@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p pages/index pages/add-record pages/record-list pages/record-detail pages/stats pages/profile utils)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\13419\\Desktop\\climbing_note\\pages"
+    ]
+  }
+}

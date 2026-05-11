@@ -1,0 +1,174 @@
+/**
+ * 记录列表页面样式
+ */
+
+/* 加载状态 */
+.loading-state {
+  text-align: center;
+  padding: 100rpx 0;
+  color: #999999;
+}
+
+/* 空状态 */
+.empty-state {
+  text-align: center;
+  padding: 100rpx 0;
+}
+
+.empty-icon {
+  font-size: 100rpx;
+  display: block;
+  margin-bottom: 30rpx;
+}
+
+.empty-text {
+  font-size: 32rpx;
+  color: #666666;
+  display: block;
+  margin-bottom: 40rpx;
+}
+
+.btn-add {
+  background-color: #2c3e50;
+  color: #ffffff;
+  border-radius: 12rpx;
+  padding: 20rpx 60rpx;
+  font-size: 30rpx;
+  display: inline-block;
+  border: none;
+}
+
+.btn-add::after {
+  border: none;
+}
+
+/* 记录卡片 */
+.record-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.05);
+}
+
+/* 记录头部 */
+.record-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20rpx;
+  padding-bottom: 20rpx;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.record-date {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.record-status {
+  padding: 8rpx 20rpx;
+  border-radius: 8rpx;
+  font-size: 24rpx;
+}
+
+.status-success {
+  background-color: #e8f5e9;
+  color: #4caf50;
+}
+
+.status-fail {
+  background-color: #ffebee;
+  color: #f44336;
+}
+
+/* 记录内容 */
+.record-info {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx 30rpx;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+}
+
+.info-label {
+  font-size: 26rpx;
+  color: #999999;
+  margin-right: 10rpx;
+}
+
+.info-value {
+  font-size: 28rpx;
+  color: #333333;
+}
+
+.info-value.grade {
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+/* 备注 */
+.record-notes {
+  margin-top: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid #f0f0f0;
+}
+
+.notes-text {
+  font-size: 26rpx;
+  color: #666666;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* 图片预览 */
+.record-images {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 20rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid #f0f0f0;
+}
+
+.image-thumb {
+  width: 120rpx;
+  height: 120rpx;
+  border-radius: 8rpx;
+}
+
+/* 加载更多 */
+.loading-more,
+.no-more {
+  text-align: center;
+  padding: 30rpx 0;
+  color: #999999;
+  font-size: 26rpx;
+}
+
+/* 悬浮按钮 */
+.fab {
+  position: fixed;
+  right: 40rpx;
+  bottom: 40rpx;
+  width: 100rpx;
+  height: 100rpx;
+  background-color: #2c3e50;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 4rpx 16rpx rgba(0, 0, 0, 0.2);
+  z-index: 100;
+}
+
+.fab-icon {
+  font-size: 50rpx;
+  color: #ffffff;
+  font-weight: bold;
+}

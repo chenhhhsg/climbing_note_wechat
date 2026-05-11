@@ -1,0 +1,56 @@
+<!--
+  个人中心页面
+-->
+<view class="container">
+  <!-- 用户信息区域 -->
+  <view class="user-section">
+    <view wx:if="{{hasUserInfo}}" class="user-info">
+      <image class="avatar" src="{{userInfo.avatarUrl}}" mode="aspectFill" />
+      <view class="user-detail">
+        <text class="username">{{userInfo.nickName}}</text>
+        <text class="user-desc">攀岩爱好者</text>
+      </view>
+    </view>
+    <view wx:else class="user-info" bindtap="getUserProfile">
+      <view class="avatar avatar-default">
+        <text class="avatar-icon">?</text>
+      </view>
+      <view class="user-detail">
+        <text class="username">点击登录</text>
+        <text class="user-desc">登录后同步数据</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 功能菜单 -->
+  <view class="menu-section">
+    <view class="menu-item" bindtap="feedback">
+      <view class="menu-left">
+        <text class="menu-icon">💬</text>
+        <text class="menu-text">意见反馈</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
+    <view class="menu-item" bindtap="clearCache">
+      <view class="menu-left">
+        <text class="menu-icon">🗑️</text>
+        <text class="menu-text">清除缓存</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
+    <view class="menu-item" bindtap="goToAbout">
+      <view class="menu-left">
+        <text class="menu-icon">ℹ️</text>
+        <text class="menu-text">关于攀笔</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+  </view>
+
+  <!-- 版本信息 -->
+  <view class="version-info">
+    <text>攀笔 v1.0.0</text>
+  </view>
+</view>

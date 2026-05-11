@@ -1,0 +1,77 @@
+<!--
+  记录详情页面
+-->
+<view class="container">
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="loading-state">
+    <text>加载中...</text>
+  </view>
+
+  <!-- 记录详情 -->
+  <view wx:elif="{{record}}" class="record-detail">
+    <!-- 状态标签 -->
+    <view class="status-bar">
+      <text class="status-tag {{record.status === '完成' ? 'status-success' : 'status-fail'}}">
+        {{record.status}}
+      </text>
+      <text class="record-date">{{record.dateText}}</text>
+    </view>
+
+    <!-- 基本信息卡片 -->
+    <view class="card">
+      <view class="card-title">基本信息</view>
+      <view class="info-grid">
+        <view class="info-item">
+          <text class="info-label">攀岩类型</text>
+          <text class="info-value">{{record.climbType}}</text>
+        </view>
+        <view class="info-item">
+          <text class="info-label">难度等级</text>
+          <text class="info-value grade">{{record.grade}}</text>
+        </view>
+        <view class="info-item">
+          <text class="info-label">攀岩地点</text>
+          <text class="info-value">{{record.location || '-'}}</text>
+        </view>
+        <view class="info-item">
+          <text class="info-label">尝试次数</text>
+          <text class="info-value">{{record.attempts}}次</text>
+        </view>
+      </view>
+    </view>
+
+    <!-- 备注卡片 -->
+    <view wx:if="{{record.notes}}" class="card">
+      <view class="card-title">备注</view>
+      <view class="notes-content">
+        <text>{{record.notes}}</text>
+      </view>
+    </view>
+
+    <!-- 图片卡片 -->
+    <view wx:if="{{record.images && record.images.length > 0}}" class="card">
+      <view class="card-title">图片</view>
+      <view class="image-grid">
+        <image
+          wx:for="{{record.images}}"
+          wx:key="*this"
+          src="{{item}}"
+          mode="aspectFill"
+          class="image-item"
+          bindtap="previewImage"
+          data-url="{{item}}"
+        />
+      </view>
+    </view>
+
+    <!-- 创建时间 -->
+    <view class="create-time">
+      <text>记录于 {{record.createTimeText}}</text>
+    </view>
+
+    <!-- 操作按钮 -->
+    <view class="actions">
+      <button class="btn-delete" bindtap="deleteRecord">删除记录</button>
+    </view>
+  </view>
+</view>

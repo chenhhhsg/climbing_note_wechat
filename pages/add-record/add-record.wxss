@@ -1,0 +1,152 @@
+/**
+ * 添加记录页面样式
+ */
+
+/* 表单卡片 */
+.form-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 20rpx 30rpx;
+  margin-bottom: 40rpx;
+}
+
+/* 表单项 */
+.form-item {
+  display: flex;
+  align-items: center;
+  padding: 24rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.form-item:last-child {
+  border-bottom: none;
+}
+
+.form-item-textarea {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.form-item-images {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+/* 表单标签 */
+.form-label {
+  width: 160rpx;
+  font-size: 30rpx;
+  color: #333333;
+  flex-shrink: 0;
+}
+
+.form-item-textarea .form-label,
+.form-item-images .form-label {
+  width: 100%;
+  margin-bottom: 20rpx;
+}
+
+/* 表单输入 */
+.form-input {
+  flex: 1;
+  font-size: 30rpx;
+  color: #333333;
+  text-align: right;
+}
+
+/* 表单选择器显示 */
+.form-value {
+  flex: 1;
+  font-size: 30rpx;
+  color: #333333;
+  text-align: right;
+}
+
+/* 文本域 */
+.form-textarea {
+  width: 100%;
+  height: 200rpx;
+  font-size: 28rpx;
+  color: #333333;
+  padding: 20rpx;
+  background-color: #f5f5f5;
+  border-radius: 12rpx;
+  box-sizing: border-box;
+}
+
+/* 图片列表 */
+.image-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  width: 100%;
+}
+
+.image-item {
+  width: 180rpx;
+  height: 180rpx;
+  position: relative;
+  border-radius: 12rpx;
+  overflow: hidden;
+}
+
+.image-preview {
+  width: 100%;
+  height: 100%;
+}
+
+.image-delete {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 40rpx;
+  height: 40rpx;
+  background-color: rgba(0, 0, 0, 0.5);
+  color: #ffffff;
+  font-size: 28rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0 12rpx 0 12rpx;
+}
+
+.image-add {
+  width: 180rpx;
+  height: 180rpx;
+  background-color: #f5f5f5;
+  border: 2rpx dashed #cccccc;
+  border-radius: 12rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-add-icon {
+  font-size: 60rpx;
+  color: #cccccc;
+}
+
+.image-hint {
+  font-size: 24rpx;
+  color: #999999;
+  margin-top: 16rpx;
+}
+
+/* 提交按钮 */
+.btn-submit {
+  background-color: #2c3e50;
+  color: #ffffff;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  font-size: 32rpx;
+  border: none;
+}
+
+.btn-submit::after {
+  border: none;
+}
+
+.btn-submit[disabled] {
+  background-color: #95a5a6;
+  color: #ffffff;
+}
