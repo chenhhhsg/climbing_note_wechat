@@ -1,117 +1,213 @@
 /**
  * 记录列表页面
- * 显示所有攀岩记录
+ * 支持搜索、筛选、分页加载
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
+const gradeUtil = require('../../utils/grade');
+const app = getApp();
 
 Page({
   data: {
-    records: [],        // 记录列表
-    loading: true,      // 加载状态
-    isEmpty: false,     // 是否无数据
-    page: 1,            // 当前页码
-    hasMore: true,      // 是否有更多数据
-    pageSize: 20        // 每页数量
+    records: [],
+    loading: false,
+    isEmpty: false,
+    page: 1,
+    hasMore: true,
+    pageSize: 20,
+
+    // 搜索和筛选
+    keyword: '',
+    filters: {
+      climbType: '',
+      status: '',
+      grade: '',
+      location: ''
+    },
+
+    // 筛选选项
+    climbTypes: [],
+    climbTypeLabels: {},
+    statusOptions: [],
+    statusLabels: {},
+
+    // 难度筛选选项（根据攀岩类型动态变化）
+    filterGradeOptions: [],
+
+    // 筛选面板
+    showFilter: false,
+    tempFilters: {},
+
+    // 用于获取去重后的地点列表
+    allLocations: []
   },
 
   onLoad() {
+    const { climbTypes, climbTypeLabels, statusOptions, statusLabels } = app.globalData;
+    this.setData({
+      climbTypes,
+      climbTypeLabels,
+      statusOptions,
+      statusLabels
+    });
     this.loadRecords();
   },
 
-  // 每次显示页面时刷新数据
   onShow() {
     this.refreshRecords();
   },
 
-  // 下拉刷新
   onPullDownRefresh() {
-    this.refreshRecords().then(() => {
-      wx.stopPullDownRefresh();
-    });
+    this.refreshRecords().then(() => wx.stopPullDownRefresh());
   },
 
-  // 上拉加载更多
   onReachBottom() {
     if (this.data.hasMore && !this.data.loading) {
       this.loadMore();
     }
   },
 
-  /**
-   * 刷新记录列表
-   */
   async refreshRecords() {
-    this.setData({
-      page: 1,
-      records: [],
-      hasMore: true
-    });
+    this.setData({ page: 1, records: [], hasMore: true });
     await this.loadRecords();
   },
 
-  /**
-   * 加载记录列表
-   */
   async loadRecords() {
     if (this.data.loading) return;
-
     this.setData({ loading: true });
 
-    try {
-      const res = await db.getRecords(this.data.page, this.data.pageSize);
-      const newRecords = res.data.map(record => ({
+    const { page, pageSize, keyword, filters } = this.data;
+
+    const res = await db.getRecords({
+      page,
+      pageSize,
+      filters,
+      keyword
+    });
+
+    if (res.success) {
+      const { climbTypeLabels, statusLabels } = app.globalData;
+
+      const newRecords = res.data.list.map(record => ({
         ...record,
-        // 格式化日期显示
         dateText: dateUtil.formatDateChinese(record.date),
-        // 格式化创建时间
-        createTimeText: dateUtil.getRelativeTime(record.createTime)
+        climbTypeLabel: climbTypeLabels[record.climbType] || record.climbType,
+        statusLabel: statusLabels[record.status] || record.status,
+        isCompleted: record.status === 'flash' || record.status === 'completed'
       }));
 
-      const allRecords = this.data.page === 1
+      const allRecords = page === 1
         ? newRecords
         : [...this.data.records, ...newRecords];
 
       this.setData({
         records: allRecords,
         isEmpty: allRecords.length === 0,
-        hasMore: newRecords.length >= this.data.pageSize,
+        hasMore: allRecords.length < res.data.total,
         loading: false
       });
-    } catch (err) {
-      console.error('加载记录失败：', err);
+    } else {
       this.setData({ loading: false });
-      wx.showToast({
-        title: '加载失败',
-        icon: 'none'
-      });
+      wx.showToast({ title: '加载失败', icon: 'none' });
     }
   },
 
-  /**
-   * 加载更多
-   */
   async loadMore() {
     this.setData({ page: this.data.page + 1 });
     await this.loadRecords();
   },
 
-  /**
-   * 跳转到记录详情
-   */
-  goToDetail(e) {
-    const id = e.currentTarget.dataset.id;
-    wx.navigateTo({
-      url: `/pages/record-detail/record-detail?id=${id}`
+  // 搜索相关
+  onSearchInput(e) {
+    this.setData({ keyword: e.detail.value });
+  },
+
+  onSearchConfirm() {
+    this.refreshRecords();
+  },
+
+  onClearSearch() {
+    this.setData({ keyword: '' });
+    this.refreshRecords();
+  },
+
+  // 筛选相关
+  onToggleFilter() {
+    this.setData({
+      showFilter: !this.data.showFilter,
+      tempFilters: { ...this.data.filters }
     });
+    // 打开面板时更新难度选项
+    if (this.data.showFilter && this.data.tempFilters.climbType) {
+      this.updateFilterGradeOptions(this.data.tempFilters.climbType);
+    }
+  },
+
+  onFilterTypeChange(e) {
+    const climbType = this.data.climbTypes[e.detail.value];
+    this.setData({
+      'tempFilters.climbType': climbType,
+      'tempFilters.grade': '' // 切换类型时清空难度选择
+    });
+    this.updateFilterGradeOptions(climbType);
   },
 
   /**
-   * 跳转到添加记录页面
+   * 更新筛选面板的难度选项
    */
-  goToAddRecord() {
-    wx.navigateTo({
-      url: '/pages/add-record/add-record'
+  updateFilterGradeOptions(climbType) {
+    if (!climbType) {
+      this.setData({ filterGradeOptions: [] });
+      return;
+    }
+    const grades = gradeUtil.getGradeOptions(climbType);
+    this.setData({
+      filterGradeOptions: grades.map(g => g.value)
     });
+  },
+
+  onFilterGradeChange(e) {
+    this.setData({ 'tempFilters.grade': this.data.filterGradeOptions[e.detail.value] });
+  },
+
+  onFilterStatusChange(e) {
+    this.setData({ 'tempFilters.status': this.data.statusOptions[e.detail.value] });
+  },
+
+  onFilterLocationInput(e) {
+    this.setData({ 'tempFilters.location': e.detail.value });
+  },
+
+  onApplyFilter() {
+    this.setData({
+      filters: { ...this.data.tempFilters },
+      showFilter: false
+    });
+    this.refreshRecords();
+  },
+
+  onResetFilter() {
+    const resetFilters = { climbType: '', status: '', grade: '', location: '' };
+    this.setData({
+      filters: resetFilters,
+      tempFilters: resetFilters,
+      showFilter: false,
+      filterGradeOptions: []
+    });
+    this.refreshRecords();
+  },
+
+  onFilterMaskTap() {
+    this.setData({ showFilter: false });
+  },
+
+  // 跳转
+  goToDetail(e) {
+    const id = e.currentTarget.dataset.id;
+    wx.navigateTo({ url: `/pages/record-detail/record-detail?id=${id}` });
+  },
+
+  goToAddRecord() {
+    wx.navigateTo({ url: '/pages/add-record/add-record' });
   }
 });

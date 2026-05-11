@@ -1,66 +1,131 @@
 <!--
-  添加记录页面
+  添加/编辑记录页面 - 完整表单
 -->
-<view class="container">
-  <view class="form-card">
-    <!-- 日期选择 -->
-    <view class="form-item">
-      <text class="form-label">日期</text>
-      <picker mode="date" value="{{date}}" bindchange="onDateChange">
-        <view class="form-value">{{date || '请选择日期'}}</view>
-      </picker>
-    </view>
+<view class="page-wrap">
+  <!-- 编辑模式加载中 -->
+  <view wx:if="{{loadingRecord}}" class="loading-state">
+    <text>加载记录中...</text>
+  </view>
 
-    <!-- 地点输入 -->
-    <view class="form-item">
-      <text class="form-label">地点</text>
+  <!-- 日期选择 -->
+  <view class="form-section">
+    <view class="section-title">基本信息</view>
+    <view class="form-card">
+      <view class="form-item">
+        <text class="form-label">日期</text>
+        <picker mode="date" value="{{date}}" bindchange="onDateChange">
+          <view class="form-value">{{date || '请选择日期'}}</view>
+        </picker>
+      </view>
+
+      <view class="form-item">
+        <text class="form-label">地点</text>
+        <input
+          class="form-input"
+          placeholder="请输入攀岩地点"
+          value="{{location}}"
+          bindinput="onLocationInput"
+        />
+      </view>
+
+      <view class="form-item">
+        <text class="form-label">攀岩类型</text>
+        <picker range="{{climbTypes}}" range-key="label" bindchange="onClimbTypeChange">
+          <view class="form-value">{{climbTypeLabels[climbType] || '请选择类型'}}</view>
+        </picker>
+      </view>
+
+      <view class="form-item">
+        <text class="form-label">难度等级</text>
+        <picker range="{{gradeOptions}}" bindchange="onGradeChange">
+          <view class="form-value">{{grade || '请选择难度'}}</view>
+        </picker>
+      </view>
+    </view>
+  </view>
+
+  <!-- 完成状态 -->
+  <view class="form-section">
+    <view class="section-title">完成状态</view>
+    <view class="status-tags">
+      <view
+        wx:for="{{statusTags}}"
+        wx:key="value"
+        class="status-tag {{status === item.value ? 'status-tag-active' : ''}} status-tag-{{item.value}}"
+        bindtap="onStatusSelect"
+        data-status="{{item.value}}"
+      >
+        <text class="status-tag-icon">{{item.icon}}</text>
+        <text class="status-tag-text">{{item.label}}</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 尝试次数 -->
+  <view class="form-section">
+    <view class="section-title">尝试次数</view>
+    <view class="attempts-control">
+      <view class="attempts-btn" bindtap="onAttemptsMinus">
+        <text class="attempts-btn-text">-</text>
+      </view>
       <input
-        class="form-input"
-        placeholder="请输入攀岩地点"
-        value="{{location}}"
-        bindinput="onLocationInput"
-      />
-    </view>
-
-    <!-- 攀岩类型选择 -->
-    <view class="form-item">
-      <text class="form-label">攀岩类型</text>
-      <picker range="{{climbTypes}}" bindchange="onClimbTypeChange">
-        <view class="form-value">{{climbType || '请选择类型'}}</view>
-      </picker>
-    </view>
-
-    <!-- 难度等级选择 -->
-    <view class="form-item">
-      <text class="form-label">难度等级</text>
-      <picker range="{{gradeOptions}}" bindchange="onGradeChange">
-        <view class="form-value">{{grade || '请选择难度'}}</view>
-      </picker>
-    </view>
-
-    <!-- 完成状态选择 -->
-    <view class="form-item">
-      <text class="form-label">完成状态</text>
-      <picker range="{{statusOptions}}" bindchange="onStatusChange">
-        <view class="form-value">{{status || '请选择状态'}}</view>
-      </picker>
-    </view>
-
-    <!-- 尝试次数 -->
-    <view class="form-item">
-      <text class="form-label">尝试次数</text>
-      <input
-        class="form-input"
+        class="attempts-input"
         type="number"
-        placeholder="请输入尝试次数"
         value="{{attempts}}"
-        bindinput="onAttemptsChange"
+        bindinput="onAttemptsInput"
       />
+      <view class="attempts-btn" bindtap="onAttemptsPlus">
+        <text class="attempts-btn-text">+</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 线路信息 -->
+  <view class="form-section">
+    <view class="section-title">线路信息 (选填)</view>
+    <view class="form-card">
+      <view class="form-item">
+        <text class="form-label">线路编号</text>
+        <input
+          class="form-input"
+          placeholder="如: A3, B5"
+          value="{{routeName}}"
+          bindinput="onRouteNameInput"
+        />
+      </view>
+
+      <view class="form-item">
+        <text class="form-label">区域</text>
+        <input
+          class="form-input"
+          placeholder="如: 抱石区A, 先锋区"
+          value="{{area}}"
+          bindinput="onAreaInput"
+        />
+      </view>
     </view>
 
-    <!-- 备注 -->
-    <view class="form-item form-item-textarea">
-      <text class="form-label">备注</text>
+    <!-- 线路颜色 -->
+    <view class="color-section">
+      <text class="color-label">线路颜色</text>
+      <view class="color-options">
+        <view
+          wx:for="{{colorOptions}}"
+          wx:key="*this"
+          class="color-item {{routeColor === item ? 'color-item-active' : ''}}"
+          bindtap="onColorSelect"
+          data-color="{{item}}"
+        >
+          <text>{{item}}</text>
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 备注 -->
+  <view class="form-section">
+    <view class="section-title">备注 (选填)</view>
+    <view class="form-card">
       <textarea
         class="form-textarea"
         placeholder="添加备注信息..."
@@ -69,47 +134,53 @@
         maxlength="500"
       />
     </view>
-
-    <!-- 图片上传 -->
-    <view class="form-item form-item-images">
-      <text class="form-label">图片</text>
-      <view class="image-list">
-        <view
-          wx:for="{{images}}"
-          wx:key="*this"
-          class="image-item"
-        >
-          <image
-            src="{{item}}"
-            mode="aspectFill"
-            class="image-preview"
-            bindtap="previewImage"
-            data-url="{{item}}"
-          />
-          <view
-            class="image-delete"
-            catchtap="deleteImage"
-            data-index="{{index}}"
-          >×</view>
-        </view>
-        <view
-          wx:if="{{images.length < 9}}"
-          class="image-add"
-          bindtap="chooseImage"
-        >
-          <text class="image-add-icon">+</text>
-        </view>
-      </view>
-      <text class="image-hint">最多上传9张图片</text>
-    </view>
   </view>
 
-  <!-- 提交按钮 -->
+  <!-- 图片上传 -->
+  <view class="form-section">
+    <view class="section-title">图片 (选填)</view>
+    <view class="image-list">
+      <view
+        wx:for="{{images}}"
+        wx:key="*this"
+        class="image-item"
+      >
+        <image
+          src="{{item}}"
+          mode="aspectFill"
+          class="image-preview"
+          bindtap="previewImage"
+          data-url="{{item}}"
+        />
+        <view
+          class="image-delete"
+          catchtap="deleteImage"
+          data-index="{{index}}"
+        >×</view>
+      </view>
+      <view
+        wx:if="{{images.length < 6}}"
+        class="image-add"
+        bindtap="chooseImage"
+      >
+        <text class="image-add-icon">+</text>
+        <text class="image-add-text">添加图片</text>
+      </view>
+    </view>
+    <text class="image-hint">最多上传6张图片，保存时自动压缩</text>
+  </view>
+
+  <!-- 底部占位 -->
+  <view class="bottom-placeholder"></view>
+</view>
+
+<!-- 固定底部提交按钮 -->
+<view class="fixed-bottom">
   <button
     class="btn-submit"
     bindtap="submitForm"
     disabled="{{isSubmitting}}"
   >
-    {{isSubmitting ? '保存中...' : '保存记录'}}
+    {{isSubmitting ? (isEdit ? '更新中...' : '保存中...') : (isEdit ? '更新记录' : '保存记录')}}
   </button>
 </view>

@@ -1,10 +1,10 @@
 <!--
-  首页 - 显示最近记录和快捷添加按钮
+  首页 - 显示基础统计和最近记录
 -->
 <view class="container">
   <!-- 头部欢迎区域 -->
   <view class="header">
-    <view class="welcome-text">攀岩记录</view>
+    <view class="welcome-text">攀笔</view>
     <view class="subtitle">记录每一次攀登</view>
   </view>
 
@@ -14,6 +14,31 @@
       <text class="btn-icon">+</text>
       <text class="btn-text">添加记录</text>
     </button>
+  </view>
+
+  <!-- 基础统计卡片 -->
+  <view class="stats-section" bindtap="goToStats">
+    <view class="stats-header">
+      <text class="stats-title">本月数据</text>
+      <text class="stats-more">查看详情 ></text>
+    </view>
+    <view wx:if="{{statsLoading}}" class="stats-loading">
+      <text>加载中...</text>
+    </view>
+    <view wx:else class="stats-grid">
+      <view class="stats-item">
+        <text class="stats-number">{{stats.monthClimbs}}</text>
+        <text class="stats-label">攀岩次数</text>
+      </view>
+      <view class="stats-item">
+        <text class="stats-number">{{stats.maxGrade}}</text>
+        <text class="stats-label">最高难度</text>
+      </view>
+      <view class="stats-item">
+        <text class="stats-number">{{stats.completionRate}}%</text>
+        <text class="stats-label">完成率</text>
+      </view>
+    </view>
   </view>
 
   <!-- 最近记录区域 -->
@@ -50,10 +75,10 @@
         </view>
         <view class="record-right">
           <view class="record-grade">{{item.grade || '-'}}</view>
-          <view class="record-type">{{item.climbType}}</view>
+          <view class="record-type">{{item.climbTypeLabel}}</view>
         </view>
-        <view class="record-status {{item.status === '完成' ? 'status-success' : 'status-fail'}}">
-          {{item.status}}
+        <view class="record-status {{item.isCompleted ? 'status-success' : 'status-fail'}}">
+          {{item.statusLabel}}
         </view>
       </view>
     </view>

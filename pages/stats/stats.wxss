@@ -14,7 +14,7 @@
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20rpx;
-  margin-bottom: 30rpx;
+  margin-bottom: 20rpx;
 }
 
 .stat-card {
@@ -51,6 +51,49 @@
   color: rgba(255, 255, 255, 0.8);
 }
 
+/* 次要数据行 */
+.stats-row {
+  display: flex;
+  gap: 20rpx;
+  margin-bottom: 20rpx;
+}
+
+.stat-mini {
+  flex: 1;
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  text-align: center;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.05);
+}
+
+.stat-mini-number {
+  display: block;
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-bottom: 8rpx;
+}
+
+.stat-mini-label {
+  display: block;
+  font-size: 24rpx;
+  color: #999999;
+}
+
+/* Project 状态颜色 */
+.stat-active {
+  color: #2196f3;
+}
+
+.stat-completed {
+  color: #4caf50;
+}
+
+.stat-abandoned {
+  color: #999999;
+}
+
 /* 区域卡片 */
 .section-card {
   background-color: #ffffff;
@@ -64,56 +107,94 @@
   font-size: 32rpx;
   font-weight: bold;
   color: #2c3e50;
-  margin-bottom: 30rpx;
+  margin-bottom: 24rpx;
 }
 
-/* 完成状态条 */
-.status-bars {
+/* 完成率进度条 */
+.progress-section {
   display: flex;
-  flex-direction: column;
-  gap: 24rpx;
+  align-items: center;
+  gap: 20rpx;
+  margin-bottom: 16rpx;
 }
 
-.status-bar-item {
-  display: flex;
-  flex-direction: column;
-}
-
-.bar-header {
-  display: flex;
-  justify-content: space-between;
-  margin-bottom: 12rpx;
-}
-
-.bar-label {
-  font-size: 28rpx;
-  color: #333333;
-}
-
-.bar-count {
-  font-size: 28rpx;
-  color: #666666;
-}
-
-.bar-bg {
+.progress-bar-bg {
+  flex: 1;
   height: 24rpx;
   background-color: #f0f0f0;
   border-radius: 12rpx;
   overflow: hidden;
 }
 
-.bar-fill {
+.progress-bar-fill {
   height: 100%;
+  background: linear-gradient(90deg, #4caf50, #2c3e50);
   border-radius: 12rpx;
-  transition: width 0.3s ease;
+  transition: width 0.5s ease;
 }
 
-.bar-success {
-  background-color: #4caf50;
+.progress-text {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  min-width: 80rpx;
+  text-align: right;
 }
 
-.bar-fail {
-  background-color: #f44336;
+.progress-detail {
+  margin-top: 8rpx;
+}
+
+.progress-info {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+/* 月度趋势 */
+.trend-chart {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  height: 300rpx;
+  padding-top: 20rpx;
+}
+
+.trend-item {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+}
+
+.trend-bar-bg {
+  flex: 1;
+  width: 40rpx;
+  background-color: #f0f0f0;
+  border-radius: 8rpx;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+
+.trend-bar-fill {
+  width: 100%;
+  background-color: #2c3e50;
+  border-radius: 8rpx;
+  transition: height 0.5s ease;
+  min-height: 4rpx;
+}
+
+.trend-count {
+  font-size: 22rpx;
+  color: #666666;
+  margin-top: 8rpx;
+}
+
+.trend-month {
+  font-size: 20rpx;
+  color: #999999;
+  margin-top: 4rpx;
 }
 
 /* 攀岩类型分布 */
@@ -204,7 +285,24 @@
 /* 空状态提示 */
 .empty-tip {
   text-align: center;
-  padding: 60rpx 0;
+  padding: 80rpx 0;
+}
+
+.empty-icon {
+  font-size: 80rpx;
+  display: block;
+  margin-bottom: 20rpx;
+}
+
+.empty-text {
+  font-size: 32rpx;
+  color: #666666;
+  display: block;
+  margin-bottom: 10rpx;
+}
+
+.empty-hint {
+  font-size: 26rpx;
   color: #999999;
-  font-size: 28rpx;
+  display: block;
 }

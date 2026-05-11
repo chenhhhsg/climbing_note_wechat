@@ -1,5 +1,5 @@
 <!--
-  统计页面
+  统计页面 - 完整统计数据展示
 -->
 <view class="container">
   <!-- 加载中 -->
@@ -28,27 +28,61 @@
       </view>
     </view>
 
-    <!-- 完成状态分布 -->
+    <!-- 次要数据 -->
+    <view class="stats-row">
+      <view class="stat-mini">
+        <text class="stat-mini-number">{{flashCount}}</text>
+        <text class="stat-mini-label">Flash 次数</text>
+      </view>
+      <view class="stat-mini">
+        <text class="stat-mini-number">{{projectCount}}</text>
+        <text class="stat-mini-label">Project 总数</text>
+      </view>
+    </view>
+
+    <!-- Project 统计 -->
+    <view wx:if="{{projectCount > 0}}" class="stats-row">
+      <view class="stat-mini">
+        <text class="stat-mini-number stat-active">{{projectActive}}</text>
+        <text class="stat-mini-label">进行中</text>
+      </view>
+      <view class="stat-mini">
+        <text class="stat-mini-number stat-completed">{{projectCompleted}}</text>
+        <text class="stat-mini-label">已完成</text>
+      </view>
+      <view class="stat-mini">
+        <text class="stat-mini-number stat-abandoned">{{projectAbandoned}}</text>
+        <text class="stat-mini-label">已放弃</text>
+      </view>
+    </view>
+
+    <!-- 完成率进度条 -->
     <view class="section-card">
-      <view class="section-title">完成状态</view>
-      <view class="status-bars">
-        <view class="status-bar-item">
-          <view class="bar-header">
-            <text class="bar-label">完成</text>
-            <text class="bar-count">{{completedCount}}次</text>
-          </view>
-          <view class="bar-bg">
-            <view class="bar-fill bar-success" style="width: {{completionRate}}%"></view>
-          </view>
+      <view class="section-title">完成率</view>
+      <view class="progress-section">
+        <view class="progress-bar-bg">
+          <view class="progress-bar-fill" style="width: {{completionRate}}%"></view>
         </view>
-        <view class="status-bar-item">
-          <view class="bar-header">
-            <text class="bar-label">未完成</text>
-            <text class="bar-count">{{failedCount}}次</text>
+        <text class="progress-text">{{completionRate}}%</text>
+      </view>
+      <view class="progress-detail">
+        <text class="progress-info">共 {{totalClimbs}} 次攀岩，其中 {{flashCount}} 次 Flash</text>
+      </view>
+    </view>
+
+    <!-- 月度趋势 -->
+    <view wx:if="{{monthTrend.length > 0}}" class="section-card">
+      <view class="section-title">月度趋势</view>
+      <view class="trend-chart">
+        <view wx:for="{{monthTrend}}" wx:key="month" class="trend-item">
+          <view class="trend-bar-bg">
+            <view
+              class="trend-bar-fill"
+              style="height: {{item.count > 0 ? (item.count / monthTrendMax * 100) : 0}}%"
+            ></view>
           </view>
-          <view class="bar-bg">
-            <view class="bar-fill bar-fail" style="width: {{100 - completionRate}}%"></view>
-          </view>
+          <text class="trend-count">{{item.count}}</text>
+          <text class="trend-month">{{item.month}}</text>
         </view>
       </view>
     </view>
@@ -59,12 +93,12 @@
       <view class="type-list">
         <view
           wx:for="{{typeDistribution}}"
-          wx:key="name"
+          wx:key="type"
           class="type-item"
         >
           <view class="type-info">
-            <text class="type-name">{{item.name}}</text>
-            <text class="type-count">{{item.count}}次</text>
+            <text class="type-name">{{item.label}}</text>
+            <text class="type-count">{{item.count}}次 ({{item.percentage}}%)</text>
           </view>
           <view class="type-bar-bg">
             <view class="type-bar-fill" style="width: {{item.percentage}}%"></view>
@@ -91,7 +125,9 @@
 
     <!-- 空状态 -->
     <view wx:if="{{totalClimbs === 0}}" class="empty-tip">
-      <text>还没有攀岩记录，快去添加吧！</text>
+      <text class="empty-icon">📊</text>
+      <text class="empty-text">还没有攀岩记录</text>
+      <text class="empty-hint">快去添加第一条记录吧！</text>
     </view>
   </view>
 </view>

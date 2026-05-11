@@ -10,18 +10,31 @@ App({
     } else {
       wx.cloud.init({
         // 替换为你的云开发环境ID
-        env: 'your-env-id',
+        env: 'cloud1-d1gm2volcc162cb06',
         traceUser: true
       });
     }
   },
 
   globalData: {
-    // 全局数据
     userInfo: null,
-    // 攀岩类型选项
-    climbTypes: ['抱石', '先锋攀', '顶绳攀', '室内', '室外'],
-    // 完成状态选项
-    statusOptions: ['完成', '未完成', '挂片', '红点']
+
+    // 攀岩类型（存储值 -> 中文显示）
+    climbTypes: ['boulder', 'lead', 'speed', 'outdoor'],
+    climbTypeLabels: {
+      boulder: '抱石',
+      lead: '先锋攀',
+      speed: '竞速',
+      outdoor: '野外'
+    },
+
+    // 完成状态（存储值 -> 中文显示）
+    statusOptions: ['flash', 'completed', 'failed', 'project'],
+    statusLabels: {
+      flash: 'Flash',
+      completed: '完成',
+      failed: '未完成',
+      project: 'Project'
+    }
   }
 });

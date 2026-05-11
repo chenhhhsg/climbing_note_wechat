@@ -4,26 +4,49 @@
 <view class="container">
   <!-- 用户信息区域 -->
   <view class="user-section">
+    <!-- 已登录 -->
     <view wx:if="{{hasUserInfo}}" class="user-info">
-      <image class="avatar" src="{{userInfo.avatarUrl}}" mode="aspectFill" />
+      <image class="avatar" src="{{avatarUrl}}" mode="aspectFill" />
       <view class="user-detail">
-        <text class="username">{{userInfo.nickName}}</text>
+        <text class="username">{{nickName}}</text>
         <text class="user-desc">攀岩爱好者</text>
       </view>
     </view>
-    <view wx:else class="user-info" bindtap="getUserProfile">
-      <view class="avatar avatar-default">
-        <text class="avatar-icon">?</text>
-      </view>
+
+    <!-- 未登录：使用新组件获取头像和昵称 -->
+    <view wx:else class="user-info user-info-edit">
+      <!-- 头像选择按钮 -->
+      <button class="avatar-btn" open-type="chooseAvatar" bindchooseavatar="onChooseAvatar">
+        <image wx:if="{{avatarUrl}}" class="avatar" src="{{avatarUrl}}" mode="aspectFill" />
+        <view wx:else class="avatar avatar-default">
+          <text class="avatar-icon">+</text>
+        </view>
+      </button>
       <view class="user-detail">
-        <text class="username">点击登录</text>
-        <text class="user-desc">登录后同步数据</text>
+        <!-- 昵称输入框 -->
+        <input
+          class="nickname-input"
+          type="nickname"
+          placeholder="点击设置昵称"
+          value="{{nickName}}"
+          bindinput="onNicknameInput"
+          bindblur="onNicknameBlur"
+        />
+        <text class="user-desc">点击头像和昵称设置信息</text>
       </view>
     </view>
   </view>
 
   <!-- 功能菜单 -->
   <view class="menu-section">
+    <view class="menu-item" bindtap="exportData">
+      <view class="menu-left">
+        <text class="menu-icon">📊</text>
+        <text class="menu-text">数据导出</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
     <view class="menu-item" bindtap="feedback">
       <view class="menu-left">
         <text class="menu-icon">💬</text>

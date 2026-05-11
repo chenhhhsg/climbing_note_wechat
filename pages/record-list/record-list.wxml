@@ -1,7 +1,89 @@
 <!--
-  记录列表页面
+  记录列表页面 - 支持搜索、筛选
 -->
 <view class="container">
+  <!-- 搜索栏 -->
+  <view class="search-bar">
+    <view class="search-input-wrap">
+      <text class="search-icon">🔍</text>
+      <input
+        class="search-input"
+        placeholder="搜索地点、备注..."
+        value="{{keyword}}"
+        bindinput="onSearchInput"
+        bindconfirm="onSearchConfirm"
+        confirm-type="search"
+      />
+      <text wx:if="{{keyword}}" class="search-clear" bindtap="onClearSearch">✕</text>
+    </view>
+    <view class="filter-btn {{showFilter ? 'filter-btn-active' : ''}}" bindtap="onToggleFilter">
+      <text class="filter-icon">⚙</text>
+    </view>
+  </view>
+
+  <!-- 当前筛选条件 -->
+  <view wx:if="{{filters.climbType || filters.status || filters.grade || filters.location}}" class="active-filters">
+    <view wx:if="{{filters.climbType}}" class="filter-tag">
+      <text>{{climbTypeLabels[filters.climbType]}}</text>
+      <text class="filter-tag-remove" bindtap="onResetFilter">✕</text>
+    </view>
+    <view wx:if="{{filters.status}}" class="filter-tag">
+      <text>{{statusLabels[filters.status]}}</text>
+      <text class="filter-tag-remove" bindtap="onResetFilter">✕</text>
+    </view>
+    <view wx:if="{{filters.grade}}" class="filter-tag">
+      <text>{{filters.grade}}</text>
+      <text class="filter-tag-remove" bindtap="onResetFilter">✕</text>
+    </view>
+    <view wx:if="{{filters.location}}" class="filter-tag">
+      <text>{{filters.location}}</text>
+      <text class="filter-tag-remove" bindtap="onResetFilter">✕</text>
+    </view>
+  </view>
+
+  <!-- 筛选面板 -->
+  <view wx:if="{{showFilter}}" class="filter-mask" bindtap="onFilterMaskTap">
+    <view class="filter-panel" catchtap="">
+      <view class="filter-title">筛选条件</view>
+
+      <view class="filter-item">
+        <text class="filter-label">攀岩类型</text>
+        <picker range="{{climbTypes}}" range-key="label" bindchange="onFilterTypeChange">
+          <view class="filter-value">{{climbTypeLabels[tempFilters.climbType] || '全部'}}</view>
+        </picker>
+      </view>
+
+      <view class="filter-item">
+        <text class="filter-label">难度等级</text>
+        <picker range="{{filterGradeOptions}}" bindchange="onFilterGradeChange">
+          <view class="filter-value">{{tempFilters.grade || '全部'}}</view>
+        </picker>
+      </view>
+
+      <view class="filter-item">
+        <text class="filter-label">完成状态</text>
+        <picker range="{{statusOptions}}" range-key="label" bindchange="onFilterStatusChange">
+          <view class="filter-value">{{statusLabels[tempFilters.status] || '全部'}}</view>
+        </picker>
+      </view>
+
+      <view class="filter-item">
+        <text class="filter-label">地点</text>
+        <input
+          class="filter-input"
+          placeholder="输入地点"
+          value="{{tempFilters.location}}"
+          bindinput="onFilterLocationInput"
+        />
+      </view>
+
+      <view class="filter-actions">
+        <button class="filter-reset-btn" bindtap="onResetFilter">重置</button>
+        <button class="filter-apply-btn" bindtap="onApplyFilter">应用</button>
+      </view>
+    </view>
+  </view>
+
   <!-- 加载中 -->
   <view wx:if="{{loading && records.length === 0}}" class="loading-state">
     <text>加载中...</text>
@@ -10,7 +92,7 @@
   <!-- 空状态 -->
   <view wx:elif="{{isEmpty}}" class="empty-state">
     <text class="empty-icon">🧗</text>
-    <text class="empty-text">还没有攀岩记录</text>
+    <text class="empty-text">没有找到攀岩记录</text>
     <button class="btn-add" bindtap="goToAddRecord">添加第一条记录</button>
   </view>
 
@@ -26,8 +108,8 @@
       <!-- 记录头部：日期和状态 -->
       <view class="record-header">
         <text class="record-date">{{item.dateText}}</text>
-        <text class="record-status {{item.status === '完成' ? 'status-success' : 'status-fail'}}">
-          {{item.status}}
+        <text class="record-status {{item.isCompleted ? 'status-success' : 'status-fail'}}">
+          {{item.statusLabel}}
         </text>
       </view>
 
@@ -40,7 +122,7 @@
           </view>
           <view class="info-item">
             <text class="info-label">类型</text>
-            <text class="info-value">{{item.climbType}}</text>
+            <text class="info-value">{{item.climbTypeLabel}}</text>
           </view>
           <view class="info-item">
             <text class="info-label">难度</text>
