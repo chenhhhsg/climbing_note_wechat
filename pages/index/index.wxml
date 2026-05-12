@@ -1,18 +1,18 @@
 <!--
-  首页 - 显示基础统计和最近记录
+  首页 - 显示基础统计和最近攀岩场次
 -->
 <view class="container">
   <!-- 头部欢迎区域 -->
   <view class="header">
     <view class="welcome-text">攀笔</view>
-    <view class="subtitle">记录每一次攀登</view>
+    <view class="subtitle">攀笔——记录你的攀岩进步</view>
   </view>
 
   <!-- 快捷操作区域 -->
   <view class="quick-actions">
     <button class="btn-add" bindtap="goToAddRecord">
       <text class="btn-icon">+</text>
-      <text class="btn-text">添加记录</text>
+      <text class="btn-text">添加攀岩</text>
     </button>
   </view>
 
@@ -27,8 +27,12 @@
     </view>
     <view wx:else class="stats-grid">
       <view class="stats-item">
-        <text class="stats-number">{{stats.monthClimbs}}</text>
-        <text class="stats-label">攀岩次数</text>
+        <text class="stats-number">{{stats.monthSessions}}</text>
+        <text class="stats-label">进馆次数</text>
+      </view>
+      <view class="stats-item">
+        <text class="stats-number">{{stats.monthRoutes}}</text>
+        <text class="stats-label">线路数</text>
       </view>
       <view class="stats-item">
         <text class="stats-number">{{stats.maxGrade}}</text>
@@ -41,10 +45,10 @@
     </view>
   </view>
 
-  <!-- 最近记录区域 -->
+  <!-- 最近攀岩场次 -->
   <view class="section">
     <view class="section-header">
-      <text class="section-title">最近记录</text>
+      <text class="section-title">最近攀岩</text>
       <text class="section-more" bindtap="goToList">查看全部 ></text>
     </view>
 
@@ -60,26 +64,38 @@
       <text class="empty-hint">点击上方按钮开始记录吧</text>
     </view>
 
-    <!-- 记录列表 -->
-    <view wx:else class="record-list">
+    <!-- 攀岩场次列表 -->
+    <view wx:else class="session-list">
       <view
-        wx:for="{{recentRecords}}"
+        wx:for="{{recentSessions}}"
         wx:key="_id"
-        class="record-item"
+        class="session-card"
         bindtap="goToDetail"
         data-id="{{item._id}}"
       >
-        <view class="record-left">
-          <view class="record-date">{{item.dateText}}</view>
-          <view class="record-location">{{item.location || '未填写地点'}}</view>
+        <view class="session-header">
+          <text class="session-date">{{item.dateText}}</text>
+          <text class="session-location">{{item.location || '未填写地点'}}</text>
         </view>
-        <view class="record-right">
-          <view class="record-grade">{{item.grade || '-'}}</view>
-          <view class="record-type">{{item.climbTypeLabel}}</view>
+        <view class="session-stats">
+          <view class="session-stat">
+            <text class="session-stat-num">{{item.routeCount}}</text>
+            <text class="session-stat-label">线路</text>
+          </view>
+          <view class="session-stat">
+            <text class="session-stat-num session-stat-success">{{item.completedCount}}</text>
+            <text class="session-stat-label">完成</text>
+          </view>
+          <view class="session-stat">
+            <text class="session-stat-num">{{item.maxGrade}}</text>
+            <text class="session-stat-label">最高</text>
+          </view>
+          <view class="session-stat">
+            <text class="session-stat-num">{{item.completionRate}}%</text>
+            <text class="session-stat-label">完成率</text>
+          </view>
         </view>
-        <view class="record-status {{item.isCompleted ? 'status-success' : 'status-fail'}}">
-          {{item.statusLabel}}
-        </view>
+        <view wx:if="{{item.notes}}" class="session-notes">{{item.notes}}</view>
       </view>
     </view>
   </view>

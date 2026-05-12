@@ -1,0 +1,106 @@
+<!--
+  好友记录详情页（只读）
+-->
+<view class="container">
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="loading-state">
+    <text>加载中...</text>
+  </view>
+
+  <!-- Session 详情 -->
+  <view wx:elif="{{session}}" class="session-detail">
+
+    <!-- 好友信息头 -->
+    <view class="friend-header">
+      <image
+        wx:if="{{session.friendAvatarUrl}}"
+        class="friend-avatar"
+        src="{{session.friendAvatarUrl}}"
+        mode="aspectFill"
+      />
+      <view wx:else class="friend-avatar friend-avatar-default">
+        <text class="avatar-text">{{session.friendNickName[0] || '?'}}</text>
+      </view>
+      <view class="friend-info">
+        <text class="friend-name">{{session.friendNickName}}</text>
+        <text class="friend-date">{{session.dateText}} · {{session.location || '未填写地点'}}</text>
+      </view>
+    </view>
+
+    <!-- Session 概览卡片 -->
+    <view class="card overview-card">
+      <view class="overview-stats">
+        <view class="overview-stat">
+          <text class="overview-stat-num">{{session.routeCount}}</text>
+          <text class="overview-stat-label">线路</text>
+        </view>
+        <view class="overview-stat">
+          <text class="overview-stat-num stat-success">{{session.completedCount}}</text>
+          <text class="overview-stat-label">完成</text>
+        </view>
+        <view class="overview-stat">
+          <text class="overview-stat-num stat-project">{{session.projectCount}}</text>
+          <text class="overview-stat-label">Project</text>
+        </view>
+        <view class="overview-stat">
+          <text class="overview-stat-num">{{session.maxGrade}}</text>
+          <text class="overview-stat-label">最高难度</text>
+        </view>
+        <view class="overview-stat">
+          <text class="overview-stat-num">{{session.completionRate}}%</text>
+          <text class="overview-stat-label">完成率</text>
+        </view>
+      </view>
+
+      <view wx:if="{{session.notes}}" class="overview-notes">
+        <text>{{session.notes}}</text>
+      </view>
+    </view>
+
+    <!-- 线路列表 -->
+    <view class="routes-section">
+      <view class="section-title">线路记录（{{session.routeCount}}）</view>
+
+      <view wx:for="{{session.routes}}" wx:key="id" wx:for-index="routeIdx" class="route-card">
+        <view class="route-header">
+          <text class="route-grade">{{item.grade}}</text>
+          <view class="route-status-tag {{item.isCompleted ? 'route-status-success' : item.status === 'project' ? 'route-status-project' : 'route-status-fail'}}">
+            {{item.status === 'flash' ? '⚡Flash' : item.status === 'completed' ? '✅完成' : item.status === 'project' ? '🎯Project' : '❌未完成'}}
+          </view>
+        </view>
+
+        <view class="route-info">
+          <view wx:if="{{item.climbTypeLabel}}" class="route-tag">{{item.climbTypeLabel}}</view>
+          <view wx:if="{{item.routeColor}}" class="route-tag">{{item.routeColor}}</view>
+          <view wx:if="{{item.routeName}}" class="route-tag">{{item.routeName}}</view>
+          <view wx:if="{{item.area}}" class="route-tag">{{item.area}}</view>
+          <text class="route-attempts">{{item.attempts}}次</text>
+        </view>
+
+        <view wx:if="{{item.notes}}" class="route-notes">
+          <text>{{item.notes}}</text>
+        </view>
+
+        <view wx:if="{{item.images && item.images.length > 0}}" class="route-images">
+          <image
+            wx:for="{{item.images}}"
+            wx:for-item="img"
+            wx:key="*this"
+            src="{{img}}"
+            mode="aspectFill"
+            class="route-image"
+            bindtap="previewRouteImage"
+            data-url="{{img}}"
+            data-route-index="{{routeIdx}}"
+          />
+        </view>
+      </view>
+    </view>
+  </view>
+
+  <!-- 加载失败 -->
+  <view wx:elif="{{!loading && !session}}" class="empty-state">
+    <text class="empty-icon">😕</text>
+    <text class="empty-text">记录不存在或未公开</text>
+  </view>
+</view>

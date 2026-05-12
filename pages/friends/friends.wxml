@@ -1,0 +1,72 @@
+<!--
+  好友列表页
+-->
+<view class="container">
+  <!-- 我的邀请码 -->
+  <view class="invite-card">
+    <view class="invite-title">我的邀请码</view>
+    <view class="invite-code-row">
+      <text class="invite-code">{{myInviteCode || '加载中...'}}</text>
+      <view class="invite-copy-btn" bindtap="copyInviteCode">复制</view>
+    </view>
+    <text class="invite-hint">分享邀请码给好友，对方输入后即可添加你为好友</text>
+  </view>
+
+  <!-- 添加好友 -->
+  <view class="add-section">
+    <view class="add-title">添加好友</view>
+    <view class="add-row">
+      <input
+        class="add-input"
+        placeholder="输入好友邀请码"
+        value="{{inviteCodeInput}}"
+        bindinput="onInviteCodeInput"
+        maxlength="6"
+      />
+      <view class="add-btn {{isAdding ? 'add-btn-disabled' : ''}}" bindtap="addFriend">
+        {{isAdding ? '添加中' : '添加'}}
+      </view>
+    </view>
+  </view>
+
+  <!-- 好友列表 -->
+  <view class="friends-section">
+    <view class="friends-title">我的好友（{{friends.length}}）</view>
+
+    <!-- 空状态 -->
+    <view wx:if="{{!loading && friends.length === 0}}" class="friends-empty">
+      <text class="empty-icon">🤝</text>
+      <text class="empty-text">还没有好友</text>
+      <text class="empty-hint">输入好友的邀请码添加好友</text>
+    </view>
+
+    <!-- 好友列表 -->
+    <view wx:for="{{friends}}" wx:key="_openid" class="friend-item">
+      <view class="friend-info" bindtap="viewFriendFeed" data-openid="{{item._openid}}">
+        <image
+          wx:if="{{item.avatarUrl}}"
+          class="friend-avatar"
+          src="{{item.avatarUrl}}"
+          mode="aspectFill"
+        />
+        <view wx:else class="friend-avatar friend-avatar-default">
+          <text class="avatar-text">{{item.nickName[0] || '?'}}</text>
+        </view>
+        <text class="friend-name">{{item.nickName || '未设置昵称'}}</text>
+      </view>
+      <view
+        class="friend-delete"
+        catchtap="removeFriend"
+        data-openid="{{item._openid}}"
+        data-name="{{item.nickName || '未设置昵称'}}"
+      >
+        <text>删除</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 加载中 -->
+  <view wx:if="{{loading}}" class="loading-state">
+    <text>加载中...</text>
+  </view>
+</view>

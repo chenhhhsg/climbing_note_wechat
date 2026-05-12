@@ -10,7 +10,8 @@ Page({
     avatarUrl: '',
     nickName: '',
     hasUserInfo: false,
-    isExporting: false
+    isExporting: false,
+    myInviteCode: ''
   },
 
   onLoad() {
@@ -74,24 +75,30 @@ Page({
     wx.showLoading({ title: '导出中...' });
 
     try {
-      const res = await db.getRecords({ page: 1, pageSize: 1000 });
+      const res = await db.getSessions({ page: 1, pageSize: 1000 });
 
       if (res.success && res.data.list.length > 0) {
         const { climbTypeLabels, statusLabels } = app.globalData;
 
-        const headers = ['日期', '地点', '攀岩类型', '难度等级', '完成状态', '尝试次数', '线路编号', '线路颜色', '区域', '备注'];
-        const rows = res.data.list.map(record => [
-          record.date,
-          record.location || '',
-          climbTypeLabels[record.climbType] || record.climbType,
-          record.grade,
-          statusLabels[record.status] || record.status,
-          record.attempts,
-          record.routeName || '',
-          record.routeColor || '',
-          record.area || '',
-          (record.notes || '').replace(/,/g, '，').replace(/\n/g, ' ')
-        ]);
+        const headers = ['日期', '地点', '攀岩类型', '难度等级', '完成状态', '尝试次数', '线路编号', '线路颜色', '区域', '线路备注'];
+        const rows = [];
+
+        res.data.list.forEach(session => {
+          (session.routes || []).forEach(route => {
+            rows.push([
+              session.date,
+              session.location || '',
+              climbTypeLabels[route.climbType] || route.climbType || '',
+              route.grade || '',
+              statusLabels[route.status] || route.status || '',
+              route.attempts || 1,
+              route.routeName || '',
+              route.routeColor || '',
+              route.area || '',
+              (route.notes || '').replace(/,/g, '，').replace(/\n/g, ' ')
+            ]);
+          });
+        });
 
         const csvContent = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
 
@@ -101,7 +108,7 @@ Page({
             wx.hideLoading();
             wx.showModal({
               title: '导出成功',
-              content: `已导出 ${res.data.list.length} 条记录到剪贴板，可粘贴到 Excel 中查看。`,
+              content: `已导出 ${res.data.list.length} 次攀岩、${rows.length} 条线路到剪贴板，可粘贴到 Excel 中查看。`,
               showCancel: false,
               confirmText: '知道了'
             });
@@ -161,5 +168,40 @@ Page({
         }
       }
     });
+  },
+
+  goToFriends() {
+    wx.navigateTo({ url: '/pages/friends/friends' });
+  },
+
+  goToFriendFeed() {
+    wx.navigateTo({ url: '/pages/friend-feed/friend-feed' });
+  },
+
+  async showInviteCode() {
+    wx.showLoading({ title: '获取邀请码...' });
+    const res = await db.callCloud('createFriendInvite');
+    wx.hideLoading();
+
+    if (res.success) {
+      const code = res.data.inviteCode;
+      this.setData({ myInviteCode: code });
+      wx.showModal({
+        title: '我的邀请码',
+        content: `你的邀请码是：${code}\n\n分享给好友，对方在"我的好友"页面输入即可添加你。`,
+        confirmText: '复制邀请码',
+        cancelText: '关闭',
+        success: (modalRes) => {
+          if (modalRes.confirm) {
+            wx.setClipboardData({
+              data: code,
+              success: () => wx.showToast({ title: '已复制', icon: 'success' })
+            });
+          }
+        }
+      });
+    } else {
+      wx.showToast({ title: res.error || '获取失败', icon: 'none' });
+    }
   }
 });

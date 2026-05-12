@@ -37,7 +37,34 @@
     </view>
   </view>
 
-  <!-- 功能菜单 -->
+  <!-- 好友功能 -->
+  <view class="menu-section">
+    <view class="menu-item" bindtap="goToFriends">
+      <view class="menu-left">
+        <text class="menu-icon">🤝</text>
+        <text class="menu-text">我的好友</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
+    <view class="menu-item" bindtap="goToFriendFeed">
+      <view class="menu-left">
+        <text class="menu-icon">📱</text>
+        <text class="menu-text">好友动态</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
+    <view class="menu-item" bindtap="showInviteCode">
+      <view class="menu-left">
+        <text class="menu-icon">📨</text>
+        <text class="menu-text">邀请好友</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+  </view>
+
+  <!-- 工具 -->
   <view class="menu-section">
     <view class="menu-item" bindtap="exportData">
       <view class="menu-left">

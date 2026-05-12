@@ -1,19 +1,21 @@
 /**
- * 首页 - 显示基础统计和最近记录
+ * 首页 - 显示基础统计和最近攀岩场次
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
+const gradeUtil = require('../../utils/grade');
 const app = getApp();
 
 Page({
   data: {
-    recentRecords: [],
+    recentSessions: [],
     loading: true,
     isEmpty: false,
 
     // 基础统计
     stats: {
-      monthClimbs: 0,
+      monthSessions: 0,
+      monthRoutes: 0,
       maxGrade: '-',
       completionRate: 0
     },
@@ -35,27 +37,37 @@ Page({
   async loadData() {
     this.setData({ loading: true, statsLoading: true });
 
-    // 并行加载记录和统计
-    const [recordsRes, statsRes] = await Promise.all([
-      db.getRecentRecords(3),
-      db.getStats()
+    const [sessionsRes, statsRes] = await Promise.all([
+      db.getRecentSessions(3),
+      db.getSessionStats()
     ]);
 
-    // 处理记录
-    if (recordsRes.success) {
-      const { climbTypeLabels, statusLabels } = app.globalData;
+    // 处理攀岩场次
+    if (sessionsRes.success) {
+      const sessions = sessionsRes.data.map(session => {
+        const routes = session.routes || [];
+        const completedCount = routes.filter(r =>
+          r.status === 'flash' || r.status === 'completed'
+        ).length;
+        const grades = routes.map(r => r.grade).filter(Boolean);
+        const maxGrade = grades.length > 0 ? gradeUtil.getMaxGrade(grades) : '-';
+        const completionRate = routes.length > 0
+          ? Math.round(completedCount / routes.length * 100)
+          : 0;
 
-      const records = recordsRes.data.map(record => ({
-        ...record,
-        dateText: dateUtil.getRelativeTime(record.date),
-        climbTypeLabel: climbTypeLabels[record.climbType] || record.climbType,
-        statusLabel: statusLabels[record.status] || record.status,
-        isCompleted: record.status === 'flash' || record.status === 'completed'
-      }));
+        return {
+          ...session,
+          dateText: dateUtil.getRelativeTime(session.date),
+          routeCount: routes.length,
+          completedCount,
+          maxGrade,
+          completionRate
+        };
+      });
 
       this.setData({
-        recentRecords: records,
-        isEmpty: records.length === 0,
+        recentSessions: sessions,
+        isEmpty: sessions.length === 0,
         loading: false
       });
     } else {
@@ -66,9 +78,10 @@ Page({
     if (statsRes.success) {
       this.setData({
         stats: {
-          monthClimbs: statsRes.data.monthClimbs,
+          monthSessions: statsRes.data.monthSessions || 0,
+          monthRoutes: statsRes.data.monthRoutes || 0,
           maxGrade: statsRes.data.maxGrade || '-',
-          completionRate: statsRes.data.completionRate
+          completionRate: statsRes.data.completionRate || 0
         },
         statsLoading: false
       });

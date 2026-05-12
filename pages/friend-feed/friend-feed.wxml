@@ -1,0 +1,84 @@
+<!--
+  好友动态页
+-->
+<view class="container">
+  <!-- 加载中 -->
+  <view wx:if="{{loading && sessions.length === 0}}" class="loading-state">
+    <text>加载中...</text>
+  </view>
+
+  <!-- 空状态 -->
+  <view wx:elif="{{!loading && sessions.length === 0}}" class="empty-state">
+    <text class="empty-icon">📱</text>
+    <text class="empty-text">暂无好友动态</text>
+    <text class="empty-hint">当好友将攀岩记录设为"好友可见"时，会出现在这里</text>
+  </view>
+
+  <!-- Session 列表 -->
+  <view wx:else class="feed-list">
+    <view
+      wx:for="{{sessions}}"
+      wx:key="_id"
+      class="feed-card"
+      bindtap="viewDetail"
+      data-id="{{item._id}}"
+    >
+      <!-- 好友信息 -->
+      <view class="feed-user">
+        <image
+          wx:if="{{item.friendAvatarUrl}}"
+          class="feed-avatar"
+          src="{{item.friendAvatarUrl}}"
+          mode="aspectFill"
+        />
+        <view wx:else class="feed-avatar feed-avatar-default">
+          <text class="feed-avatar-text">{{item.friendNickName[0] || '?'}}</text>
+        </view>
+        <view class="feed-user-info">
+          <text class="feed-nickname">{{item.friendNickName}}</text>
+          <text class="feed-date">{{item.dateText}}</text>
+        </view>
+      </view>
+
+      <!-- Session 信息 -->
+      <view class="feed-location">
+        <text>{{item.location || '未填写地点'}}</text>
+      </view>
+
+      <!-- 统计数据 -->
+      <view class="feed-stats">
+        <view class="feed-stat">
+          <text class="feed-stat-num">{{item.routeCount}}</text>
+          <text class="feed-stat-label">线路</text>
+        </view>
+        <view class="feed-stat">
+          <text class="feed-stat-num stat-success">{{item.completedCount}}</text>
+          <text class="feed-stat-label">完成</text>
+        </view>
+        <view class="feed-stat">
+          <text class="feed-stat-num">{{item.maxGrade}}</text>
+          <text class="feed-stat-label">最高难度</text>
+        </view>
+        <view class="feed-stat">
+          <text class="feed-stat-num">{{item.completionRate}}%</text>
+          <text class="feed-stat-label">完成率</text>
+        </view>
+      </view>
+
+      <!-- 备注 -->
+      <view wx:if="{{item.notes}}" class="feed-notes">
+        <text>{{item.notes}}</text>
+      </view>
+    </view>
+
+    <!-- 加载更多 -->
+    <view wx:if="{{loading}}" class="loading-more">
+      <text>加载中...</text>
+    </view>
+
+    <!-- 没有更多 -->
+    <view wx:if="{{!hasMore && sessions.length > 0}}" class="no-more">
+      <text>没有更多了</text>
+    </view>
+  </view>
+</view>

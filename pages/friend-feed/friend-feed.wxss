@@ -1,0 +1,146 @@
+/**
+ * 好友动态页样式
+ */
+
+.container {
+  padding: 20rpx;
+  min-height: 100vh;
+  box-sizing: border-box;
+  background-color: #f5f5f5;
+}
+
+/* 动态卡片 */
+.feed-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+  box-shadow: 0 2rpx 12rpx rgba(0, 0, 0, 0.06);
+}
+
+/* 好友信息 */
+.feed-user {
+  display: flex;
+  align-items: center;
+  margin-bottom: 20rpx;
+}
+
+.feed-avatar {
+  width: 72rpx;
+  height: 72rpx;
+  border-radius: 50%;
+  margin-right: 20rpx;
+  flex-shrink: 0;
+}
+
+.feed-avatar-default {
+  background-color: #e0e0e0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.feed-avatar-text {
+  font-size: 28rpx;
+  color: #666666;
+  font-weight: bold;
+}
+
+.feed-user-info {
+  flex: 1;
+}
+
+.feed-nickname {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  display: block;
+  margin-bottom: 4rpx;
+}
+
+.feed-date {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+/* 地点 */
+.feed-location {
+  font-size: 28rpx;
+  color: #666666;
+  margin-bottom: 20rpx;
+  padding-left: 4rpx;
+}
+
+/* 统计 */
+.feed-stats {
+  display: flex;
+  background-color: #f8f9fa;
+  border-radius: 12rpx;
+  padding: 20rpx 0;
+  margin-bottom: 16rpx;
+}
+
+.feed-stat {
+  flex: 1;
+  text-align: center;
+}
+
+.feed-stat-num {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  display: block;
+  margin-bottom: 6rpx;
+}
+
+.stat-success {
+  color: #4caf50;
+}
+
+.feed-stat-label {
+  font-size: 22rpx;
+  color: #999999;
+}
+
+/* 备注 */
+.feed-notes {
+  font-size: 26rpx;
+  color: #666666;
+  padding-top: 12rpx;
+  border-top: 1rpx solid #f0f0f0;
+}
+
+/* 状态提示 */
+.loading-state,
+.empty-state {
+  text-align: center;
+  padding: 120rpx 0;
+}
+
+.empty-icon {
+  font-size: 100rpx;
+  display: block;
+  margin-bottom: 20rpx;
+}
+
+.empty-text {
+  font-size: 32rpx;
+  color: #333333;
+  display: block;
+  margin-bottom: 12rpx;
+}
+
+.empty-hint {
+  font-size: 26rpx;
+  color: #999999;
+  display: block;
+  padding: 0 60rpx;
+}
+
+.loading-more,
+.no-more {
+  text-align: center;
+  padding: 30rpx 0;
+  font-size: 26rpx;
+  color: #999999;
+}

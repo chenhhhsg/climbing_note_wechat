@@ -5,7 +5,10 @@
     "pages/record-list/record-list",
     "pages/record-detail/record-detail",
     "pages/stats/stats",
-    "pages/profile/profile"
+    "pages/profile/profile",
+    "pages/friends/friends",
+    "pages/friend-feed/friend-feed",
+    "pages/friend-detail/friend-detail"
   ],
   "window": {
     "backgroundTextStyle": "light",

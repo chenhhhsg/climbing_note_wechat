@@ -1,186 +1,227 @@
 <!--
-  添加/编辑记录页面 - 完整表单
+  添加攀岩 Session 页面
 -->
 <view class="page-wrap">
-  <!-- 编辑模式加载中 -->
-  <view wx:if="{{loadingRecord}}" class="loading-state">
-    <text>加载记录中...</text>
-  </view>
-
-  <!-- 日期选择 -->
-  <view class="form-section">
-    <view class="section-title">基本信息</view>
-    <view class="form-card">
-      <view class="form-item">
-        <text class="form-label">日期</text>
-        <picker mode="date" value="{{date}}" bindchange="onDateChange">
-          <view class="form-value">{{date || '请选择日期'}}</view>
-        </picker>
-      </view>
-
-      <view class="form-item">
-        <text class="form-label">地点</text>
-        <input
-          class="form-input"
-          placeholder="请输入攀岩地点"
-          value="{{location}}"
-          bindinput="onLocationInput"
-        />
-      </view>
-
-      <view class="form-item">
-        <text class="form-label">攀岩类型</text>
-        <picker range="{{climbTypes}}" range-key="label" bindchange="onClimbTypeChange">
-          <view class="form-value">{{climbTypeLabels[climbType] || '请选择类型'}}</view>
-        </picker>
-      </view>
-
-      <view class="form-item">
-        <text class="form-label">难度等级</text>
-        <picker range="{{gradeOptions}}" bindchange="onGradeChange">
-          <view class="form-value">{{grade || '请选择难度'}}</view>
-        </picker>
-      </view>
+  <!-- ========== 基础信息 ========== -->
+  <view class="section-title">基础信息</view>
+  <view class="form-card">
+    <view class="form-item">
+      <text class="form-label">日期</text>
+      <picker mode="date" value="{{date}}" bindchange="onDateChange">
+        <view class="form-value">{{date}}</view>
+      </picker>
     </view>
-  </view>
-
-  <!-- 完成状态 -->
-  <view class="form-section">
-    <view class="section-title">完成状态</view>
-    <view class="status-tags">
-      <view
-        wx:for="{{statusTags}}"
-        wx:key="value"
-        class="status-tag {{status === item.value ? 'status-tag-active' : ''}} status-tag-{{item.value}}"
-        bindtap="onStatusSelect"
-        data-status="{{item.value}}"
-      >
-        <text class="status-tag-icon">{{item.icon}}</text>
-        <text class="status-tag-text">{{item.label}}</text>
-      </view>
-    </view>
-  </view>
-
-  <!-- 尝试次数 -->
-  <view class="form-section">
-    <view class="section-title">尝试次数</view>
-    <view class="attempts-control">
-      <view class="attempts-btn" bindtap="onAttemptsMinus">
-        <text class="attempts-btn-text">-</text>
-      </view>
+    <view class="form-item">
+      <text class="form-label">岩馆</text>
       <input
-        class="attempts-input"
-        type="number"
-        value="{{attempts}}"
-        bindinput="onAttemptsInput"
+        class="form-input"
+        placeholder="请输入岩馆/地点"
+        value="{{location}}"
+        bindinput="onLocationInput"
       />
-      <view class="attempts-btn" bindtap="onAttemptsPlus">
-        <text class="attempts-btn-text">+</text>
-      </view>
     </view>
-  </view>
-
-  <!-- 线路信息 -->
-  <view class="form-section">
-    <view class="section-title">线路信息 (选填)</view>
-    <view class="form-card">
-      <view class="form-item">
-        <text class="form-label">线路编号</text>
-        <input
-          class="form-input"
-          placeholder="如: A3, B5"
-          value="{{routeName}}"
-          bindinput="onRouteNameInput"
-        />
-      </view>
-
-      <view class="form-item">
-        <text class="form-label">区域</text>
-        <input
-          class="form-input"
-          placeholder="如: 抱石区A, 先锋区"
-          value="{{area}}"
-          bindinput="onAreaInput"
-        />
-      </view>
-    </view>
-
-    <!-- 线路颜色 -->
-    <view class="color-section">
-      <text class="color-label">线路颜色</text>
-      <view class="color-options">
-        <view
-          wx:for="{{colorOptions}}"
-          wx:key="*this"
-          class="color-item {{routeColor === item ? 'color-item-active' : ''}}"
-          bindtap="onColorSelect"
-          data-color="{{item}}"
-        >
-          <text>{{item}}</text>
-        </view>
-      </view>
-    </view>
-  </view>
-
-  <!-- 备注 -->
-  <view class="form-section">
-    <view class="section-title">备注 (选填)</view>
-    <view class="form-card">
-      <textarea
-        class="form-textarea"
-        placeholder="添加备注信息..."
+    <view class="form-item form-item-last">
+      <text class="form-label">备注</text>
+      <input
+        class="form-input"
+        placeholder="本次攀岩备注（选填）"
         value="{{notes}}"
         bindinput="onNotesInput"
-        maxlength="500"
       />
+    </view>
+    <view class="form-item form-item-visibility">
+      <text class="form-label">可见范围</text>
+      <view class="visibility-tags">
+        <view
+          class="visibility-tag {{visibility === 'private' ? 'visibility-active' : ''}}"
+          bindtap="onVisibilitySelect"
+          data-value="private"
+        >仅自己</view>
+        <view
+          class="visibility-tag {{visibility === 'friends' ? 'visibility-active' : ''}}"
+          bindtap="onVisibilitySelect"
+          data-value="friends"
+        >好友可见</view>
+      </view>
     </view>
   </view>
 
-  <!-- 图片上传 -->
-  <view class="form-section">
-    <view class="section-title">图片 (选填)</view>
-    <view class="image-list">
-      <view
-        wx:for="{{images}}"
-        wx:key="*this"
-        class="image-item"
-      >
-        <image
-          src="{{item}}"
-          mode="aspectFill"
-          class="image-preview"
-          bindtap="previewImage"
-          data-url="{{item}}"
-        />
-        <view
-          class="image-delete"
-          catchtap="deleteImage"
-          data-index="{{index}}"
-        >×</view>
-      </view>
-      <view
-        wx:if="{{images.length < 6}}"
-        class="image-add"
-        bindtap="chooseImage"
-      >
-        <text class="image-add-icon">+</text>
-        <text class="image-add-text">添加图片</text>
+  <!-- ========== 线路列表 ========== -->
+  <view class="section-title section-title-routes">
+    <text>线路记录</text>
+    <text class="route-count" wx:if="{{routes.length > 0}}">{{routes.length}} 条</text>
+  </view>
+
+  <!-- 空状态 -->
+  <view wx:if="{{routes.length === 0}}" class="routes-empty">
+    <text class="routes-empty-icon">🧗</text>
+    <text class="routes-empty-text">还没有添加线路</text>
+    <text class="routes-empty-hint">点击下方按钮开始记录</text>
+  </view>
+
+  <!-- 线路卡片列表 -->
+  <view wx:for="{{routes}}" wx:key="id" class="route-card">
+    <view class="route-card-header">
+      <view class="route-card-grade">{{item.grade}}</view>
+      <view class="route-card-status {{item.status === 'flash' || item.status === 'completed' ? 'status-success' : item.status === 'project' ? 'status-project' : 'status-fail'}}">
+        {{item.status === 'flash' ? '⚡Flash' : item.status === 'completed' ? '✅完成' : item.status === 'project' ? '🎯Project' : '❌未完成'}}
       </view>
     </view>
-    <text class="image-hint">最多上传6张图片，保存时自动压缩</text>
+    <view class="route-card-info">
+      <text wx:if="{{item.routeColor}}" class="route-tag">{{item.routeColor}}</text>
+      <text wx:if="{{item.routeName}}" class="route-tag">{{item.routeName}}</text>
+      <text wx:if="{{item.area}}" class="route-tag">{{item.area}}</text>
+      <text class="route-attempts">{{item.attempts}}次</text>
+    </view>
+    <view wx:if="{{item.images.length > 0}}" class="route-card-images">
+      <image
+        wx:for="{{item.images}}"
+        wx:for-item="img"
+        wx:key="*this"
+        src="{{img}}"
+        mode="aspectFill"
+        class="route-thumb"
+      />
+    </view>
+    <view class="route-card-actions">
+      <view class="route-action-btn" bindtap="openEditRouteForm" data-index="{{index}}">
+        <text>编辑</text>
+      </view>
+      <view class="route-action-btn route-action-delete" bindtap="deleteRoute" data-index="{{index}}">
+        <text>删除</text>
+      </view>
+    </view>
+  </view>
+
+  <!-- 添加线路按钮 -->
+  <view class="add-route-btn" bindtap="openAddRouteForm">
+    <text class="add-route-icon">+</text>
+    <text class="add-route-text">添加线路</text>
   </view>
 
   <!-- 底部占位 -->
   <view class="bottom-placeholder"></view>
 </view>
 
-<!-- 固定底部提交按钮 -->
+<!-- ========== 固定底部保存按钮 ========== -->
 <view class="fixed-bottom">
   <button
     class="btn-submit"
-    bindtap="submitForm"
+    bindtap="submitSession"
     disabled="{{isSubmitting}}"
   >
-    {{isSubmitting ? (isEdit ? '更新中...' : '保存中...') : (isEdit ? '更新记录' : '保存记录')}}
+    {{isSubmitting ? '保存中...' : editingSessionId ? '更新本次攀岩' : '保存本次攀岩'}}
   </button>
+</view>
+
+<!-- ========== 线路表单弹层 ========== -->
+<view wx:if="{{showRouteForm}}" class="route-form-mask" bindtap="closeRouteForm">
+  <view class="route-form-panel" catchtap="onPanelTap">
+    <view class="route-form-header">
+      <text class="route-form-title">{{editingRouteIndex >= 0 ? '编辑线路' : '添加线路'}}</text>
+      <text class="route-form-close" bindtap="closeRouteForm">✕</text>
+    </view>
+
+    <scroll-view scroll-y class="route-form-body" style="height: 60vh;">
+      <!-- 攀岩类型 -->
+      <view class="rf-item">
+        <text class="rf-label">攀岩类型</text>
+        <picker range="{{climbTypes}}" bindchange="onRouteClimbTypeChange">
+          <view class="rf-value">{{climbTypeLabels[routeForm.climbType] || '请选择'}}</view>
+        </picker>
+      </view>
+
+      <!-- 难度 -->
+      <view class="rf-item">
+        <text class="rf-label">难度等级</text>
+        <picker range="{{gradeOptions}}" bindchange="onRouteGradeChange">
+          <view class="rf-value">{{routeForm.grade || '请选择'}}</view>
+        </picker>
+      </view>
+
+      <!-- 完成状态 -->
+      <view class="rf-item rf-item-status">
+        <text class="rf-label">完成状态</text>
+        <view class="rf-status-tags">
+          <view
+            wx:for="{{statusTags}}"
+            wx:key="value"
+            class="rf-status-tag {{routeForm.status === item.value ? 'rf-status-active' : ''}} rf-status-{{item.value}}"
+            bindtap="onRouteStatusSelect"
+            data-status="{{item.value}}"
+          >
+            <text class="rf-status-icon">{{item.icon}}</text>
+            <text class="rf-status-text">{{item.label}}</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 尝试次数 -->
+      <view class="rf-item rf-item-attempts">
+        <text class="rf-label">尝试次数</text>
+        <view class="rf-attempts">
+          <view class="rf-attempts-btn" bindtap="onRouteAttemptsMinus">
+            <text>−</text>
+          </view>
+          <text class="rf-attempts-num">{{routeForm.attempts}}</text>
+          <view class="rf-attempts-btn" bindtap="onRouteAttemptsPlus">
+            <text>+</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 线路颜色 -->
+      <view class="rf-item rf-item-color">
+        <text class="rf-label">线路颜色</text>
+        <view class="rf-colors">
+          <view
+            wx:for="{{colorOptions}}"
+            wx:key="*this"
+            class="rf-color {{routeForm.routeColor === item ? 'rf-color-active' : ''}}"
+            bindtap="onRouteColorSelect"
+            data-color="{{item}}"
+          >{{item}}</view>
+        </view>
+      </view>
+
+      <!-- 线路编号 -->
+      <view class="rf-item">
+        <text class="rf-label">线路编号</text>
+        <input class="rf-input" placeholder="如 A3" value="{{routeForm.routeName}}" bindinput="onRouteNameInput" />
+      </view>
+
+      <!-- 区域 -->
+      <view class="rf-item">
+        <text class="rf-label">区域</text>
+        <input class="rf-input" placeholder="如 抱石区A" value="{{routeForm.area}}" bindinput="onRouteAreaChange" />
+      </view>
+
+      <!-- 备注 -->
+      <view class="rf-item">
+        <text class="rf-label">备注</text>
+        <input class="rf-input" placeholder="选填" value="{{routeForm.notes}}" bindinput="onRouteNotesInput" />
+      </view>
+
+      <!-- 图片 -->
+      <view class="rf-item rf-item-images">
+        <text class="rf-label">图片（最多6张）</text>
+        <view class="rf-images">
+          <view wx:for="{{routeForm.images}}" wx:key="*this" class="rf-image-wrap">
+            <image src="{{item}}" mode="aspectFill" class="rf-image" bindtap="previewRouteImage" data-url="{{item}}" />
+            <view class="rf-image-del" catchtap="deleteRouteImage" data-index="{{index}}">×</view>
+          </view>
+          <view wx:if="{{routeForm.images.length < 6}}" class="rf-image-add" bindtap="chooseRouteImage">
+            <text class="rf-image-add-icon">+</text>
+          </view>
+        </view>
+      </view>
+    </scroll-view>
+
+    <view class="route-form-footer">
+      <button class="rf-btn-cancel" bindtap="closeRouteForm">取消</button>
+      <button class="rf-btn-confirm" bindtap="confirmRouteForm">
+        {{editingRouteIndex >= 0 ? '更新线路' : '添加线路'}}
+      </button>
+    </view>
+  </view>
 </view>

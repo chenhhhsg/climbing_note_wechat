@@ -1,5 +1,5 @@
 <!--
-  记录列表页面 - 支持搜索、筛选
+  记录列表页面 - 攀岩场次列表，支持搜索、筛选
 -->
 <view class="container">
   <!-- 搜索栏 -->
@@ -8,7 +8,7 @@
       <text class="search-icon">🔍</text>
       <input
         class="search-input"
-        placeholder="搜索地点、备注..."
+        placeholder="搜索岩馆、备注、线路编号..."
         value="{{keyword}}"
         bindinput="onSearchInput"
         bindconfirm="onSearchConfirm"
@@ -47,9 +47,26 @@
       <view class="filter-title">筛选条件</view>
 
       <view class="filter-item">
+        <text class="filter-label">岩馆</text>
+        <input
+          class="filter-input"
+          placeholder="输入岩馆名称"
+          value="{{tempFilters.location}}"
+          bindinput="onFilterLocationInput"
+        />
+      </view>
+
+      <view class="filter-item">
         <text class="filter-label">攀岩类型</text>
-        <picker range="{{climbTypes}}" range-key="label" bindchange="onFilterTypeChange">
+        <picker range="{{climbTypes}}" bindchange="onFilterTypeChange">
           <view class="filter-value">{{climbTypeLabels[tempFilters.climbType] || '全部'}}</view>
+        </picker>
+      </view>
+
+      <view class="filter-item">
+        <text class="filter-label">完成状态</text>
+        <picker range="{{statusOptions}}" bindchange="onFilterStatusChange">
+          <view class="filter-value">{{statusLabels[tempFilters.status] || '全部'}}</view>
         </picker>
       </view>
 
@@ -60,23 +77,6 @@
         </picker>
       </view>
 
-      <view class="filter-item">
-        <text class="filter-label">完成状态</text>
-        <picker range="{{statusOptions}}" range-key="label" bindchange="onFilterStatusChange">
-          <view class="filter-value">{{statusLabels[tempFilters.status] || '全部'}}</view>
-        </picker>
-      </view>
-
-      <view class="filter-item">
-        <text class="filter-label">地点</text>
-        <input
-          class="filter-input"
-          placeholder="输入地点"
-          value="{{tempFilters.location}}"
-          bindinput="onFilterLocationInput"
-        />
-      </view>
-
       <view class="filter-actions">
         <button class="filter-reset-btn" bindtap="onResetFilter">重置</button>
         <button class="filter-apply-btn" bindtap="onApplyFilter">应用</button>
@@ -85,7 +85,7 @@
   </view>
 
   <!-- 加载中 -->
-  <view wx:if="{{loading && records.length === 0}}" class="loading-state">
+  <view wx:if="{{loading && sessions.length === 0}}" class="loading-state">
     <text>加载中...</text>
   </view>
 
@@ -93,63 +93,51 @@
   <view wx:elif="{{isEmpty}}" class="empty-state">
     <text class="empty-icon">🧗</text>
     <text class="empty-text">没有找到攀岩记录</text>
-    <button class="btn-add" bindtap="goToAddRecord">添加第一条记录</button>
+    <button class="btn-add" bindtap="goToAddRecord">添加第一次攀岩</button>
   </view>
 
-  <!-- 记录列表 -->
-  <view wx:else class="record-list">
+  <!-- 攀岩场次列表 -->
+  <view wx:else class="session-list">
     <view
-      wx:for="{{records}}"
+      wx:for="{{sessions}}"
       wx:key="_id"
-      class="record-card"
+      class="session-card"
       bindtap="goToDetail"
       data-id="{{item._id}}"
     >
-      <!-- 记录头部：日期和状态 -->
-      <view class="record-header">
-        <text class="record-date">{{item.dateText}}</text>
-        <text class="record-status {{item.isCompleted ? 'status-success' : 'status-fail'}}">
-          {{item.statusLabel}}
-        </text>
+      <!-- 卡片头部：日期 + 岩馆 -->
+      <view class="session-header">
+        <text class="session-date">{{item.dateText}}</text>
+        <text class="session-location">{{item.location || '未填写地点'}}</text>
       </view>
 
-      <!-- 记录内容 -->
-      <view class="record-content">
-        <view class="record-info">
-          <view class="info-item">
-            <text class="info-label">地点</text>
-            <text class="info-value">{{item.location || '-'}}</text>
-          </view>
-          <view class="info-item">
-            <text class="info-label">类型</text>
-            <text class="info-value">{{item.climbTypeLabel}}</text>
-          </view>
-          <view class="info-item">
-            <text class="info-label">难度</text>
-            <text class="info-value grade">{{item.grade}}</text>
-          </view>
-          <view class="info-item">
-            <text class="info-label">尝试</text>
-            <text class="info-value">{{item.attempts}}次</text>
-          </view>
+      <!-- 统计数据 -->
+      <view class="session-stats">
+        <view class="session-stat">
+          <text class="session-stat-num">{{item.routeCount}}</text>
+          <text class="session-stat-label">线路</text>
         </view>
+        <view class="session-stat">
+          <text class="session-stat-num session-stat-success">{{item.completedCount}}</text>
+          <text class="session-stat-label">完成</text>
+        </view>
+        <view class="session-stat">
+          <text class="session-stat-num session-stat-project">{{item.projectCount}}</text>
+          <text class="session-stat-label">Project</text>
+        </view>
+        <view class="session-stat">
+          <text class="session-stat-num">{{item.maxGrade}}</text>
+          <text class="session-stat-label">最高</text>
+        </view>
+        <view class="session-stat">
+          <text class="session-stat-num">{{item.completionRate}}%</text>
+          <text class="session-stat-label">完成率</text>
+        </view>
+      </view>
 
-        <!-- 备注预览 -->
-        <view wx:if="{{item.notes}}" class="record-notes">
-          <text class="notes-text">{{item.notes}}</text>
-        </view>
-
-        <!-- 图片预览 -->
-        <view wx:if="{{item.images && item.images.length > 0}}" class="record-images">
-          <image
-            wx:for="{{item.images}}"
-            wx:for-item="img"
-            wx:key="*this"
-            src="{{img}}"
-            mode="aspectFill"
-            class="image-thumb"
-          />
-        </view>
+      <!-- 备注摘要 -->
+      <view wx:if="{{item.notes}}" class="session-notes">
+        <text>{{item.notes}}</text>
       </view>
     </view>
 
@@ -157,9 +145,12 @@
     <view wx:if="{{loading}}" class="loading-more">
       <text>加载中...</text>
     </view>
-    <view wx:elif="{{!hasMore && records.length > 0}}" class="no-more">
+    <view wx:elif="{{!hasMore && sessions.length > 0}}" class="no-more">
       <text>没有更多记录了</text>
     </view>
+
+    <!-- 底部占位（为 FAB 按钮留空间） -->
+    <view class="fab-placeholder"></view>
   </view>
 </view>
 

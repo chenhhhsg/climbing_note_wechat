@@ -1,5 +1,5 @@
 <!--
-  统计页面 - 完整统计数据展示
+  统计页面 - 基于 climbing_sessions 的攀岩统计
 -->
 <view class="container">
   <!-- 加载中 -->
@@ -7,16 +7,32 @@
     <text>加载中...</text>
   </view>
 
+  <!-- 空状态 -->
+  <view wx:elif="{{isEmpty}}" class="empty-tip">
+    <text class="empty-icon">📊</text>
+    <text class="empty-text">还没有统计数据</text>
+    <text class="empty-hint">先添加一次攀岩记录吧</text>
+  </view>
+
   <view wx:else>
-    <!-- 核心数据卡片 -->
+
+    <!-- 一、核心数据卡片 -->
     <view class="stats-grid">
       <view class="stat-card">
-        <text class="stat-number">{{totalClimbs}}</text>
-        <text class="stat-label">总攀岩次数</text>
+        <text class="stat-number">{{totalSessions}}</text>
+        <text class="stat-label">总进馆次数</text>
       </view>
       <view class="stat-card">
-        <text class="stat-number">{{monthClimbs}}</text>
-        <text class="stat-label">本月攀岩</text>
+        <text class="stat-number">{{totalRoutes}}</text>
+        <text class="stat-label">总线路数</text>
+      </view>
+      <view class="stat-card">
+        <text class="stat-number">{{monthSessions}}</text>
+        <text class="stat-label">本月进馆</text>
+      </view>
+      <view class="stat-card">
+        <text class="stat-number">{{monthRoutes}}</text>
+        <text class="stat-label">本月线路</text>
       </view>
       <view class="stat-card highlight">
         <text class="stat-number">{{maxGrade}}</text>
@@ -24,81 +40,52 @@
       </view>
       <view class="stat-card">
         <text class="stat-number">{{completionRate}}%</text>
-        <text class="stat-label">完成率</text>
+        <text class="stat-label">总完成率</text>
       </view>
     </view>
 
-    <!-- 次要数据 -->
-    <view class="stats-row">
-      <view class="stat-mini">
-        <text class="stat-mini-number">{{flashCount}}</text>
-        <text class="stat-mini-label">Flash 次数</text>
-      </view>
-      <view class="stat-mini">
-        <text class="stat-mini-number">{{projectCount}}</text>
-        <text class="stat-mini-label">Project 总数</text>
-      </view>
-    </view>
-
-    <!-- Project 统计 -->
-    <view wx:if="{{projectCount > 0}}" class="stats-row">
-      <view class="stat-mini">
-        <text class="stat-mini-number stat-active">{{projectActive}}</text>
-        <text class="stat-mini-label">进行中</text>
-      </view>
-      <view class="stat-mini">
-        <text class="stat-mini-number stat-completed">{{projectCompleted}}</text>
-        <text class="stat-mini-label">已完成</text>
-      </view>
-      <view class="stat-mini">
-        <text class="stat-mini-number stat-abandoned">{{projectAbandoned}}</text>
-        <text class="stat-mini-label">已放弃</text>
-      </view>
-    </view>
-
-    <!-- 完成率进度条 -->
+    <!-- 二、线路状态统计 -->
     <view class="section-card">
-      <view class="section-title">完成率</view>
+      <view class="section-title">线路状态</view>
+      <view class="status-grid">
+        <view class="status-item">
+          <text class="status-icon">⚡</text>
+          <text class="status-num status-flash">{{flashCount}}</text>
+          <text class="status-label">Flash</text>
+        </view>
+        <view class="status-item">
+          <text class="status-icon">✅</text>
+          <text class="status-num status-completed">{{completedCount}}</text>
+          <text class="status-label">完成</text>
+        </view>
+        <view class="status-item">
+          <text class="status-icon">❌</text>
+          <text class="status-num status-failed">{{failedCount}}</text>
+          <text class="status-label">未完成</text>
+        </view>
+        <view class="status-item">
+          <text class="status-icon">🎯</text>
+          <text class="status-num status-project">{{projectCount}}</text>
+          <text class="status-label">Project</text>
+        </view>
+      </view>
+      <!-- 完成率进度条 -->
       <view class="progress-section">
         <view class="progress-bar-bg">
           <view class="progress-bar-fill" style="width: {{completionRate}}%"></view>
         </view>
         <text class="progress-text">{{completionRate}}%</text>
       </view>
-      <view class="progress-detail">
-        <text class="progress-info">共 {{totalClimbs}} 次攀岩，其中 {{flashCount}} 次 Flash</text>
-      </view>
     </view>
 
-    <!-- 月度趋势 -->
-    <view wx:if="{{monthTrend.length > 0}}" class="section-card">
-      <view class="section-title">月度趋势</view>
-      <view class="trend-chart">
-        <view wx:for="{{monthTrend}}" wx:key="month" class="trend-item">
-          <view class="trend-bar-bg">
-            <view
-              class="trend-bar-fill"
-              style="height: {{item.count > 0 ? (item.count / monthTrendMax * 100) : 0}}%"
-            ></view>
-          </view>
-          <text class="trend-count">{{item.count}}</text>
-          <text class="trend-month">{{item.month}}</text>
-        </view>
-      </view>
-    </view>
-
-    <!-- 攀岩类型分布 -->
+    <!-- 三、攀岩类型分布 -->
     <view wx:if="{{typeDistribution.length > 0}}" class="section-card">
       <view class="section-title">攀岩类型</view>
       <view class="type-list">
-        <view
-          wx:for="{{typeDistribution}}"
-          wx:key="type"
-          class="type-item"
-        >
+        <view wx:for="{{typeDistribution}}" wx:key="type" class="type-item">
           <view class="type-info">
             <text class="type-name">{{item.label}}</text>
-            <text class="type-count">{{item.count}}次 ({{item.percentage}}%)</text>
+            <text class="type-count">{{item.count}} 条 ({{item.percentage}}%)</text>
           </view>
           <view class="type-bar-bg">
             <view class="type-bar-fill" style="width: {{item.percentage}}%"></view>
@@ -107,27 +94,47 @@
       </view>
     </view>
 
-    <!-- 常去地点 -->
+    <!-- 四、常去岩馆 Top 5 -->
     <view wx:if="{{topLocations.length > 0}}" class="section-card">
-      <view class="section-title">常去地点</view>
+      <view class="section-title">常去岩馆</view>
       <view class="location-list">
-        <view
-          wx:for="{{topLocations}}"
-          wx:key="name"
-          class="location-item"
-        >
+        <view wx:for="{{topLocations}}" wx:key="name" class="location-item">
           <text class="location-rank">{{index + 1}}</text>
           <text class="location-name">{{item.name}}</text>
-          <text class="location-count">{{item.count}}次</text>
+          <text class="location-count">{{item.count}} 次</text>
         </view>
       </view>
     </view>
 
-    <!-- 空状态 -->
-    <view wx:if="{{totalClimbs === 0}}" class="empty-tip">
-      <text class="empty-icon">📊</text>
-      <text class="empty-text">还没有攀岩记录</text>
-      <text class="empty-hint">快去添加第一条记录吧！</text>
+    <!-- 五、最近 6 个月趋势 -->
+    <view wx:if="{{monthTrend.length > 0}}" class="section-card">
+      <view class="section-title-row">
+        <text class="section-title">月度趋势</text>
+        <view class="trend-tabs">
+          <text class="trend-tab {{trendMode === 'sessions' ? 'trend-tab-active' : ''}}" bindtap="onTrendModeChange" data-mode="sessions">进馆</text>
+          <text class="trend-tab {{trendMode === 'routes' ? 'trend-tab-active' : ''}}" bindtap="onTrendModeChange" data-mode="routes">线路</text>
+        </view>
+      </view>
+
+      <view class="trend-chart">
+        <view wx:for="{{monthTrend}}" wx:key="month" class="trend-item">
+          <view class="trend-bar-bg">
+            <view
+              wx:if="{{trendMode === 'sessions'}}"
+              class="trend-bar-fill"
+              style="height: {{item.sessions > 0 ? (item.sessions / monthTrendSessionsMax * 100) : 0}}%"
+            ></view>
+            <view
+              wx:else
+              class="trend-bar-fill trend-bar-routes"
+              style="height: {{item.routes > 0 ? (item.routes / monthTrendRoutesMax * 100) : 0}}%"
+            ></view>
+          </view>
+          <text class="trend-count">{{trendMode === 'sessions' ? item.sessions : item.routes}}</text>
+          <text class="trend-month">{{item.month}}</text>
+        </view>
+      </view>
     </view>
+
   </view>
 </view>

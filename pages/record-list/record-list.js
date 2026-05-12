@@ -1,5 +1,5 @@
 /**
- * 记录列表页面
+ * 记录列表页面 - 攀岩场次列表
  * 支持搜索、筛选、分页加载
  */
 const db = require('../../utils/db');
@@ -9,7 +9,7 @@ const app = getApp();
 
 Page({
   data: {
-    records: [],
+    sessions: [],
     loading: false,
     isEmpty: false,
     page: 1,
@@ -36,10 +36,7 @@ Page({
 
     // 筛选面板
     showFilter: false,
-    tempFilters: {},
-
-    // 用于获取去重后的地点列表
-    allLocations: []
+    tempFilters: {}
   },
 
   onLoad() {
@@ -50,15 +47,15 @@ Page({
       statusOptions,
       statusLabels
     });
-    this.loadRecords();
+    this.loadSessions();
   },
 
   onShow() {
-    this.refreshRecords();
+    this.refreshSessions();
   },
 
   onPullDownRefresh() {
-    this.refreshRecords().then(() => wx.stopPullDownRefresh());
+    this.refreshSessions().then(() => wx.stopPullDownRefresh());
   },
 
   onReachBottom() {
@@ -67,18 +64,18 @@ Page({
     }
   },
 
-  async refreshRecords() {
-    this.setData({ page: 1, records: [], hasMore: true });
-    await this.loadRecords();
+  async refreshSessions() {
+    this.setData({ page: 1, sessions: [], hasMore: true });
+    await this.loadSessions();
   },
 
-  async loadRecords() {
+  async loadSessions() {
     if (this.data.loading) return;
     this.setData({ loading: true });
 
     const { page, pageSize, keyword, filters } = this.data;
 
-    const res = await db.getRecords({
+    const res = await db.getSessions({
       page,
       pageSize,
       filters,
@@ -86,24 +83,37 @@ Page({
     });
 
     if (res.success) {
-      const { climbTypeLabels, statusLabels } = app.globalData;
+      const newSessions = res.data.list.map(session => {
+        const routes = session.routes || [];
+        const completedCount = routes.filter(r =>
+          r.status === 'flash' || r.status === 'completed'
+        ).length;
+        const projectCount = routes.filter(r => r.status === 'project').length;
+        const grades = routes.map(r => r.grade).filter(Boolean);
+        const maxGrade = grades.length > 0 ? gradeUtil.getMaxGrade(grades) : '-';
+        const completionRate = routes.length > 0
+          ? Math.round(completedCount / routes.length * 100)
+          : 0;
 
-      const newRecords = res.data.list.map(record => ({
-        ...record,
-        dateText: dateUtil.formatDateChinese(record.date),
-        climbTypeLabel: climbTypeLabels[record.climbType] || record.climbType,
-        statusLabel: statusLabels[record.status] || record.status,
-        isCompleted: record.status === 'flash' || record.status === 'completed'
-      }));
+        return {
+          ...session,
+          dateText: dateUtil.formatDateChinese(session.date),
+          routeCount: routes.length,
+          completedCount,
+          projectCount,
+          maxGrade,
+          completionRate
+        };
+      });
 
-      const allRecords = page === 1
-        ? newRecords
-        : [...this.data.records, ...newRecords];
+      const allSessions = page === 1
+        ? newSessions
+        : [...this.data.sessions, ...newSessions];
 
       this.setData({
-        records: allRecords,
-        isEmpty: allRecords.length === 0,
-        hasMore: allRecords.length < res.data.total,
+        sessions: allSessions,
+        isEmpty: allSessions.length === 0,
+        hasMore: allSessions.length < res.data.total,
         loading: false
       });
     } else {
@@ -114,7 +124,7 @@ Page({
 
   async loadMore() {
     this.setData({ page: this.data.page + 1 });
-    await this.loadRecords();
+    await this.loadSessions();
   },
 
   // 搜索相关
@@ -123,12 +133,12 @@ Page({
   },
 
   onSearchConfirm() {
-    this.refreshRecords();
+    this.refreshSessions();
   },
 
   onClearSearch() {
     this.setData({ keyword: '' });
-    this.refreshRecords();
+    this.refreshSessions();
   },
 
   // 筛选相关
@@ -137,7 +147,6 @@ Page({
       showFilter: !this.data.showFilter,
       tempFilters: { ...this.data.filters }
     });
-    // 打开面板时更新难度选项
     if (this.data.showFilter && this.data.tempFilters.climbType) {
       this.updateFilterGradeOptions(this.data.tempFilters.climbType);
     }
@@ -147,14 +156,11 @@ Page({
     const climbType = this.data.climbTypes[e.detail.value];
     this.setData({
       'tempFilters.climbType': climbType,
-      'tempFilters.grade': '' // 切换类型时清空难度选择
+      'tempFilters.grade': ''
     });
     this.updateFilterGradeOptions(climbType);
   },
 
-  /**
-   * 更新筛选面板的难度选项
-   */
   updateFilterGradeOptions(climbType) {
     if (!climbType) {
       this.setData({ filterGradeOptions: [] });
@@ -183,7 +189,7 @@ Page({
       filters: { ...this.data.tempFilters },
       showFilter: false
     });
-    this.refreshRecords();
+    this.refreshSessions();
   },
 
   onResetFilter() {
@@ -194,7 +200,7 @@ Page({
       showFilter: false,
       filterGradeOptions: []
     });
-    this.refreshRecords();
+    this.refreshSessions();
   },
 
   onFilterMaskTap() {
