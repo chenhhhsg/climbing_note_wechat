@@ -2,9 +2,15 @@
   记录列表页面
 -->
 <view class="container">
-  <!-- 加载中 -->
+  <!-- 首次加载中 -->
   <view wx:if="{{loading && records.length === 0}}" class="loading-state">
     <text>加载中...</text>
+  </view>
+
+  <!-- 首次加载失败：给出可重试入口 -->
+  <view wx:elif="{{loadError && records.length === 0}}" class="error-state">
+    <text class="error-text">加载失败，请检查网络后重试</text>
+    <button class="btn-retry" bindtap="retryRefresh">重试</button>
   </view>
 
   <!-- 空状态 -->
@@ -16,6 +22,12 @@
 
   <!-- 记录列表 -->
   <view wx:else class="record-list">
+    <!-- 已有内容时刷新失败：保留旧记录，只做简短提示 -->
+    <view wx:if="{{refreshError}}" class="inline-error">
+      <text class="inline-error-text">刷新失败，正在显示上次的记录</text>
+      <text class="retry-link" bindtap="retryRefresh">重试刷新</text>
+    </view>
+
     <view
       wx:for="{{records}}"
       wx:key="_id"
@@ -72,8 +84,13 @@
     </view>
 
     <!-- 加载更多提示 -->
-    <view wx:if="{{loading}}" class="loading-more">
+    <view wx:if="{{loadingMore}}" class="loading-more">
       <text>加载中...</text>
+    </view>
+    <!-- 翻页失败：重试继续请求刚才失败的页 -->
+    <view wx:elif="{{loadMoreError}}" class="inline-error load-more-error">
+      <text class="inline-error-text">加载更多失败</text>
+      <text class="retry-link" bindtap="retryLoadMore">重试加载更多</text>
     </view>
     <view wx:elif="{{!hasMore && records.length > 0}}" class="no-more">
       <text>没有更多记录了</text>
