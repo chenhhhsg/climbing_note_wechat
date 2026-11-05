@@ -35,6 +35,15 @@
 6. **写结论**：把报告写入 `pm-reports\Txxx-review.md`，裁决写入 `pm-reports\Txxx-verdict.json`（`PASS` / `CHANGES_REQUESTED` / `BLOCKED`）。
 7. **更新全局**：根据结论更新任务状态（`in_review` / `changes_requested` / `done`）和 `ROADMAP.md`。返工就回到第 4 步，最多两轮，仍不通过就交回人。
 
+## 简短指令（人只用说这几句）
+
+- **“继续”**：读 `ROADMAP.md`、`scripts\status.ps1` 和最近一次 verdict，选下一个任务，写 `tasks\Txxx.md`（`draft`），停下等批准。一次只规划一个任务。
+- **“批准 Txxx”**：视为人已确认范围。依次执行 `approve-task.ps1 -ApproveToken APPROVE-Txxx`、提交任务单、`run-approved-task.ps1 -DevOnly`，然后自己审核并汇报。
+- **“收尾 Txxx”**：仅在 `pm-reports\Txxx-verdict.json` 为 `PASS` 时执行。提交 worktree 改动、合并 `feat/Txxx` 到 `main`、删除 worktree 与分支、把任务状态改为 `done`。不 push、不部署。
+- **“停”**：立即停止当前轮，保留现场，不清理、不合并。
+
+收到简短指令时不要反问流程性问题；只有范围、风险或验收标准有歧义时才提问。
+
 ## 审核要求
 
 - 只依据 `git diff`、未跟踪文件内容、实际命令输出下结论，不推测。

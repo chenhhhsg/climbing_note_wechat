@@ -96,6 +96,17 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-approved-task.
 
 这样只有 Codex 一个"大脑"，ZCode 不参与判断，只执行任务单。
 
+### 简短指令
+
+配置好之后，每轮你只需要说：
+
+| 你说 | Codex 做 |
+|---|---|
+| `继续` | 读路线图和状态，选下一个任务，写任务单，停下等批准 |
+| `批准 Txxx` | 批准、提交、调 ZCode 开发、自己审核、汇报 |
+| `收尾 Txxx` | 仅在 PASS 后：提交改动、合并 `feat/Txxx`、清理 worktree 和分支、状态改 `done` |
+| `停` | 保留现场，不清理、不合并 |
+
 ## 状态与结论
 
 ```text
