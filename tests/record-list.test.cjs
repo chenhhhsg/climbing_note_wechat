@@ -1,5 +1,5 @@
 /**
- * 记录列表页面回归测试（L01–L07）
+ * 记录列表页面回归测试（L01–L07、R1）
  *
  * 直接加载真实页面文件，捕获 Page(...) 定义，替换 utils/db 的响应，
  * 用可手动完成的 Promise 控制请求完成顺序。
@@ -448,6 +448,67 @@ test('L07 刷新成功后旧第二页失败：不把界面变成错误态', asyn
   assert.equal(page.data.loading, false);
   assert.equal(page.data.refreshError, false);
   assert.equal(page.data.loadMoreError, false);
+  assert.equal(wxLog.stopPullDownRefresh, 1);
+});
+
+// ---- R1 ----
+test('R1 过时下拉请求不能提前结束当前下拉动画', async () => {
+  resetWxLog();
+  const initial = [makeRecord('init-0'), makeRecord('init-1')];
+  const refreshA = [makeRecord('a-0')];
+  const refreshB = [makeRecord('b-0'), makeRecord('b-1'), makeRecord('b-2')];
+  const pullDownA = deferred();
+  const showRefresh = deferred();
+  const pullDownB = deferred();
+  let firstPageCalls = 0;
+
+  useDb(pageNumber => {
+    firstPageCalls += 1;
+    if (firstPageCalls === 1) {
+      return Promise.resolve({ data: initial });
+    }
+    if (firstPageCalls === 2) {
+      return pullDownA.promise;
+    }
+    if (firstPageCalls === 3) {
+      return showRefresh.promise;
+    }
+    return pullDownB.promise;
+  });
+
+  const page = createPage();
+  await page.onShow();
+  assert.deepEqual(idsOf(page), ['init-0', 'init-1']);
+
+  // 慢下拉 A
+  const pullDownAPromise = page.onPullDownRefresh();
+  assert.equal(page.data.loading, true);
+
+  // 再次显示页面，随后发起下拉 B；B 是最新一次下拉
+  const showPromise = page.onShow();
+  const pullDownBPromise = page.onPullDownRefresh();
+
+  // A 先返回：B 仍在等待，过时回调不得结束当前动画
+  pullDownA.resolve({ data: refreshA });
+  await pullDownAPromise;
+
+  assert.equal(page.data.loading, true, 'B 未完成前应保持加载中');
+  assert.equal(wxLog.stopPullDownRefresh, 0, '过时下拉不得结束当前动画');
+
+  // B 后返回：只有它负责结束动画并更新列表
+  pullDownB.resolve({ data: refreshB });
+  await pullDownBPromise;
+
+  assert.equal(page.data.loading, false);
+  assert.equal(wxLog.stopPullDownRefresh, 1);
+  assert.deepEqual(idsOf(page), ['b-0', 'b-1', 'b-2']);
+
+  // 更早的页面显示请求最后返回，也不改变结果
+  showRefresh.resolve({ data: [makeRecord('show-0')] });
+  await showPromise;
+
+  assert.deepEqual(idsOf(page), ['b-0', 'b-1', 'b-2']);
+  assert.equal(page.data.loading, false);
   assert.equal(wxLog.stopPullDownRefresh, 1);
 });
 
