@@ -22,6 +22,7 @@ Page({
   onLoad() {
     this._generation = 0;
     this._loadingMore = false;
+    this._pullDownSequence = 0;
   },
 
   // 每次显示页面时刷新第一页。首次进入也由这里发起，
@@ -30,12 +31,18 @@ Page({
     return this.loadFirstPage();
   },
 
-  // 下拉刷新：无论成功或失败都结束下拉动画
+  // 下拉刷新：只有最新一次下拉负责结束动画，
+  // 过时的下拉回调不能提前停止当前下拉动画
   async onPullDownRefresh() {
+    const sequence = (this._pullDownSequence || 0) + 1;
+    this._pullDownSequence = sequence;
+
     try {
       await this.refreshRecords();
     } finally {
-      wx.stopPullDownRefresh();
+      if (sequence === this._pullDownSequence) {
+        wx.stopPullDownRefresh();
+      }
     }
   },
 
