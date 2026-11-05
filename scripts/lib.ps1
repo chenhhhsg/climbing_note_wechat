@@ -257,6 +257,18 @@ function Invoke-Zcode {
         [string]$Mode = 'yolo'
     )
     $cli = Resolve-ZcodeCli
+
+    # 桌面版 CLI 在部分宿主环境（例如被其它 Agent 的沙箱启动）会按 resources\glm\provider
+    # 推断内置配置，实际文件在 resources\config\provider。显式传路径，避免启动即失败。
+    $builtinConfig = Join-Path $env:LOCALAPPDATA 'Programs\ZCode\resources\config\provider\zcode-builtin.json'
+    $personalConfig = Join-Path $env:USERPROFILE '.zcode\v2\provider_config.json'
+    if (-not $env:ZCODE_BUILTIN_PROVIDER_CONFIG_FILE -and (Test-Path -LiteralPath $builtinConfig)) {
+        $env:ZCODE_BUILTIN_PROVIDER_CONFIG_FILE = $builtinConfig
+    }
+    if (-not $env:ZCODE_PERSONAL_PROVIDER_CONFIG_FILE -and (Test-Path -LiteralPath $personalConfig)) {
+        $env:ZCODE_PERSONAL_PROVIDER_CONFIG_FILE = $personalConfig
+    }
+
     $argv = @()
     if ($cli.Prefix.Count -gt 0) { $argv += $cli.Prefix }
     $argv += @('-p', $Prompt, '--cwd', $WorkDir, '--mode', $Mode, '--json', '--no-color')

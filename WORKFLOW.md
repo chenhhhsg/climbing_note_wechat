@@ -124,5 +124,6 @@ draft ──approve──> approved ──run──> in_review ──人确认�
 | 提示找不到 `zcode` | 脚本会自动回退到桌面版内置 CLI；手动使用可运行 `scripts\bin\zcode.cmd` |
 | 脚本无法执行 | `powershell -ExecutionPolicy Bypass -File .\scripts\status.ps1` |
 | 中文乱码 | 本目录 `.ps1` 均为 UTF-8 with BOM；不要用记事本另存为 ANSI |
+| ZCode 报 `无法定位 CLI ZCode Built-in Provider Config` | 启动环境没有继承桌面版的环境变量；脚本已显式指向 `resources\config\provider` 与 `~\.zcode\v2\provider_config.json`，确认这两个文件存在 |
 | 任务被拒绝执行 | 正文在批准后改过；重新 `approve-task.ps1` |
 | worktree 已存在 | 检查 `.worktrees\<任务号>`，确认后可删除目录与 `feat/<任务号>` 分支 |
