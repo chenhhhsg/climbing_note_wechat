@@ -8,7 +8,8 @@ param(
     [string]$Model = 'gpt-5.6-terra',
     [string]$Effort = 'high',
     [string]$TestCommand = '',
-    [string]$RunToken = ''
+    [string]$RunToken = '',
+    [switch]$DevOnly
 )
 
 $ErrorActionPreference = 'Stop'
@@ -112,6 +113,21 @@ if ($scope.Count -gt 0) {
     $diffPaths = '-- ' + (($scope | ForEach-Object { '"' + $_ + '"' }) -join ' ')
 }
 $diffCommand = ('git diff ' + $base + ' ' + $diffPaths).Trim()
+
+if ($DevOnly) {
+    Write-Host ''
+    Write-Host '=== 开发完成（未审核，-DevOnly）===' -ForegroundColor Green
+    Write-Host ("工作区：{0}" -f $worktree)
+    Write-Host ("分支：{0}（基线 {1}）" -f $branch, $base)
+    Write-Host ("Git 状态：{0}" -f $evidenceFile)
+    Write-Host ("ZCode 退出码：{0}" -f $zcode.ExitCode)
+    Write-Host ''
+    Write-Host '交回项目经理审核。建议命令：' -ForegroundColor Yellow
+    Write-Host ('  git -C "{0}" status --short --untracked-files=all' -f $worktree)
+    Write-Host ('  {0}' -f $diffCommand)
+    Write-Host '审核结论写入 pm-reports\<任务号>-review.md 和 -verdict.json，不要自动合并或推送。'
+    exit 0
+}
 
 $pmRole = ''
 $pmRolePath = Join-Path $root 'roles\codex-pm.md'

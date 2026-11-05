@@ -78,6 +78,24 @@ git commit -m "chore(task): approve T002"
 .\scripts\status.ps1
 ```
 
+## Codex 主导模式（在 Codex 会话里驱动 ZCode）
+
+如果你习惯在 Codex 里工作，可以让 Codex 当司机，ZCode 只负责开发：
+
+1. Codex 自己读 `ROADMAP.md`、`tasks/`、上次裁决，写 `tasks/Txxx.md`。
+2. 你审查并批准（`approve-task.ps1 -ApproveToken`），提交任务单。
+3. Codex 运行：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-approved-task.ps1 -TaskId Txxx -RunToken RUN-Txxx -DevOnly
+```
+
+4. 脚本建 `.worktrees\Txxx`、调用 ZCode、跑验证命令后停下，不启动第二个 Codex。
+5. Codex 在当前会话里读 diff、逐条核对验收标准，自己写 `pm-reports\Txxx-review.md` 和 `Txxx-verdict.json`。
+6. Codex 更新任务状态与 `ROADMAP.md`，把结论交给你决定是否合并。
+
+这样只有 Codex 一个"大脑"，ZCode 不参与判断，只执行任务单。
+
 ## 状态与结论
 
 ```text
