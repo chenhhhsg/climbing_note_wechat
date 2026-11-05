@@ -1,0 +1,521 @@
+/**
+ * 今日攀爬 · 岩馆线路手账风格
+ * 粉笔白底、炭黑字；线路色只出现在小色标上。
+ */
+.page {
+  min-height: 100vh;
+  padding: 24rpx 32rpx calc(220rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(220rpx + env(safe-area-inset-bottom));
+  box-sizing: border-box;
+}
+
+/* 本地试用标识 */
+.trial-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 24rpx;
+}
+
+.trial-badge {
+  padding: 6rpx 16rpx;
+  border: 2rpx dashed #8a877b;
+  border-radius: 999rpx;
+  color: #55564e;
+  font-size: 22rpx;
+  letter-spacing: 1rpx;
+}
+
+.trial-note {
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.page-header {
+  margin: 8rpx 0 28rpx;
+}
+
+.page-title {
+  display: block;
+  color: #23241f;
+  font-size: 56rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.page-subtitle {
+  display: block;
+  margin-top: 8rpx;
+  color: #717269;
+  font-size: 26rpx;
+}
+
+.card {
+  margin-bottom: 24rpx;
+  padding: 28rpx;
+  background: #fffdf8;
+  border: 1rpx solid #e3ded0;
+  border-radius: 24rpx;
+  box-shadow: 0 8rpx 24rpx rgba(35, 36, 31, 0.05);
+}
+
+.card-title {
+  display: block;
+  color: #23241f;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 92rpx;
+  margin-top: 16rpx;
+  border-bottom: 1rpx solid #ece7db;
+}
+
+.field-label {
+  color: #717269;
+  font-size: 24rpx;
+}
+
+.picker-value {
+  color: #23241f;
+  font-size: 30rpx;
+  font-weight: 600;
+  text-align: right;
+}
+
+.field-error {
+  display: block;
+  margin-top: 16rpx;
+  color: #b3261e;
+  font-size: 24rpx;
+}
+
+.primary-button,
+.secondary-button {
+  min-height: 96rpx;
+  line-height: 96rpx;
+  margin-top: 24rpx;
+  border-radius: 18rpx;
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.primary-button {
+  background: #23241f;
+  color: #fdfbf5;
+}
+
+.secondary-button {
+  background: #f3efe4;
+  color: #23241f;
+  border: 1rpx solid #d8d2c2;
+}
+
+.primary-button::after,
+.secondary-button::after,
+.result-button::after,
+.text-button::after {
+  border: none;
+}
+
+.text-button {
+  display: inline-block;
+  min-height: 72rpx;
+  line-height: 72rpx;
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  color: #4b5f4a;
+  font-size: 26rpx;
+  font-weight: 600;
+  text-align: right;
+}
+
+.session-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.session-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.session-meta {
+  display: block;
+  margin-top: 10rpx;
+  color: #717269;
+  font-size: 26rpx;
+}
+
+.session-new {
+  flex: none;
+  margin-left: 20rpx;
+}
+
+.session-switch {
+  margin-top: 24rpx;
+  padding-top: 20rpx;
+  border-top: 1rpx solid #ece7db;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 14rpx;
+}
+
+.chip {
+  margin: 0 16rpx 12rpx 0;
+  padding: 12rpx 28rpx;
+  border: 2rpx solid #d8d2c2;
+  border-radius: 999rpx;
+  color: #55564e;
+  font-size: 26rpx;
+}
+
+.chip-active {
+  border-color: #23241f;
+  background: #23241f;
+  color: #fdfbf5;
+  font-weight: 600;
+}
+
+.section {
+  margin-top: 36rpx;
+}
+
+.section-title {
+  display: block;
+  margin-bottom: 18rpx;
+  color: #23241f;
+  font-size: 30rpx;
+  font-weight: 700;
+}
+
+.storage-error {
+  margin-bottom: 24rpx;
+  padding: 20rpx 24rpx;
+  background: #fbeceb;
+  border: 1rpx solid #e7b6b1;
+  border-radius: 16rpx;
+}
+
+.storage-error-text {
+  display: block;
+  color: #b3261e;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.storage-error-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #8a4b45;
+  font-size: 22rpx;
+}
+
+.error-card {
+  border-color: #e7b6b1;
+}
+
+.error-title {
+  display: block;
+  color: #b3261e;
+  font-size: 32rpx;
+  font-weight: 700;
+}
+
+.error-text {
+  display: block;
+  margin-top: 12rpx;
+  color: #6c4a46;
+  font-size: 26rpx;
+}
+
+.route-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.route-item {
+  display: flex;
+  align-items: center;
+  min-height: 112rpx;
+  margin-bottom: 16rpx;
+  padding: 20rpx 24rpx;
+  background: #fffdf8;
+  border: 2rpx solid #e3ded0;
+  border-radius: 20rpx;
+}
+
+.route-selected {
+  border-color: #23241f;
+  box-shadow: 0 6rpx 18rpx rgba(35, 36, 31, 0.09);
+}
+
+.route-swatch {
+  flex: none;
+  width: 28rpx;
+  height: 72rpx;
+  margin-right: 22rpx;
+  border-radius: 8rpx;
+  border: 1rpx solid rgba(35, 36, 31, 0.18);
+}
+
+.route-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.route-name {
+  display: block;
+  color: #23241f;
+  font-size: 32rpx;
+  font-weight: 700;
+}
+
+.route-meta {
+  display: block;
+  margin-top: 4rpx;
+  color: #717269;
+  font-size: 24rpx;
+}
+
+.route-check {
+  flex: none;
+  margin-left: 16rpx;
+  color: #4b5f4a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+.quick-route-toggle {
+  margin-top: 8rpx;
+}
+
+.quick-route-form {
+  margin-top: 18rpx;
+  margin-bottom: 0;
+}
+
+.text-input {
+  min-height: 88rpx;
+  padding: 0 20rpx;
+  background: #f7f4ec;
+  border: 1rpx solid #ddd8ca;
+  border-radius: 14rpx;
+  color: #23241f;
+  font-size: 30rpx;
+}
+
+.quick-route-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 18rpx;
+}
+
+.selected-route {
+  display: flex;
+  align-items: center;
+  padding: 24rpx 26rpx;
+  background: #fffdf8;
+  border: 2rpx solid #23241f;
+  border-radius: 20rpx;
+}
+
+.selected-route-name {
+  flex: 1;
+  color: #23241f;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.selected-route-meta {
+  color: #717269;
+  font-size: 24rpx;
+}
+
+.empty-attempts {
+  margin-top: 18rpx;
+  padding: 30rpx 24rpx;
+  background: #f3efe4;
+  border-radius: 16rpx;
+  color: #717269;
+  font-size: 26rpx;
+  text-align: center;
+}
+
+.attempt-item {
+  margin-top: 16rpx;
+  padding: 22rpx 24rpx;
+  background: #fffdf8;
+  border: 1rpx solid #e3ded0;
+  border-radius: 18rpx;
+}
+
+.attempt-main {
+  display: flex;
+  align-items: baseline;
+}
+
+.attempt-label {
+  color: #23241f;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.attempt-result {
+  margin-left: 16rpx;
+  color: #23241f;
+  font-size: 30rpx;
+  font-weight: 700;
+}
+
+.attempt-time {
+  margin-left: auto;
+  color: #8a877b;
+  font-size: 22rpx;
+}
+
+.attempt-note {
+  display: block;
+  margin-top: 10rpx;
+  color: #4b4c44;
+  font-size: 26rpx;
+  line-height: 1.45;
+}
+
+.attempt-note-button {
+  display: block;
+  margin-top: 6rpx;
+  margin-left: auto;
+}
+
+.note-editor {
+  margin-top: 18rpx;
+  margin-bottom: 0;
+}
+
+.note-context {
+  display: block;
+  margin-top: 12rpx;
+  color: #4b4c44;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.note-input {
+  width: 100%;
+  height: 150rpx;
+  margin-top: 16rpx;
+  padding: 18rpx 20rpx;
+  box-sizing: border-box;
+  background: #f7f4ec;
+  border: 1rpx solid #ddd8ca;
+  border-radius: 14rpx;
+  color: #23241f;
+  font-size: 28rpx;
+}
+
+.button-row {
+  display: flex;
+  margin-top: 8rpx;
+}
+
+.button-row .primary-button,
+.button-row .secondary-button {
+  flex: 1;
+  margin-left: 12rpx;
+}
+
+.button-row .primary-button:first-child,
+.button-row .secondary-button:first-child {
+  margin-left: 0;
+}
+
+/* 底部两个大按钮：避开微信底栏与手机安全区 */
+.result-footer {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
+  display: flex;
+  padding: 20rpx 32rpx 20rpx;
+  padding-bottom: calc(20rpx + constant(safe-area-inset-bottom));
+  padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+  background: rgba(247, 244, 236, 0.98);
+  border-top: 1rpx solid #ddd8ca;
+  box-sizing: border-box;
+}
+
+.result-button {
+  flex: 1;
+  height: 116rpx;
+  line-height: 116rpx;
+  padding: 0;
+  border-radius: 20rpx;
+  font-size: 36rpx;
+  font-weight: 700;
+  text-align: center;
+}
+
+.result-button + .result-button {
+  margin-left: 20rpx;
+}
+
+.result-fail {
+  background: #fffdf8;
+  color: #23241f;
+  border: 3rpx solid #23241f;
+}
+
+.result-send {
+  background: #23241f;
+  color: #fdfbf5;
+  border: 3rpx solid #23241f;
+}
+
+.session-history {
+  margin-top: 44rpx;
+  padding-top: 4rpx;
+}
+
+.session-item {
+  display: flex;
+  align-items: baseline;
+  padding: 20rpx 22rpx;
+  margin-bottom: 12rpx;
+  background: #fffdf8;
+  border: 1rpx solid #e3ded0;
+  border-radius: 16rpx;
+}
+
+.session-item-active {
+  border-color: #23241f;
+}
+
+.session-item-date {
+  color: #23241f;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+
+.session-item-gym {
+  flex: 1;
+  margin-left: 16rpx;
+  color: #55564e;
+  font-size: 24rpx;
+}
+
+.session-item-meta {
+  color: #8a877b;
+  font-size: 22rpx;
+}

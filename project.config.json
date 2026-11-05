@@ -5,6 +5,10 @@
       {
         "value": "devtools/media-check",
         "type": "folder"
+      },
+      {
+        "value": "devtools/gym-log",
+        "type": "folder"
       }
     ],
     "include": []
