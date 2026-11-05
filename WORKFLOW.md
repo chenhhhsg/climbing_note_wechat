@@ -102,6 +102,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-approved-task.
 
 | 你说 | Codex 做 |
 |---|---|
+| `新需求：……` | 定位阶段、最多问 3 个问题、拆成一个任务单草稿，停下等批准 |
 | `继续` | 读路线图和状态，选下一个任务，写任务单，停下等批准 |
 | `批准 Txxx` | 批准、提交、调 ZCode 开发、自己审核、汇报 |
 | `收尾 Txxx` | 仅在 PASS 后：提交改动、合并 `feat/Txxx`、清理 worktree 和分支、状态改 `done` |
