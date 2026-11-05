@@ -135,6 +135,8 @@ function createInitialState() {
     sessions: [],
     routes: clone(FIXTURE_ROUTES),
     attempts: [],
+    // 已经点了结果、但保存端尚未确认的操作；opId 与最终尝试 ID 相同。
+    pendingSaves: [],
     activeSessionId: '',
     activeRouteId: ''
   };
@@ -183,6 +185,10 @@ function normalizeState(raw) {
     return null;
   }
 
+  // 旧版本缓存没有待确认操作，按空数组兼容读取。
+  const pendingRaw = raw.pendingSaves === undefined ? [] : raw.pendingSaves;
+  if (!Array.isArray(pendingRaw)) return null;
+
   const sessionsOk = raw.sessions.every(
     item =>
       item &&
@@ -213,13 +219,28 @@ function normalizeState(raw) {
       typeof item.note === 'string' &&
       hasText(item.createdAt)
   );
-  if (!sessionsOk || !routesOk || !attemptsOk) return null;
+  const pendingOk = pendingRaw.every(
+    item =>
+      item &&
+      hasText(item.opId) &&
+      isSeq(item.seq) &&
+      hasText(item.sessionId) &&
+      hasText(item.routeId) &&
+      (item.result === 'fail' || item.result === 'send') &&
+      typeof item.note === 'string' &&
+      hasText(item.createdAt)
+  );
+  if (!sessionsOk || !routesOk || !attemptsOk || !pendingOk) return null;
 
   const uniqueIds = items => new Set(items.map(item => item.id)).size === items.length;
+  const uniqueOpIds = new Set(pendingRaw.map(item => item.opId)).size === pendingRaw.length;
+  const attemptIds = new Set(raw.attempts.map(item => item.id));
   if (
     !uniqueIds(raw.sessions) ||
     !uniqueIds(raw.routes) ||
-    !uniqueIds(raw.attempts)
+    !uniqueIds(raw.attempts) ||
+    !uniqueOpIds ||
+    pendingRaw.some(item => attemptIds.has(item.opId))
   ) {
     return null;
   }
@@ -228,10 +249,15 @@ function normalizeState(raw) {
     version: STATE_VERSION,
     nextSessionSeq: normalizeCounter(raw.nextSessionSeq, raw.sessions),
     nextRouteSeq: normalizeCounter(raw.nextRouteSeq, raw.routes, routeSeq),
-    nextAttemptSeq: normalizeCounter(raw.nextAttemptSeq, raw.attempts),
+    // 待确认操作已经占用了序号，重试不能重新分配 ID。
+    nextAttemptSeq: normalizeCounter(
+      raw.nextAttemptSeq,
+      raw.attempts.concat(pendingRaw.map(item => ({ seq: item.seq })))
+    ),
     sessions: raw.sessions,
     routes: raw.routes,
     attempts: raw.attempts,
+    pendingSaves: pendingRaw,
     activeSessionId: typeof raw.activeSessionId === 'string' ? raw.activeSessionId : '',
     activeRouteId: typeof raw.activeRouteId === 'string' ? raw.activeRouteId : ''
   };

@@ -25,6 +25,22 @@
       <text class="page-subtitle">下一把，趁动作还记得</text>
     </view>
 
+    <!--
+      弱网演练入口：本地模拟保存端，只影响下一次保存。
+      账本与客户端待确认操作分开；重试复用同一操作 ID。
+    -->
+    <view id="weak-network-drill" class="card drill-card">
+      <text class="card-title">弱网演练（本地模拟）</text>
+      <text class="drill-hint">模拟保存端已入账、但回执丢失。仅作用于下一次保存；失败行保留原条目，重试沿用同一操作 ID。</text>
+      <button
+        id="arm-receipt-loss"
+        class="secondary-button drill-button"
+        bindtap="toggleReceiptLossArm"
+      >{{faultInjectionArmed ? '取消模拟回执丢失' : '模拟下一次保存回执丢失'}}</button>
+      <text wx:if="{{faultInjectionArmed}}" class="drill-armed">已就绪：下一次保存会写入模拟账本，但客户端收不到回执（仅一次）</text>
+      <text wx:if="{{faultInjectionError}}" class="field-error">{{faultInjectionError}}</text>
+    </view>
+
     <view wx:if="{{storageError}}" class="storage-error" bindtap="dismissStorageError">
       <text class="storage-error-text">{{storageError}}</text>
       <text class="storage-error-hint">当前操作未生效，请重试；点击可收起</text>
@@ -94,7 +110,7 @@
           <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
           <view class="selected-route-info">
             <text class="selected-route-name">{{selectedRoute.name}}</text>
-            <text class="selected-route-meta">{{selectedRoute.grade}} · 本场 {{attemptCountText}}</text>
+            <text class="selected-route-meta">{{selectedRoute.grade}} · 本场 {{routeCountText}}</text>
           </view>
           <button
             id="selected-route-detail"
@@ -102,6 +118,12 @@
             data-route-id="{{selectedRoute.id}}"
             bindtap="openRouteDetail"
           >详情</button>
+        </view>
+
+        <!-- 保存中、回执丢失等结果提示；点击可收起，待确认行本身仍保留 -->
+        <view wx:if="{{saveNotice}}" id="save-notice" class="save-notice" bindtap="dismissSaveNotice">
+          <text class="save-notice-text">{{saveNotice}}</text>
+          <text class="save-notice-hint">点击收起</text>
         </view>
 
         <!-- 补备注：始终显示对应的线路与第几把 -->
@@ -123,7 +145,7 @@
         </view>
 
         <block wx:else>
-          <view wx:if="{{!hasAttempts}}" class="empty-attempts">
+          <view wx:if="{{!hasAttempts && !hasPending}}" class="empty-attempts">
             <text>还没有记录，从墙上下来后点一次结果。</text>
           </view>
           <view wx:for="{{attempts}}" wx:key="id" class="attempt-item">
@@ -139,6 +161,30 @@
               data-attempt-id="{{item.id}}"
               bindtap="openNoteEditor"
             >{{item.hasNote ? '改备注' : '补备注'}}</button>
+          </view>
+
+          <!-- 待确认操作：保存中不可重复派发；失败后保留原条目，可在该行重试同一 ID -->
+          <view
+            wx:for="{{pendingAttempts}}"
+            wx:key="opId"
+            id="pending-{{item.opId}}"
+            class="attempt-item pending-attempt"
+          >
+            <view class="attempt-main">
+              <text class="attempt-label">{{item.label}}</text>
+              <text class="attempt-result">{{item.resultText}}</text>
+              <text class="attempt-time">{{item.timeText}}</text>
+            </view>
+            <view class="pending-footer">
+              <text class="pending-status {{item.isSaving ? 'pending-status-saving' : 'pending-status-failed'}}">{{item.statusText}}</text>
+              <button
+                wx:if="{{!item.isSaving}}"
+                id="retry-{{item.opId}}"
+                class="text-button pending-retry"
+                data-op-id="{{item.opId}}"
+                bindtap="retryPendingAttempt"
+              >重试保存</button>
+            </view>
           </view>
         </block>
       </view>
@@ -206,18 +252,22 @@
         </view>
       </view>
 
-      <!-- 拇指可及的两个大按钮，底部留出安全区 -->
+      <!-- 拇指可及的两个大按钮，底部留出安全区；
+           本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把 -->
       <view wx:if="{{selectedRoute && !noteEditor}}" class="result-footer">
+        <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
         <button
           id="record-fail"
           class="result-button result-fail"
           data-result="fail"
+          disabled="{{resultLocked}}"
           bindtap="recordAttempt"
         >未完成</button>
         <button
           id="record-send"
           class="result-button result-send"
           data-result="send"
+          disabled="{{resultLocked}}"
           bindtap="recordAttempt"
         >完攀</button>
       </view>

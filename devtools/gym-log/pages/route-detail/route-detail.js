@@ -211,16 +211,32 @@ Page({
    * 今天该岩馆只有一场时直接复用；没有就新建；有多场时先让用户明确归属。
    * 选择权交给用户，避免静默把当前场次改成另一场。
    * 只改当前场次与已选线路，不改动与这条线无关的记录。
+   *
+   * 进入详情时的快照可能早于今日页刚完成的保存回执，因此写回前重新读缓存，
+   * 只把「当前场次/线路」合并进去，不拿旧快照覆盖新的尝试或待确认操作。
    */
   recordAgain() {
     if (this.data.loadError || this.data.notFound || this.data.isLegacy) return;
 
     const routeId = this.data.route && this.data.route.id;
-    const target = this.state.routes.find(item => item.id === routeId);
-    if (!target) return;
+    if (!routeId) return;
+
+    const loaded = loadState();
+    if (loaded.error) {
+      this.setData({ storageError: loaded.error });
+      return;
+    }
+    this.state = loaded.state;
+
+    const next = clone(loaded.state);
+    const target = next.routes.find(item => item.id === routeId);
+    if (!target) {
+      this.setData({ storageError: '找不到这条线路，请返回今日页重试' });
+      return;
+    }
 
     const today = todayLocalDate();
-    const todaySessions = this.state.sessions
+    const todaySessions = next.sessions
       .filter(item => item.date === today && item.gymId === target.gymId)
       .sort((left, right) => left.seq - right.seq);
 
@@ -234,16 +250,15 @@ Page({
           gymName: gymName(target.gymId),
           sessions: todaySessions.map(session => ({
             id: session.id,
-            label: sessionLabel(this.state, session),
+            label: sessionLabel(next, session),
             timeText: timeText(session.createdAt),
-            isCurrent: session.id === this.state.activeSessionId
+            isCurrent: session.id === next.activeSessionId
           }))
         }
       });
       return;
     }
 
-    const next = clone(this.state);
     let session = todaySessions[0] || null;
 
     if (!session) {
@@ -276,6 +291,7 @@ Page({
   /**
    * 用户从同日场次列表中明确选中一场后才切换归属并返回。
    * 写入失败时保留选择界面与原场次，用户可重试。
+   * 同样先读最新缓存再合并，避免详情页快照把今日页刚保存的回执覆盖掉。
    */
   chooseSessionForAgain(event) {
     const sessionId =
@@ -284,7 +300,15 @@ Page({
     if (!sessionId || !picker) return;
     if (!picker.sessions.some(item => item.id === sessionId)) return;
 
-    const target = this.state.routes.find(
+    const loaded = loadState();
+    if (loaded.error) {
+      this.setData({ storageError: loaded.error });
+      return;
+    }
+    this.state = loaded.state;
+
+    const next = clone(loaded.state);
+    const target = next.routes.find(
       item => item.id === this._pendingRouteId
     );
     if (!target) {
@@ -295,14 +319,18 @@ Page({
       return;
     }
 
-    const next = clone(this.state);
     const session = next.sessions.find(
       item =>
         item.id === sessionId &&
         item.date === picker.dateText &&
         item.gymId === target.gymId
     );
-    if (!session) return;
+    if (!session) {
+      this.setData({
+        storageError: '找不到这个场次，请重新选择'
+      });
+      return;
+    }
 
     next.activeSessionId = session.id;
     next.activeRouteId = target.id;
