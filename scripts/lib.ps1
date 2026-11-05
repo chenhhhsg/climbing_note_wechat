@@ -131,7 +131,8 @@ function Get-BodyHash {
     param([string]$Body)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
-        $bytes = $script:Utf8NoBom.GetBytes($Body.Trim())
+        $normalized = $Body -replace "`r`n", "`n"
+        $bytes = $script:Utf8NoBom.GetBytes($normalized.Trim())
         $hash = $sha.ComputeHash($bytes)
         $hex = ([BitConverter]::ToString($hash)) -replace '-', ''
         return $hex.ToLowerInvariant()
