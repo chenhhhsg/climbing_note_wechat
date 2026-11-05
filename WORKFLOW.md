@@ -108,6 +108,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run-approved-task.
 | `收尾 Txxx` | 仅在 PASS 后：提交改动、合并 `feat/Txxx`、清理 worktree 和分支、状态改 `done` |
 | `停` | 保留现场，不清理、不合并 |
 
+## 无人值守跑完一个任务
+
+前提：需求已经拆成 `tasks/Txxx.md`，并且你批准、提交。适合有明确 `test_command`、可离线验证的任务；不适合需要真机、云环境、产品判断或跨多个任务的需求。
+
+```powershell
+.\scripts\run-unattended.ps1 -TaskId T003 -MaxAttempts 3 -RunToken RUN-T003
+```
+
+它会：复用或创建 worktree → ZCode 实现 → 跑 `test_command` → Codex 审核 → 如果 `CHANGES_REQUESTED`，带着返工要求再来一轮 → 直到 `PASS`、`BLOCKED` 或次数用尽。
+
+结束时写 `pm-reports\T003-unattended.md`，包含每轮退出码、裁决、改动文件、范围检查、未验证项和“回来先看什么”。中断后重跑同一条命令会复用现有 worktree。
+
+默认不合并。确认报告后想自动合并，加：
+
+```powershell
+.\scripts\run-unattended.ps1 -TaskId T003 -MaxAttempts 3 -RunToken RUN-T003 -AutoMerge -MergeToken MERGE-T003
+```
+
+只有在最终裁决 `PASS` 且所有改动都在任务 scope 内时才合并；不 push、不部署。
+
+离开前建议关闭睡眠，并让终端保持打开：
+
+```powershell
+powercfg /change standby-timeout-ac 0
+```
+
 ## 状态与结论
 
 ```text
