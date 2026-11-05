@@ -296,6 +296,55 @@
   font-weight: 600;
 }
 
+/* 线路详情入口：从今日/历史线路找回稳定 ID */
+.route-detail-link,
+.route-item-detail {
+  flex: none;
+  margin-left: 10rpx;
+  color: #4b5f4a;
+  font-size: 24rpx;
+}
+
+/* 旧汇总只读入口 */
+.legacy-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 40rpx;
+  padding: 22rpx 24rpx;
+  background: #fffdf8;
+  border: 2rpx dashed #b9b3a2;
+  border-radius: 18rpx;
+}
+
+.legacy-entry-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.legacy-entry-title {
+  display: block;
+  color: #55564e;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.legacy-entry-meta {
+  display: block;
+  margin-top: 6rpx;
+  color: #23241f;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.legacy-entry-link {
+  flex: none;
+  margin-left: 16rpx;
+  color: #4b5f4a;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
 .quick-route-toggle {
   margin-top: 8rpx;
 }
@@ -330,14 +379,21 @@
   border-radius: 20rpx;
 }
 
-.selected-route-name {
+.selected-route-info {
   flex: 1;
+  min-width: 0;
+}
+
+.selected-route-name {
+  display: block;
   color: #23241f;
   font-size: 34rpx;
   font-weight: 700;
 }
 
 .selected-route-meta {
+  display: block;
+  margin-top: 4rpx;
   color: #717269;
   font-size: 24rpx;
 }

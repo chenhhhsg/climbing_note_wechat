@@ -1,6 +1,7 @@
 {
   "pages": [
-    "pages/today/today"
+    "pages/today/today",
+    "pages/route-detail/route-detail"
   ],
   "window": {
     "navigationBarTitleText": "今日攀爬",

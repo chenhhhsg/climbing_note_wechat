@@ -1,0 +1,128 @@
+<!--
+  线路详情：同一条线跨天接着记
+  按日期与场次分组回看逐次尝试；主要操作「今天再爬」固定在拇指可及处。
+  旧汇总样例只显示原始汇总，逐次统计保持 0，不生成多条尝试。
+-->
+<view class="page route-detail-page">
+  <view class="trial-banner">
+    <text class="trial-badge">{{trialBadge}}</text>
+    <text class="trial-note">跨天回看 · 仅保存在本机</text>
+  </view>
+
+  <view wx:if="{{loadError}}" class="card error-card">
+    <text class="error-title">本地数据读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <view class="button-row">
+      <button id="retry-load" class="secondary-button" bindtap="retryLoad">重试读取</button>
+      <button id="back-today" class="secondary-button" bindtap="goBackToToday">返回今日</button>
+    </view>
+  </view>
+
+  <block wx:else>
+    <view class="page-header">
+      <text class="page-title">线路详情</text>
+      <text class="page-subtitle">同一条线，接着上次继续</text>
+    </view>
+
+    <view wx:if="{{storageError}}" class="storage-error" bindtap="dismissStorageError">
+      <text class="storage-error-text">{{storageError}}</text>
+      <text class="storage-error-hint">当前操作未生效，请重试；点击可收起</text>
+    </view>
+
+    <view wx:if="{{notFound}}" class="card error-card">
+      <text class="error-title">找不到这条线路</text>
+      <text class="error-text">这条线路可能已被移除，请返回今日页重新选择。</text>
+      <button class="secondary-button" bindtap="goBackToToday">返回今日</button>
+    </view>
+
+    <block wx:if="{{route}}">
+      <view class="card route-header">
+        <view class="route-swatch" style="background: {{route.colorHex}};"></view>
+        <view class="route-heading">
+          <text class="route-title">{{route.name}}</text>
+          <text class="route-meta">{{route.grade}} · {{route.colorName}} · {{route.gymName}}</text>
+        </view>
+      </view>
+
+      <view class="summary-row">
+        <text class="summary-text">{{summaryText}}</text>
+        <text wx:if="{{hasAttempts}}" class="summary-detail">完攀 {{sendCount}} 把</text>
+      </view>
+
+      <!-- 旧汇总：只读原样展示，不生成逐次尝试，不参与统计 -->
+      <view wx:if="{{isLegacy}}" class="card legacy-card">
+        <text class="legacy-label">{{legacySummary.label}}</text>
+        <text class="legacy-summary">{{legacySummary.summaryText}}</text>
+        <text class="legacy-hint">{{legacySummary.hint}}</text>
+        <view class="legacy-stat">
+          <text class="legacy-stat-label">逐次尝试</text>
+          <text class="legacy-stat-value">{{attemptCountText}}</text>
+        </view>
+      </view>
+
+      <view wx:elif="{{hasAttempts}}" class="history-groups">
+        <view wx:for="{{groups}}" wx:key="sessionId" class="history-group">
+          <view class="group-head">
+            <text class="group-date">{{item.dateText}}</text>
+            <text class="group-session">{{item.sessionLabel}}</text>
+            <text class="group-gym">{{item.gymName}}</text>
+            <text class="group-count">{{item.countText}}</text>
+          </view>
+          <view
+            wx:for="{{item.attempts}}"
+            wx:key="id"
+            wx:for-item="attempt"
+            class="detail-attempt"
+          >
+            <view class="attempt-main">
+              <text class="attempt-label">{{attempt.label}}</text>
+              <text class="attempt-result">{{attempt.resultText}}</text>
+              <text class="attempt-time">{{attempt.timeText}}</text>
+            </view>
+            <text wx:if="{{attempt.hasNote}}" class="attempt-note">{{attempt.note}}</text>
+          </view>
+        </view>
+      </view>
+
+      <view wx:else class="card empty-history">
+        <text>这条线路还没有逐次记录。</text>
+        <text class="empty-hint">点「今天再爬」用原线路记一把。</text>
+      </view>
+    </block>
+  </block>
+
+  <view wx:if="{{!isLegacy && route}}" class="record-again-footer">
+    <button id="record-again" class="record-again-button" bindtap="recordAgain">今天再爬</button>
+    <text class="record-again-hint">今天该岩馆只有一场时直接沿用；多场先选归属；没有就新建一场</text>
+  </view>
+
+  <!--
+    同日多场：必须明确选一场才切换归属并返回。
+    取消不写缓存，当前场次与详情数据保持原样。
+  -->
+  <view
+    wx:if="{{sessionPicker}}"
+    class="picker-mask"
+    bindtap="cancelSessionPicker"
+  ></view>
+  <view wx:if="{{sessionPicker}}" class="session-picker">
+    <text class="picker-title">今天记到哪一场？</text>
+    <text class="picker-subtitle">{{sessionPicker.dateText}} · {{sessionPicker.gymName}} · 共 {{sessionPicker.sessions.length}} 场</text>
+    <text class="picker-hint">同日多场需要明确归属；选中后切到该场并返回今日页。</text>
+    <view
+      wx:for="{{sessionPicker.sessions}}"
+      wx:key="id"
+      id="pick-{{item.id}}"
+      class="picker-session {{item.isCurrent ? 'picker-session-current' : ''}}"
+      data-session-id="{{item.id}}"
+      bindtap="chooseSessionForAgain"
+    >
+      <view class="picker-session-main">
+        <text class="picker-session-label">{{item.label}}</text>
+        <text wx:if="{{item.isCurrent}}" class="picker-current-badge">当前</text>
+      </view>
+      <text class="picker-session-time">{{item.timeText}} 开始</text>
+    </view>
+    <button id="cancel-session-picker" class="picker-cancel" bindtap="cancelSessionPicker">取消，保持当前场次</button>
+  </view>
+</view>

@@ -92,8 +92,16 @@
         <text class="section-title">本场记录</text>
         <view class="selected-route">
           <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
-          <text class="selected-route-name">{{selectedRoute.name}}</text>
-          <text class="selected-route-meta">{{selectedRoute.grade}} · 本场 {{attemptCountText}}</text>
+          <view class="selected-route-info">
+            <text class="selected-route-name">{{selectedRoute.name}}</text>
+            <text class="selected-route-meta">{{selectedRoute.grade}} · 本场 {{attemptCountText}}</text>
+          </view>
+          <button
+            id="selected-route-detail"
+            class="text-button route-detail-link"
+            data-route-id="{{selectedRoute.id}}"
+            bindtap="openRouteDetail"
+          >详情</button>
         </view>
 
         <!-- 补备注：始终显示对应的线路与第几把 -->
@@ -151,6 +159,12 @@
               <text class="route-name">{{item.name}}</text>
               <text class="route-meta">{{item.grade}} · {{item.colorName}}</text>
             </view>
+            <button
+              id="route-detail-{{item.id}}"
+              class="text-button route-item-detail"
+              data-route-id="{{item.id}}"
+              catchtap="openRouteDetail"
+            >详情</button>
             <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
           </view>
         </view>
@@ -223,5 +237,19 @@
         </view>
       </view>
     </block>
+
+    <!-- 旧汇总只读入口：虚构样例，用于检查原始汇总可读且不生成逐次尝试 -->
+    <view
+      wx:if="{{legacySample}}"
+      id="legacy-entry"
+      class="legacy-entry"
+      bindtap="openLegacySample"
+    >
+      <view class="legacy-entry-main">
+        <text class="legacy-entry-title">{{legacySample.name}} · 旧汇总（只读）</text>
+        <text class="legacy-entry-meta">{{legacySample.legacy.summaryText}}</text>
+      </view>
+      <text class="legacy-entry-link">查看 ›</text>
+    </view>
   </block>
 </view>
