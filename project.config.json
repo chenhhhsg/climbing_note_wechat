@@ -1,7 +1,12 @@
 {
   "description": "攀笔 - 攀岩记录小程序",
   "packOptions": {
-    "ignore": [],
+    "ignore": [
+      {
+        "value": "devtools/media-check",
+        "type": "folder"
+      }
+    ],
     "include": []
   },
   "setting": {

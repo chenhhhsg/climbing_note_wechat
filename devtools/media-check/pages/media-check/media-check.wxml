@@ -1,0 +1,76 @@
+<!--
+  本地视频验证页：相册单选 → 播放/暂停 → 跳到第 5 秒
+-->
+<view class="page">
+  <view class="intro">
+    <text class="intro-title">本地视频跳转验证</text>
+    <text class="intro-text">从相册选一段带时间码的样片，暂停后点“跳到第 5 秒”，用画面中的时间码核对落点。</text>
+  </view>
+
+  <button class="btn btn-primary" bindtap="chooseVideo">
+    {{hasVideo ? '重新选择相册视频' : '选择相册视频'}}
+  </button>
+
+  <!-- 选片失败：可见错误 + 重试入口 -->
+  <view wx:if="{{chooseError}}" class="notice notice-error">
+    <text class="notice-text">{{chooseError}}</text>
+    <text class="notice-action" bindtap="chooseVideo">重新选择</text>
+  </view>
+
+  <view wx:if="{{hasVideo}}" class="player-panel">
+    <!-- 每次选片替换为一个新的 wx:key，确保原生 video 节点与身份一起重建；
+         旧节点迟到的事件带着旧 token，页面按 token 丢弃。 -->
+    <block wx:for="{{videoInstances}}" wx:key="token">
+      <video
+        id="{{item.domId}}"
+        data-video-token="{{item.token}}"
+        class="video"
+        src="{{videoPath}}"
+        controls="{{true}}"
+        show-center-play-btn="{{true}}"
+        bindloadedmetadata="onVideoLoadedMetadata"
+        bindplay="onVideoPlay"
+        bindpause="onVideoPause"
+        bindtimeupdate="onVideoTimeUpdate"
+        binderror="onVideoError"
+      ></video>
+    </block>
+
+    <view class="meta">
+      <view class="meta-row">
+        <text class="meta-label">时长</text>
+        <text class="meta-value">{{ready ? durationText + ' 秒' : '等待播放器回报'}}</text>
+      </view>
+      <view class="meta-row">
+        <text class="meta-label">分辨率</text>
+        <text class="meta-value">{{width && height ? width + ' × ' + height : '等待播放器回报'}}</text>
+      </view>
+    </view>
+
+    <!-- 播放失败：可见错误 + 重选入口 -->
+    <view wx:if="{{errorMessage}}" class="notice notice-error">
+      <text class="notice-text">{{errorMessage}}</text>
+      <text class="notice-action" bindtap="chooseVideo">重新选择</text>
+    </view>
+
+    <view class="controls">
+      <button class="btn" bindtap="togglePlay">{{playing ? '暂停' : '播放'}}</button>
+      <button class="btn" bindtap="seekToFifthSecond" disabled="{{seekDisabled}}">跳到第 5 秒</button>
+    </view>
+
+    <view class="seek-panel">
+      <text class="seek-target">跳转目标：{{targetPositionMs}} 毫秒（{{targetPositionSeconds}} 秒）</text>
+      <text class="seek-actual">播放器回报位置：{{currentTimeText ? currentTimeText + ' 秒' : '尚未回报'}}</text>
+      <text wx:if="{{shortVideoMessage}}" class="seek-short">{{shortVideoMessage}}</text>
+      <text wx:elif="{{seekStatus}}" class="seek-status">{{seekStatus}}</text>
+    </view>
+  </view>
+
+  <view wx:else class="empty">
+    <text class="empty-text">还没有选择视频</text>
+  </view>
+
+  <view class="tips">
+    <text>临时路径只在当前页面内存中使用；退出验证页后需要重新选择。样片请放在手机相册或模拟器可选位置。</text>
+  </view>
+</view>
