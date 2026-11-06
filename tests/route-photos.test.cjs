@@ -455,6 +455,29 @@ function newService(harness, options) {
   });
 }
 
+/** 可指定实例、时钟与预算的服务，用于构造“活跃/过期实例”和并发预算场景。 */
+function serviceWith(harness, options) {
+  const config = options || {};
+  return routePhotos.createRoutePhotoService({
+    ownerId: config.ownerId || 'trial-user-a',
+    datasetId: config.datasetId || 'trial-dataset-1',
+    files: harness.files,
+    storage: harness.storage,
+    instanceId: config.instanceId || 'svc-x',
+    instanceTtlMs: config.instanceTtlMs,
+    space: config.space,
+    now: config.now || (() => '2026-11-06T10:00:00.000Z')
+  });
+}
+
+/** 在途预留清单；全部释放后协调键会被移除，这里统一成空清单。 */
+function reservationsOf(storage) {
+  const raw = storage.get(routePhotos.RESERVATION_KEY);
+  if (!raw) return { items: [] };
+  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+  return parsed && Array.isArray(parsed.items) ? parsed : { items: [] };
+}
+
 function sample(files, name) {
   const presets = {
     p1: { bytes: 520 * 1024, width: 3000, height: 2000 },
@@ -554,7 +577,13 @@ test('PS01 保存后临时文件失效、实例重建仍按归属读到同一 ph
   assert.ok(
     harness.storage.log.gets
       .concat(harness.storage.log.sets)
-      .every(key => key === INDEX_KEY || key === THUMB_CACHE_KEY),
+      .every(
+        key =>
+          key === INDEX_KEY ||
+          key === THUMB_CACHE_KEY ||
+          key === routePhotos.INSTANCE_KEY ||
+          key === routePhotos.RESERVATION_KEY
+      ),
     '只读写照片专用键'
   );
   assert.equal(
@@ -1354,6 +1383,325 @@ test('PS05 缩略图缺失时主图仍可读，并可从主图重建缩略图', 
   const after = await readRoute(harness.service, L1);
   assert.equal(after.status, 'ready');
   assert.equal(after.photo.thumbnail.available, true);
+});
+
+// ---- PS07 并发预算、维护协调与实例恢复（T012 返工复验） ----
+
+test('PS07 同一服务并发保存按在途预留受预算约束，失败可重试且预留释放', async () => {
+  const harness = createHarness();
+  const service = serviceWith(harness, {
+    instanceId: 'svc-budget',
+    space: { budgetBytes: 1500, warnBytes: 1200, reserveBytes: 100 }
+  });
+  const source = harness.files.addSource({ bytes: 500, width: 100, height: 100 });
+
+  // 第一路在 writeMain 前暂停：此时它已登记在途预留但尚未写入受管目录。
+  const release = harness.files.holdCall('writeMain', 1);
+  const first = service.addPhoto({
+    routeId: L1,
+    sourcePath: source,
+    opId: 'budget-1'
+  });
+  await harness.files.waitForCall('writeMain', 1);
+  assert.ok(
+    reservationsOf(harness.storage).items.length >= 1,
+    '写入前必须已登记在途预留'
+  );
+
+  // 第二路并发保存：当前实际占用仍为 0，但必须看到第一路的预留并被拒绝。
+  const second = await service.addPhoto({
+    routeId: L2,
+    sourcePath: source,
+    opId: 'budget-2'
+  });
+  assert.equal(second.ok, false, '并发保存不得共享同一份未预留预算');
+  assert.equal(second.code, 'space-insufficient');
+  assert.equal(second.recoverable, true);
+
+  release();
+  const firstResult = await first;
+  assert.equal(firstResult.ok, true);
+  const usage = await service.getSpaceUsage();
+  assert.ok(usage.totalBytes <= 1500, '实际占用不得越过预算');
+  assert.equal(
+    reservationsOf(harness.storage).items.length,
+    0,
+    '成功与失败的预留都要释放'
+  );
+
+  // 释放空间后同一 opId 可重试成功。
+  const removed = await service.removePhoto({ routeId: L1, opId: 'budget-rm' });
+  assert.equal(removed.ok, true);
+  const retried = await service.addPhoto({
+    routeId: L2,
+    sourcePath: source,
+    opId: 'budget-2'
+  });
+  assert.equal(retried.ok, true);
+  assert.equal(operationOf(harness.storage, 'budget-2').status, 'committed');
+  const finalUsage = await service.getSpaceUsage();
+  assert.ok(finalUsage.totalBytes <= 1500);
+});
+
+test('PS07 缩略图重建同样计入在途预留与预算，放宽预算后可重试', async () => {
+  const harness = createHarness();
+  const small = serviceWith(harness, {
+    instanceId: 'svc-rebuild-small',
+    space: { budgetBytes: 1700, warnBytes: 1400, reserveBytes: 100 }
+  });
+  const source = harness.files.addSource({ bytes: 500, width: 100, height: 100 });
+  const first = await small.addPhoto({
+    routeId: L1,
+    opId: 'rebuild-1',
+    sourcePath: source
+  });
+  assert.equal(first.ok, true);
+  assert.equal((await small.clearRebuildableCache()).ok, true);
+  const second = await small.addPhoto({
+    routeId: L2,
+    opId: 'rebuild-2',
+    sourcePath: source
+  });
+  assert.equal(second.ok, true);
+
+  const before = await small.getSpaceUsage();
+  assert.equal(before.totalBytes, 1500);
+  const blocked = await small.rebuildMissingThumbnails();
+  assert.equal(blocked.ok, false, '重建不得越过预算');
+  assert.equal(blocked.failed.length, 1);
+  assert.equal(blocked.failed[0].code, 'space-insufficient');
+  const after = await small.getSpaceUsage();
+  assert.ok(after.totalBytes <= 1700, '实际占用仍在预算内');
+  assert.equal(harness.files.hasMain(first.photoId), true);
+  assert.equal(harness.files.hasMain(second.photoId), true);
+  assert.equal(
+    reservationsOf(harness.storage).items.length,
+    0,
+    '失败的重建也要释放预留'
+  );
+
+  // 放宽预算后同一重建成功，且只补齐缺失缩略图。
+  const roomy = serviceWith(harness, {
+    instanceId: 'svc-rebuild-roomy',
+    space: { budgetBytes: 2600, warnBytes: 2000, reserveBytes: 100 }
+  });
+  const retried = await roomy.rebuildMissingThumbnails();
+  assert.equal(retried.ok, true);
+  assert.equal(retried.rebuiltCount, 1);
+  const finalUsage = await roomy.getSpaceUsage();
+  assert.equal(finalUsage.totalBytes, 2000);
+});
+
+test('PS07 清缓存与保存交错：新提交的缩略图与元数据都保留', async () => {
+  const harness = createHarness();
+  const service = harness.service;
+  const source = sample(harness.files, 'p1');
+
+  const release = harness.files.holdCall('listThumb', 1);
+  const clearing = service.clearRebuildableCache();
+  await harness.files.waitForCall('listThumb', 1);
+  const saved = await service.addPhoto({
+    routeId: L1,
+    opId: 'clear-race',
+    sourcePath: source
+  });
+  assert.equal(saved.ok, true);
+  release();
+  const cleared = await clearing;
+  assert.equal(cleared.ok, true);
+
+  assert.equal(
+    harness.files.hasThumb(saved.photoId),
+    true,
+    '清缓存期间新提交的缩略图不得被删除'
+  );
+  const read = await readRoute(service, L1);
+  assert.equal(read.ok, true);
+  assert.equal(read.status, 'ready');
+  assert.equal(read.photo.thumbnail.available, true);
+  const cache = harness.storage.raw(THUMB_CACHE_KEY);
+  assert.ok(
+    cache.items.some(item => item.photoId === saved.photoId),
+    '被保留的缩略图仍保留元数据条目'
+  );
+});
+
+test('PS07 清理无引用文件与保存交错：按最新引用跳过刚提交的主图', async () => {
+  const harness = createHarness();
+  const service = harness.service;
+  const source = sample(harness.files, 'p1');
+
+  const release = harness.files.holdCall('listMain', 1);
+  const cleanup = service.cleanupOrphans();
+  await harness.files.waitForCall('listMain', 1);
+  const saved = await service.addPhoto({
+    routeId: L1,
+    opId: 'cleanup-race',
+    sourcePath: source
+  });
+  assert.equal(saved.ok, true);
+  release();
+  const cleaned = await cleanup;
+
+  assert.equal(cleaned.ok, true);
+  assert.equal(harness.files.hasMain(saved.photoId), true, '刚提交的主图不得被删');
+  assert.equal(harness.files.hasThumb(saved.photoId), true);
+  assert.equal(
+    cleaned.deleted.indexOf(harness.files.mainPath(saved.photoId)),
+    -1,
+    '删除清单不得包含刚提交的主图'
+  );
+  const read = await readRoute(service, L1);
+  assert.equal(read.ok, true);
+  assert.equal(read.photo.photoId, saved.photoId);
+  assert.equal(indexOf(harness.storage).routes[0].photoId, saved.photoId);
+});
+
+test('PS07 重建与移除交错：不为已移除照片留下孤儿缩略图或缓存条目', async () => {
+  const harness = createHarness();
+  const service = harness.service;
+  const saved = await service.addPhoto({
+    routeId: L1,
+    sourcePath: sample(harness.files, 'p1'),
+    opId: 'rebuild-remove'
+  });
+  assert.equal(saved.ok, true);
+  assert.equal((await service.clearRebuildableCache()).ok, true);
+
+  const release = harness.files.holdCall('writeThumb', 2);
+  const rebuilding = service.rebuildMissingThumbnails();
+  await harness.files.waitForCall('writeThumb', 2);
+  const removed = await service.removePhoto({ routeId: L1, opId: 'remove' });
+  release();
+  const rebuilt = await rebuilding;
+
+  assert.equal(removed.ok, true);
+  assert.equal(harness.files.hasMain(saved.photoId), false);
+  assert.equal(
+    harness.files.hasThumb(saved.photoId),
+    false,
+    '迟到重建不得写回已移除照片的缩略图'
+  );
+  const cache = harness.storage.raw(THUMB_CACHE_KEY);
+  assert.ok(
+    !cache || !cache.items.some(item => item.photoId === saved.photoId),
+    '缓存中不得保留已移除照片'
+  );
+  assert.equal(rebuilt.ok, false);
+  assert.equal(rebuilt.failed[0].photoId, saved.photoId);
+  assert.equal((await readRoute(service, L1)).status, 'none');
+});
+
+test('PS07 recover 不中止其他归属活跃操作，过期实例的遗留仍可恢复', async () => {
+  const harness = createHarness();
+  const live = serviceWith(harness, {
+    ownerId: 'trial-user-a',
+    datasetId: 'trial-dataset-1',
+    instanceId: 'svc-live',
+    now: () => '2026-11-06T10:00:00.000Z'
+  });
+  const other = serviceWith(harness, {
+    ownerId: 'trial-user-b',
+    datasetId: 'trial-dataset-2',
+    instanceId: 'svc-other',
+    now: () => '2026-11-06T10:00:05.000Z'
+  });
+  const source = harness.files.addSource({ bytes: 500, width: 100, height: 100 });
+  const release = harness.files.holdCall('writeThumb', 1);
+  const pending = live.addPhoto({
+    routeId: L1,
+    sourcePath: source,
+    opId: 'live-op'
+  });
+  await harness.files.waitForCall('writeThumb', 1);
+  assert.equal(harness.files.hasMain('photo-1'), true);
+
+  // 另一归属的新实例初始化：不得把 A 的活跃操作当作崩溃遗留。
+  const recovered = await other.recover();
+  assert.deepEqual(recovered.abortedOps, []);
+  assert.equal(harness.files.hasMain('photo-1'), true, 'B 初始化不得删 A 的主图');
+  release();
+  const liveResult = await pending;
+  assert.equal(liveResult.ok, true, 'A 的保存应正常完成');
+  assert.equal(operationOf(harness.storage, 'live-op').status, 'committed');
+
+  // 真正中断：租约过期后新实例初始化仍能中止遗留操作并清理其文件。
+  const dead = serviceWith(harness, {
+    ownerId: 'trial-user-a',
+    datasetId: 'trial-dataset-1',
+    instanceId: 'svc-dead',
+    now: () => '2026-11-06T12:00:00.000Z'
+  });
+  const releaseDead = harness.files.holdCall('writeMain', 2);
+  const leftover = dead.addPhoto({
+    routeId: L2,
+    sourcePath: source,
+    opId: 'leftover-op'
+  });
+  await harness.files.waitForCall('writeMain', 2);
+  const restarted = serviceWith(harness, {
+    ownerId: 'trial-user-a',
+    datasetId: 'trial-dataset-1',
+    instanceId: 'svc-restarted',
+    now: () => '2026-11-06T12:40:00.000Z'
+  });
+  const restartedResult = await restarted.recover();
+  assert.deepEqual(restartedResult.abortedOps, ['leftover-op']);
+  assert.equal(
+    operationOf(harness.storage, 'leftover-op').status,
+    'aborted',
+    '过期实例的遗留操作仍被中止'
+  );
+  releaseDead();
+  const late = await leftover;
+  assert.equal(late.ok, false, '被中止的操作不得假成功');
+  assert.equal(
+    harness.files.hasMain(late.photoId),
+    false,
+    '遗留半成品文件被清理'
+  );
+  assert.equal(
+    reservationsOf(harness.storage).items.length,
+    0,
+    '过期实例的预留被释放'
+  );
+  // 已提交的照片不受影响。
+  assert.equal(harness.files.hasMain(liveResult.photoId), true);
+});
+
+test('PS07 读取结果按当前实际缩略图报告字节，缺失时为 0', async () => {
+  const harness = createHarness();
+  const saved = await harness.service.addPhoto({
+    routeId: L1,
+    sourcePath: sample(harness.files, 'p1'),
+    opId: 'bytes-report'
+  });
+  const thumbBytes = harness.files.thumbBytes(saved.photoId);
+  assert.ok(thumbBytes > 0);
+
+  const ready = await readRoute(harness.service, L1);
+  assert.equal(ready.status, 'ready');
+  assert.equal(ready.photo.bytes.thumb, thumbBytes, '可用时按真实缩略图字节');
+  assert.equal(ready.photo.thumbnail.bytes, thumbBytes);
+
+  // 清缓存（等价于缩略图缺失）后不得回放写入时的旧快照。
+  assert.equal(
+    (await harness.service.clearRebuildableCache()).ok,
+    true
+  );
+  const missingThumb = await readRoute(harness.service, L1);
+  assert.equal(missingThumb.status, 'ready-thumb-missing');
+  assert.equal(missingThumb.photo.bytes.thumb, 0, '无缩略图时不得显示旧占用');
+  assert.equal(missingThumb.photo.thumbnail.available, false);
+  assert.equal(missingThumb.photo.bytes.main, harness.files.mainBytes(saved.photoId));
+
+  const rebuilt = await harness.service.rebuildThumbnail({
+    photoId: saved.photoId
+  });
+  assert.equal(rebuilt.ok, true);
+  const after = await readRoute(harness.service, L1);
+  assert.equal(after.photo.bytes.thumb, harness.files.thumbBytes(saved.photoId));
+  assert.equal(after.photo.photoId, saved.photoId, '重建不改 photoId');
 });
 
 // ---- PS06 迁移保留与回归 ----

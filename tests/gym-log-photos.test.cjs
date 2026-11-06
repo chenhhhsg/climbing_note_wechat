@@ -1048,6 +1048,189 @@ test('PU05 保存中途退出重进：旧实例不回写，页面从持久索引
 });
 
 // ---- 重置与旧缓存 ----
+
+test('PU05 选片期间重置：迟到结果不进入新数据集（当前线路入口）', async () => {
+  const page = await createPage();
+  await tapStart(page);
+  await tapRoute(page, ROUTE_BLUE_BALANCE);
+  await savePhoto(page, ROUTE_BLUE_BALANCE, 'album');
+  await tapRoute(page, ROUTE_BLUE);
+
+  const realChooseMedia = global.wx.chooseMedia;
+  let respond;
+  global.wx.chooseMedia = (options, success) => {
+    respond = success;
+  };
+  try {
+    const choosing = choose(page, ROUTE_BLUE, 'album');
+    const startedDataset = page.state.datasetId;
+    assert.equal(await page.resetTrialData(), true, '重置成功');
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    respond({
+      tempFiles: [{ tempFilePath: addSourceImage(100, 100, 500) }],
+      type: 'image'
+    });
+    const outcome = await choosing;
+
+    assert.equal(outcome.ok, false, '迟到选择被丢弃');
+    assert.equal(outcome.staleContext, true, '标记为过期上下文');
+    assert.equal(page.data.routePhoto.status, 'none', '新数据集不出现预览');
+    assert.equal(await confirm(page, ROUTE_BLUE), null, '无预览时不保存');
+    const index = photoIndex();
+    assert.equal(
+      index.photos.some(photo => photo.datasetId !== startedDataset),
+      false,
+      '不得把旧选择写到重置后的数据集'
+    );
+  } finally {
+    global.wx.chooseMedia = realChooseMedia;
+  }
+});
+
+test('PU05 快速新建选片期间重置：迟到结果不进入新建表单', async () => {
+  const page = await createPage();
+  await tapStart(page);
+  await tapRoute(page, ROUTE_BLUE);
+  await savePhoto(page, ROUTE_BLUE, 'album');
+
+  const realChooseMedia = global.wx.chooseMedia;
+  let respond;
+  global.wx.chooseMedia = (options, success) => {
+    respond = success;
+  };
+  try {
+    const picking = page.chooseQuickRoutePhoto({
+      currentTarget: { dataset: { source: 'album' } }
+    });
+    assert.equal(await page.resetTrialData(), true, '重置成功');
+    respond({
+      tempFiles: [{ tempFilePath: addSourceImage(100, 100, 500) }],
+      type: 'image'
+    });
+    const outcome = await picking;
+
+    assert.equal(outcome.ok, false, '迟到选择被丢弃');
+    assert.equal(page._quickPhotoSource, '', '不保留旧照片源');
+    assert.equal(page.data.quickRoutePhoto, null, '不显示旧照片预览');
+
+    await tapStart(page);
+    page.toggleQuickRoute();
+    page.onQuickRouteNameInput({ detail: { value: '重置后新建' } });
+    await page.createQuickRoute();
+    assert.equal(
+      photoOfRoute(page.data.selectedRoute.id, page.state.datasetId),
+      null,
+      '新线路不挂旧选择'
+    );
+  } finally {
+    global.wx.chooseMedia = realChooseMedia;
+  }
+});
+
+test('PU05 来源弹层与移除确认期间重置：迟到回调不作用于新数据集', async () => {
+  const page = await createPage();
+  await tapStart(page);
+  await tapRoute(page, ROUTE_BLUE);
+  await savePhoto(page, ROUTE_BLUE, 'album');
+  const savedPhoto = photoOfRoute(ROUTE_BLUE, page.state.datasetId);
+  assert.ok(savedPhoto);
+
+  // 来源 action sheet 迟到回调：不发起照片操作。
+  const realActionSheet = global.wx.showActionSheet;
+  let pendingSheet = null;
+  global.wx.showActionSheet = options => {
+    pendingSheet = options;
+  };
+  try {
+    await tapRoute(page, ROUTE_BLUE_BALANCE);
+    page.openRoutePhotoPicker({
+      currentTarget: { dataset: { routeId: ROUTE_BLUE } }
+    });
+    assert.ok(pendingSheet, 'action sheet 已打开');
+    assert.equal(await page.resetTrialData(), true, '重置成功');
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    pendingSheet.success({ tapIndex: 1 });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(page.data.routePhoto.status, 'none', '迟到来源不产生预览');
+  } finally {
+    global.wx.showActionSheet = realActionSheet;
+  }
+
+  // 移除确认弹窗迟到确认：不删除旧数据集照片。
+  const realShowModal = global.wx.showModal;
+  let pendingModal = null;
+  let deferNext = true;
+  global.wx.showModal = options => {
+    if (deferNext) {
+      deferNext = false;
+      pendingModal = options;
+      return;
+    }
+    options.success({ confirm: true, cancel: false });
+  };
+  try {
+    await tapRoute(page, ROUTE_BLUE);
+    // 新数据集还没有照片：先保存一张，再验证迟到确认不误删。
+    await savePhoto(page, ROUTE_BLUE, 'album');
+    const currentPhoto = photoOfRoute(ROUTE_BLUE, page.state.datasetId);
+    const removing = page.removeRoutePhoto({
+      currentTarget: { dataset: { routeId: ROUTE_BLUE } }
+    });
+    assert.ok(pendingModal, '移除确认弹窗已打开');
+    assert.equal(await page.resetTrialData(), true, '重置成功');
+    pendingModal.success({ confirm: true, cancel: false });
+    const removed = await removing;
+
+    assert.equal(removed, null, '迟到确认不执行移除');
+    assert.ok(
+      photoIndex().photos.some(photo => photo.photoId === currentPhoto.photoId),
+      '照片记录保留'
+    );
+    assert.ok(
+      photoIndex().photos.some(photo => photo.photoId === savedPhoto.photoId),
+      '旧数据集照片保留'
+    );
+  } finally {
+    global.wx.showModal = realShowModal;
+  }
+});
+
+test('PU05 无照片时重置（数据集不变）也会让迟到选片失效', async () => {
+  const page = await createPage();
+  await tapStart(page);
+  await tapRoute(page, ROUTE_BLUE);
+  const datasetBefore = page.state.datasetId;
+
+  const realChooseMedia = global.wx.chooseMedia;
+  let respond;
+  global.wx.chooseMedia = (options, success) => {
+    respond = success;
+  };
+  try {
+    const choosing = choose(page, ROUTE_BLUE, 'album');
+    // 没有照片时重置不轮换数据集，但仍清空页面上下文。
+    assert.equal(await page.resetTrialData(), true, '重置成功');
+    assert.equal(page.state.datasetId, datasetBefore, '无照片重置保持同一数据集');
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    respond({
+      tempFiles: [{ tempFilePath: addSourceImage(100, 100, 500) }],
+      type: 'image'
+    });
+    const outcome = await choosing;
+
+    assert.equal(outcome.ok, false, '迟到选择被丢弃');
+    assert.equal(outcome.staleContext, true);
+    assert.equal(page.data.routePhoto.status, 'none', '不出现预览');
+    assert.equal(await confirm(page, ROUTE_BLUE), null, '无预览时不保存');
+    assert.equal(storage.has(INDEX_KEY), false, '不写照片索引');
+  } finally {
+    global.wx.chooseMedia = realChooseMedia;
+  }
+});
+
 test('PU05 有照片时重置需明确确认；取消保留，确认后轮换数据集且不串旧照片', async () => {
   const page = await createPage();
   await tapStart(page);

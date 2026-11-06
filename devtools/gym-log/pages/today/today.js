@@ -631,9 +631,12 @@ Page({
       return;
     }
 
+    // 来源选择弹层也是异步的：先固定上下文，重置/切线后迟到的选择不再生效。
+    const context = this._photoUi.captureContext();
     wx.showActionSheet({
       itemList: ['拍照', '从相册选择'],
       success: result => {
+        if (!this._photoUi || !this._photoUi.isContextCurrent(context)) return;
         const source = result && result.tapIndex === 0 ? 'camera' : 'album';
         this.chooseRoutePhoto({
           currentTarget: { dataset: { routeId, source } }
@@ -718,6 +721,8 @@ Page({
   /**
    * 新建线路可选一张照片：先在本机预览，创建成功后再保存；
    * 照片失败不回滚已创建的线路，也不影响随后记尝试。
+   * 选择器是异步原生调用：先固定发起时的数据集/代次，期间发生重置就丢弃这次选择，
+   * 避免旧选择被新数据集的新线路接收。
    */
   chooseQuickRoutePhoto(event) {
     const detail = (event && event.currentTarget && event.currentTarget.dataset) || {};
@@ -725,6 +730,7 @@ Page({
     if (!this._photoUi || (source !== 'camera' && source !== 'album')) {
       return Promise.resolve();
     }
+    const context = this._photoUi.captureContext();
     return this._photoUi.pickFile(source).then(outcome => {
       if (!outcome.ok) {
         if (!outcome.cancelled) {
@@ -736,6 +742,15 @@ Page({
           });
         }
         return outcome;
+      }
+      if (!this._photoUi.isContextCurrent(context)) {
+        // 重置/切换后迟到的选择结果不再进入新建表单。
+        return {
+          ok: false,
+          staleContext: true,
+          cancelled: false,
+          error: '试用数据已重置，已放弃这次选择'
+        };
       }
       this._quickPhotoSource = outcome.path;
       this.setData({

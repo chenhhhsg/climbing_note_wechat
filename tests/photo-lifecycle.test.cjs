@@ -1322,3 +1322,355 @@ test('PL06 文件适配器对持久主图压缩失败时回退画布，且不访
   );
   assert.doesNotMatch(spaceSource, /clearStorageSync/);
 });
+
+// ---- PL07 并发预留、维护协调与显示口径（T012 返工复验） ----
+
+/**
+ * 给真实文件适配器包一层可控的异步边界：`arm()` 之后的下一次该方法调用会先挂起，
+ * 由测试决定何时释放。文件和压缩仍是真实 wx 替身；即使目标调用没发生也不会死锁。
+ */
+function holdNextCall(files, method) {
+  const original = files[method].bind(files);
+  let gate = null;
+  const state = { hit: false };
+  const wrapped = Object.assign({}, files);
+  wrapped[method] = async function wrappedMethod() {
+    if (gate) {
+      const current = gate;
+      gate = null;
+      state.hit = true;
+      await current.promise;
+    }
+    return original.apply(null, arguments);
+  };
+  return {
+    files: wrapped,
+    state,
+    arm() {
+      let release;
+      const promise = new Promise(resolve => {
+        release = resolve;
+      });
+      gate = { promise };
+      return release;
+    }
+  };
+}
+
+/** 有界等待挂起点生效：最多 50 个宏任务，不会死锁。 */
+async function waitForHit(hold) {
+  for (let tick = 0; tick < 50; tick += 1) {
+    if (hold.state.hit) return true;
+    await new Promise(resolve => setImmediate(resolve));
+  }
+  return hold.state.hit;
+}
+
+function createHookedService(options) {
+  const config = options || {};
+  return routePhotos.createRoutePhotoService({
+    ownerId: config.ownerId || trialPhotos.TRIAL_OWNER_ID,
+    datasetId: config.datasetId || trialPhotos.TRIAL_DATASET_ID,
+    files: config.files || photoFiles.createWxPhotoFiles(),
+    instanceId: config.instanceId || 'svc-hooked',
+    space: config.space
+  });
+}
+
+test('PL07 并发保存共用一份在途预留：后到者被拒绝、保旧、可重试', async () => {
+  const policy = { budgetBytes: 300000, warnBytes: 200000, reserveBytes: 20000 };
+  const service = createService({ space: policy });
+  await service.recover();
+
+  // 第一路停在压缩阶段（尚未登记预留）；第二路先完成整笔保存。
+  const gate = createGate();
+  compressHold = gate.promise;
+  const first = serviceAdd(service, ROUTE_BLUE, 'life-concurrent-1');
+  await new Promise(resolve => setImmediate(resolve));
+  compressHold = null;
+  const second = await serviceAdd(service, ROUTE_RED, 'life-concurrent-2');
+  assert.equal(second.ok, true, '先完成的一路成功');
+  gate.release();
+  const firstResult = await first;
+
+  assert.equal(firstResult.ok, false, '后到者不得按过期占用放行');
+  assert.equal(firstResult.code, 'space-insufficient');
+  assert.equal(firstResult.recoverable, true);
+  const usage = await service.getSpaceUsage();
+  assert.ok(
+    usage.totalBytes <= policy.budgetBytes,
+    '实际占用不得越过预算，实际 ' + usage.totalBytes
+  );
+  assert.equal(photoIndex().photos.length, 1, '只保留先完成的那张');
+  assert.equal(
+    photoOfRoute(ROUTE_RED, trialPhotos.TRIAL_OWNER_ID).photoId,
+    second.photoId
+  );
+  assert.equal(
+    opsOfRoute(ROUTE_BLUE).filter(op => op.status === 'started').length,
+    0,
+    '失败的并发保存不留下未完成操作'
+  );
+
+  // 释放空间后同一 opId 可重试成功。
+  assert.equal((await service.removePhoto({ routeId: ROUTE_RED })).ok, true);
+  const retried = await service.addPhoto({
+    routeId: ROUTE_BLUE,
+    sourcePath: addSourceImage(),
+    opId: 'life-concurrent-1'
+  });
+  assert.equal(retried.ok, true);
+  const finalUsage = await service.getSpaceUsage();
+  assert.equal(finalUsage.totalBytes, PHOTO_BYTES);
+});
+
+test('PL07 缩略图重建同样受预算约束，放宽预算后可重试', async () => {
+  // 预算刚好容得下两张完整照片（324000），但容不下再补两张缩略图。
+  const small = createService({
+    space: { budgetBytes: 340000, warnBytes: 200000, reserveBytes: 20000 }
+  });
+  await small.recover();
+  const first = await serviceAdd(small, ROUTE_BLUE, 'life-rebuild-budget-1');
+  assert.equal(first.ok, true);
+  assert.equal((await small.clearRebuildableCache()).ok, true);
+  const second = await serviceAdd(small, ROUTE_RED, 'life-rebuild-budget-2');
+  assert.equal(second.ok, true);
+
+  const before = await small.getSpaceUsage();
+  assert.equal(before.totalBytes, MAIN_BYTES * 2 + THUMB_BYTES, '清缓存后只剩一张缩略图');
+  const blocked = await small.rebuildMissingThumbnails();
+  assert.equal(blocked.ok, false, '重建不得越过预算');
+  assert.equal(blocked.failed.length, 1);
+  assert.equal(blocked.failed[0].code, 'space-insufficient');
+  const after = await small.getSpaceUsage();
+  assert.ok(after.totalBytes <= 340000, '实际占用仍在预算内');
+  assert.equal(virtual.files.has(first.photo.storage.location), true);
+  assert.equal(virtual.files.has(second.photo.storage.location), true);
+
+  // 放宽预算后同一重建成功：缺失缩略图补齐，主图字节不变。
+  const roomy = createService({
+    space: { budgetBytes: 400000, warnBytes: 200000, reserveBytes: 20000 }
+  });
+  const retried = await roomy.rebuildMissingThumbnails();
+  assert.equal(retried.ok, true);
+  assert.equal(retried.rebuiltCount, 1);
+  const finalUsage = await roomy.getSpaceUsage();
+  assert.equal(finalUsage.totalBytes, 2 * PHOTO_BYTES);
+  assert.equal(
+    virtual.files.get(first.photo.storage.location).length,
+    MAIN_BYTES,
+    '重建不改主图'
+  );
+});
+
+test('PL07 清缓存与保存交错：新保存照片的缩略图与元数据保留', async () => {
+  const hold = holdNextCall(photoFiles.createWxPhotoFiles(), 'listThumb');
+  const service = createHookedService({ files: hold.files });
+  await service.recover();
+
+  const release = hold.arm();
+  const clearing = service.clearRebuildableCache();
+  const saved = await serviceAdd(service, ROUTE_BLUE, 'life-clear-race');
+  assert.equal(saved.ok, true);
+  assert.equal(hold.state.hit, true, '清缓存确实在读取缩略图清单时被挂起');
+  release();
+  const cleared = await clearing;
+  assert.equal(cleared.ok, true);
+
+  const thumbPath = thumbPathOf(saved.photo.storage.location);
+  assert.equal(
+    virtual.files.has(thumbPath),
+    true,
+    '清缓存期间新保存的缩略图不得被删除'
+  );
+  const read = await service.getRoutePhoto({ routeId: ROUTE_BLUE });
+  assert.equal(read.status, 'ready');
+  assert.equal(read.photo.thumbnail.available, true);
+  const cache = JSON.parse(storage.get(THUMB_CACHE_KEY));
+  assert.ok(
+    cache.items.some(item => item.photoId === saved.photoId),
+    '保留的缩略图仍有元数据条目'
+  );
+});
+
+test('PL07 清理无引用文件与保存交错：按最新引用跳过刚提交的主图', async () => {
+  const hold = holdNextCall(photoFiles.createWxPhotoFiles(), 'listMain');
+  const service = createHookedService({ files: hold.files });
+  await service.recover();
+
+  const release = hold.arm();
+  const cleanup = service.cleanupOrphans();
+  const saved = await serviceAdd(service, ROUTE_BLUE, 'life-cleanup-race');
+  assert.equal(saved.ok, true);
+  assert.equal(hold.state.hit, true, '清理确实在读取主图清单时被挂起');
+  release();
+  const cleaned = await cleanup;
+
+  assert.equal(cleaned.ok, true);
+  assert.equal(virtual.files.has(saved.photo.storage.location), true);
+  assert.equal(virtual.files.has(thumbPathOf(saved.photo.storage.location)), true);
+  assert.equal(
+    cleaned.deleted.indexOf(saved.photo.storage.location),
+    -1,
+    '删除清单不得包含刚提交的主图'
+  );
+  const read = await service.getRoutePhoto({ routeId: ROUTE_BLUE });
+  assert.equal(read.ok, true);
+  assert.equal(read.photo.photoId, saved.photoId);
+});
+
+test('PL07 重建与移除交错：不为已移除照片留下孤儿缩略图或缓存条目', async () => {
+  const hold = holdNextCall(photoFiles.createWxPhotoFiles(), 'writeThumb');
+  const service = createHookedService({ files: hold.files });
+  await service.recover();
+  const saved = await serviceAdd(service, ROUTE_BLUE, 'life-rebuild-remove');
+  assert.equal(saved.ok, true);
+  assert.equal((await service.clearRebuildableCache()).ok, true);
+  const thumbPath = thumbPathOf(saved.photo.storage.location);
+
+  const release = hold.arm();
+  const rebuilding = service.rebuildMissingThumbnails();
+  assert.equal(
+    await waitForHit(hold),
+    true,
+    '重建确实在写入缩略图前被挂起'
+  );
+  const removed = await service.removePhoto({ routeId: ROUTE_BLUE });
+  release();
+  const rebuilt = await rebuilding;
+
+  assert.equal(removed.ok, true);
+  assert.equal(virtual.files.has(saved.photo.storage.location), false);
+  assert.equal(virtual.files.has(thumbPath), false, '不留孤儿缩略图');
+  assert.equal(
+    storage.has(THUMB_CACHE_KEY),
+    false,
+    '不留已移除照片的缓存条目'
+  );
+  assert.equal(rebuilt.ok, false, '迟到重建报告失败而不是假成功');
+  assert.equal(rebuilt.failed[0].photoId, saved.photoId);
+  const read = await service.getRoutePhoto({ routeId: ROUTE_BLUE });
+  assert.equal(read.status, 'none');
+});
+
+test('PL07 新实例初始化不中止其他归属的活跃保存，过期实例遗留仍可恢复', async () => {
+  // 用 writeThumb 挂起活跃保存：真实适配器 + 可控异步边界。
+  const filesWithHold = holdNextCall(photoFiles.createWxPhotoFiles(), 'writeThumb');
+  const liveService = createHookedService({
+    instanceId: 'svc-live',
+    files: filesWithHold.files
+  });
+  const otherService = createHookedService({
+    ownerId: 'trial-user-local-b',
+    datasetId: 'trial-dataset-local-b',
+    instanceId: 'svc-other',
+    files: photoFiles.createWxPhotoFiles()
+  });
+  const releaseLive = filesWithHold.arm();
+  const pending = serviceAdd(liveService, ROUTE_BLUE, 'life-live-op');
+  assert.equal(
+    await waitForHit(filesWithHold),
+    true,
+    '活跃保存确实被挂起在写缩略图前'
+  );
+  const mainPath = filesWithHold.files.mainPath('photo-1');
+  assert.equal(virtual.files.has(mainPath), true, '活跃保存已写入主图');
+
+  const recovered = await otherService.recover();
+  assert.deepEqual(recovered.abortedOps, [], '不把活跃操作当作崩溃遗留');
+  assert.equal(virtual.files.has(mainPath), true, 'B 初始化不得删除 A 的主图');
+  releaseLive();
+  const liveResult = await pending;
+  assert.equal(liveResult.ok, true, 'A 的保存正常完成');
+  assert.equal(opsOfRoute(ROUTE_BLUE)[0].status, 'committed');
+
+  // 真正中断：租约过期的新实例仍能中止遗留操作并清理文件。
+  const deadFiles = holdNextCall(photoFiles.createWxPhotoFiles(), 'writeMain');
+  const dead = routePhotos.createRoutePhotoService({
+    ownerId: trialPhotos.TRIAL_OWNER_ID,
+    datasetId: 'trial-dataset-dead',
+    instanceId: 'svc-dead',
+    files: deadFiles.files,
+    now: () => '2026-11-06T10:00:00.000Z'
+  });
+  const releaseDead = deadFiles.arm();
+  const leftover = serviceAdd(dead, ROUTE_RED, 'life-leftover');
+  assert.equal(
+    await waitForHit(deadFiles),
+    true,
+    '遗留操作确实被挂起在写主图前'
+  );
+  const restarted = routePhotos.createRoutePhotoService({
+    ownerId: trialPhotos.TRIAL_OWNER_ID,
+    datasetId: 'trial-dataset-dead',
+    instanceId: 'svc-restarted',
+    files: deadFiles.files,
+    now: () => '2026-11-06T10:40:00.000Z'
+  });
+  const restartedResult = await restarted.recover();
+  assert.deepEqual(restartedResult.abortedOps, ['life-leftover']);
+  releaseDead();
+  const late = await leftover;
+  assert.equal(late.ok, false, '被中止的操作不得假成功');
+  assert.equal(
+    virtual.files.has(deadFiles.files.mainPath('photo-2')),
+    false,
+    '遗留半成品文件被清理'
+  );
+  assert.equal(virtual.files.has(mainPath), true, '已提交照片不受影响');
+});
+
+test('PL07 照片卡按当前实际缩略图字节显示，与真实文件和空间卡一致', async () => {
+  const page = await createPage();
+  await tapStart(page);
+  await tapRoute(page, ROUTE_BLUE);
+  await savePhoto(page, ROUTE_BLUE, 'album');
+  const mainPath = page.data.routePhoto.mainPath;
+  const thumbPath = thumbPathOf(mainPath);
+  assert.match(page.data.routePhoto.bytesText, /缩略图/, '保存后显示缩略图字节');
+
+  // 清缓存：不得继续显示已不存在的缩略图占用。
+  assert.equal((await page.clearPhotoCache()).ok, true);
+  assert.doesNotMatch(
+    page.data.routePhoto.bytesText,
+    /缩略图/,
+    '清缓存后不得显示旧缩略图占用，实际 ' + page.data.routePhoto.bytesText
+  );
+
+  // 重开页面：仍不得回放索引里的写入时快照。
+  page.onUnload();
+  const reentered = await createPage();
+  await tapStart(reentered);
+  await tapRoute(reentered, ROUTE_BLUE);
+  assert.doesNotMatch(reentered.data.routePhoto.bytesText, /缩略图/);
+
+  // 外部把缩略图换成不同大小：照片卡必须跟随真实文件，而不是索引快照。
+  addVirtualFile(thumbPath, 30000);
+  const afterExternal = await createPage();
+  await tapStart(afterExternal);
+  await tapRoute(afterExternal, ROUTE_BLUE);
+  assert.equal(
+    afterExternal.data.routePhoto.bytesText,
+    '主图 146 KB · 缩略图 29 KB',
+    '按真实文件显示缩略图字节'
+  );
+  assert.equal(afterExternal.data.photoSpace.thumbBytes, 30000);
+
+  // 真实重建后照片卡、真实文件与空间卡三者一致。
+  virtual.files.delete(thumbPath);
+  const reloaded = await createPage();
+  await tapStart(reloaded);
+  await tapRoute(reloaded, ROUTE_BLUE);
+  assert.doesNotMatch(reloaded.data.routePhoto.bytesText, /缩略图/);
+  const rebuilt = await reloaded.rebuildPhotoThumbs();
+  assert.equal(rebuilt.ok, true);
+  const realThumbBytes = virtual.files.get(thumbPath).length;
+  assert.equal(
+    reloaded.data.routePhoto.bytesText,
+    '主图 146 KB · 缩略图 ' + Math.round(realThumbBytes / 1024) + ' KB'
+  );
+  assert.equal(reloaded.data.photoSpace.thumbBytes, realThumbBytes);
+  const record = photoOfRoute(ROUTE_BLUE, trialPhotos.TRIAL_OWNER_ID);
+  assert.equal(record.storage.location, mainPath, '重建不改主图位置');
+  assert.equal(virtual.files.get(mainPath).length, MAIN_BYTES, '重建不改主图字节');
+});

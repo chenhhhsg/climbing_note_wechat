@@ -36,7 +36,15 @@ function formatBytes(bytes) {
 function bytesText(photo) {
   if (!photo || !photo.bytes) return '';
   const main = formatBytes(photo.bytes.main);
-  const thumb = formatBytes(photo.bytes.thumb);
+  // 缩略图按“当前可用”的字节显示：读取结果带 thumbnail 时以它为准
+  // （清缓存后为 0，重建后为真实文件大小），没有该字段才退回记录快照。
+  const thumbBytes =
+    photo.thumbnail && typeof photo.thumbnail === 'object'
+      ? photo.thumbnail.available
+        ? photo.thumbnail.bytes
+        : 0
+      : photo.bytes.thumb;
+  const thumb = formatBytes(thumbBytes);
   if (main && thumb) return '主图 ' + main + ' · 缩略图 ' + thumb;
   return main ? '主图 ' + main : '';
 }
@@ -582,6 +590,25 @@ function createPhotoController(page, options) {
     return buildView(views[routeId], ops[routeId]);
   }
 
+  /**
+   * 发起异步用户交互前固定上下文（服务实例 + 数据集 + 代次）。
+   * 原生选择器、来源 action sheet、确认弹窗和异步读取都可能晚于重置/切线/切页返回，
+   * 旧回调必须按发起时的上下文校验，不能把旧操作绑到新数据集上。
+   */
+  function captureContext() {
+    return {
+      service,
+      datasetId: currentDatasetId,
+      generation
+    };
+  }
+
+  function isContextCurrent(context) {
+    return Boolean(context) && context.service === service &&
+      context.datasetId === currentDatasetId &&
+      context.generation === generation;
+  }
+
   function hasStoredPhoto(routeId) {
     const base = views[routeId];
     return Boolean(
@@ -607,6 +634,9 @@ function createPhotoController(page, options) {
       return Promise.resolve({ ok: false, error: '照片正在保存' });
     }
 
+    // 选择器是异步的原生调用：在打开前就固定数据集/代次，
+    // 期间发生重置或切换后丢弃这次选择，不把旧结果当成新数据集的操作。
+    const context = captureContext();
     return choosePhotoFile(source).then(outcome => {
       if (!alive()) return outcome;
       if (!outcome.ok) {
@@ -620,6 +650,14 @@ function createPhotoController(page, options) {
           );
         }
         return outcome;
+      }
+      if (!isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          cancelled: false,
+          error: '试用数据或线路已变化，已放弃这次选择'
+        };
       }
       ops[routeId] = {
         phase: 'preview',
@@ -813,8 +851,11 @@ function createPhotoController(page, options) {
       notify('照片正在处理，请稍后再移除', '');
       return Promise.resolve(null);
     }
+    // 确认弹窗期间可能发生重置：按发起时上下文校验，旧确认不作用于新数据集。
+    const context = captureContext();
     return askRemovePhoto().then(confirmed => {
       if (!confirmed || !alive()) return null;
+      if (!isContextCurrent(context)) return null;
       const op = {
         phase: 'saving',
         kind: 'remove',
@@ -903,9 +944,17 @@ function createPhotoController(page, options) {
       notify('照片正在保存或移除，请稍后再清除缓存', '');
       return Promise.resolve({ ok: false, error: '照片操作进行中' });
     }
+    const context = captureContext();
     return askClearCache().then(confirmed => {
       if (!confirmed || !alive()) {
         return { ok: false, cancelled: true };
+      }
+      if (!isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          error: '试用数据已重置，已取消这次清除缓存'
+        };
       }
       return service.clearRebuildableCache().then(
         result => {
@@ -948,10 +997,13 @@ function createPhotoController(page, options) {
       notify('照片正在保存或移除，请稍后再重建缩略图', '');
       return Promise.resolve({ ok: false, error: '照片操作进行中' });
     }
+    const context = captureContext();
     return service.rebuildMissingThumbnails().then(
       result => {
         const finish = reloadKnownPhotos().then(() => refreshSpace());
         return finish.then(() => {
+          // 重置/切换期间完成的旧重建只回报结果，不往新上下文提示。
+          if (!isContextCurrent(context)) return result;
           if (result && result.ok) {
             notify(
               result.rebuiltCount > 0
@@ -988,9 +1040,17 @@ function createPhotoController(page, options) {
       notify('照片正在保存或移除，请稍后再清理无引用文件', '');
       return Promise.resolve({ ok: false, error: '照片操作进行中' });
     }
+    const context = captureContext();
     return askCleanupOrphans().then(confirmed => {
       if (!confirmed || !alive()) {
         return { ok: false, cancelled: true };
+      }
+      if (!isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          error: '试用数据已重置，已取消这次清理'
+        };
       }
       return service.cleanupOrphans().then(
         result => {
@@ -1040,6 +1100,8 @@ function createPhotoController(page, options) {
     view,
     hasStoredPhoto,
     hasActiveOperation,
+    captureContext,
+    isContextCurrent,
     choose,
     beginPreview,
     confirm,
