@@ -716,7 +716,13 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
     ignore.some(item => item.type === 'folder' && item.value === 'devtools/gym-log'),
     '正式工程打包应排除 devtools/gym-log'
   );
-  assert.equal(ignore.length, 2, '根配置只追加一项打包排除');
+  for (const value of ['devtools/media-check', 'devtools/gym-log']) {
+    assert.equal(
+      ignore.filter(item => item.type === 'folder' && item.value === value).length,
+      1,
+      `根配置中 ${value} 打包排除应恰好出现一次`
+    );
+  }
   assert.equal(rootProject.appid, 'wx9ea86e9d7aa04c2f', 'AppID 不得变更');
   assert.equal(rootProject.cloudbaseRoot, 'cloudbase/');
   assert.equal(rootProject.cloudfunctionRoot, 'cloudfunctions/');
