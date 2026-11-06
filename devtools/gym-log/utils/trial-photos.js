@@ -15,12 +15,31 @@ const {
 } = require('./trial-profile.js');
 
 let active = null;
+let spacePolicy = null;
 
-function createTrialPhotoService(datasetId) {
+/**
+ * 试用预算默认取 T012 的集中常量；这里只允许测试/试用注入小数值，
+ * 不提供页面入口修改，避免把“可保存张数”变成用户可随意放宽的承诺。
+ */
+function setTrialSpacePolicy(policy) {
+  spacePolicy = policy && typeof policy === 'object'
+    ? Object.assign({}, policy)
+    : null;
+  // 已创建的服务仍持有旧预算；下一次 open 时重建。这里不删除任何照片或索引。
+  active = null;
+}
+
+function getTrialSpacePolicy() {
+  return spacePolicy ? Object.assign({}, spacePolicy) : null;
+}
+
+function createTrialPhotoService(datasetId, options) {
+  const config = options || {};
   return createRoutePhotoService({
     ownerId: TRIAL_OWNER_ID,
     datasetId: datasetId || TRIAL_DATASET_ID,
-    files: createWxPhotoFiles()
+    files: createWxPhotoFiles(),
+    space: config.space || spacePolicy || undefined
   });
 }
 
@@ -56,5 +75,7 @@ module.exports = {
   TRIAL_DATASET_ID,
   createTrialPhotoService,
   openTrialPhotos,
-  resetTrialPhotoService
+  resetTrialPhotoService,
+  setTrialSpacePolicy,
+  getTrialSpacePolicy
 };

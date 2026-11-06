@@ -20,6 +20,11 @@
  * 本轮只实现 local 存储，不发起任何上传或云调用。
  */
 const { isSafePhotoId, errorText } = require('./photo-files');
+const {
+  PHOTO_SPACE_POLICY,
+  createPhotoSpaceMeter,
+  isSpaceError
+} = require('./photo-space');
 
 const INDEX_KEY = 'climbingNote.gymLogTrial.photos.v1';
 const THUMB_CACHE_KEY = 'climbingNote.gymLogTrial.photoThumbs.v1';
@@ -55,6 +60,9 @@ const ERROR_TEXT = {
   'compress-failed': '照片压缩失败',
   'file-write-failed': '照片文件写入失败',
   'thumbnail-failed': '缩略图生成失败',
+  'space-insufficient':
+    '本机照片空间不足，旧照片和记录已保留；请清理可重建缓存或管理照片后重试',
+  'space-measure-failed': '读取照片实际占用失败，为保护已保存照片未继续写入',
   'no-photo': '该线路还没有照片',
   'already-has-photo': '该线路已有主照片，请使用更换',
   'operation-in-progress': '同一照片操作正在进行或未完成，请稍后重试',
@@ -285,6 +293,15 @@ function createWxStorage(wxApi) {
     set(key, value) {
       if (!api) throw new Error('微信存储不可用');
       return api.setStorageSync(key, value);
+    },
+    // 只删除指定缓存键；不使用全局清空接口，也不碰其他命名空间。
+    remove(key) {
+      if (!api) throw new Error('微信存储不可用');
+      if (typeof api.removeStorageSync === 'function') {
+        api.removeStorageSync(key);
+        return;
+      }
+      api.setStorageSync(key, '');
     }
   };
 }
@@ -320,6 +337,11 @@ function createRoutePhotoService(options) {
     ? config.instanceId
     : makeInstanceId();
   const policy = Object.assign({}, PHOTO_POLICY, config.policy || {});
+  const spaceMeter = createPhotoSpaceMeter({
+    files,
+    policy: config.space || PHOTO_SPACE_POLICY
+  });
+  const spacePolicy = spaceMeter.policy;
   const inflight = new Map();
 
   function attributionError() {
@@ -435,6 +457,33 @@ function createRoutePhotoService(options) {
         operation.ownerId === ownerId &&
         operation.datasetId === datasetId
     );
+  }
+
+  /**
+   * 按实际文件逐项计量；同一线路跨天读取不会重复计费。
+   * 统计范围是专用目录中的全部受管文件（含旧数据集与孤儿文件），
+   * 因为这些文件共同占用同一个本机试用预算。
+   */
+  async function measureIndex(index) {
+    const startedPhotoIds = index.operations
+      .filter(operation => operation.status === 'started' && operation.photoId)
+      .map(operation => operation.photoId);
+    const measured = await spaceMeter.measure({
+      photos: index.photos,
+      startedPhotoIds
+    });
+    if (!measured.ok) {
+      return fail('space-measure-failed', measured.error);
+    }
+    const ownerPhotos = index.photos.filter(
+      photo => photo.ownerId === ownerId
+    );
+    return Object.assign({}, measured, {
+      photoCount: ownerPhotos.length,
+      currentDatasetPhotoCount: ownerPhotos.filter(
+        photo => photo.datasetId === datasetId
+      ).length
+    });
   }
 
   function nextPhotoId(index) {
@@ -692,7 +741,7 @@ function createRoutePhotoService(options) {
 
     const seq = index.nextOpSeq;
     index.nextOpSeq += 1;
-    const finalOpId = opId || nextOperationId(index);
+    const finalOpId = opId || 'photo-op-' + seq;
     if (findOperation(index, finalOpId)) {
       return { result: fail('invalid-op-id', '操作 ID 已存在') };
     }
@@ -753,7 +802,12 @@ function createRoutePhotoService(options) {
     return { deleted, error: errors.join('；') };
   }
 
-  async function markOperationFailed(op, code, detail) {
+  async function markOperationFailed(op, code, detail, extra) {
+    // 实际写入报空间不足时统一归为可恢复的空间错误，页面才能给出管理入口。
+    const finalCode =
+      code !== 'space-insufficient' && isSpaceError(detail)
+        ? 'space-insufficient'
+        : code;
     const loaded = loadIndex();
     if (loaded.ok) {
       const current = findOperation(loaded.index, op.opId);
@@ -765,16 +819,24 @@ function createRoutePhotoService(options) {
       ) {
         current.status = 'failed';
         current.finishedAt = now();
-        current.error = detail || ERROR_TEXT[code] || ERROR_TEXT.unexpected;
+        current.error =
+          detail || ERROR_TEXT[finalCode] || ERROR_TEXT.unexpected;
         saveIndex(loaded.index);
       }
     }
     const cleanup = await cleanupUncommitted(op.photoId);
-    return fail(code, detail, {
-      opId: op.opId,
-      photoId: op.photoId,
-      cleanedFiles: cleanup.deleted
-    });
+    return fail(
+      finalCode,
+      detail,
+      Object.assign(
+        {
+          opId: op.opId,
+          photoId: op.photoId,
+          cleanedFiles: cleanup.deleted
+        },
+        extra || {}
+      )
+    );
   }
 
   function removeThumbCacheItem(photoId) {
@@ -791,8 +853,8 @@ function createRoutePhotoService(options) {
       photoId: photo.photoId,
       location: thumbResult.path,
       bytes: thumbResult.bytes,
-      width: photo.width,
-      height: photo.height,
+      width: thumbResult.width || photo.width,
+      height: thumbResult.height || photo.height,
       updatedAt: now()
     };
     const next = cache.items.filter(
@@ -827,14 +889,6 @@ function createRoutePhotoService(options) {
         );
       }
 
-      const mainWritten = await files.writeMain(
-        op.photoId,
-        mainCompressed.path
-      );
-      if (!mainWritten.ok) {
-        return markOperationFailed(op, 'file-write-failed', mainWritten.error);
-      }
-
       // 缩略图从刚压缩好的临时主图生成：内容与持久主图一致、保持整幅画面，
       // 同时不依赖压缩器能否读取用户文件目录里的持久路径。
       const thumbCompressed = await files.compressImage({
@@ -848,6 +902,75 @@ function createRoutePhotoService(options) {
           'thumbnail-failed',
           thumbCompressed.error
         );
+      }
+
+      // 先按真实待写入文件大小估算峰值，再动受管目录：
+      // 当前实际占用 + 新主图 + 新缩略图 + 更换余量，必须不超过预算。
+      // 更换时旧主图仍在，峰值天然包含新旧共存，不提前删旧照片制造空间。
+      const mainTempStat = await files.stat(mainCompressed.path);
+      if (!mainTempStat.ok || !mainTempStat.exists || !(mainTempStat.bytes > 0)) {
+        return markOperationFailed(
+          op,
+          'file-write-failed',
+          '无法读取待写入主图大小'
+        );
+      }
+      const thumbTempStat = await files.stat(thumbCompressed.path);
+      if (
+        !thumbTempStat.ok ||
+        !thumbTempStat.exists ||
+        !(thumbTempStat.bytes > 0)
+      ) {
+        return markOperationFailed(
+          op,
+          'thumbnail-failed',
+          '无法读取待写入缩略图大小'
+        );
+      }
+      const spaceLoaded = loadIndex();
+      if (!spaceLoaded.ok) {
+        return markOperationFailed(op, 'index-read-failed', spaceLoaded.error);
+      }
+      const measured = await measureIndex(spaceLoaded.index);
+      if (!measured.ok) {
+        return markOperationFailed(
+          op,
+          'space-measure-failed',
+          measured.error
+        );
+      }
+      const spaceCheck = spaceMeter.checkSave(
+        measured.totalBytes,
+        mainTempStat.bytes,
+        thumbTempStat.bytes
+      );
+      if (!spaceCheck.ok) {
+        return markOperationFailed(
+          op,
+          'space-insufficient',
+          spaceCheck.message,
+          {
+            space: {
+              reason: spaceCheck.reason,
+              policy: spaceCheck.policy,
+              totalBytes: spaceCheck.totalBytes,
+              newBytes: spaceCheck.newBytes,
+              projectedBytes: spaceCheck.projectedBytes,
+              peakBytes: spaceCheck.peakBytes,
+              budgetBytes: spaceCheck.policy.budgetBytes,
+              warnBytes: spaceCheck.policy.warnBytes,
+              reserveBytes: spaceCheck.policy.reserveBytes
+            }
+          }
+        );
+      }
+
+      const mainWritten = await files.writeMain(
+        op.photoId,
+        mainCompressed.path
+      );
+      if (!mainWritten.ok) {
+        return markOperationFailed(op, 'file-write-failed', mainWritten.error);
       }
 
       const thumbWritten = await files.writeThumb(
@@ -931,7 +1054,13 @@ function createRoutePhotoService(options) {
       }
 
       // 缩略图元数据是缓存；写失败不改变“照片已保存”的结果。
-      upsertThumbCache(photo, thumbWritten);
+      upsertThumbCache(
+        photo,
+        Object.assign({}, thumbWritten, {
+          width: thumbCompressed.width,
+          height: thumbCompressed.height
+        })
+      );
 
       let cleanupError = '';
       if (kind === 'replace' && op.basePhotoId) {
@@ -1220,17 +1349,12 @@ function createRoutePhotoService(options) {
     };
   }
 
-  async function rebuildThumbnail(input) {
-    const invalidAttribution = attributionError();
-    if (invalidAttribution) return invalidAttribution;
-    const photoId = (input || {}).photoId;
-    if (!isSafePhotoId(photoId)) return fail('invalid-photo-id');
-
-    const loaded = loadIndex();
-    if (!loaded.ok) return loaded;
-    const record = findPhoto(loaded.index, photoId);
-    if (!record) return fail('not-found');
-
+  /**
+   * 缩略图只依赖主图，按照片记录重建；不改变主图或关联。
+   * 供当前数据集公开入口和“清缓存后重建”共用。
+   */
+  async function rebuildThumbnailRecord(record) {
+    const photoId = record.photoId;
     const mainPath = files.mainPath(photoId);
     const mainStat = await files.stat(mainPath);
     if (!mainStat.ok || !mainStat.exists || !(mainStat.bytes > 0)) {
@@ -1254,7 +1378,13 @@ function createRoutePhotoService(options) {
         photo: describePhoto(record)
       });
     }
-    upsertThumbCache(record, written);
+    upsertThumbCache(
+      record,
+      Object.assign({}, written, {
+        width: compressed.width,
+        height: compressed.height
+      })
+    );
     return {
       ok: true,
       photoId,
@@ -1265,6 +1395,19 @@ function createRoutePhotoService(options) {
         bytes: written.bytes
       }
     };
+  }
+
+  async function rebuildThumbnail(input) {
+    const invalidAttribution = attributionError();
+    if (invalidAttribution) return invalidAttribution;
+    const photoId = (input || {}).photoId;
+    if (!isSafePhotoId(photoId)) return fail('invalid-photo-id');
+
+    const loaded = loadIndex();
+    if (!loaded.ok) return loaded;
+    const record = findPhoto(loaded.index, photoId);
+    if (!record) return fail('not-found');
+    return rebuildThumbnailRecord(record);
   }
 
   async function cleanupOrphansWithIndex(index) {
@@ -1383,10 +1526,141 @@ function createRoutePhotoService(options) {
     };
   }
 
+  /**
+   * 照片已用空间与提醒状态。统计的是实际受管文件字节：
+   * main/、thumb/ 中的每个文件逐项 stat，不用写入时记录的单图估值。
+   */
+  async function getSpaceUsage() {
+    const invalidAttribution = attributionError();
+    if (invalidAttribution) return invalidAttribution;
+    const loaded = loadIndex();
+    if (!loaded.ok) return loaded;
+    return measureIndex(loaded.index);
+  }
+
+  function clearThumbCacheKey() {
+    try {
+      if (typeof storage.remove === 'function') {
+        storage.remove(THUMB_CACHE_KEY);
+      } else {
+        storage.set(THUMB_CACHE_KEY, JSON.stringify(createEmptyThumbCache()));
+      }
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * 普通清缓存：只删除可重建的缩略图文件与缩略图元数据。
+   * 主图、照片索引、场次、尝试、待确认操作和其他缓存键都不动。
+   * 有照片操作未完成时拒绝执行，避免删掉正在写入的缩略图。
+   */
+  async function clearRebuildableCache() {
+    const invalidAttribution = attributionError();
+    if (invalidAttribution) return invalidAttribution;
+    const loaded = loadIndex();
+    if (!loaded.ok) return loaded;
+    if (loaded.index.operations.some(op => op.status === 'started')) {
+      return fail(
+        'operation-in-progress',
+        '有照片操作未完成，暂不清除缓存'
+      );
+    }
+
+    const thumbList = await files.listThumb();
+    if (!thumbList.ok) {
+      return fail('file-delete-failed', thumbList.error);
+    }
+
+    const deleted = [];
+    const errors = [];
+    for (const file of thumbList.files) {
+      const removed = await files.remove(file.path);
+      if (removed.ok) {
+        if (removed.existed) deleted.push(file.path);
+      } else {
+        errors.push(removed.error);
+      }
+    }
+    const thumbCacheCleared = clearThumbCacheKey();
+    if (!thumbCacheCleared) {
+      errors.push('缩略图元数据清理失败');
+    }
+    if (errors.length) {
+      return fail('file-delete-failed', errors.join('；'), {
+        deleted,
+        thumbCacheCleared,
+        rebuildable: true
+      });
+    }
+    return {
+      ok: true,
+      deleted,
+      deletedCount: deleted.length,
+      thumbCacheCleared,
+      // 便于页面直接展示保护范围，而不是让调用方猜。
+      protectedKeys: [INDEX_KEY],
+      protectedFiles: 'main/'
+    };
+  }
+
+  /**
+   * 缩略图缺失时从持久主图重建（同一试用用户的当前与旧数据集）。
+   * 只补充可重建缓存，不改变主图、照片关联、场次或尝试。
+   */
+  async function rebuildMissingThumbnails() {
+    const invalidAttribution = attributionError();
+    if (invalidAttribution) return invalidAttribution;
+    const loaded = loadIndex();
+    if (!loaded.ok) return loaded;
+    if (loaded.index.operations.some(op => op.status === 'started')) {
+      return fail(
+        'operation-in-progress',
+        '有照片操作未完成，暂不重建缩略图'
+      );
+    }
+
+    // 缩略图缓存按本服务目录共享；重置后保留的旧数据集照片也属于同一试用用户，
+    // 清缓存后一并重建，避免“缺失数”永远无法降到 0。
+    const photos = loaded.index.photos.filter(
+      photo => photo.ownerId === ownerId
+    );
+    const rebuilt = [];
+    const failed = [];
+    let skipped = 0;
+    for (const photo of photos) {
+      const thumbStat = await files.stat(files.thumbPath(photo.photoId));
+      if (thumbStat.ok && thumbStat.exists && thumbStat.bytes > 0) {
+        skipped += 1;
+        continue;
+      }
+      const result = await rebuildThumbnailRecord(photo);
+      if (result.ok) {
+        rebuilt.push(photo.photoId);
+      } else {
+        failed.push({
+          photoId: photo.photoId,
+          code: result.code || 'thumbnail-failed',
+          error: result.error || '缩略图重建失败'
+        });
+      }
+    }
+    return {
+      ok: failed.length === 0,
+      rebuilt,
+      rebuiltCount: rebuilt.length,
+      skipped,
+      failed,
+      total: photos.length
+    };
+  }
+
   return {
     ownerId,
     datasetId,
     instanceId,
+    spacePolicy,
     keys: {
       index: INDEX_KEY,
       thumbCache: THUMB_CACHE_KEY
@@ -1399,7 +1673,10 @@ function createRoutePhotoService(options) {
     rebuildThumbnail,
     cleanupOrphans,
     recover,
-    listPhotos
+    listPhotos,
+    getSpaceUsage,
+    clearRebuildableCache,
+    rebuildMissingThumbnails
   };
 }
 

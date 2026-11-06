@@ -877,3 +877,88 @@
 .quick-photo-preview {
   margin-top: 10rpx;
 }
+
+/* 照片空间：实际占用、提醒线与可重建缓存管理 */
+.photo-space-card {
+  margin-bottom: 24rpx;
+}
+
+.photo-space-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.photo-space-usage {
+  color: #3d4a3c;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.photo-space-track {
+  height: 12rpx;
+  margin-top: 16rpx;
+  overflow: hidden;
+  background: #ece7db;
+  border-radius: 6rpx;
+}
+
+.photo-space-fill {
+  height: 100%;
+  background: #4b5f4a;
+  border-radius: 6rpx;
+  transition: width 0.2s ease;
+}
+
+.photo-space-fill-warn {
+  background: #b07a2b;
+}
+
+.photo-space-fill-over {
+  background: #b04a3a;
+}
+
+.photo-space-detail,
+.photo-space-hint {
+  display: block;
+  margin-top: 10rpx;
+  color: #6d6a60;
+  font-size: 22rpx;
+  line-height: 1.5;
+}
+
+.photo-space-warn {
+  display: block;
+  margin-top: 12rpx;
+  padding: 12rpx 16rpx;
+  color: #8a5a1f;
+  font-size: 24rpx;
+  line-height: 1.5;
+  background: #fbf1df;
+  border-radius: 10rpx;
+}
+
+.photo-space-error {
+  display: block;
+  margin-top: 10rpx;
+  color: #8f4a2f;
+  font-size: 24rpx;
+}
+
+.photo-space-actions {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 14rpx;
+}
+
+.photo-space-action {
+  flex: none;
+  margin: 0 12rpx 12rpx 0;
+  font-size: 24rpx;
+}
+
+.photo-space-details {
+  margin-top: 10rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx solid #ece7db;
+}

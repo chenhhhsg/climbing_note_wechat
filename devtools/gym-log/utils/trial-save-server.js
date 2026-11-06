@@ -205,6 +205,26 @@ function resetLedger() {
   return saveLedger(createEmptyLedger());
 }
 
+/**
+ * 重置失败时恢复重置前的账本原文，避免客户端状态还在、账本却已被清空。
+ * raw 为空表示原本没有账本；恢复失败只返回错误，不重试其他写入。
+ */
+function restoreLedger(raw) {
+  try {
+    if (raw === undefined || raw === null || raw === '') {
+      wx.removeStorageSync(LEDGER_KEY);
+      return { ok: true, error: '' };
+    }
+    wx.setStorageSync(LEDGER_KEY, raw);
+    return { ok: true, error: '' };
+  } catch (error) {
+    return {
+      ok: false,
+      error: '恢复模拟保存账本失败：' + errorText(error)
+    };
+  }
+}
+
 module.exports = {
   LEDGER_KEY,
   LEDGER_VERSION,
@@ -217,5 +237,6 @@ module.exports = {
   armReceiptLoss,
   disarmReceiptLoss,
   readReceiptLossArm,
-  resetLedger
+  resetLedger,
+  restoreLedger
 };

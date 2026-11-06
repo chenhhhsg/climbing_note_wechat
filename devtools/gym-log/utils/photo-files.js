@@ -196,6 +196,104 @@ function createWxPhotoFiles(options) {
   }
 
   /**
+   * 开发者工具对 http://usr 持久路径调用 wx.compressImage 会报
+   * file doesn't exist；部分基础库也只接受临时文件。这里用离屏画布从
+   * 持久主图重绘缩略图，作为压缩器失败后的回退，供“清缓存后重建缩略图”使用。
+   */
+  function compressViaCanvas(input, width, height, quality) {
+    return new Promise(resolve => {
+      const createCanvas =
+        api && typeof api.createOffscreenCanvas === 'function'
+          ? api.createOffscreenCanvas
+          : null;
+      const toTempFile =
+        api && typeof api.canvasToTempFilePath === 'function'
+          ? api.canvasToTempFilePath.bind(api)
+          : null;
+      if (!createCanvas || !toTempFile) {
+        resolve({ ok: false, error: '当前环境不支持画布压缩' });
+        return;
+      }
+
+      let canvas;
+      let context;
+      let image;
+      let settled = false;
+      const finish = result => {
+        if (settled) return;
+        settled = true;
+        resolve(result);
+      };
+
+      try {
+        canvas = createCanvas({ type: '2d', width, height });
+        context = canvas && canvas.getContext('2d');
+        image = canvas && canvas.createImage();
+      } catch (error) {
+        finish({ ok: false, error: '画布初始化失败：' + errorText(error) });
+        return;
+      }
+      if (!canvas || !context || !image) {
+        finish({ ok: false, error: '画布初始化失败：返回结构无效' });
+        return;
+      }
+
+      image.onload = () => {
+        try {
+          context.drawImage(image, 0, 0, width, height);
+        } catch (error) {
+          finish({ ok: false, error: '画布绘制失败：' + errorText(error) });
+          return;
+        }
+        try {
+          toTempFile({
+            canvas,
+            fileType: 'jpg',
+            quality,
+            destWidth: width,
+            destHeight: height,
+            success(result) {
+              const path = result && result.tempFilePath;
+              if (!hasText(path)) {
+                finish({ ok: false, error: '画布压缩失败：没有返回临时文件' });
+                return;
+              }
+              finish({
+                ok: true,
+                path,
+                width,
+                height,
+                source: {
+                  width: input.sourceWidth,
+                  height: input.sourceHeight
+                },
+                viaCanvas: true
+              });
+            },
+            fail(error) {
+              finish({
+                ok: false,
+                error: '画布压缩失败：' + errorText(error)
+              });
+            }
+          });
+        } catch (error) {
+          finish({ ok: false, error: '画布压缩失败：' + errorText(error) });
+        }
+      };
+      image.onerror = () => {
+        finish({ ok: false, error: '画布读取照片失败' });
+      };
+
+      try {
+        image.src = input.srcPath;
+      } catch (error) {
+        finish({ ok: false, error: '画布读取照片失败：' + errorText(error) });
+      }
+    });
+  }
+
+  /**
    * 等比缩放到最长边不超过 maxEdge。compressedWidth 只按宽度比例给，
    * 长宽比由微信压缩器保持，因此不会裁剪画面。
    */
@@ -211,17 +309,29 @@ function createWxPhotoFiles(options) {
     const targetWidth = Math.max(1, Math.round(info.width * scale));
     const targetHeight = Math.max(1, Math.round(info.height * scale));
 
+    const quality =
+      Number.isFinite(input.quality) && input.quality > 0
+        ? Math.min(100, Math.round(input.quality))
+        : 80;
     const request = {
       src: input.srcPath,
-      quality:
-        Number.isFinite(input.quality) && input.quality > 0
-          ? Math.min(100, Math.round(input.quality))
-          : 80
+      quality
     };
     if (scale < 1) request.compressedWidth = targetWidth;
 
     const result = await toPromiseApi(api, 'compressImage', request);
     if (!result.ok) {
+      const fallback = await compressViaCanvas(
+        {
+          srcPath: input.srcPath,
+          sourceWidth: info.width,
+          sourceHeight: info.height
+        },
+        targetWidth,
+        targetHeight,
+        quality
+      );
+      if (fallback.ok) return fallback;
       return { ok: false, error: '照片压缩失败：' + result.error };
     }
     const path = result.result.tempFilePath;

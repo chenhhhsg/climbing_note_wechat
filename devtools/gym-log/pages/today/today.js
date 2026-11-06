@@ -15,6 +15,7 @@ const {
   LEGACY_SUMMARY_SAMPLE,
   ROUTE_COLORS,
   GRADES,
+  STORE_KEY,
   clone,
   formatLocalTime,
   todayLocalDate,
@@ -118,10 +119,14 @@ Page({
     photoNotice: '',
     quickRoutePhoto: null,
 
+    // 照片空间：实际文件占用、提醒线、管理入口与可重建缓存。
+    photoSpace: null,
+    photoSpaceExpanded: false,
+
     legacySample: null
   },
 
-  onLoad() {
+  onLoad(query) {
     this._editingAttemptId = '';
     this._dispatching = {};
     this._pendingFailures = {};
@@ -131,6 +136,8 @@ Page({
     this._baseRoutes = [];
     this._baseSelectedRoute = null;
     this._quickPhotoSource = '';
+    // 从详情页容量失败入口返回时直接展开管理区。
+    this._focusSpace = Boolean(query && query.manageSpace);
     this.state = createInitialState();
     this.setData({
       gyms: GYMS,
@@ -164,6 +171,7 @@ Page({
     if (this.data.savingOpId) {
       this.refreshFaultInjection();
       this.refreshPhotos();
+      this.refreshPhotoSpace();
       return;
     }
 
@@ -188,6 +196,7 @@ Page({
     } else {
       this.refreshFaultInjection();
       this.refreshPhotos();
+      this.refreshPhotoSpace();
     }
   },
 
@@ -235,12 +244,13 @@ Page({
       saveNotice: '',
       photoNotice: '',
       quickRoutePhoto: null,
+      photoSpace: null,
       noteEditor: null
     });
     this.refreshView();
     this.refreshFaultInjection();
-    // 没有当前场次时不展示线路照片，也避免无谓读取照片索引；
-    // 一旦有场次则初始化服务并读取本场线路的照片状态。
+    // 没有当前场次时既不展示线路照片，也不读取照片索引；
+    // 开始/切换场次后再初始化服务，显示照片空间与线路照片状态。
     if (this.data.activeSession) {
       this._photoReady = this.initPhotoUi();
     } else {
@@ -435,12 +445,22 @@ Page({
   initPhotoUi() {
     if (!this._photoUi) {
       this._photoUi = createPhotoController(this, {
-        onChange: () => this.applyPhotoViews(),
+        onChange: () => {
+          this.applyPhotoViews();
+          this.applyPhotoSpace();
+        },
         onNotice: text => this.setData({ photoNotice: text })
       });
     }
     this._photoUi.init(this.state.datasetId);
-    return this.refreshPhotos();
+    return Promise.resolve(this.refreshPhotos())
+      .then(() => this.refreshPhotoSpace())
+      .then(() => {
+        if (this._focusSpace) {
+          this._focusSpace = false;
+          this.setData({ photoSpaceExpanded: true });
+        }
+      });
   },
 
   /**
@@ -495,6 +515,62 @@ Page({
 
   dismissPhotoNotice() {
     this.setData({ photoNotice: '' });
+  },
+
+  /**
+   * 照片空间卡片只展示实际受管文件计量结果；管理操作不放宽预算，
+   * 也不把主图或照片索引当作普通缓存。
+   */
+  applyPhotoSpace() {
+    if (this._unloaded || !this._photoUi) return;
+    this.setData({ photoSpace: this._photoUi.spaceView() });
+  },
+
+  refreshPhotoSpace() {
+    if (!this._photoUi) return Promise.resolve();
+    return this._photoUi.refreshSpace().then(result => {
+      this.applyPhotoSpace();
+      return result;
+    });
+  },
+
+  togglePhotoSpaceManage() {
+    this.setData({ photoSpaceExpanded: !this.data.photoSpaceExpanded });
+  },
+
+  openPhotoSpaceManager() {
+    this.setData({ photoSpaceExpanded: true });
+    if (typeof wx !== 'undefined' && typeof wx.pageScrollTo === 'function') {
+      try {
+        wx.pageScrollTo({ selector: '#photo-space-card', duration: 300 });
+      } catch (error) {
+        // 滚动失败不影响管理入口展开。
+      }
+    }
+  },
+
+  clearPhotoCache() {
+    if (!this._photoUi) return Promise.resolve(null);
+    return this._photoUi.clearCache().then(result => {
+      this.applyPhotoSpace();
+      return result;
+    });
+  },
+
+  rebuildPhotoThumbs() {
+    if (!this._photoUi) return Promise.resolve(null);
+    return this._photoUi.rebuildThumbs().then(result => {
+      this.applyPhotoSpace();
+      return result;
+    });
+  },
+
+  cleanupPhotoOrphans() {
+    if (!this._photoUi) return Promise.resolve(null);
+    return this._photoUi.cleanupOrphans().then(result => {
+      this.applyPhotoSpace();
+      return result;
+    });
   },
 
   /**
@@ -1371,8 +1447,21 @@ Page({
   /**
    * 清空客户端场次/线路/尝试与模拟账本，并写入指定试用数据集。
    * 照片文件和照片索引不在这里删除；轮换数据集后旧关联自然不可见。
+   * 账本先重置、客户端后写入；客户端写入失败时恢复原账本，原有资料保持不变。
    */
   applyTrialReset(datasetId) {
+    let ledgerBefore = '';
+    try {
+      ledgerBefore = wx.getStorageSync(trialSaveServer.LEDGER_KEY) || '';
+    } catch (error) {
+      this.setData({
+        storageError:
+          '读取模拟保存账本失败，重置未执行：' +
+          ((error && (error.errMsg || error.message)) || String(error))
+      });
+      return false;
+    }
+
     // 客户端待确认操作与模拟账本一起清空，避免新序号撞上旧账本被当成重复操作。
     const ledgerReset = trialSaveServer.resetLedger();
     if (!ledgerReset.ok) {
@@ -1382,7 +1471,16 @@ Page({
 
     const next = createInitialState();
     next.datasetId = datasetId || next.datasetId;
-    if (!this.commit(next)) return false;
+    if (!this.commit(next)) {
+      // 客户端写入失败：原场次/尝试没有变化；把账本恢复到重置前，便于直接重试。
+      const restored = trialSaveServer.restoreLedger(ledgerBefore);
+      this.setData({
+        storageError: restored.ok
+          ? '重置未完成，原有资料与账本已保留，可重试。'
+          : '重置未完成，原有资料保留；' + restored.error
+      });
+      return false;
+    }
 
     this._editingAttemptId = '';
     this._pendingFailures = {};
@@ -1405,6 +1503,7 @@ Page({
       quickRouteError: '',
       quickRoutePhoto: null,
       photoNotice: '',
+      photoSpace: null,
       routePhoto: null,
       savingOpId: '',
       saveNotice: '',
@@ -1413,7 +1512,8 @@ Page({
     });
     this.refreshView();
     this.refreshFaultInjection();
-    this._photoReady = this.refreshPhotos();
+    this._photoReady = Promise.resolve(this.refreshPhotos())
+      .then(() => this.refreshPhotoSpace());
     return true;
   },
 
