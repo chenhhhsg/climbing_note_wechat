@@ -13,17 +13,29 @@
  *   climbingNote.gymLogTrial.photoThumbs.v1     缩略图元数据（可重建缓存）
  *   climbingNote.gymLogTrial.photoInstances.v1  活跃实例租约（可重建协调数据）
  *   climbingNote.gymLogTrial.photoReservations.v1 在途字节预留（可重建协调数据）
+ *   climbingNote.gymLogTrial.photoDeletes.v1    文件删除声明（可重建协调数据）
  *   <USER_DATA_PATH>/gym-log-trial-photos/v1/{main,thumb}/photo-<seq>.jpg
  *
- * 并发与恢复约定（返工轮补充）：
+ * 并发与恢复约定（第二轮返工补充）：
+ * - 运行期（runtime）与应用进程/小程序启动一一对应，模块加载时生成；同一运行期
+ *   可以创建多个服务实例（不同页面、owner/dataset），它们共享同一个 runtimeId。
+ *   运行期身份才是“这个 JS 上下文还活着”的可靠证据；单个服务实例的 instanceId
+ *   只用于区分实例，不能当作运行期是否重启的依据。
+ * - recover() 立即中止“其他运行期或无法证明仍属于当前运行期”留下的 started 操作，
+ *   不需要等待 TTL；同一运行期其他服务实例（含其他 owner/dataset）的进行中操作
+ *   始终保留，后台暂停或长时间 await 超过租约时间也不会被误中止。TTL 只用于清理
+ *   没有 runtimeId 的旧版协调数据。
  * - 任何会新增受管字节的路径（新增/更换/缩略图重建）在写入前必须先在
  *   photoReservations 键登记在途预留；预算检查计入“实际占用 + 先到预留 + 本次新增 + R”。
  *   预留按登记顺序（claimSeq）先到先得，后到者返回可恢复错误并可重试；预留随操作
- *   结束（提交/失败/中止）释放，进程崩溃后的预留由下一次 recover() 释放。
- * - recover() 只中止“租约已过期或未知实例”留下的 started 操作；其他仍活跃实例
- *   （含其他 owner/dataset）的进行中操作不会被当作崩溃遗留处理。
- * - 维护操作（cleanupOrphans / clearRebuildableCache）在异步边界之后按最新索引与
- *   在途预留重新确认引用关系，不用过期快照删除文件。
+ *   结束（提交/失败/中止）释放。释放写入失败时，下一次 claim/recover 会按操作终态
+ *   回收残留预留；同一 opId 重试视为新的尝试，会取代该 opId 的旧预留。
+ *   若租约/预留协调数据无法可靠写入，保存会在动受管文件前安全失败。
+ * - 删除声明确认“某个 photoId 的旧文件正在被异步删除”。保存/重试遇到声明时返回
+ *   可重试忙状态，不写入或提交；维护操作在发出 unlink 前登记声明，并在异步边界后
+ *   再次确认引用，避免旧 unlink 回调删掉后来提交的主图。
+ * - 维护操作（cleanupOrphans / clearRebuildableCache）在异步边界之后按最新索引、
+ *   在途预留与删除声明重新确认引用关系，不用过期快照删除文件。
  *
  * 失败恢复入口：
  * - recover()：中止真正中断的旧操作、释放过期租约与预留，清理可证明无引用的文件；
@@ -44,12 +56,21 @@ const THUMB_CACHE_KEY = 'climbingNote.gymLogTrial.photoThumbs.v1';
 // 单独成键，避免把易变的并发状态写进受保护的照片索引。
 const INSTANCE_KEY = 'climbingNote.gymLogTrial.photoInstances.v1';
 const RESERVATION_KEY = 'climbingNote.gymLogTrial.photoReservations.v1';
+const DELETION_KEY = 'climbingNote.gymLogTrial.photoDeletes.v1';
 const INDEX_VERSION = 1;
 const THUMB_CACHE_VERSION = 1;
 const INSTANCE_LEASE_VERSION = 1;
 const RESERVATION_VERSION = 1;
-// 租约过期时间：超过该时间没有心跳的实例按“已中断”处理，可恢复其遗留操作。
+const DELETION_VERSION = 1;
+// 租约过期时间只用于没有运行期标识的旧版协调数据；同一运行期的实例不靠它判死。
 const INSTANCE_TTL_MS = 5 * 60 * 1000;
+// 模块加载即代表一次新的 JS 运行期；重新启动小程序/进程会得到新的 runtimeId。
+// 同一运行期内的多个服务实例共享它，便于区分“实例”和“运行期是否已重启”。
+const RUNTIME_ID =
+  'photo-runtime-' +
+  Date.now().toString(36) +
+  '-' +
+  Math.random().toString(36).slice(2, 10);
 const LOCAL_STORAGE_TYPE = 'local';
 const OPERATION_KINDS = ['add', 'replace', 'remove'];
 const OPERATION_STATUSES = ['started', 'committed', 'failed', 'aborted'];
@@ -80,6 +101,9 @@ const ERROR_TEXT = {
   'compress-failed': '照片压缩失败',
   'file-write-failed': '照片文件写入失败',
   'thumbnail-failed': '缩略图生成失败',
+  'coordination-failed':
+    '照片并发协调数据写入失败，已停止写入并保留原有照片',
+  'cleanup-in-progress': '照片文件正在清理，请稍后重试',
   'space-insufficient':
     '本机照片空间不足，旧照片和记录已保留；请清理可重建缓存或管理照片后重试',
   'space-measure-failed': '读取照片实际占用失败，为保护已保存照片未继续写入',
@@ -244,6 +268,14 @@ function normalizeIndex(raw) {
     if (!operation || !hasText(operation.opId)) return null;
     if (!isSeq(operation.seq)) return null;
     if (!hasText(operation.instanceId)) return null;
+    // runtimeId 为第二轮返工新增；旧版索引没有该字段仍可读，由 recover()
+    // 按旧租约规则处理，不因为升级索引而丢掉已保存照片。
+    if (
+      operation.runtimeId !== undefined &&
+      typeof operation.runtimeId !== 'string'
+    ) {
+      return null;
+    }
     if (!isScope(operation)) return null;
     if (!OPERATION_KINDS.includes(operation.kind)) return null;
     if (!OPERATION_STATUSES.includes(operation.status)) return null;
@@ -330,6 +362,7 @@ function normalizeLeases(raw) {
     seen.add(item.instanceId);
     instances.push({
       instanceId: item.instanceId,
+      runtimeId: hasText(item.runtimeId) ? item.runtimeId : '',
       ownerId: hasText(item.ownerId) ? item.ownerId : '',
       datasetId: hasText(item.datasetId) ? item.datasetId : '',
       heartbeatAt: hasText(item.heartbeatAt) ? item.heartbeatAt : '',
@@ -367,9 +400,11 @@ function normalizeReservations(raw) {
     items.push({
       reservationId: item.reservationId,
       instanceId: item.instanceId,
+      runtimeId: hasText(item.runtimeId) ? item.runtimeId : '',
       ownerId: hasText(item.ownerId) ? item.ownerId : '',
       datasetId: hasText(item.datasetId) ? item.datasetId : '',
       photoId: isSafePhotoId(item.photoId) ? item.photoId : '',
+      opId: hasText(item.opId) ? item.opId : '',
       kind: hasText(item.kind) ? item.kind : '',
       bytes: item.bytes,
       claimSeq: item.claimSeq,
@@ -380,6 +415,49 @@ function normalizeReservations(raw) {
     ? raw.nextClaimSeq
     : maxClaimSeq + 1;
   return { version: RESERVATION_VERSION, nextClaimSeq, items };
+}
+
+function createEmptyDeletions() {
+  return { version: DELETION_VERSION, nextClaimSeq: 1, items: [] };
+}
+
+function normalizeDeletions(raw) {
+  if (
+    !raw ||
+    typeof raw !== 'object' ||
+    Array.isArray(raw) ||
+    raw.version !== DELETION_VERSION ||
+    !Array.isArray(raw.items)
+  ) {
+    return createEmptyDeletions();
+  }
+  const seen = new Set();
+  const items = [];
+  let maxClaimSeq = 0;
+  for (const item of raw.items) {
+    if (!item || !hasText(item.claimId)) continue;
+    if (!hasText(item.instanceId)) continue;
+    if (!isSafePhotoId(item.photoId)) continue;
+    if (!isSeq(item.claimSeq)) continue;
+    if (seen.has(item.claimId)) continue;
+    seen.add(item.claimId);
+    maxClaimSeq = Math.max(maxClaimSeq, item.claimSeq);
+    items.push({
+      claimId: item.claimId,
+      instanceId: item.instanceId,
+      runtimeId: hasText(item.runtimeId) ? item.runtimeId : '',
+      ownerId: hasText(item.ownerId) ? item.ownerId : '',
+      datasetId: hasText(item.datasetId) ? item.datasetId : '',
+      photoId: item.photoId,
+      claimSeq: item.claimSeq,
+      startedAt: hasText(item.startedAt) ? item.startedAt : ''
+    });
+  }
+  const nextClaimSeq =
+    isSeq(raw.nextClaimSeq) && raw.nextClaimSeq > maxClaimSeq
+      ? raw.nextClaimSeq
+      : maxClaimSeq + 1;
+  return { version: DELETION_VERSION, nextClaimSeq, items };
 }
 
 // 文件名 → photoId：只接受本服务命名空间里的 photo-<seq>.jpg 形态。
@@ -443,6 +521,9 @@ function createRoutePhotoService(options) {
   const instanceId = hasText(config.instanceId)
     ? config.instanceId
     : makeInstanceId();
+  // 运行期身份默认取模块加载时生成的标识；测试或宿主可显式注入，
+  // 模拟“新的小程序运行期/新进程”，但新服务实例本身不代表新运行期。
+  const runtimeId = hasText(config.runtimeId) ? config.runtimeId : RUNTIME_ID;
   // 活跃实例租约的过期时间；测试可注入较小值来构造“真正中断”的遗留操作。
   const instanceTtlMs = isNonNegativeInt(config.instanceTtlMs)
     ? config.instanceTtlMs
@@ -454,6 +535,10 @@ function createRoutePhotoService(options) {
   });
   const spacePolicy = spaceMeter.policy;
   const inflight = new Map();
+  // 本实例当前确实持有的预留/删除声明。用于分辨“本实例遗留的协调数据”
+  // 与“其他实例仍在使用”，从而在不误删活跃数据的前提下回收自己的残留。
+  const activeReservations = new Set();
+  const activeDeletions = new Set();
 
   function attributionError() {
     if (!hasVisibleText(ownerId)) return fail('missing-owner');
@@ -544,7 +629,7 @@ function createRoutePhotoService(options) {
     }
   }
 
-  // ---- 活跃实例租约：区分“仍然活跃的其他实例”和“真正中断的遗留操作” ----
+  // ---- 活跃实例租约/运行期：区分同一运行期的活跃实例与真正中断的遗留操作 ----
 
   function currentTimeMs() {
     const parsed = Date.parse(now());
@@ -568,6 +653,12 @@ function createRoutePhotoService(options) {
     }
   }
 
+  function leaseMapOf(leases) {
+    const map = new Map();
+    for (const item of leases.instances) map.set(item.instanceId, item);
+    return map;
+  }
+
   function saveLeases(instances) {
     try {
       storage.set(
@@ -576,7 +667,8 @@ function createRoutePhotoService(options) {
       );
       return true;
     } catch (error) {
-      // 租约是可重建的协调数据；写失败只影响“其他实例能否看到我活跃”。
+      // 租约是可重建的协调数据；写失败意味着无法向其他实例证明本实例活跃，
+      // 调用方必须在本实例动受管文件前安全失败，而不是继续写入后被当成孤儿。
       return false;
     }
   }
@@ -587,17 +679,30 @@ function createRoutePhotoService(options) {
   }
 
   /**
-   * 刷新本实例的心跳。只在真正要动受管文件/索引的操作前后调用，
-   * 让其他实例的 recover() 能把本实例的进行中操作视为活跃。
+   * 同一运行期的租约始终视为存活：租约时间只说明“多久没刷新”，不能证明
+   * 回调已死（后台暂停、长 await 都会超过 TTL）。旧版没有 runtimeId 的租约
+   * 仍按 TTL 判断，保证升级前的协调数据可恢复。其他运行期已被新运行期取代。
+   */
+  function isLeaseProtected(item, timeMs) {
+    if (!item) return false;
+    if (item.runtimeId === runtimeId) return true;
+    if (hasText(item.runtimeId)) return false;
+    return isLeaseFresh(item, timeMs);
+  }
+
+  /**
+   * 刷新本实例的租约。只在真正要动受管文件/索引的操作前调用；
+   * 返回值必须被检查：写不进去就不允许继续危险写入。
    */
   function touchInstance() {
     const timeMs = currentTimeMs();
     const leases = loadLeases();
     const kept = leases.instances.filter(
-      item => item.instanceId !== instanceId && isLeaseFresh(item, timeMs)
+      item => item.instanceId !== instanceId && isLeaseProtected(item, timeMs)
     );
     kept.push({
       instanceId,
+      runtimeId,
       ownerId,
       datasetId,
       heartbeatAt: now(),
@@ -606,19 +711,10 @@ function createRoutePhotoService(options) {
     return saveLeases(kept);
   }
 
-  function liveInstanceIds(timeMs) {
-    const leases = loadLeases();
-    const live = new Set();
-    for (const item of leases.instances) {
-      if (isLeaseFresh(item, timeMs)) live.add(item.instanceId);
-    }
-    return live;
-  }
-
-  /** 丢弃过期租约，返回是否发生了写入。 */
+  /** 丢弃已被取代的租约，返回是否发生了写入。 */
   function pruneLeases(timeMs) {
     const leases = loadLeases();
-    const kept = leases.instances.filter(item => isLeaseFresh(item, timeMs));
+    const kept = leases.instances.filter(item => isLeaseProtected(item, timeMs));
     if (kept.length === leases.instances.length) return false;
     if (kept.length === 0) return removeCoordinationKey(INSTANCE_KEY);
     return saveLeases(kept);
@@ -626,23 +722,33 @@ function createRoutePhotoService(options) {
 
   // ---- 在途字节预留：让并发的新增/更换/重建共享同一份已预留预算 ----
 
-  function loadReservations() {
+  function readReservations() {
     let raw;
     try {
       raw = storage.get(RESERVATION_KEY);
     } catch (error) {
-      return createEmptyReservations();
+      return {
+        ok: false,
+        error: '读取照片空间预留失败：' + errorText(error)
+      };
     }
     if (raw === '' || raw === null || raw === undefined) {
-      return createEmptyReservations();
+      return { ok: true, state: createEmptyReservations() };
     }
+    let parsed;
     try {
-      return normalizeReservations(
-        typeof raw === 'string' ? JSON.parse(raw) : raw
-      );
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
     } catch (error) {
-      return createEmptyReservations();
+      return { ok: false, error: '照片空间预留格式不可读' };
     }
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      parsed.version !== RESERVATION_VERSION
+    ) {
+      return { ok: false, error: '照片空间预留格式不可读' };
+    }
+    return { ok: true, state: normalizeReservations(parsed) };
   }
 
   function saveReservations(state) {
@@ -654,27 +760,98 @@ function createRoutePhotoService(options) {
     }
   }
 
+  function findOperationForReservation(index, item) {
+    if (!hasText(item.opId)) return null;
+    return (
+      index.operations.find(
+        operation =>
+          operation.opId === item.opId &&
+          operation.ownerId === item.ownerId &&
+          operation.datasetId === item.datasetId
+      ) || null
+    );
+  }
+
+  /**
+   * 一笔预留是否仍然代表“正在进行的写入”。
+   * - 有 opId：只跟随该操作的 started 状态；失败/中止/提交后的残留一律可回收，
+   *   即使释放协调键的写入曾经失败。
+   * - 重建缩略图没有操作记录：本实例只保留仍在内存活跃集合中的预留；同一运行期
+   *   其他实例的预留保守保留；其他运行期或旧版过期数据可回收。
+   */
+  function reservationStillNeeded(item, index, timeMs, leaseMap) {
+    if (hasText(item.opId)) {
+      const operation = findOperationForReservation(index, item);
+      return Boolean(operation && operation.status === 'started');
+    }
+    if (item.runtimeId === runtimeId) {
+      if (item.instanceId === instanceId) {
+        return activeReservations.has(item.reservationId);
+      }
+      return true;
+    }
+    if (hasText(item.runtimeId)) return false;
+    return isLeaseFresh(leaseMap.get(item.instanceId), timeMs);
+  }
+
+  function liveReservationItems(state, index, timeMs, leaseMap) {
+    return state.items.filter(item =>
+      reservationStillNeeded(item, index, timeMs, leaseMap)
+    );
+  }
+
   /**
    * 同步登记一笔预留（读—改—写之间没有 await，同一实例内不会交错）。
-   * 返回 priorReservedBytes：登记顺序更早的预留合计，用于“先到先得”的预算检查。
+   * 登记前先回收已终止操作的残留预留；返回 priorReservedBytes：
+   * 登记顺序更早的预留合计，用于“先到先得”的预算检查。
+   * 同一 opId 的新尝试会取代该 opId 的旧预留（上一次失败/崩溃留下的）。
    */
   function claimReservation(input) {
     const bytes = isNonNegativeInt(input.bytes) ? input.bytes : 0;
-    const state = loadReservations();
+    const read = readReservations();
+    if (!read.ok) {
+      return { ok: false, error: read.error };
+    }
+    const loaded = loadIndex();
+    if (!loaded.ok) {
+      return {
+        ok: false,
+        error: '读取照片索引失败，无法确认在途预留：' + loaded.error
+      };
+    }
+    const timeMs = currentTimeMs();
+    const leaseMap = leaseMapOf(loadLeases());
+    const state = read.state;
+    const kept = liveReservationItems(
+      state,
+      loaded.index,
+      timeMs,
+      leaseMap
+    ).filter(
+      item =>
+        !(
+          hasText(input.opId) &&
+          item.opId === input.opId &&
+          item.ownerId === ownerId &&
+          item.datasetId === datasetId
+        )
+    );
     const claimSeq = state.nextClaimSeq;
     let priorReservedBytes = 0;
-    for (const item of state.items) {
+    for (const item of kept) {
       if (item.claimSeq < claimSeq) priorReservedBytes += item.bytes;
     }
     const reservationId =
       'photo-res-' + claimSeq + '-' + Math.random().toString(36).slice(2, 8);
-    const items = state.items.concat([
+    const items = kept.concat([
       {
         reservationId,
         instanceId,
+        runtimeId,
         ownerId,
         datasetId,
         photoId: isSafePhotoId(input.photoId) ? input.photoId : '',
+        opId: hasText(input.opId) ? input.opId : '',
         kind: hasText(input.kind) ? input.kind : '',
         bytes,
         claimSeq,
@@ -689,12 +866,16 @@ function createRoutePhotoService(options) {
     if (!saved) {
       return { ok: false, error: '无法登记照片空间预留' };
     }
+    activeReservations.add(reservationId);
     return { ok: true, reservationId, priorReservedBytes, claimSeq, bytes };
   }
 
   function releaseReservation(reservationId) {
     if (!hasText(reservationId)) return true;
-    const state = loadReservations();
+    activeReservations.delete(reservationId);
+    const read = readReservations();
+    if (!read.ok) return false;
+    const state = read.state;
     const items = state.items.filter(
       item => item.reservationId !== reservationId
     );
@@ -707,33 +888,218 @@ function createRoutePhotoService(options) {
     });
   }
 
-  /** 释放已不在活跃列表中的实例预留，避免崩溃实例的预留长期占用预算。 */
-  function pruneReservations(liveIds) {
-    const state = loadReservations();
-    const items = state.items.filter(item => liveIds.has(item.instanceId));
-    if (items.length === state.items.length) return false;
-    if (items.length === 0) return removeCoordinationKey(RESERVATION_KEY);
-    return saveReservations({
+  /**
+   * 回收已终止操作/已结束实例留下的预留。恢复入口和下一次登记都会调用，
+   * 因此“释放协调键写失败”留下的残留在故障解除后仍可被清理。
+   */
+  function pruneStaleReservations(index) {
+    const read = readReservations();
+    if (!read.ok) return { ok: false, error: read.error };
+    const timeMs = currentTimeMs();
+    const leaseMap = leaseMapOf(loadLeases());
+    const items = liveReservationItems(read.state, index, timeMs, leaseMap);
+    if (items.length === read.state.items.length) {
+      return { ok: true, pruned: 0 };
+    }
+    if (items.length === 0) {
+      const removed = removeCoordinationKey(RESERVATION_KEY);
+      return removed
+        ? { ok: true, pruned: read.state.items.length }
+        : { ok: false, error: '清理照片空间预留失败' };
+    }
+    const saved = saveReservations({
       version: RESERVATION_VERSION,
+      nextClaimSeq: read.state.nextClaimSeq,
+      items
+    });
+    return saved
+      ? { ok: true, pruned: read.state.items.length - items.length }
+      : { ok: false, error: '清理照片空间预留失败' };
+  }
+
+  function reservedPhotoIds() {
+    const read = readReservations();
+    if (!read.ok) return [];
+    return read.state.items
+      .map(item => item.photoId)
+      .filter(photoId => Boolean(photoId));
+  }
+
+  /**
+   * 是否有本操作之外的在途预留引用该照片。
+   * 读取失败时保守返回 true：无法证明没有其他写入时不动文件。
+   */
+  function hasOtherReservationForPhoto(photoId, exceptOpId) {
+    const read = readReservations();
+    if (!read.ok) return true;
+    return read.state.items.some(
+      item =>
+        item.photoId === photoId &&
+        (!hasText(exceptOpId) || item.opId !== exceptOpId)
+    );
+  }
+
+  // ---- 文件删除声明：封锁“异步 unlink 回调”与“同 photoId 重试”的竞争 ----
+
+  function readDeletions() {
+    let raw;
+    try {
+      raw = storage.get(DELETION_KEY);
+    } catch (error) {
+      return {
+        ok: false,
+        error: '读取照片文件删除声明失败：' + errorText(error)
+      };
+    }
+    if (raw === '' || raw === null || raw === undefined) {
+      return { ok: true, state: createEmptyDeletions() };
+    }
+    let parsed;
+    try {
+      parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
+    } catch (error) {
+      return { ok: false, error: '照片文件删除声明格式不可读' };
+    }
+    if (
+      !parsed ||
+      typeof parsed !== 'object' ||
+      parsed.version !== DELETION_VERSION
+    ) {
+      return { ok: false, error: '照片文件删除声明格式不可读' };
+    }
+    return { ok: true, state: normalizeDeletions(parsed) };
+  }
+
+  function saveDeletions(state) {
+    try {
+      storage.set(DELETION_KEY, JSON.stringify(state));
+      return true;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * 声明是否仍由存活的运行期持有。同一运行期其他实例的声明保守保留
+   * （可能是真实进行中的 unlink）；本实例只有仍在内存活跃集合中的才算。
+   * 其他运行期随进程/小程序重启结束，其遗留声明可以立即回收。
+   */
+  function deletionStillHeld(item) {
+    if (item.runtimeId === runtimeId) {
+      if (item.instanceId === instanceId) {
+        return activeDeletions.has(item.claimId);
+      }
+      return true;
+    }
+    return false;
+  }
+
+  function persistPrunedDeletions(state, items) {
+    if (items.length === state.items.length) return true;
+    if (items.length === 0) return removeCoordinationKey(DELETION_KEY);
+    return saveDeletions({
+      version: DELETION_VERSION,
       nextClaimSeq: state.nextClaimSeq,
       items
     });
   }
 
-  function reservedPhotoIds() {
-    return loadReservations()
-      .items.map(item => item.photoId)
-      .filter(photoId => Boolean(photoId));
+  /** 该照片是否有进行中的删除声明；读取失败时按“有声明”安全阻塞写入。 */
+  function deletionBlocksPhoto(photoId) {
+    const read = readDeletions();
+    if (!read.ok) return true;
+    const kept = read.state.items.filter(deletionStillHeld);
+    persistPrunedDeletions(read.state, kept);
+    return kept.some(item => item.photoId === photoId);
   }
 
   /**
-   * 需要受预算约束的一次受管写入：先登记预留，再按“实际占用 + 先到预留 + 本次新增 + R”
-   * 检查峰值。调用方必须在 finally 中释放预留。
+   * 登记“我要删除这个 photoId 的旧文件”。失败时调用方不得删除；
+   * 已有同一照片的声明时返回 busy，交给现有清理/重试流程收尾。
+   */
+  function beginDeletion(photoId) {
+    const read = readDeletions();
+    if (!read.ok) return { ok: false, error: read.error };
+    const state = read.state;
+    const kept = state.items.filter(deletionStillHeld);
+    if (kept.some(item => item.photoId === photoId)) {
+      persistPrunedDeletions(state, kept);
+      return { ok: false, busy: true, error: '该照片文件正在清理' };
+    }
+    const claimSeq = state.nextClaimSeq;
+    const claimId =
+      'photo-del-' + claimSeq + '-' + Math.random().toString(36).slice(2, 8);
+    const items = kept.concat([
+      {
+        claimId,
+        instanceId,
+        runtimeId,
+        ownerId,
+        datasetId,
+        photoId,
+        claimSeq,
+        startedAt: now()
+      }
+    ]);
+    const saved = saveDeletions({
+      version: DELETION_VERSION,
+      nextClaimSeq: claimSeq + 1,
+      items
+    });
+    if (!saved) {
+      return { ok: false, error: '无法登记照片文件删除声明' };
+    }
+    activeDeletions.add(claimId);
+    return { ok: true, claimId };
+  }
+
+  function endDeletion(claimId) {
+    if (!hasText(claimId)) return true;
+    activeDeletions.delete(claimId);
+    const read = readDeletions();
+    if (!read.ok) return false;
+    const items = read.state.items.filter(item => item.claimId !== claimId);
+    if (items.length === read.state.items.length) return true;
+    if (items.length === 0) return removeCoordinationKey(DELETION_KEY);
+    return saveDeletions({
+      version: DELETION_VERSION,
+      nextClaimSeq: read.state.nextClaimSeq,
+      items
+    });
+  }
+
+  function pruneDeletions() {
+    const read = readDeletions();
+    if (!read.ok) return false;
+    return persistPrunedDeletions(
+      read.state,
+      read.state.items.filter(deletionStillHeld)
+    );
+  }
+
+  /**
+   * 需要受预算约束的一次受管写入：先证明本实例仍活跃、确认没有进行中的删除，
+   * 再登记预留，最后按“实际占用 + 先到预留 + 本次新增 + R”检查峰值。
+   * 调用方必须在 finally 中释放预留。
    */
   async function reserveForWrite(input) {
-    touchInstance();
+    if (!touchInstance()) {
+      return {
+        ok: false,
+        code: 'coordination-failed',
+        error: '无法写入照片实例租约；为避免其他实例把本次写入当成孤儿，已停止写入'
+      };
+    }
+    if (deletionBlocksPhoto(input.photoId)) {
+      return {
+        ok: false,
+        code: 'cleanup-in-progress',
+        error: '该照片文件正在清理或清理声明不可读，请稍后重试'
+      };
+    }
     const claim = claimReservation({
       photoId: input.photoId,
+      opId: input.opId,
       kind: input.kind,
       bytes: input.bytes
     });
@@ -978,6 +1344,7 @@ function createRoutePhotoService(options) {
 
       existing.status = 'started';
       existing.instanceId = instanceId;
+      existing.runtimeId = runtimeId;
       existing.finishedAt = '';
       existing.error = '';
       const saved = saveIndex(index);
@@ -1012,6 +1379,7 @@ function createRoutePhotoService(options) {
       opId: finalOpId,
       seq,
       instanceId,
+      runtimeId,
       ownerId,
       datasetId,
       routeId,
@@ -1081,6 +1449,7 @@ function createRoutePhotoService(options) {
       }
       existing.status = 'started';
       existing.instanceId = instanceId;
+      existing.runtimeId = runtimeId;
       existing.finishedAt = '';
       existing.error = '';
       const saved = saveIndex(index);
@@ -1101,6 +1470,7 @@ function createRoutePhotoService(options) {
       opId: finalOpId,
       seq,
       instanceId,
+      runtimeId,
       ownerId,
       datasetId,
       routeId,
@@ -1122,10 +1492,11 @@ function createRoutePhotoService(options) {
   }
 
   /**
-   * 删除一个尚未被索引引用的照片文件。索引不可读时不做删除：
-   * 无法证明“无引用”就不能动用户文件。
+   * 删除一个尚未被索引引用、也没有其他写入正在处理的照片文件。
+   * 索引不可读、有其他 started 操作、其他在途预留或进行中的删除声明时保留文件；
+   * 真正 unlink 前登记删除声明，异步删除期间同 photoId 的保存会返回可重试忙状态。
    */
-  async function cleanupUncommitted(photoId) {
+  async function cleanupUncommitted(photoId, opId) {
     if (!isSafePhotoId(photoId)) return { deleted: [], error: '' };
     const loaded = loadIndex();
     if (!loaded.ok) {
@@ -1137,19 +1508,58 @@ function createRoutePhotoService(options) {
     if (referenced) {
       return { deleted: [], error: '照片仍被索引引用，未删除' };
     }
+    if (
+      loaded.index.operations.some(
+        operation =>
+          operation.status === 'started' && operation.photoId === photoId
+      )
+    ) {
+      return { deleted: [], error: '有进行中的操作引用该照片，保留文件' };
+    }
+    if (hasOtherReservationForPhoto(photoId, opId)) {
+      return { deleted: [], error: '有其他在途预留引用该照片，保留文件' };
+    }
+    const claim = beginDeletion(photoId);
+    if (!claim.ok) {
+      return {
+        deleted: [],
+        error: claim.busy
+          ? '照片文件正在清理，保留文件'
+          : claim.error || '无法登记照片文件删除声明，保留文件'
+      };
+    }
     const deleted = [];
     const errors = [];
-    const main = await files.remove(files.mainPath(photoId));
-    if (main.ok) {
-      if (main.existed) deleted.push(files.mainPath(photoId));
-    } else {
-      errors.push(main.error);
-    }
-    const thumb = await files.remove(files.thumbPath(photoId));
-    if (thumb.ok) {
-      if (thumb.existed) deleted.push(files.thumbPath(photoId));
-    } else {
-      errors.push(thumb.error);
+    try {
+      // 登记声明后再次确认：等待期间可能有同 opId 的重试重新置为 started。
+      const fresh = loadIndex();
+      if (!fresh.ok) {
+        return { deleted, error: '索引不可读，保留未引用文件' };
+      }
+      const stillReferenced =
+        fresh.index.photos.some(photo => photo.photoId === photoId) ||
+        fresh.index.routes.some(route => route.photoId === photoId) ||
+        fresh.index.operations.some(
+          operation =>
+            operation.status === 'started' && operation.photoId === photoId
+        );
+      if (stillReferenced || hasOtherReservationForPhoto(photoId, opId)) {
+        return { deleted, error: '照片已被重新引用，保留文件' };
+      }
+      const main = await files.remove(files.mainPath(photoId));
+      if (main.ok) {
+        if (main.existed) deleted.push(files.mainPath(photoId));
+      } else {
+        errors.push(main.error);
+      }
+      const thumb = await files.remove(files.thumbPath(photoId));
+      if (thumb.ok) {
+        if (thumb.existed) deleted.push(files.thumbPath(photoId));
+      } else {
+        errors.push(thumb.error);
+      }
+    } finally {
+      endDeletion(claim.claimId);
     }
     return { deleted, error: errors.join('；') };
   }
@@ -1176,7 +1586,7 @@ function createRoutePhotoService(options) {
         saveIndex(loaded.index);
       }
     }
-    const cleanup = await cleanupUncommitted(op.photoId);
+    const cleanup = await cleanupUncommitted(op.photoId, op.opId);
     return fail(
       finalCode,
       detail,
@@ -1324,6 +1734,7 @@ function createRoutePhotoService(options) {
       // 后到者会看到先到者的预留并被拒绝，而不是各自按同一份未预留预算放行。
       const reserved = await reserveForWrite({
         photoId: op.photoId,
+        opId: op.opId,
         kind,
         bytes: mainTempStat.bytes + thumbTempStat.bytes,
         mainBytes: mainTempStat.bytes,
@@ -1353,7 +1764,9 @@ function createRoutePhotoService(options) {
         }
         if (
           reserved.code === 'index-read-failed' ||
-          reserved.code === 'index-broken'
+          reserved.code === 'index-broken' ||
+          reserved.code === 'coordination-failed' ||
+          reserved.code === 'cleanup-in-progress'
         ) {
           return markOperationFailed(op, reserved.code, reserved.error);
         }
@@ -1417,6 +1830,16 @@ function createRoutePhotoService(options) {
         }
         if (kind === 'replace' && route.photoId !== op.basePhotoId) {
           return markOperationFailed(op, 'stale-operation');
+        }
+
+        // 最后一刻再确认没有进行中的删除声明：如果维护在文件写入后才登记了声明，
+        // 本次提交会引用一个可能即将被旧 unlink 删掉的文件，必须按可重试忙状态退回。
+        if (deletionBlocksPhoto(op.photoId)) {
+          return markOperationFailed(
+            op,
+            'cleanup-in-progress',
+            '照片文件正在清理，本次保存未提交'
+          );
         }
 
         const photo = {
@@ -1904,6 +2327,7 @@ function createRoutePhotoService(options) {
   /**
    * 当前“有引用”的受管文件路径：照片记录、进行中操作、在途预留。
    * 维护操作在异步边界之后必须重新计算它，不能用过期快照判断无引用。
+   * 在途预留读不出来时返回 ok:false，调用方必须停止删除而不是猜“无引用”。
    */
   function collectReferencedPaths(index) {
     const referenced = new Set();
@@ -1917,17 +2341,28 @@ function createRoutePhotoService(options) {
       referenced.add(files.mainPath(operation.photoId));
       referenced.add(files.thumbPath(operation.photoId));
     }
-    for (const photoId of reservedPhotoIds()) {
-      referenced.add(files.mainPath(photoId));
-      referenced.add(files.thumbPath(photoId));
+    const read = readReservations();
+    if (!read.ok) {
+      return { ok: false, error: read.error };
     }
-    return referenced;
+    for (const item of read.state.items) {
+      if (!item.photoId) continue;
+      referenced.add(files.mainPath(item.photoId));
+      referenced.add(files.thumbPath(item.photoId));
+    }
+    return { ok: true, paths: referenced };
+  }
+
+  function fileNameOf(filePath) {
+    const parts = String(filePath || '').split(/[\\/]/);
+    return parts[parts.length - 1] || '';
   }
 
   /**
    * 清理 main/thumb 目录中无引用的本服务文件。
-   * 逐个候选文件在删除前按最新索引、进行中操作与在途预留重新确认引用关系：
-   * 读取文件清单期间刚提交的主图/缩略图不会被过期快照删掉。
+   * 逐个候选文件在删除前按最新索引、进行中操作与在途预留重新确认引用关系；
+   * 真正删除前登记删除声明，并在异步读取之后再次复查，避免旧 unlink 回调
+   * 删掉后来提交的主图。删除声明写入失败时保留文件，不冒险删除。
    */
   async function cleanupOrphansInternal() {
     const deleted = [];
@@ -1952,12 +2387,53 @@ function createRoutePhotoService(options) {
         errors.push(fresh.error);
         break;
       }
-      if (collectReferencedPaths(fresh.index).has(path)) continue;
-      const removed = await files.remove(path);
-      if (removed.ok) {
-        if (removed.existed) deleted.push(path);
-      } else {
-        errors.push(removed.error);
+      const freshRefs = collectReferencedPaths(fresh.index);
+      if (!freshRefs.ok) {
+        errors.push(freshRefs.error);
+        break;
+      }
+      if (freshRefs.paths.has(path)) continue;
+
+      const photoId = photoIdFromFileName(fileNameOf(path));
+      if (!photoId) {
+        // 不是本服务 photo-<id>.jpg 命名的文件不会被任何保存复用，可直接清理。
+        const removed = await files.remove(path);
+        if (removed.ok) {
+          if (removed.existed) deleted.push(path);
+        } else {
+          errors.push(removed.error);
+        }
+        continue;
+      }
+
+      const claim = beginDeletion(photoId);
+      if (!claim.ok) {
+        if (!claim.busy) {
+          errors.push(claim.error || '无法登记照片文件删除声明');
+        }
+        continue;
+      }
+      try {
+        // 登记声明后再次复查：清单读取期间可能有重试开始写同一 photoId。
+        const recheck = loadIndex();
+        if (!recheck.ok) {
+          errors.push(recheck.error);
+          break;
+        }
+        const recheckRefs = collectReferencedPaths(recheck.index);
+        if (!recheckRefs.ok) {
+          errors.push(recheckRefs.error);
+          break;
+        }
+        if (recheckRefs.paths.has(path)) continue;
+        const removed = await files.remove(path);
+        if (removed.ok) {
+          if (removed.existed) deleted.push(path);
+        } else {
+          errors.push(removed.error);
+        }
+      } finally {
+        endDeletion(claim.claimId);
       }
     }
 
@@ -1978,9 +2454,10 @@ function createRoutePhotoService(options) {
   /**
    * 初始化/重启恢复。
    *
-   * 只把“租约已过期或从未登记的实例”留下的 started 操作当作崩溃遗留中止；
-   * 其他仍活跃实例（含其他 owner/dataset）的进行中操作不会被本实例修改，
-   * 它们的主图也不会被清理。真正的遗留操作、过期租约与预留仍然会被恢复。
+   * 运行期身份是主要判据：同一运行期（包括其他 owner/dataset、后台暂停或
+   * 长时间 await 的操作）始终保留；其他运行期或无法证明仍属于当前运行期的
+   * started 操作立即中止，不需要等租约 TTL。旧版没有 runtimeId 的记录退回
+   * 租约 TTL 判断，保证升级兼容。
    */
   async function recover() {
     const invalidAttribution = attributionError();
@@ -1990,16 +2467,34 @@ function createRoutePhotoService(options) {
     if (!loaded.ok) return loaded;
     const index = loaded.index;
     const timeMs = currentTimeMs();
-    const live = liveInstanceIds(timeMs);
-    // 本实例当然是活跃的；本实例自己的 started 操作交给同一 opId 的重试逻辑处理。
-    live.add(instanceId);
+    const leaseMap = leaseMapOf(loadLeases());
+
+    function operationRuntime(operation) {
+      if (hasText(operation.runtimeId)) return operation.runtimeId;
+      const lease = leaseMap.get(operation.instanceId);
+      return lease && hasText(lease.runtimeId) ? lease.runtimeId : '';
+    }
 
     const abortedOps = [];
     let changed = false;
     for (const operation of index.operations) {
       if (operation.status !== 'started') continue;
-      if (operation.instanceId === instanceId) continue;
-      if (live.has(operation.instanceId)) continue;
+      // 只跳过“本运行期的本实例”；新运行期即使复用了同名实例标识，
+      // 也不能把旧运行期的遗留当成自己的进行中操作。
+      if (
+        operation.instanceId === instanceId &&
+        (!hasText(operation.runtimeId) || operation.runtimeId === runtimeId)
+      ) {
+        continue;
+      }
+      const operationRuntimeId = operationRuntime(operation);
+      if (operationRuntimeId) {
+        if (operationRuntimeId === runtimeId) continue;
+      } else {
+        // 旧版记录没有运行期标识：只在租约仍新鲜时保留，否则按遗留恢复。
+        const lease = leaseMap.get(operation.instanceId);
+        if (isLeaseFresh(lease, timeMs)) continue;
+      }
       operation.status = 'aborted';
       operation.finishedAt = now();
       operation.error = '服务重启，未完成操作已中止';
@@ -2011,9 +2506,11 @@ function createRoutePhotoService(options) {
       if (!saved.ok) return saved;
     }
 
-    // 过期租约与它们留下的预留一起释放，避免崩溃实例长期占用预算。
+    // 已被取代的租约、终止操作的残留预留与结束运行期的删除声明一起回收，
+    // 避免崩溃实例长期占用预算或让旧 unlink 继续生效。
     pruneLeases(timeMs);
-    pruneReservations(live);
+    pruneStaleReservations(index);
+    pruneDeletions();
 
     // 缩略图缓存可重建：只保留仍有照片记录的条目。
     const cache = loadThumbCache();
@@ -2103,8 +2600,16 @@ function createRoutePhotoService(options) {
       );
     }
 
-    touchInstance();
+    if (!touchInstance()) {
+      return fail(
+        'coordination-failed',
+        '无法写入照片实例租约，暂不清除缓存'
+      );
+    }
     const startReferenced = collectReferencedPaths(loaded.index);
+    if (!startReferenced.ok) {
+      return fail('file-delete-failed', startReferenced.error);
+    }
     const thumbList = await files.listThumb();
     if (!thumbList.ok) {
       return fail('file-delete-failed', thumbList.error);
@@ -2121,11 +2626,15 @@ function createRoutePhotoService(options) {
         break;
       }
       const currentReferenced = collectReferencedPaths(fresh.index);
+      if (!currentReferenced.ok) {
+        errors.push(currentReferenced.error);
+        break;
+      }
       // 开始时已被引用：属于本次要清理的可重建缩略图。
       // 开始时未被引用、现在却被引用：清缓存期间新出现的照片，跳过不删。
       if (
-        currentReferenced.has(file.path) &&
-        !startReferenced.has(file.path)
+        currentReferenced.paths.has(file.path) &&
+        !startReferenced.paths.has(file.path)
       ) {
         continue;
       }
@@ -2214,10 +2723,44 @@ function createRoutePhotoService(options) {
     };
   }
 
+  /**
+   * 显式放弃本服务 owner+dataset 下仍未完成的操作。只用于试用数据集切换/重置：
+   * 页面已经丢弃旧数据集上下文，继续写入只会留下不可见的半成品。正常 recover()
+   * 不会调用它，因此同一运行期其他实例/归属的活跃保存不受影响。
+   */
+  function abandonStartedOperations() {
+    const invalidAttribution = attributionError();
+    if (invalidAttribution) return invalidAttribution;
+    const loaded = loadIndex();
+    if (!loaded.ok) return loaded;
+    const index = loaded.index;
+    const abortedOps = [];
+    for (const operation of index.operations) {
+      if (operation.status !== 'started') continue;
+      if (
+        operation.ownerId !== ownerId ||
+        operation.datasetId !== datasetId
+      ) {
+        continue;
+      }
+      operation.status = 'aborted';
+      operation.finishedAt = now();
+      operation.error = '试用数据集已切换，未完成操作已中止';
+      abortedOps.push(operation.opId);
+    }
+    if (abortedOps.length) {
+      const saved = saveIndex(index);
+      if (!saved.ok) return saved;
+    }
+    pruneStaleReservations(index);
+    return { ok: true, abortedOps };
+  }
+
   return {
     ownerId,
     datasetId,
     instanceId,
+    runtimeId,
     spacePolicy,
     keys: {
       index: INDEX_KEY,
@@ -2231,6 +2774,7 @@ function createRoutePhotoService(options) {
     rebuildThumbnail,
     cleanupOrphans,
     recover,
+    abandonStartedOperations,
     listPhotos,
     getSpaceUsage,
     clearRebuildableCache,
@@ -2243,11 +2787,14 @@ module.exports = {
   THUMB_CACHE_KEY,
   INSTANCE_KEY,
   RESERVATION_KEY,
+  DELETION_KEY,
   INDEX_VERSION,
   THUMB_CACHE_VERSION,
   INSTANCE_LEASE_VERSION,
   RESERVATION_VERSION,
+  DELETION_VERSION,
   INSTANCE_TTL_MS,
+  RUNTIME_ID,
   LOCAL_STORAGE_TYPE,
   PHOTO_POLICY,
   ERROR_TEXT,
@@ -2257,6 +2804,8 @@ module.exports = {
   normalizeThumbCache,
   normalizeLeases,
   normalizeReservations,
+  normalizeDeletions,
   createEmptyIndex,
+  createEmptyDeletions,
   routeKey
 };

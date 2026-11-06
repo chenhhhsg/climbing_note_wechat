@@ -1373,6 +1373,7 @@ function createHookedService(options) {
     datasetId: config.datasetId || trialPhotos.TRIAL_DATASET_ID,
     files: config.files || photoFiles.createWxPhotoFiles(),
     instanceId: config.instanceId || 'svc-hooked',
+    runtimeId: config.runtimeId,
     space: config.space
   });
 }
@@ -1584,12 +1585,13 @@ test('PL07 新实例初始化不中止其他归属的活跃保存，过期实例
   assert.equal(liveResult.ok, true, 'A 的保存正常完成');
   assert.equal(opsOfRoute(ROUTE_BLUE)[0].status, 'committed');
 
-  // 真正中断：租约过期的新实例仍能中止遗留操作并清理文件。
+  // 真正中断：旧运行期（小程序/进程已重启）的遗留操作由新运行期立即中止。
   const deadFiles = holdNextCall(photoFiles.createWxPhotoFiles(), 'writeMain');
   const dead = routePhotos.createRoutePhotoService({
     ownerId: trialPhotos.TRIAL_OWNER_ID,
     datasetId: 'trial-dataset-dead',
     instanceId: 'svc-dead',
+    runtimeId: 'runtime-dead',
     files: deadFiles.files,
     now: () => '2026-11-06T10:00:00.000Z'
   });
@@ -1604,6 +1606,7 @@ test('PL07 新实例初始化不中止其他归属的活跃保存，过期实例
     ownerId: trialPhotos.TRIAL_OWNER_ID,
     datasetId: 'trial-dataset-dead',
     instanceId: 'svc-restarted',
+    runtimeId: 'runtime-restarted',
     files: deadFiles.files,
     now: () => '2026-11-06T10:40:00.000Z'
   });
