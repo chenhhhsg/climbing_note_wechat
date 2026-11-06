@@ -1,0 +1,227 @@
+<!--
+  今日攀爬：独立本地试用页
+  开始场次 → 按岩馆选线路 → 连续记两把 → 给第二把补备注。
+  已选线路与本场尝试放在上方，点结果后立即能看到新的一条。
+-->
+<view class="page">
+  <view class="trial-banner">
+    <text class="trial-badge">{{trialBadge}}</text>
+    <text class="trial-note">{{trialNote}}</text>
+  </view>
+
+  <!-- 本地缓存损坏：只显示错误与重置入口，避免覆盖后仍不清楚 -->
+  <view wx:if="{{loadError}}" class="card error-card">
+    <text class="error-title">本地数据读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <view class="button-row">
+      <button id="retry-load" class="secondary-button" bindtap="retryLoad">重试读取</button>
+      <button id="reset-trial" class="secondary-button" bindtap="resetTrialData">重置本地试用数据</button>
+    </view>
+  </view>
+
+  <block wx:else>
+    <view class="page-header">
+      <text class="page-title">今日攀爬</text>
+      <text class="page-subtitle">下一把，趁动作还记得</text>
+    </view>
+
+    <view wx:if="{{storageError}}" class="storage-error" bindtap="dismissStorageError">
+      <text class="storage-error-text">{{storageError}}</text>
+      <text class="storage-error-hint">当前操作未生效，请重试；点击可收起</text>
+    </view>
+
+    <!-- 开始场次：日期默认今天，可选历史日期回放跨天 -->
+    <view wx:if="{{sessionFormVisible}}" class="card session-form">
+      <text class="card-title">{{sessionFormTitle}}</text>
+      <view class="field">
+        <text class="field-label">岩馆</text>
+        <picker
+          mode="selector"
+          range="{{gyms}}"
+          range-key="name"
+          value="{{formGymIndex}}"
+          bindchange="onGymChange"
+        >
+          <view class="picker-value">{{formGymName}}</view>
+        </picker>
+      </view>
+      <view class="field">
+        <text class="field-label">日期</text>
+        <picker mode="date" value="{{formDate}}" bindchange="onDateChange">
+          <view class="picker-value">{{formDate}}</view>
+        </picker>
+      </view>
+      <text wx:if="{{formError}}" class="field-error">{{formError}}</text>
+      <button id="start-session" class="primary-button" bindtap="startSession">开始场次</button>
+      <button
+        wx:if="{{activeSession}}"
+        class="text-button"
+        bindtap="cancelSessionForm"
+      >取消</button>
+    </view>
+
+    <block wx:if="{{activeSession}}">
+      <view class="card session-card">
+        <view class="session-top">
+          <view class="session-heading">
+            <text class="card-title">{{activeSession.gymName}}</text>
+            <text class="session-meta">{{activeSession.dateText}} · {{activeSession.label}}</text>
+          </view>
+          <button id="open-session-form" class="text-button session-new" bindtap="openSessionForm">
+            开始新场次
+          </button>
+        </view>
+
+        <view wx:if="{{sameDaySessions.length > 1}}" class="session-switch">
+          <text class="field-label">本日场次归属</text>
+          <view class="chip-row">
+            <view
+              wx:for="{{sameDaySessions}}"
+              wx:key="id"
+              id="session-chip-{{item.id}}"
+              class="chip {{item.isActive ? 'chip-active' : ''}}"
+              data-session-id="{{item.id}}"
+              bindtap="switchSession"
+            >{{item.label}}</view>
+          </view>
+        </view>
+      </view>
+
+      <!-- 已选线路与本场尝试靠前，点结果后即时可见 -->
+      <view wx:if="{{selectedRoute}}" class="section current-route">
+        <text class="section-title">本场记录</text>
+        <view class="selected-route">
+          <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
+          <text class="selected-route-name">{{selectedRoute.name}}</text>
+          <text class="selected-route-meta">{{selectedRoute.grade}} · 本场 {{attemptCountText}}</text>
+        </view>
+
+        <!-- 补备注：始终显示对应的线路与第几把 -->
+        <view wx:if="{{noteEditor}}" id="note-editor" class="card note-editor">
+          <text class="card-title">补备注</text>
+          <text class="note-context">{{noteEditor.routeName}} · {{noteEditor.attemptLabel}} · {{noteEditor.resultText}}</text>
+          <textarea
+            id="note-input"
+            class="note-input"
+            value="{{noteEditor.text}}"
+            placeholder="例如：抓到后向右摆"
+            maxlength="120"
+            bindinput="onNoteInput"
+          ></textarea>
+          <view class="button-row">
+            <button class="secondary-button" bindtap="cancelNote">取消</button>
+            <button id="save-note" class="primary-button" bindtap="saveNote">保存备注</button>
+          </view>
+        </view>
+
+        <block wx:else>
+          <view wx:if="{{!hasAttempts}}" class="empty-attempts">
+            <text>还没有记录，从墙上下来后点一次结果。</text>
+          </view>
+          <view wx:for="{{attempts}}" wx:key="id" class="attempt-item">
+            <view class="attempt-main">
+              <text class="attempt-label">{{item.label}}</text>
+              <text class="attempt-result">{{item.resultText}}</text>
+              <text class="attempt-time">{{item.timeText}}</text>
+            </view>
+            <text wx:if="{{item.note}}" class="attempt-note">{{item.note}}</text>
+            <button
+              id="note-{{item.id}}"
+              class="text-button attempt-note-button"
+              data-attempt-id="{{item.id}}"
+              bindtap="openNoteEditor"
+            >{{item.hasNote ? '改备注' : '补备注'}}</button>
+          </view>
+        </block>
+      </view>
+
+      <view class="section">
+        <text class="section-title">{{selectedRoute ? '换线路' : '选线路'}}</text>
+        <view class="route-list">
+          <view
+            wx:for="{{routes}}"
+            wx:key="id"
+            id="route-{{item.id}}"
+            class="route-item {{item.isSelected ? 'route-selected' : ''}}"
+            data-route-id="{{item.id}}"
+            bindtap="selectRoute"
+          >
+            <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+            <view class="route-info">
+              <text class="route-name">{{item.name}}</text>
+              <text class="route-meta">{{item.grade}} · {{item.colorName}}</text>
+            </view>
+            <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
+          </view>
+        </view>
+
+        <button class="text-button quick-route-toggle" bindtap="toggleQuickRoute">
+          {{quickRouteVisible ? '收起新建线路' : '＋ 快速新建线路'}}
+        </button>
+
+        <view wx:if="{{quickRouteVisible}}" class="card quick-route-form">
+          <input
+            class="text-input"
+            placeholder="线路名称，例如：蓝色动态线"
+            value="{{quickRouteName}}"
+            bindinput="onQuickRouteNameInput"
+          />
+          <view class="quick-route-row">
+            <picker
+              mode="selector"
+              range="{{quickRouteColors}}"
+              range-key="name"
+              value="{{quickRouteColorIndex}}"
+              bindchange="onQuickRouteColorChange"
+            >
+              <view class="picker-value">颜色：{{quickRouteColorName}}</view>
+            </picker>
+            <picker
+              mode="selector"
+              range="{{quickRouteGrades}}"
+              value="{{quickRouteGradeIndex}}"
+              bindchange="onQuickRouteGradeChange"
+            >
+              <view class="picker-value">难度：{{quickRouteGrade}}</view>
+            </picker>
+          </view>
+          <text wx:if="{{quickRouteError}}" class="field-error">{{quickRouteError}}</text>
+          <button id="create-quick-route" class="secondary-button" bindtap="createQuickRoute">
+            创建并选中
+          </button>
+        </view>
+      </view>
+
+      <!-- 拇指可及的两个大按钮，底部留出安全区 -->
+      <view wx:if="{{selectedRoute && !noteEditor}}" class="result-footer">
+        <button
+          id="record-fail"
+          class="result-button result-fail"
+          data-result="fail"
+          bindtap="recordAttempt"
+        >未完成</button>
+        <button
+          id="record-send"
+          class="result-button result-send"
+          data-result="send"
+          bindtap="recordAttempt"
+        >完攀</button>
+      </view>
+
+      <view class="section session-history">
+        <text class="section-title">已开始场次</text>
+        <view
+          wx:for="{{allSessions}}"
+          wx:key="id"
+          class="session-item {{item.isActive ? 'session-item-active' : ''}}"
+          data-session-id="{{item.id}}"
+          bindtap="switchSession"
+        >
+          <text class="session-item-date">{{item.dateText}}</text>
+          <text class="session-item-gym">{{item.gymName}}</text>
+          <text class="session-item-meta">{{item.label}} · {{item.attemptCount}} 把</text>
+        </view>
+      </view>
+    </block>
+  </block>
+</view>

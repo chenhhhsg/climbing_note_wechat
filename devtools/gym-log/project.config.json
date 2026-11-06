@@ -1,0 +1,33 @@
+{
+  "description": "攀笔 · 今日攀爬岩馆快速记录本地试用工程（虚构数据）",
+  "packOptions": {
+    "ignore": [],
+    "include": []
+  },
+  "setting": {
+    "urlCheck": false,
+    "es6": true,
+    "postcss": true,
+    "minified": true,
+    "enhance": true,
+    "compileHotReLoad": false,
+    "ignoreDevUnusedFiles": false,
+    "checkInvalidKey": true,
+    "uploadWithSourceMap": true,
+    "babelSetting": {
+      "ignore": [],
+      "disablePlugins": [],
+      "outputPath": ""
+    }
+  },
+  "compileType": "miniprogram",
+  "libVersion": "2.25.4",
+  "appid": "wx9ea86e9d7aa04c2f",
+  "projectname": "climbing-note-gym-log",
+  "miniprogramRoot": "./",
+  "condition": {},
+  "editorSetting": {
+    "tabIndent": "insertSpaces",
+    "tabSize": 2
+  }
+}

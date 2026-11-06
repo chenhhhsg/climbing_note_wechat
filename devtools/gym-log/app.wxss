@@ -1,0 +1,16 @@
+/**
+ * 粉笔白底、炭黑字；中文使用系统黑体，保证真机上清晰易读。
+ */
+page {
+  background: #f7f4ec;
+  color: #23241f;
+  font-family: "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", "Heiti SC", sans-serif;
+  font-size: 30rpx;
+  line-height: 1.5;
+}
+
+button,
+input,
+textarea {
+  font-family: inherit;
+}
