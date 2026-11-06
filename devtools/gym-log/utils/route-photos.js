@@ -16,24 +16,28 @@
  *   climbingNote.gymLogTrial.photoDeletes.v1    文件删除声明（可重建协调数据）
  *   <USER_DATA_PATH>/gym-log-trial-photos/v1/{main,thumb}/photo-<seq>.jpg
  *
- * 并发与恢复约定（第二轮返工补充）：
+ * 并发与恢复约定（第三轮返工补充）：
  * - 运行期（runtime）与应用进程/小程序启动一一对应，模块加载时生成；同一运行期
  *   可以创建多个服务实例（不同页面、owner/dataset），它们共享同一个 runtimeId。
- *   运行期身份才是“这个 JS 上下文还活着”的可靠证据；单个服务实例的 instanceId
- *   只用于区分实例，不能当作运行期是否重启的依据。
- * - recover() 立即中止“其他运行期或无法证明仍属于当前运行期”留下的 started 操作，
- *   不需要等待 TTL；同一运行期其他服务实例（含其他 owner/dataset）的进行中操作
- *   始终保留，后台暂停或长时间 await 超过租约时间也不会被误中止。TTL 只用于清理
- *   没有 runtimeId 的旧版协调数据。
+ *   运行期身份说明“这个 JS 上下文还活着”；单个服务实例的 instanceId 只用于区分实例。
+ * - 模块级内存登记 RUNTIME_ACTIVITY 记录同一运行期内每个异步保存/重建/删除声明的
+ *   开始与结束。持久记录只说明“某实例曾声明在做”，共享登记才说明“promise 还没结束”。
+ *   因此同一运行期的新服务实例能区分仍在执行的 promise（保护）与已结束但终态/
+ *   释放写回失败的残留（可恢复），不需要新增持久租约或依赖 TTL。
+ * - recover() 立即中止其他运行期留下的 started 操作；同一运行期只有共享登记仍在的
+ *   操作才保留。已结束但终态写回失败的操作、已结束但声明释放失败的删除/预留，
+ *   由同运行期新实例在故障解除后回收并允许同 opId 重试。TTL 只用于没有 runtimeId
+ *   的旧版协调数据。
  * - 任何会新增受管字节的路径（新增/更换/缩略图重建）在写入前必须先在
  *   photoReservations 键登记在途预留；预算检查计入“实际占用 + 先到预留 + 本次新增 + R”。
  *   预留按登记顺序（claimSeq）先到先得，后到者返回可恢复错误并可重试；预留随操作
- *   结束（提交/失败/中止）释放。释放写入失败时，下一次 claim/recover 会按操作终态
+ *   结束（提交/失败/中止）释放。释放写入失败时，下一次 claim/recover 按共享登记
  *   回收残留预留；同一 opId 重试视为新的尝试，会取代该 opId 的旧预留。
  *   若租约/预留协调数据无法可靠写入，保存会在动受管文件前安全失败。
  * - 删除声明确认“某个 photoId 的旧文件正在被异步删除”。保存/重试遇到声明时返回
  *   可重试忙状态，不写入或提交；维护操作在发出 unlink 前登记声明，并在异步边界后
- *   再次确认引用，避免旧 unlink 回调删掉后来提交的主图。
+ *   再次确认引用，避免旧 unlink 回调删掉后来提交的主图。声明释放写回失败时，
+ *   共享登记已经结束，同运行期新实例可回收它；仍持有登记的活跃删除继续受保护。
  * - 维护操作（cleanupOrphans / clearRebuildableCache）在异步边界之后按最新索引、
  *   在途预留与删除声明重新确认引用关系，不用过期快照删除文件。
  *
@@ -71,6 +75,31 @@ const RUNTIME_ID =
   Date.now().toString(36) +
   '-' +
   Math.random().toString(36).slice(2, 10);
+
+/**
+ * 同一 JS 运行期内所有服务实例共享的“真实执行中”登记（仅内存，不持久化）。
+ *
+ * 持久记录（started 操作、预留、删除声明）只说明某个实例“曾声明要做”；
+ * 这里的登记才说明该实例在本次运行期里对应的异步操作“还没有结束”。
+ * 因此同一运行期的新服务实例可以区分：
+ * - 登记仍在：原实例的 promise 仍活跃（含长 await/后台暂停），必须保护；
+ * - 登记已消失：原 promise 已经结束，只是终态/释放写回失败，可以安全恢复。
+ * 进程/小程序重启后登记随模块一起消失，与新的 runtimeId 共同证明旧操作已中断。
+ *
+ * 键包含运行期与实例标识，不同运行期、不同实例（含其他 owner/dataset）
+ * 不会互相释放；不同存储实例只要实例标识不同也互不影响。
+ */
+const RUNTIME_ACTIVITY = {
+  operations: new Map(),
+  reservations: new Map(),
+  deletions: new Map()
+};
+
+function activityKey(kind, runtimeId, instanceId, rest) {
+  return JSON.stringify(
+    [kind, runtimeId, instanceId].concat(rest || [])
+  );
+}
 const LOCAL_STORAGE_TYPE = 'local';
 const OPERATION_KINDS = ['add', 'replace', 'remove'];
 const OPERATION_STATUSES = ['started', 'committed', 'failed', 'aborted'];
@@ -534,11 +563,57 @@ function createRoutePhotoService(options) {
     policy: config.space || PHOTO_SPACE_POLICY
   });
   const spacePolicy = spaceMeter.policy;
-  const inflight = new Map();
-  // 本实例当前确实持有的预留/删除声明。用于分辨“本实例遗留的协调数据”
-  // 与“其他实例仍在使用”，从而在不误删活跃数据的前提下回收自己的残留。
-  const activeReservations = new Set();
-  const activeDeletions = new Set();
+
+  // 本运行期共享登记中属于“某个真实异步操作/预留/删除声明”的键。
+  // 登记只在对象开始后写入、在对应 promise 的 finally 结束路径移除；移除后即使
+  // 持久状态因故障未写回，同运行期的其他实例也能把它当作已结束的残留回收。
+  function operationActivityKey(operation) {
+    return activityKey(
+      'operation',
+      operation.runtimeId || runtimeId,
+      operation.instanceId || instanceId,
+      [
+        operation.ownerId || ownerId,
+        operation.datasetId || datasetId,
+        operation.opId,
+        operation.seq
+      ]
+    );
+  }
+
+  function operationTokenLive(operation) {
+    if (!operation || operation.runtimeId !== runtimeId) return false;
+    return RUNTIME_ACTIVITY.operations.has(operationActivityKey(operation));
+  }
+
+  function beginOperationToken(operation) {
+    RUNTIME_ACTIVITY.operations.set(
+      operationActivityKey(operation),
+      true
+    );
+  }
+
+  function endOperationToken(operation) {
+    RUNTIME_ACTIVITY.operations.delete(operationActivityKey(operation));
+  }
+
+  function reservationActivityKey(item) {
+    return activityKey(
+      'reservation',
+      item.runtimeId || runtimeId,
+      item.instanceId || instanceId,
+      [item.reservationId]
+    );
+  }
+
+  function deletionActivityKey(item) {
+    return activityKey(
+      'deletion',
+      item.runtimeId || runtimeId,
+      item.instanceId || instanceId,
+      [item.claimId]
+    );
+  }
 
   function attributionError() {
     if (!hasVisibleText(ownerId)) return fail('missing-owner');
@@ -547,10 +622,6 @@ function createRoutePhotoService(options) {
       return fail('unexpected', '缺少照片文件适配器');
     }
     return null;
-  }
-
-  function operationKey(opId) {
-    return JSON.stringify([ownerId, datasetId, opId]);
   }
 
   function loadIndex() {
@@ -776,8 +847,9 @@ function createRoutePhotoService(options) {
    * 一笔预留是否仍然代表“正在进行的写入”。
    * - 有 opId：只跟随该操作的 started 状态；失败/中止/提交后的残留一律可回收，
    *   即使释放协调键的写入曾经失败。
-   * - 重建缩略图没有操作记录：本实例只保留仍在内存活跃集合中的预留；同一运行期
-   *   其他实例的预留保守保留；其他运行期或旧版过期数据可回收。
+   * - 重建缩略图没有操作记录：同一运行期以共享登记为准——登记仍在说明对应实例
+   *   尚未结束，登记已消失说明释放写回失败但写入已经结束，可以回收。其他运行期
+   *   或旧版过期数据按租约/版本判断。
    */
   function reservationStillNeeded(item, index, timeMs, leaseMap) {
     if (hasText(item.opId)) {
@@ -785,10 +857,7 @@ function createRoutePhotoService(options) {
       return Boolean(operation && operation.status === 'started');
     }
     if (item.runtimeId === runtimeId) {
-      if (item.instanceId === instanceId) {
-        return activeReservations.has(item.reservationId);
-      }
-      return true;
+      return RUNTIME_ACTIVITY.reservations.has(reservationActivityKey(item));
     }
     if (hasText(item.runtimeId)) return false;
     return isLeaseFresh(leaseMap.get(item.instanceId), timeMs);
@@ -866,13 +935,25 @@ function createRoutePhotoService(options) {
     if (!saved) {
       return { ok: false, error: '无法登记照片空间预留' };
     }
-    activeReservations.add(reservationId);
+    const claimed = {
+      reservationId,
+      instanceId,
+      runtimeId
+    };
+    RUNTIME_ACTIVITY.reservations.set(
+      reservationActivityKey(claimed),
+      true
+    );
     return { ok: true, reservationId, priorReservedBytes, claimSeq, bytes };
   }
 
   function releaseReservation(reservationId) {
     if (!hasText(reservationId)) return true;
-    activeReservations.delete(reservationId);
+    // 先结束本运行期登记，再尝试持久化释放；写回失败时残留可由下一次
+    // claim/recover 按“登记已消失”回收，而不是永久占用预算。
+    RUNTIME_ACTIVITY.reservations.delete(
+      reservationActivityKey({ reservationId, instanceId, runtimeId })
+    );
     const read = readReservations();
     if (!read.ok) return false;
     const state = read.state;
@@ -980,18 +1061,14 @@ function createRoutePhotoService(options) {
   }
 
   /**
-   * 声明是否仍由存活的运行期持有。同一运行期其他实例的声明保守保留
-   * （可能是真实进行中的 unlink）；本实例只有仍在内存活跃集合中的才算。
+   * 声明是否仍由存活的异步删除持有。同一运行期以共享登记为准：
+   * 登记仍在说明对应实例的 unlink promise 尚未结束（可能是真实进行中的删除）；
+   * 登记已消失说明 promise 已结束、只是释放写回失败，声明可以回收。
    * 其他运行期随进程/小程序重启结束，其遗留声明可以立即回收。
    */
   function deletionStillHeld(item) {
-    if (item.runtimeId === runtimeId) {
-      if (item.instanceId === instanceId) {
-        return activeDeletions.has(item.claimId);
-      }
-      return true;
-    }
-    return false;
+    if (item.runtimeId !== runtimeId) return false;
+    return RUNTIME_ACTIVITY.deletions.has(deletionActivityKey(item));
   }
 
   function persistPrunedDeletions(state, items) {
@@ -1049,13 +1126,24 @@ function createRoutePhotoService(options) {
     if (!saved) {
       return { ok: false, error: '无法登记照片文件删除声明' };
     }
-    activeDeletions.add(claimId);
+    RUNTIME_ACTIVITY.deletions.set(
+      deletionActivityKey({
+        claimId,
+        instanceId,
+        runtimeId
+      }),
+      true
+    );
     return { ok: true, claimId };
   }
 
   function endDeletion(claimId) {
     if (!hasText(claimId)) return true;
-    activeDeletions.delete(claimId);
+    // 先结束登记再写持久释放：unlink 已经结束，写回失败留下的声明属于可回收
+    // 残留，不能继续阻塞同运行期其他实例或同 opId 重试。
+    RUNTIME_ACTIVITY.deletions.delete(
+      deletionActivityKey({ claimId, instanceId, runtimeId })
+    );
     const read = readDeletions();
     if (!read.ok) return false;
     const items = read.state.items.filter(item => item.claimId !== claimId);
@@ -1303,9 +1391,11 @@ function createRoutePhotoService(options) {
         return { result: duplicateResult(kind, existing) };
       }
       if (existing.status === 'started') {
+        // 同一实例仍登记有真实执行中的 promise 时拒绝重入；别的实例一律保守忙，
+        // 等 recover() 按共享登记判断其是否已经结束。
         if (
           existing.instanceId !== instanceId ||
-          inflight.has(operationKey(opId))
+          operationTokenLive(existing)
         ) {
           return {
             result: fail('operation-in-progress', '', { opId })
@@ -1349,6 +1439,7 @@ function createRoutePhotoService(options) {
       existing.error = '';
       const saved = saveIndex(index);
       if (!saved.ok) return { result: saved };
+      beginOperationToken(existing);
       return { proceed: true, index, op: existing, sourcePath };
     }
 
@@ -1397,6 +1488,7 @@ function createRoutePhotoService(options) {
 
     const saved = saveIndex(index);
     if (!saved.ok) return { result: saved };
+    beginOperationToken(operation);
     return { proceed: true, index, op: operation, sourcePath };
   }
 
@@ -1434,7 +1526,7 @@ function createRoutePhotoService(options) {
       if (existing.status === 'started') {
         if (
           existing.instanceId !== instanceId ||
-          inflight.has(operationKey(opId))
+          operationTokenLive(existing)
         ) {
           return { result: fail('operation-in-progress', '', { opId }) };
         }
@@ -1454,6 +1546,7 @@ function createRoutePhotoService(options) {
       existing.error = '';
       const saved = saveIndex(index);
       if (!saved.ok) return { result: saved };
+      beginOperationToken(existing);
       return { proceed: true, op: existing };
     }
 
@@ -1488,6 +1581,7 @@ function createRoutePhotoService(options) {
 
     const saved = saveIndex(index);
     if (!saved.ok) return { result: saved };
+    beginOperationToken(operation);
     return { proceed: true, op: operation };
   }
 
@@ -2032,34 +2126,22 @@ function createRoutePhotoService(options) {
   async function addPhoto(input) {
     const prepared = prepareSave('add', input || {});
     if (!prepared.proceed) return prepared.result;
-    const key = operationKey(prepared.op.opId);
-    if (inflight.has(key)) {
-      return fail('operation-in-progress', '', {
-        opId: prepared.op.opId
-      });
-    }
-    inflight.set(key, true);
     try {
       return await runSave('add', prepared.op, prepared.sourcePath);
     } finally {
-      inflight.delete(key);
+      // 无论提交、失败还是异常，都结束本次真实执行登记；之后同运行期的
+      // 其他实例才能把写回失败的终态当作已结束操作恢复，而不会误判仍活跃。
+      endOperationToken(prepared.op);
     }
   }
 
   async function replacePhoto(input) {
     const prepared = prepareSave('replace', input || {});
     if (!prepared.proceed) return prepared.result;
-    const key = operationKey(prepared.op.opId);
-    if (inflight.has(key)) {
-      return fail('operation-in-progress', '', {
-        opId: prepared.op.opId
-      });
-    }
-    inflight.set(key, true);
     try {
       return await runSave('replace', prepared.op, prepared.sourcePath);
     } finally {
-      inflight.delete(key);
+      endOperationToken(prepared.op);
     }
   }
 
@@ -2067,17 +2149,10 @@ function createRoutePhotoService(options) {
     const prepared = prepareRemove(input || {});
     if (prepared.cleanupCommitted) return finishRemove(prepared.op);
     if (!prepared.proceed) return prepared.result;
-    const key = operationKey(prepared.op.opId);
-    if (inflight.has(key)) {
-      return fail('operation-in-progress', '', {
-        opId: prepared.op.opId
-      });
-    }
-    inflight.set(key, true);
     try {
       return await runRemove(prepared.op);
     } finally {
-      inflight.delete(key);
+      endOperationToken(prepared.op);
     }
   }
 
@@ -2454,10 +2529,10 @@ function createRoutePhotoService(options) {
   /**
    * 初始化/重启恢复。
    *
-   * 运行期身份是主要判据：同一运行期（包括其他 owner/dataset、后台暂停或
-   * 长时间 await 的操作）始终保留；其他运行期或无法证明仍属于当前运行期的
-   * started 操作立即中止，不需要等租约 TTL。旧版没有 runtimeId 的记录退回
-   * 租约 TTL 判断，保证升级兼容。
+   * 运行期身份先排除“旧运行期已中断”的遗留；同一运行期再以模块级共享登记
+   * 区分“某个服务实例的 promise 仍在执行”和“promise 已结束、只是终态写回失败”。
+   * 前者（含其他 owner/dataset、后台暂停或长 await）保留；后者立即中止，
+   * 不需要等租约 TTL。旧版没有 runtimeId 的记录退回租约 TTL 判断。
    */
   async function recover() {
     const invalidAttribution = attributionError();
@@ -2469,35 +2544,30 @@ function createRoutePhotoService(options) {
     const timeMs = currentTimeMs();
     const leaseMap = leaseMapOf(loadLeases());
 
-    function operationRuntime(operation) {
-      if (hasText(operation.runtimeId)) return operation.runtimeId;
+    function operationStillRunning(operation) {
+      if (hasText(operation.runtimeId)) {
+        // 其他运行期的操作随进程/小程序重启结束；同一运行期只认共享登记，
+        // 不能用“runtimeId 相同”或“实例还存在于某处”证明 promise 仍在执行。
+        if (operation.runtimeId !== runtimeId) return false;
+        return RUNTIME_ACTIVITY.operations.has(
+          operationActivityKey(operation)
+        );
+      }
+      // 旧版记录没有运行期标识：只按租约（或租约里的运行期）兼容判断。
       const lease = leaseMap.get(operation.instanceId);
-      return lease && hasText(lease.runtimeId) ? lease.runtimeId : '';
+      if (!lease) return false;
+      if (hasText(lease.runtimeId)) return lease.runtimeId === runtimeId;
+      return isLeaseFresh(lease, timeMs);
     }
 
     const abortedOps = [];
     let changed = false;
     for (const operation of index.operations) {
       if (operation.status !== 'started') continue;
-      // 只跳过“本运行期的本实例”；新运行期即使复用了同名实例标识，
-      // 也不能把旧运行期的遗留当成自己的进行中操作。
-      if (
-        operation.instanceId === instanceId &&
-        (!hasText(operation.runtimeId) || operation.runtimeId === runtimeId)
-      ) {
-        continue;
-      }
-      const operationRuntimeId = operationRuntime(operation);
-      if (operationRuntimeId) {
-        if (operationRuntimeId === runtimeId) continue;
-      } else {
-        // 旧版记录没有运行期标识：只在租约仍新鲜时保留，否则按遗留恢复。
-        const lease = leaseMap.get(operation.instanceId);
-        if (isLeaseFresh(lease, timeMs)) continue;
-      }
+      if (operationStillRunning(operation)) continue;
       operation.status = 'aborted';
       operation.finishedAt = now();
-      operation.error = '服务重启，未完成操作已中止';
+      operation.error = '服务重启或操作已结束，未完成操作已中止';
       abortedOps.push(operation.opId);
       changed = true;
     }

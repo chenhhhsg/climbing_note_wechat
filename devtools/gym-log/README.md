@@ -107,8 +107,9 @@ Node 回归测试使用内存缓存与可控文件替身，不触碰本机微信
 - 旧版客户端缓存没有 `datasetId` 时，读取会补当前虚构数据集标识，
   原场次、线路、尝试与备注保留；下一次写入才持久化该字段。
 - 今日页没有场次时不读取照片索引；有场次后通过 `utils/trial-photos.js`
-  取得共享服务，`recover()` 每个 JS 上下文只执行一次；运行期身份区分
-  “同一上下文的其他实例/归属”和“真正重启后的遗留”，不会打断仍活跃的保存。
+  取得共享服务，`recover()` 每个 JS 上下文只执行一次；运行期身份与内存执行登记
+  共同区分“同一上下文仍活跃的实例/归属”和“真正重启或 promise 已结束的遗留”，
+  不会打断仍活跃的保存。
 
 ### 隔离排查
 
@@ -147,7 +148,7 @@ Node 回归测试使用内存缓存与可控文件替身，不触碰本机微信
 - 实际写入返回 `no space`/`ENOSPC`/“空间不足”等错误时，同样归为
   `space-insufficient`，保留旧照片、索引、场次和尝试，并显示重试与管理入口。
 
-### 并发、预留与恢复约定（T012 第二轮返工补充）
+### 并发、预留与恢复约定（T012 第三轮返工补充）
 
 - **所有新增受管字节的路径都受同一份预算约束**：新增、更换和缩略图重建在写入前
   都先在 `photoReservations.v1` 登记一笔在途预留（字节数取待写入文件的真实大小）。
@@ -164,18 +165,26 @@ Node 回归测试使用内存缓存与可控文件替身，不触碰本机微信
   状态却继续写入、随后被其他实例当孤儿删掉”的路径。故障解除后同 `opId` 可重试。
 - **重建也算写入**：`rebuildMissingThumbnails()` / `rebuildThumbnail()` 与保存共享
   同一份预留；预算不足时该项重建失败并说明原因，主图与已有缩略图不变。
-- **运行期与实例是两件事**：模块加载时生成 `runtimeId`，同一 JS 运行期的多个
-  服务实例（不同页面、owner/dataset）共享它。`recover()` 立即中止**其他运行期**
-  留下的 `started` 操作；同一运行期其他实例的保存始终保留，后台暂停或长时间
-  await 超过 5 分钟租约也不会被误中止。只有没有 `runtimeId` 的旧版协调数据才按
-  租约 TTL 判断。重启小程序/进程后会得到新的 `runtimeId`，无需等待 TTL 即可恢复
-  中断保存并同 `opId` 重试。重置/切换试用数据集时，页面入口会显式放弃旧数据集
-  自己的未完成操作（`abandonStartedOperations()`），不影响其他归属。
+- **运行期、服务实例与真实执行是三层概念**：模块加载时生成 `runtimeId`，同一 JS
+  运行期的多个服务实例（不同页面、owner/dataset）共享它；模块级内存登记
+  `RUNTIME_ACTIVITY` 再记录每个服务实例的保存/重建/删除声明当前是否真的还在执行。
+  `recover()` 先用 `runtimeId` 排除其他运行期的遗留，再对同一运行期只保留登记仍在的
+  `started` 操作：后台暂停或长 await 超过 5 分钟租约也不会被误中止；promise 已经结束、
+  只是终态写回失败留下 `started` 的操作，同运行期新实例可以立即中止并允许同 `opId`
+  重试。重启小程序/进程后共享登记随模块消失，无需等待 TTL 即可恢复中断保存并重试。
+  重置/切换试用数据集时，页面入口会显式放弃旧数据集自己的未完成操作
+  （`abandonStartedOperations()`），不影响其他归属。
 - **异步删除与重试串行化**：真正 unlink 前先在 `photoDeletes.v1` 登记
   `{ photoId, runtimeId, instanceId }` 删除声明，并在异步边界后再次按最新索引、
   在途预留复查引用。保存/重建遇到声明时返回可恢复的 `cleanup-in-progress`，
-  不写入或提交；声明结束后同 `opId` 重试成功。旧运行期的遗留声明在下一次
+  不写入或提交；声明结束后同 `opId` 重试成功。同一运行期只保护登记仍在的删除
+  promise：unlink 已结束但释放声明写回失败时，同运行期新实例的 `recover()` 可回收
+  该残留；另一个实例真实进行中的删除声明继续保留。旧运行期的遗留声明在下一次
   `recover()` 时立即失效，不需要等 TTL。
+- **协调残留的 finally 边界**：预留与删除声明都在开始后写入共享登记，并在各自的
+  `finally` 结束路径先移除登记、再尝试持久释放；写出失败只留下可回收残留，不会让
+  已结束的 promise 永久占用预算或永久返回 `cleanup-in-progress`。没有对应操作记录
+  的重建预留同样按共享登记回收，其他运行期或旧版数据仍按租约/版本兼容处理。
 - **维护与写操作协调**：`cleanupOrphans()` 与 `clearRebuildableCache()` 在读取文件
   清单之后，逐个候选文件按**最新**索引、进行中操作、在途预留与删除声明重新确认
   引用关系：刚提交的主图/缩略图不会被过期快照删除；清缓存期间新保存照片的缩略图
@@ -273,6 +282,10 @@ Node 回归测试使用内存缓存与可控文件替身，不触碰本机微信
 预留记录 `{ reservationId, instanceId, runtimeId, ownerId, datasetId, photoId, opId, kind, bytes, claimSeq, startedAt }`，
 删除声明记录 `{ claimId, instanceId, runtimeId, ownerId, datasetId, photoId, claimSeq, startedAt }`。
 三者丢失后可从后续操作重新建立，不会丢照片；`runtimeId` 缺失的旧版记录按租约 TTL 兼容处理。
+此外，模块级内存登记 `RUNTIME_ACTIVITY`（**不落盘**）记录同一运行期内每个服务实例的
+操作/预留/删除声明是否仍有未结束的 promise。它只在当前 JS 运行期有效：重启后自然清空，
+持久键里的 `started`/声明/预留只有在登记仍存在时才被视为真实活跃；登记已结束的残留
+由同运行期新实例在故障解除后回收。不同运行期或不同实例标识不会互相释放。
 
 索引结构（只读摘要）：
 
@@ -310,7 +323,7 @@ const photos = createRoutePhotoService({
   files: createWxPhotoFiles()   // 页面也可注入可控替身做测试
 });
 
-await photos.recover(); // 页面/服务初始化时调用一次：中止其他运行期遗留的操作、回收终止操作的预留/删除声明并清理孤儿
+await photos.recover(); // 页面/服务初始化时调用一次：中止其他运行期或已结束 promise 留下的操作，回收已结束的预留/删除声明并清理孤儿
 ```
 
 | 方法 | 说明 |
@@ -322,7 +335,7 @@ await photos.recover(); // 页面/服务初始化时调用一次：中止其他�
 | `getPhoto({ photoId })` | 按 photoId 读取，自动校验 owner/dataset；不返回其他归属 |
 | `rebuildThumbnail({ photoId })` | 从主图重建缩略图；主图缺失返回 `missing-file`；受预算约束，照片已移除时返回 `not-found` |
 | `cleanupOrphans()` | 只清理 main/thumb 目录中不被照片记录、进行中操作、预留或删除声明引用的本服务文件（逐项按最新引用确认） |
-| `recover()` | 中止其他运行期的 `started` 操作、回收终止操作/已结束运行期的预留与删除声明、修剪缩略图缓存、清理孤儿文件 |
+| `recover()` | 中止其他运行期或同运行期已结束 promise 留下的 `started` 操作，回收已结束的预留与删除声明、修剪缩略图缓存、清理孤儿文件；登记仍在的活跃操作/删除继续保留 |
 | `abandonStartedOperations()` | 显式放弃本 owner/dataset 的未完成操作；仅用于试用数据集切换/重置，正常恢复不会调用 |
 | `listPhotos()` | 当前 owner/dataset 的照片记录与字节合计（供容量功能使用） |
 | `clearRebuildableCache()` | 只删可重建缩略图与其元数据；跳过清缓存期间新出现的照片缩略图 |
@@ -411,7 +424,7 @@ node --test tests/gym-log-photos.test.cjs
 node --test tests/*.test.cjs
 ```
 
-- `tests/route-photos.test.cjs` 覆盖 PS01–PS08：临时文件失效后重建读取、
+- `tests/route-photos.test.cjs` 覆盖 PS01–PS09：临时文件失效后重建读取、
   A/B 与数据集隔离、压缩/写文件/索引失败、更换失败保旧、移除失败、
   迟到回调、孤立文件清理，以及用 Node 实际磁盘执行真实文件适配器；
   PS07 另覆盖并发保存的在途预留、重建预算、清缓存/清理与保存交错、
@@ -419,7 +432,10 @@ node --test tests/*.test.cjs
   读取结果按当前实际缩略图报告字节；PS08 覆盖预留释放写失败后的自愈、
   租约写失败安全拒绝、同一运行期超过 TTL 的保护、新运行期立即恢复、
   异步 unlink 与同 `opId` 重试的串行化，以及真实子进程在 TTL 内重启后
-  中止遗留保存并成功重试。
+  中止遗留保存并成功重试；PS09 覆盖同运行期已结束 promise 的跨实例恢复：
+  删除声明释放 remove/set 失败、另一删除仍活跃时的区分保护、
+  committed/failed 终态写回失败、无 `opId` 重建预留残留，均由新实例
+  `recover()` 回收后同 `opId` 重试成功。
 - `tests/gym-log-photos.test.cjs` 覆盖 PU01–PU05：相册/拍照参数、预览确认、
   权限拒绝、压缩/写文件/索引失败重试、缺文件重新添加、两天三把与四处一致、
   更换/移除、切线路与退出重进、安全重置和旧缓存 datasetId 兼容；
