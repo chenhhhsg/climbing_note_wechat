@@ -246,13 +246,26 @@
 
 .route-item {
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   min-height: 112rpx;
   margin-bottom: 16rpx;
   padding: 20rpx 24rpx;
   background: #fffdf8;
   border: 2rpx solid #e3ded0;
   border-radius: 20rpx;
+}
+
+.route-main {
+  display: flex;
+  align-items: center;
+}
+
+.route-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 4rpx;
+  padding-left: 50rpx;
 }
 
 .route-selected {
@@ -279,6 +292,9 @@
   color: #23241f;
   font-size: 32rpx;
   font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .route-meta {
@@ -286,6 +302,9 @@
   margin-top: 4rpx;
   color: #717269;
   font-size: 24rpx;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .route-check {
@@ -676,4 +695,185 @@
 .pending-retry {
   flex: none;
   margin-left: 16rpx;
+}
+
+/* ---- 线路照片（可选，一条线路一张，本机保存） ---- */
+.photo-notice {
+  margin-bottom: 24rpx;
+  padding: 18rpx 22rpx;
+  background: #f3efe4;
+  border: 1rpx solid #d8d2c2;
+  border-radius: 14rpx;
+}
+
+.photo-notice-text {
+  display: block;
+  color: #3f4b3e;
+  font-size: 25rpx;
+  line-height: 1.5;
+}
+
+.photo-notice-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.photo-card {
+  margin-top: 18rpx;
+  padding: 22rpx 24rpx;
+  background: #fffdf8;
+  border: 1rpx dashed #b9b3a2;
+  border-radius: 18rpx;
+}
+
+.photo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.photo-title {
+  color: #23241f;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.photo-note {
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.photo-thumb {
+  display: block;
+  width: 100%;
+  height: 300rpx;
+  margin-top: 16rpx;
+  background: #f3efe4;
+  border-radius: 14rpx;
+}
+
+.photo-preview {
+  display: block;
+  width: 100%;
+  height: 360rpx;
+  margin-top: 16rpx;
+  background: #f3efe4;
+  border-radius: 14rpx;
+}
+
+.photo-status {
+  display: block;
+  margin-top: 14rpx;
+  color: #3f4b3e;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.photo-status-busy {
+  color: #6b4a12;
+}
+
+.photo-status-error {
+  color: #8f4a2f;
+}
+
+.photo-meta {
+  display: block;
+  margin-top: 4rpx;
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.photo-error-detail {
+  display: block;
+  margin-top: 6rpx;
+  color: #8a4b45;
+  font-size: 23rpx;
+  line-height: 1.45;
+}
+
+.photo-hint {
+  display: block;
+  margin-top: 8rpx;
+  color: #85857a;
+  font-size: 22rpx;
+  line-height: 1.5;
+}
+
+.photo-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.photo-action {
+  flex: 1;
+  min-height: 80rpx;
+  line-height: 80rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-action + .photo-action {
+  margin-left: 14rpx;
+}
+
+.photo-remove {
+  flex: none;
+  margin: 14rpx 0 0 18rpx;
+  color: #8f4a2f;
+}
+
+.photo-source-row {
+  display: flex;
+  margin-top: 10rpx;
+}
+
+.photo-source {
+  flex: 1;
+  min-height: 84rpx;
+  line-height: 84rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-source + .photo-source {
+  margin-left: 14rpx;
+}
+
+/* 历史/选线路列表里的缩略图与照片入口 */
+.route-photo-thumb {
+  flex: none;
+  width: 96rpx;
+  height: 96rpx;
+  margin-right: 18rpx;
+  background: #f3efe4;
+  border-radius: 12rpx;
+}
+
+.route-photo-missing {
+  display: block;
+  margin-top: 4rpx;
+  color: #8f4a2f;
+  font-size: 22rpx;
+}
+
+.route-item-photo {
+  flex: none;
+  margin-left: 8rpx;
+  color: #4b5f4a;
+  font-size: 24rpx;
+}
+
+/* 新建线路时的可选照片预览 */
+.quick-route-photo {
+  margin-top: 20rpx;
+  padding-top: 18rpx;
+  border-top: 1rpx solid #ece7db;
+}
+
+.quick-photo-preview {
+  margin-top: 10rpx;
 }

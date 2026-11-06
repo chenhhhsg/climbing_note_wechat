@@ -478,3 +478,179 @@
 .picker-cancel::after {
   border: none;
 }
+
+/* ---- 线路照片：详情展示完整主图，列表缩略图在今日页 ---- */
+.photo-notice {
+  margin-bottom: 24rpx;
+  padding: 18rpx 22rpx;
+  background: #f3efe4;
+  border: 1rpx solid #d8d2c2;
+  border-radius: 14rpx;
+}
+
+.photo-notice-text {
+  display: block;
+  color: #3f4b3e;
+  font-size: 25rpx;
+  line-height: 1.5;
+}
+
+.photo-notice-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.photo-card {
+  border-style: dashed;
+  border-color: #b9b3a2;
+}
+
+.photo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.photo-title {
+  color: #23241f;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.photo-note {
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.detail-photo-main {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 16rpx;
+  background: #f3efe4;
+  border-radius: 14rpx;
+}
+
+.photo-preview {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 16rpx;
+  background: #f3efe4;
+  border-radius: 14rpx;
+}
+
+.photo-thumb {
+  display: block;
+  width: 100%;
+  height: 300rpx;
+  margin-top: 16rpx;
+  background: #f3efe4;
+  border-radius: 14rpx;
+}
+
+.photo-status {
+  display: block;
+  margin-top: 14rpx;
+  color: #3f4b3e;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.photo-status-busy {
+  color: #6b4a12;
+}
+
+.photo-status-error {
+  color: #8f4a2f;
+}
+
+.photo-meta {
+  display: block;
+  margin-top: 4rpx;
+  color: #85857a;
+  font-size: 22rpx;
+}
+
+.photo-error-detail {
+  display: block;
+  margin-top: 6rpx;
+  color: #8a4b45;
+  font-size: 23rpx;
+  line-height: 1.45;
+}
+
+.photo-hint {
+  display: block;
+  margin-top: 8rpx;
+  color: #85857a;
+  font-size: 22rpx;
+  line-height: 1.5;
+}
+
+.photo-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.photo-action {
+  flex: 1;
+  min-height: 80rpx;
+  line-height: 80rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-action + .photo-action {
+  margin-left: 14rpx;
+}
+
+.photo-remove {
+  flex: none;
+  margin: 14rpx 0 0 18rpx;
+  color: #8f4a2f;
+}
+
+.photo-source-row {
+  display: flex;
+  margin-top: 10rpx;
+}
+
+.photo-source {
+  flex: 1;
+  min-height: 84rpx;
+  line-height: 84rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-source + .photo-source {
+  margin-left: 14rpx;
+}
+
+.primary-button {
+  min-height: 96rpx;
+  line-height: 96rpx;
+  margin-top: 24rpx;
+  border-radius: 18rpx;
+  background: #23241f;
+  color: #fdfbf5;
+  border: 1rpx solid #23241f;
+  font-size: 32rpx;
+  font-weight: 600;
+  text-align: center;
+}
+
+.primary-button::after {
+  border: none;
+}
+
+.primary-button.photo-action {
+  min-height: 80rpx;
+  line-height: 80rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}

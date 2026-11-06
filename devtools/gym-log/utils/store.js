@@ -5,6 +5,8 @@
  * 岩馆与线路来自虚构样例；用户新建的线路、场次和尝试都保存在本机。
  * 所有 ID 一经创建就固定下来，用于区分同色同级的线路和跨天回看。
  */
+const { TRIAL_DATASET_ID, isTrialDatasetId } = require('./trial-profile.js');
+
 const STORE_KEY = 'climbingNote.gymLogTrial.v1';
 const STATE_VERSION = 1;
 
@@ -129,6 +131,8 @@ function errorText(error) {
 function createInitialState() {
   return {
     version: STATE_VERSION,
+    // 试用数据集属于本机试用数据本身；照片归属按 owner + dataset + route 隔离。
+    datasetId: TRIAL_DATASET_ID,
     nextSessionSeq: 1,
     nextRouteSeq: 1,
     nextAttemptSeq: 1,
@@ -189,6 +193,11 @@ function normalizeState(raw) {
   const pendingRaw = raw.pendingSaves === undefined ? [] : raw.pendingSaves;
   if (!Array.isArray(pendingRaw)) return null;
 
+  // 旧试用缓存还没有 datasetId：补上当前虚构数据集标识，原场次、线路与尝试照常读取。
+  const datasetId =
+    raw.datasetId === undefined ? TRIAL_DATASET_ID : raw.datasetId;
+  if (!isTrialDatasetId(datasetId)) return null;
+
   const sessionsOk = raw.sessions.every(
     item =>
       item &&
@@ -247,6 +256,7 @@ function normalizeState(raw) {
 
   return {
     version: STATE_VERSION,
+    datasetId,
     nextSessionSeq: normalizeCounter(raw.nextSessionSeq, raw.sessions),
     nextRouteSeq: normalizeCounter(raw.nextRouteSeq, raw.routes, routeSeq),
     // 待确认操作已经占用了序号，重试不能重新分配 ID。

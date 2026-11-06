@@ -16,6 +16,10 @@ const {
   loadState,
   saveState
 } = require('../../utils/store.js');
+const {
+  createPhotoController,
+  buildView
+} = require('../../utils/photo-controller.js');
 
 const TRIAL_BADGE = '本地试用 · 虚构数据';
 const TODAY_URL = '/pages/today/today';
@@ -64,13 +68,29 @@ Page({
     sendCount: 0,
     summaryText: '0 天 · 0 场 · 0 把',
 
+    // 主照片可以在详情页直接补、换、移除；列表缩略图仍由今日页读取同一索引。
+    routePhoto: null,
+    photoNotice: '',
+
     sessionPicker: null
   },
 
   onLoad(query) {
     this._routeId = (query && query.routeId) || '';
+    this._photoUi = null;
+    this._unloaded = false;
+    this._photoReady = Promise.resolve();
     this.state = createInitialState();
     this.load();
+  },
+
+  onShow() {
+    if (!this.data.ready) return;
+    this.loadPhotos();
+  },
+
+  onUnload() {
+    this._unloaded = true;
   },
 
   /**
@@ -95,22 +115,128 @@ Page({
       attemptCountText: '0 把',
       sendCount: 0,
       summaryText: '0 天 · 0 场 · 0 把',
+      routePhoto: null,
+      photoNotice: '',
       sessionPicker: null
     });
 
     if (loaded.error) return;
     this.refreshView();
+    this._photoReady = this.initPhotoUi();
   },
 
   retryLoad() {
     this.load();
   },
 
+  /**
+   * 详情页与今日页共享同一个试用照片服务与索引；这里只读取当前线路的照片。
+   */
+  initPhotoUi() {
+    if (!this._photoUi) {
+      this._photoUi = createPhotoController(this, {
+        onChange: () => this.applyPhotoView(),
+        onNotice: text => this.setData({ photoNotice: text })
+      });
+    }
+    this._photoUi.init(this.state.datasetId);
+    return this.loadPhotos();
+  },
+
+  loadPhotos() {
+    if (
+      !this._photoUi ||
+      !this.data.route ||
+      this.data.isLegacy ||
+      this.data.notFound
+    ) {
+      return Promise.resolve();
+    }
+    return this._photoUi
+      .load([this.data.route.id])
+      .then(() => this.applyPhotoView());
+  },
+
+  applyPhotoView() {
+    if (this._unloaded) return;
+    if (!this._photoUi || !this.data.route || this.data.isLegacy) {
+      this.setData({ routePhoto: null });
+      return;
+    }
+    this.setData({ routePhoto: this._photoUi.view(this.data.route.id) });
+  },
+
+  photoRouteId(event) {
+    const detail =
+      (event && event.currentTarget && event.currentTarget.dataset) || {};
+    return detail.routeId || this._routeId;
+  },
+
+  dismissPhotoNotice() {
+    this.setData({ photoNotice: '' });
+  },
+
+  chooseDetailPhoto(event) {
+    const detail =
+      (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const source = detail.source;
+    if (!this._photoUi || (source !== 'camera' && source !== 'album')) {
+      return Promise.resolve();
+    }
+    const routeId = this.photoRouteId(event);
+    if (!routeId || routeId !== this._routeId) return Promise.resolve();
+    return this._photoUi.choose(routeId, source);
+  },
+
+  confirmDetailPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId || routeId !== this._routeId) {
+      return Promise.resolve();
+    }
+    return this._photoUi.confirm(routeId);
+  },
+
+  cancelDetailPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.cancelPreview(routeId);
+  },
+
+  retryDetailPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.retry(routeId);
+  },
+
+  dismissDetailPhotoFailure(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.dismiss(routeId);
+  },
+
+  removeDetailPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.remove(routeId);
+  },
+
+  previewDetailPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.preview(routeId);
+  },
+
+  reloadDetailPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.load([routeId]);
+  },
+
   refreshView() {
     const state = this.state;
 
     if (!this._routeId) {
-      this.setData({ notFound: true });
+      this.setData({ notFound: true, routePhoto: null });
       return;
     }
 
@@ -137,14 +263,15 @@ Page({
         attemptCount: 0,
         attemptCountText: '0 把',
         sendCount: 0,
-        summaryText: '0 天 · 0 场 · 0 把'
+        summaryText: '0 天 · 0 场 · 0 把',
+        routePhoto: null
       });
       return;
     }
 
     const route = state.routes.find(item => item.id === this._routeId);
     if (!route) {
-      this.setData({ route: null, notFound: true });
+      this.setData({ route: null, notFound: true, routePhoto: null });
       return;
     }
 
@@ -203,7 +330,10 @@ Page({
       attemptCountText: related.length + ' 把',
       sendCount,
       summaryText:
-        dayCount + ' 天 · ' + groups.length + ' 场 · ' + related.length + ' 把'
+        dayCount + ' 天 · ' + groups.length + ' 场 · ' + related.length + ' 把',
+      routePhoto: this._photoUi
+        ? this._photoUi.view(route.id)
+        : buildView(null, null)
     });
   },
 

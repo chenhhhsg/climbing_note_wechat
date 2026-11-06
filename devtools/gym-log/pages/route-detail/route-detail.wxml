@@ -29,6 +29,16 @@
       <text class="storage-error-hint">当前操作未生效，请重试；点击可收起</text>
     </view>
 
+    <view
+      wx:if="{{photoNotice}}"
+      id="photo-notice"
+      class="photo-notice"
+      bindtap="dismissPhotoNotice"
+    >
+      <text class="photo-notice-text">{{photoNotice}}</text>
+      <text class="photo-notice-hint">点击收起</text>
+    </view>
+
     <view wx:if="{{notFound}}" class="card error-card">
       <text class="error-title">找不到这条线路</text>
       <text class="error-text">这条线路可能已被移除，请返回今日页重新选择。</text>
@@ -41,6 +51,142 @@
         <view class="route-heading">
           <text class="route-title">{{route.name}}</text>
           <text class="route-meta">{{route.grade}} · {{route.colorName}} · {{route.gymName}}</text>
+        </view>
+      </view>
+
+      <!--
+        主照片：详情展示完整主图，点击进入微信原生预览，可双指缩放。
+        照片可选；缺文件时只对本线路显示重新添加入口。
+      -->
+      <view wx:if="{{!isLegacy && routePhoto}}" id="route-photo-card" class="card photo-card">
+        <view class="photo-head">
+          <text class="photo-title">线路照片</text>
+          <text class="photo-note">本机试用 · 照片保存在本机</text>
+        </view>
+
+        <block wx:if="{{routePhoto.status === 'saved'}}">
+          <image
+            id="detail-photo-main"
+            class="detail-photo-main"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+            data-route-id="{{route.id}}"
+            bindtap="previewDetailPhoto"
+          />
+          <text class="photo-status">{{routePhoto.statusText}}</text>
+          <text wx:if="{{routePhoto.bytesText}}" class="photo-meta">{{routePhoto.bytesText}}</text>
+          <text class="photo-hint">点击照片打开完整主图，可双指缩放。</text>
+          <view class="photo-actions">
+            <button
+              id="detail-photo-preview"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="previewDetailPhoto"
+            >查看大图</button>
+            <button
+              id="detail-photo-remove"
+              class="text-button photo-remove"
+              data-route-id="{{route.id}}"
+              bindtap="removeDetailPhoto"
+            >移除照片</button>
+          </view>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'preview'}}">
+          <image
+            id="detail-photo-preview-image"
+            class="photo-preview"
+            src="{{routePhoto.previewPath}}"
+            mode="aspectFit"
+          />
+          <text class="photo-status">{{routePhoto.statusText}}</text>
+          <view class="photo-actions">
+            <button
+              id="detail-photo-cancel"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="cancelDetailPhoto"
+            >取消</button>
+            <button
+              id="detail-photo-confirm"
+              class="primary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="confirmDetailPhoto"
+            >确认保存</button>
+          </view>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'saving'}}">
+          <image
+            wx:if="{{routePhoto.mainPath}}"
+            class="photo-thumb"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFill"
+          />
+          <text id="detail-photo-saving" class="photo-status photo-status-busy">{{routePhoto.statusText}}</text>
+          <text class="photo-hint">照片文件和关联都写入后才提示成功。</text>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'failed'}}">
+          <image
+            wx:if="{{routePhoto.mainPath}}"
+            class="photo-thumb"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFill"
+            data-route-id="{{route.id}}"
+            bindtap="previewDetailPhoto"
+          />
+          <text id="detail-photo-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+          <text class="photo-error-detail">{{routePhoto.errorText}}</text>
+          <view class="photo-actions">
+            <button
+              id="detail-photo-retry"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="retryDetailPhoto"
+            >{{routePhoto.retryText}}</button>
+            <button
+              id="detail-photo-dismiss"
+              class="text-button photo-remove"
+              data-route-id="{{route.id}}"
+              bindtap="dismissDetailPhotoFailure"
+            >收起</button>
+          </view>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'missing'}}">
+          <text id="detail-photo-missing" class="photo-status photo-status-error">本机照片不可用，可重新添加</text>
+          <text class="photo-hint">照片文件可能已被系统清理；重新添加会替换原关联，历史尝试不变。</text>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'error'}}">
+          <text class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+          <button
+            class="secondary-button photo-action"
+            data-route-id="{{route.id}}"
+            bindtap="reloadDetailPhoto"
+          >重试读取</button>
+        </block>
+
+        <block wx:else>
+          <text class="photo-status">{{routePhoto.statusText}}</text>
+        </block>
+
+        <view wx:if="{{routePhoto.sourceVisible}}" class="photo-source-row">
+          <button
+            id="detail-photo-camera"
+            class="secondary-button photo-source"
+            data-source="camera"
+            data-route-id="{{route.id}}"
+            bindtap="chooseDetailPhoto"
+          >{{routePhoto.cameraText}}</button>
+          <button
+            id="detail-photo-album"
+            class="secondary-button photo-source"
+            data-source="album"
+            data-route-id="{{route.id}}"
+            bindtap="chooseDetailPhoto"
+          >{{routePhoto.albumText}}</button>
         </view>
       </view>
 
