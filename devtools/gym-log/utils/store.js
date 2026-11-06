@@ -57,6 +57,24 @@ const FIXTURE_ROUTES = [
   }
 ];
 
+/**
+ * 旧记录只有汇总、没有逐次尝试，只作只读样例展示。
+ * 不进入 state.routes / state.attempts，不参与逐次统计，也不会被改写成多条尝试。
+ */
+const LEGACY_SUMMARY_SAMPLE = {
+  id: 'route-legacy-summary-v3',
+  gymId: 'gym-chalkbox',
+  name: '旧汇总样例线',
+  colorName: '蓝色',
+  colorHex: '#2f6fe4',
+  grade: 'V3',
+  legacy: {
+    label: '旧汇总 · 虚构只读样例',
+    summaryText: 'V3 / 尝试 5 次 / 完成',
+    hint: '按原始汇总原样显示：不生成 5 条逐次尝试，也不计入逐次统计'
+  }
+};
+
 const ROUTE_COLORS = [
   { name: '蓝色', hex: '#2f6fe4' },
   { name: '红色', hex: '#d94a3a' },
@@ -130,13 +148,29 @@ function isSeq(value) {
   return Number.isInteger(value) && value > 0;
 }
 
-function normalizeEntrySeq(items) {
-  return items.reduce((max, item) => Math.max(max, item.seq), 0);
+function normalizeEntrySeq(items, readSeq) {
+  const read = readSeq || (item => item.seq);
+  return items.reduce((max, item) => {
+    const seq = read(item);
+    return isSeq(seq) ? Math.max(max, seq) : max;
+  }, 0);
 }
 
-function normalizeCounter(value, items) {
-  const max = normalizeEntrySeq(items);
+function normalizeCounter(value, items, readSeq) {
+  const max = normalizeEntrySeq(items, readSeq);
   return isSeq(value) && value > max ? value : max + 1;
+}
+
+/**
+ * 样例线路没有 seq；新建设线路带 seq，旧缓存里的 route-local-N 从 ID 兜底。
+ * 两种情况都要能恢复成有效的下一个序号，避免 NaN 破坏稳定 ID。
+ */
+function routeSeq(route) {
+  if (isSeq(route.seq)) return route.seq;
+  const match = /^route-local-(\d+)$/.exec(
+    typeof route.id === 'string' ? route.id : ''
+  );
+  return match ? Number(match[1]) : 0;
 }
 
 /**
@@ -193,7 +227,7 @@ function normalizeState(raw) {
   return {
     version: STATE_VERSION,
     nextSessionSeq: normalizeCounter(raw.nextSessionSeq, raw.sessions),
-    nextRouteSeq: normalizeCounter(raw.nextRouteSeq, raw.routes),
+    nextRouteSeq: normalizeCounter(raw.nextRouteSeq, raw.routes, routeSeq),
     nextAttemptSeq: normalizeCounter(raw.nextAttemptSeq, raw.attempts),
     sessions: raw.sessions,
     routes: raw.routes,
@@ -258,6 +292,7 @@ module.exports = {
   STATE_VERSION,
   GYMS,
   FIXTURE_ROUTES,
+  LEGACY_SUMMARY_SAMPLE,
   ROUTE_COLORS,
   GRADES,
   clone,

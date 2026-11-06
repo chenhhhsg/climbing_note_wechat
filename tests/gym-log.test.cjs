@@ -1,8 +1,9 @@
 /**
- * 今日攀爬本地试用工程离线测试（G01–G09）
+ * 岩馆快速记录本地试用工程离线测试（G01–G17）
  *
- * 直接加载独立工程的真实页面和数据层，只替换微信本地缓存，
- * 验证场次、线路、尝试、备注与错误提示的真实数据逻辑。
+ * 直接加载独立工程的两个真实页面（今日攀爬、线路详情）和数据层，
+ * 只替换微信本地缓存与页面导航，验证场次、线路、尝试、备注、
+ * 跨天回看、旧汇总只读样例与错误提示的真实数据逻辑。
  *
  * 运行：node --test tests/gym-log.test.cjs
  */
@@ -20,17 +21,23 @@ const PAGE_WXSS = path.join(PAGE_DIR, 'today.wxss');
 const APP_JS = path.join(DEV_PROJECT, 'app.js');
 const APP_WXSS = path.join(DEV_PROJECT, 'app.wxss');
 const STORE_JS = path.join(DEV_PROJECT, 'utils', 'store.js');
+const DETAIL_DIR = path.join(DEV_PROJECT, 'pages', 'route-detail');
+const DETAIL_JS = path.join(DETAIL_DIR, 'route-detail.js');
+const DETAIL_WXML = path.join(DETAIL_DIR, 'route-detail.wxml');
+const DETAIL_WXSS = path.join(DETAIL_DIR, 'route-detail.wxss');
 
 const ROUTE_BLUE = 'route-chalkbox-blue-dyn';
 const ROUTE_BLUE_BALANCE = 'route-chalkbox-blue-balance';
 const ROUTE_YELLOW = 'route-northshore-yellow-small';
+const LEGACY_ROUTE = 'route-legacy-summary-v3';
 
 const storage = new Map();
 const wxLog = {
   getKeys: [],
   setKeys: [],
   setShouldThrow: false,
-  setError: null
+  setError: null,
+  navigations: []
 };
 
 // ---- wx 模拟：必须在加载页面和 store 之前就绪 ----
@@ -45,6 +52,18 @@ global.wx = {
       throw wxLog.setError || { errMsg: 'setStorageSync:fail mock storage error' };
     }
     storage.set(key, value);
+  },
+  navigateTo(options) {
+    wxLog.navigations.push({ type: 'navigateTo', url: options && options.url });
+  },
+  navigateBack(options) {
+    wxLog.navigations.push({
+      type: 'navigateBack',
+      delta: options && options.delta
+    });
+  },
+  reLaunch(options) {
+    wxLog.navigations.push({ type: 'reLaunch', url: options && options.url });
   }
 };
 
@@ -58,12 +77,19 @@ global.Page = definition => {
 };
 require(PAGE_JS);
 
+let detailDefinition = null;
+global.Page = definition => {
+  detailDefinition = definition;
+};
+require(DETAIL_JS);
+
 function resetHarness() {
   storage.clear();
   wxLog.getKeys = [];
   wxLog.setKeys = [];
   wxLog.setShouldThrow = false;
   wxLog.setError = null;
+  wxLog.navigations = [];
 }
 
 beforeEach(resetHarness);
@@ -72,9 +98,7 @@ function read(filePath) {
   return fs.readFileSync(filePath, 'utf8');
 }
 
-function createPage() {
-  const page = Object.create(pageDefinition);
-  page.data = JSON.parse(JSON.stringify(pageDefinition.data));
+function attachSetData(page) {
   page.setData = function setData(patch) {
     Object.keys(patch).forEach(key => {
       const value = patch[key];
@@ -93,7 +117,21 @@ function createPage() {
       target[parts[parts.length - 1]] = value;
     });
   };
+}
+
+function createPage() {
+  const page = Object.create(pageDefinition);
+  page.data = JSON.parse(JSON.stringify(pageDefinition.data));
+  attachSetData(page);
   page.onLoad();
+  return page;
+}
+
+function createDetailPage(routeId) {
+  const page = Object.create(detailDefinition);
+  page.data = JSON.parse(JSON.stringify(detailDefinition.data));
+  attachSetData(page);
+  page.onLoad(routeId === undefined ? {} : { routeId });
   return page;
 }
 
@@ -547,7 +585,10 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', () => {
   assert.equal(devProject.appid, rootProject.appid, '试用工程复用项目可用 AppID');
   assert.equal(devProject.cloudbaseRoot, undefined, '试用工程不接云开发');
   assert.equal(devProject.cloudfunctionRoot, undefined);
-  assert.deepEqual(devApp.pages, ['pages/today/today']);
+  assert.deepEqual(devApp.pages, [
+    'pages/today/today',
+    'pages/route-detail/route-detail'
+  ]);
   assert.equal(devApp.window.navigationBarTitleText, '今日攀爬');
 
   for (const ext of ['js', 'json', 'wxml', 'wxss']) {
@@ -623,7 +664,10 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', () => {
     'createQuickRoute',
     'dismissStorageError',
     'resetTrialData',
-    'commit'
+    'commit',
+    'onShow',
+    'openRouteDetail',
+    'openLegacySample'
   ]) {
     assert.equal(typeof pageDefinition[method], 'function', `${method} 应为页面方法`);
   }
@@ -660,4 +704,683 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', () => {
     ]
   );
   assert.doesNotMatch(JSON.stringify(rootApp), /gym-log/);
+});
+
+// ---- G10 ----
+test('G10 线路详情页已注册，今日页按稳定 ID 进入并显示线路名称、颜色与难度', () => {
+  const devApp = JSON.parse(read(path.join(DEV_PROJECT, 'app.json')));
+  assert.deepEqual(devApp.pages, [
+    'pages/today/today',
+    'pages/route-detail/route-detail'
+  ]);
+  for (const ext of ['js', 'json', 'wxml', 'wxss']) {
+    assert.ok(
+      fs.existsSync(path.join(DETAIL_DIR, `route-detail.${ext}`)),
+      `缺少页面文件 route-detail.${ext}`
+    );
+  }
+
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE_BALANCE);
+
+  const before = wxLog.navigations.length;
+  page.openRouteDetail({
+    currentTarget: { dataset: { routeId: ROUTE_BLUE_BALANCE } }
+  });
+  assert.equal(wxLog.navigations.length, before + 1);
+  assert.equal(wxLog.navigations[before].type, 'navigateTo');
+  assert.equal(
+    wxLog.navigations[before].url,
+    '/pages/route-detail/route-detail?routeId=' + ROUTE_BLUE_BALANCE
+  );
+
+  const writesBefore = wxLog.setKeys.length;
+  const detail = createDetailPage(ROUTE_BLUE_BALANCE);
+  assert.equal(detail.data.ready, true);
+  assert.equal(detail.data.loadError, '');
+  assert.equal(detail.data.notFound, false);
+  assert.equal(detail.data.isLegacy, false);
+  assert.equal(detail.data.route.id, ROUTE_BLUE_BALANCE);
+  assert.equal(detail.data.route.name, '蓝色平衡线');
+  assert.equal(detail.data.route.colorName, '蓝色');
+  assert.equal(detail.data.route.colorHex, '#2f6fe4');
+  assert.equal(detail.data.route.grade, 'V3');
+  assert.equal(detail.data.route.gymName, store.GYMS[0].name);
+  assert.equal(detail.data.summaryText, '0 天 · 0 场 · 0 把');
+  assert.equal(detail.data.hasAttempts, false);
+  assert.equal(wxLog.setKeys.length, writesBefore, '只查看详情不写缓存');
+});
+
+// ---- G11 ----
+test('G11 历史两天两场三把：第二把备注保留，今天再爬回到原线路', () => {
+  // 场景中的周四：用固定历史日期，避免与运行当天重合
+  const historyDate = '2020-04-02';
+
+  const page = createPage();
+  tapStart(page, 0, historyDate);
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'fail');
+  tapResult(page, 'fail');
+
+  const historySessionId = page.data.activeSession.id;
+  tapNote(page, page.data.attempts[1].id);
+  typeNote(page, '抓到后向右摆');
+  page.saveNote();
+  const noteAttemptId = page.data.attempts[1].id;
+
+  let detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '1 天 · 1 场 · 2 把');
+  assert.equal(detail.data.groups.length, 1);
+  assert.equal(detail.data.groups[0].sessionId, historySessionId);
+  assert.equal(detail.data.groups[0].dateText, historyDate);
+  assert.equal(detail.data.groups[0].sessionLabel, '第 1 场');
+  assert.deepEqual(
+    detail.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['未完成', '未完成']
+  );
+  assert.equal(detail.data.groups[0].attempts[0].note, '');
+  assert.equal(detail.data.groups[0].attempts[1].note, '抓到后向右摆');
+  assert.equal(detail.data.groups[0].attempts[1].label, '第 2 把');
+
+  // 「今天再爬」：新建今天的场次并回到原线路
+  const writesBefore = wxLog.setKeys.length;
+  detail.recordAgain();
+  assert.equal(detail.data.storageError, '');
+  assert.ok(wxLog.setKeys.length > writesBefore, '今天再爬写入当前场次');
+  const nav = wxLog.navigations[wxLog.navigations.length - 1];
+  assert.equal(nav.type, 'navigateBack');
+
+  const afterRecordAgain = savedState();
+  assert.equal(afterRecordAgain.sessions.length, 2);
+  assert.equal(afterRecordAgain.attempts.length, 2, '今天再爬不凭空生成尝试');
+  const todaySession = afterRecordAgain.sessions.find(
+    session => session.id !== historySessionId
+  );
+  assert.ok(todaySession);
+  assert.equal(todaySession.date, localToday());
+  assert.equal(todaySession.gymId, 'gym-chalkbox');
+  assert.equal(afterRecordAgain.activeSessionId, todaySession.id);
+  assert.equal(afterRecordAgain.activeRouteId, ROUTE_BLUE);
+
+  // 回到今日页后自动同步到今天场次与原线路，再记一次完攀
+  page.onShow();
+  assert.equal(page.data.activeSession.id, todaySession.id);
+  assert.equal(page.data.activeSession.dateText, localToday());
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(page.data.attempts.length, 0);
+  tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].resultText, '完攀');
+
+  detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '2 天 · 2 场 · 3 把');
+  assert.equal(detail.data.groups.length, 2);
+  assert.equal(detail.data.sendCount, 1);
+  assert.equal(detail.data.attemptCount, 3);
+
+  assert.equal(detail.data.groups[0].dateText, localToday());
+  assert.equal(detail.data.groups[0].sessionLabel, '第 1 场');
+  assert.deepEqual(
+    detail.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['完攀']
+  );
+
+  assert.equal(detail.data.groups[1].dateText, historyDate);
+  assert.equal(detail.data.groups[1].sessionLabel, '第 1 场');
+  assert.deepEqual(
+    detail.data.groups[1].attempts.map(attempt => attempt.resultText),
+    ['未完成', '未完成']
+  );
+  assert.equal(detail.data.groups[1].attempts[0].note, '');
+  assert.equal(detail.data.groups[1].attempts[1].id, noteAttemptId);
+  assert.equal(detail.data.groups[1].attempts[1].label, '第 2 把');
+  assert.equal(detail.data.groups[1].attempts[1].note, '抓到后向右摆');
+
+  assert.equal(savedState().attempts.length, 3);
+});
+
+// ---- G12 ----
+test('G12 同日两个场次在详情中分开分组，归属与结果不串', () => {
+  const day = '2020-04-02';
+  const page = createPage();
+  tapStart(page, 0, day);
+  const firstSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'fail');
+
+  page.openSessionForm();
+  page.onDateChange({ detail: { value: day } });
+  page.startSession();
+  const secondSessionId = page.data.activeSession.id;
+  assert.notEqual(secondSessionId, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'send');
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '1 天 · 2 场 · 2 把');
+  assert.equal(detail.data.groups.length, 2);
+  assert.deepEqual(
+    detail.data.groups.map(group => group.sessionLabel),
+    ['第 2 场', '第 1 场']
+  );
+  assert.ok(detail.data.groups.every(group => group.dateText === day));
+  assert.deepEqual(
+    detail.data.groups.map(group => group.sessionId),
+    [secondSessionId, firstSessionId]
+  );
+  assert.deepEqual(
+    detail.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['完攀']
+  );
+  assert.deepEqual(
+    detail.data.groups[1].attempts.map(attempt => attempt.resultText),
+    ['未完成']
+  );
+});
+
+// ---- G13 ----
+test('G13 同色同级与同名线路按稳定 ID 独立统计', () => {
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'fail');
+
+  tapRoute(page, ROUTE_BLUE_BALANCE);
+  tapResult(page, 'send');
+  tapResult(page, 'fail');
+
+  const blue = createDetailPage(ROUTE_BLUE);
+  assert.equal(blue.data.route.grade, 'V3');
+  assert.equal(blue.data.route.colorName, '蓝色');
+  assert.equal(blue.data.attemptCount, 1);
+  assert.equal(blue.data.sendCount, 0);
+  assert.deepEqual(
+    blue.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['未完成']
+  );
+
+  const balance = createDetailPage(ROUTE_BLUE_BALANCE);
+  assert.equal(balance.data.route.grade, 'V3');
+  assert.equal(balance.data.attemptCount, 2);
+  assert.equal(balance.data.sendCount, 1);
+  assert.deepEqual(
+    balance.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['完攀', '未完成']
+  );
+
+  // 同名、同色、同级的快速新建线路也各自独立
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '同名线' } });
+  page.createQuickRoute();
+  const firstQuickRouteId = page.data.selectedRoute.id;
+  tapResult(page, 'fail');
+
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '同名线' } });
+  page.createQuickRoute();
+  const secondQuickRouteId = page.data.selectedRoute.id;
+  assert.notEqual(secondQuickRouteId, firstQuickRouteId);
+  assert.equal(page.data.selectedRoute.name, '同名线');
+  assert.equal(page.data.selectedRoute.colorName, '蓝色');
+  assert.equal(page.data.selectedRoute.grade, 'V3');
+  tapResult(page, 'send');
+
+  const quickOne = createDetailPage(firstQuickRouteId);
+  assert.equal(quickOne.data.route.name, '同名线');
+  assert.equal(quickOne.data.attemptCount, 1);
+  assert.deepEqual(
+    quickOne.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['未完成']
+  );
+
+  const quickTwo = createDetailPage(secondQuickRouteId);
+  assert.equal(quickTwo.data.route.name, '同名线');
+  assert.equal(quickTwo.data.attemptCount, 1);
+  assert.deepEqual(
+    quickTwo.data.groups[0].attempts.map(attempt => attempt.resultText),
+    ['完攀']
+  );
+});
+
+// ---- G14 ----
+test('G14 旧汇总只读样例可读，不生成五条尝试、不计入逐次统计', () => {
+  const page = createPage();
+  assert.equal(page.data.legacySample.id, LEGACY_ROUTE);
+  assert.equal(page.data.legacySample.legacy.summaryText, 'V3 / 尝试 5 次 / 完成');
+
+  const before = wxLog.navigations.length;
+  page.openLegacySample();
+  assert.equal(wxLog.navigations.length, before + 1);
+  assert.equal(wxLog.navigations[before].type, 'navigateTo');
+  assert.equal(
+    wxLog.navigations[before].url,
+    '/pages/route-detail/route-detail?routeId=' + LEGACY_ROUTE
+  );
+
+  const writesBefore = wxLog.setKeys.length;
+  const detail = createDetailPage(LEGACY_ROUTE);
+  assert.equal(detail.data.loadError, '');
+  assert.equal(detail.data.isLegacy, true);
+  assert.equal(detail.data.notFound, false);
+  assert.equal(detail.data.route.id, LEGACY_ROUTE);
+  assert.equal(detail.data.route.name, '旧汇总样例线');
+  assert.equal(detail.data.route.grade, 'V3');
+  assert.equal(detail.data.route.colorName, '蓝色');
+  assert.equal(detail.data.legacySummary.label, '旧汇总 · 虚构只读样例');
+  assert.equal(
+    detail.data.legacySummary.summaryText,
+    'V3 / 尝试 5 次 / 完成'
+  );
+  assert.match(detail.data.legacySummary.hint, /不生成 5 条逐次尝试/);
+  assert.match(detail.data.legacySummary.hint, /不计入逐次统计/);
+  assert.equal(detail.data.groups.length, 0);
+  assert.equal(detail.data.hasAttempts, false);
+  assert.equal(detail.data.attemptCount, 0);
+  assert.equal(detail.data.attemptCountText, '0 把');
+  assert.equal(detail.data.summaryText, '0 天 · 0 场 · 0 把');
+  assert.equal(wxLog.setKeys.length, writesBefore, '查看旧汇总不写缓存');
+
+  // 只读样例没有「今天再爬」写入口；误触发也不产生场次或五条尝试
+  detail.recordAgain();
+  assert.equal(detail.data.storageError, '');
+  assert.equal(wxLog.setKeys.length, writesBefore);
+  assert.equal(storage.has(STORE_KEY), false);
+  assert.equal(savedState(), null);
+  assert.equal(detail.data.attemptCount, 0);
+  assert.equal(detail.data.groups.length, 0);
+});
+
+// ---- G15 ----
+test('G15 详情页读取损坏缓存、找不到线路与保存失败均可见且可恢复', () => {
+  storage.set(STORE_KEY, '{not-json');
+  const broken = createDetailPage(ROUTE_BLUE);
+  assert.match(broken.data.loadError, /格式损坏/);
+  assert.equal(broken.data.route, null);
+  assert.equal(broken.data.groups.length, 0);
+
+  storage.clear();
+  const missing = createDetailPage('route-does-not-exist');
+  assert.equal(missing.data.loadError, '');
+  assert.equal(missing.data.notFound, true);
+  assert.equal(missing.data.route, null);
+
+  const noId = createDetailPage();
+  assert.equal(noId.data.notFound, true);
+
+  const page = createPage();
+  tapStart(page, 0, '2020-04-02');
+  tapRoute(page, ROUTE_BLUE);
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '0 天 · 0 场 · 0 把');
+
+  wxLog.setShouldThrow = true;
+  wxLog.setError = { errMsg: 'setStorageSync:fail quota exceeded' };
+  detail.recordAgain();
+  assert.match(detail.data.storageError, /本地保存失败/);
+  assert.match(detail.data.storageError, /quota exceeded/);
+  assert.equal(savedState().sessions.length, 1, '保存失败时不新建场次');
+  assert.equal(
+    wxLog.navigations.filter(item => item.type === 'navigateBack').length,
+    0,
+    '保存失败时不离开详情页'
+  );
+
+  detail.dismissStorageError();
+  assert.equal(detail.data.storageError, '');
+
+  wxLog.setShouldThrow = false;
+  detail.recordAgain();
+  assert.equal(detail.data.storageError, '');
+  assert.equal(savedState().sessions.length, 2);
+  assert.equal(
+    wxLog.navigations.filter(item => item.type === 'navigateBack').length,
+    1
+  );
+});
+
+// ---- G16 ----
+test('G16 详情页 WXML 绑定、跨天分组与视觉要求齐全', () => {
+  const detailJson = JSON.parse(read(path.join(DETAIL_DIR, 'route-detail.json')));
+  assert.equal(detailJson.navigationBarTitleText, '线路详情');
+
+  const todayWxml = read(PAGE_WXML);
+  for (const binding of [
+    'bindtap="openRouteDetail"',
+    'catchtap="openRouteDetail"',
+    'bindtap="openLegacySample"'
+  ]) {
+    assert.ok(todayWxml.includes(binding), `今日页应包含 ${binding}`);
+  }
+  assert.match(todayWxml, /\{\{legacySample\.legacy\.summaryText\}\}/);
+
+  const wxml = read(DETAIL_WXML);
+  for (const binding of [
+    'bindtap="recordAgain"',
+    'bindtap="chooseSessionForAgain"',
+    'bindtap="cancelSessionPicker"',
+    'bindtap="retryLoad"',
+    'bindtap="goBackToToday"',
+    'bindtap="dismissStorageError"'
+  ]) {
+    assert.ok(wxml.includes(binding), `详情页应包含 ${binding}`);
+  }
+  for (const binding of [
+    '{{item.dateText}}',
+    '{{item.sessionLabel}}',
+    '{{attempt.resultText}}',
+    '{{attempt.note}}',
+    '{{summaryText}}',
+    '{{route.colorHex}}',
+    '{{route.name}}',
+    '{{route.grade}}',
+    '{{legacySummary.label}}',
+    '{{legacySummary.summaryText}}',
+    '{{legacySummary.hint}}'
+  ]) {
+    assert.ok(wxml.includes(binding), `详情页应显示 ${binding}`);
+  }
+  assert.ok(wxml.includes('旧汇总'), '旧汇总必须明确标注');
+  assert.ok(
+    wxml.includes('wx:if="{{!isLegacy && route}}"'),
+    '旧汇总只读样例不显示「今天再爬」'
+  );
+  assert.match(wxml, /wx:if="\{\{sessionPicker\}\}"/, '同日多场显示选择面板');
+  assert.ok(wxml.includes('{{sessionPicker.dateText}}'), '选择面板显示日期');
+  assert.ok(wxml.includes('{{sessionPicker.gymName}}'), '选择面板显示岩馆');
+  assert.ok(wxml.includes('{{item.label}}'), '选择面板显示场次编号');
+  assert.ok(wxml.includes('{{item.timeText}}'), '选择面板显示场次时刻');
+  assert.ok(wxml.includes('{{item.isCurrent}}'), '选择面板标出当前场次');
+  assert.ok(wxml.includes('当前'), '当前场次有可辨认文字');
+  assert.ok(
+    wxml.includes('取消，保持当前场次'),
+    '取消入口明确说明不改变归属'
+  );
+
+  const wxss = read(DETAIL_WXSS) + read(APP_WXSS);
+  assert.match(wxss, /font-family:[^;]*(PingFang SC|Heiti SC)/, '中文黑体');
+  assert.match(wxss, /#f7f4ec/i, '粉笔白底色');
+  assert.match(wxss, /#23241f/i, '炭黑文字');
+  assert.match(wxss, /env\(safe-area-inset-bottom\)/, '底部安全区');
+  assert.match(wxss, /\.record-again-button/, '主要操作「今天再爬」');
+  assert.match(wxss, /height:\s*116rpx/, '主按钮拇指可及');
+
+  for (const method of [
+    'load',
+    'retryLoad',
+    'refreshView',
+    'recordAgain',
+    'chooseSessionForAgain',
+    'cancelSessionPicker',
+    'goBackToToday',
+    'dismissStorageError'
+  ]) {
+    assert.equal(
+      typeof detailDefinition[method],
+      'function',
+      `${method} 应为详情页方法`
+    );
+  }
+});
+
+// ---- G17 ----
+test('G17 重新进入后新建线路仍有有效稳定 ID，旧缓存从中断的序号恢复', () => {
+  const first = createPage();
+  tapStart(first, 0);
+  first.toggleQuickRoute();
+  first.onQuickRouteNameInput({ detail: { value: '第一条自建线' } });
+  first.createQuickRoute();
+  const firstId = first.data.selectedRoute.id;
+  assert.match(firstId, /^route-local-\d+$/);
+  assert.equal(typeof savedState().nextRouteSeq, 'number');
+  assert.ok(savedState().nextRouteSeq > 0, '线路序号必须是有效数字');
+
+  const reentered = createPage();
+  assert.equal(reentered.data.loadError, '');
+  reentered.toggleQuickRoute();
+  reentered.onQuickRouteNameInput({ detail: { value: '第二条自建线' } });
+  reentered.createQuickRoute();
+  const secondId = reentered.data.selectedRoute.id;
+  assert.match(secondId, /^route-local-\d+$/, '重新进入后仍生成数字 ID');
+  assert.notEqual(secondId, firstId);
+
+  const saved = savedState();
+  assert.equal(typeof saved.nextRouteSeq, 'number');
+  assert.ok(saved.nextRouteSeq > 0);
+  const ids = saved.routes.map(route => route.id);
+  assert.equal(new Set(ids).size, ids.length, '线路 ID 不重复');
+  assert.equal(createPage().data.loadError, '', '再次进入不应判定缓存损坏');
+
+  const detail = createDetailPage(secondId);
+  assert.equal(detail.data.notFound, false);
+  assert.equal(detail.data.route.name, '第二条自建线');
+
+  // 模拟旧缓存：自建线路没有 seq，计数曾被序列化为 null
+  const legacy = store.createInitialState();
+  legacy.routes.push({
+    id: 'route-local-1',
+    gymId: 'gym-chalkbox',
+    name: '旧自建线',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4',
+    grade: 'V3'
+  });
+  legacy.nextRouteSeq = null;
+  const normalized = store.normalizeState(legacy);
+  assert.ok(normalized, '旧缓存结构仍应可读');
+  assert.equal(normalized.nextRouteSeq, 2, '从 route-local-1 恢复下一个序号');
+  assert.equal(typeof normalized.nextSessionSeq, 'number');
+  assert.equal(typeof normalized.nextAttemptSeq, 'number');
+});
+
+// ---- G18（QA 复现）----
+test('G18 同日两场从详情「今天再爬」先显式选场，取消或选当前场次不改归属', () => {
+  const page = createPage();
+  tapStart(page, 0);
+  const firstSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'fail');
+
+  page.openSessionForm();
+  tapStart(page, 0);
+  const secondSessionId = page.data.activeSession.id;
+  assert.notEqual(secondSessionId, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'send');
+
+  // QA 复现起点：同一岩馆今天已有两场，当前明确选中第 1 场
+  tapSession(page, firstSessionId);
+  assert.equal(page.data.activeSession.id, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'fail');
+
+  const writesBefore = wxLog.setKeys.length;
+  const navBefore = wxLog.navigations.length;
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '1 天 · 2 场 · 3 把');
+
+  detail.recordAgain();
+
+  assert.ok(detail.data.sessionPicker, '同日多场必须显示场次选择');
+  assert.equal(detail.data.sessionPicker.sessions.length, 2);
+  assert.deepEqual(
+    detail.data.sessionPicker.sessions.map(item => item.label),
+    ['第 1 场', '第 2 场'],
+    '场次选项带可辨认编号'
+  );
+  assert.deepEqual(
+    detail.data.sessionPicker.sessions.map(item => item.id),
+    [firstSessionId, secondSessionId]
+  );
+  assert.equal(
+    detail.data.sessionPicker.sessions[0].isCurrent,
+    true,
+    '当前场次必须有明确标记'
+  );
+  assert.equal(detail.data.sessionPicker.sessions[1].isCurrent, false);
+  assert.ok(
+    detail.data.sessionPicker.sessions.every(item =>
+      /^\d{2}:\d{2}$/.test(item.timeText)
+    ),
+    '场次选项带开始时刻'
+  );
+  assert.equal(detail.data.sessionPicker.dateText, localToday());
+  assert.equal(detail.data.sessionPicker.gymName, store.GYMS[0].name);
+  assert.equal(detail.data.storageError, '');
+  assert.equal(wxLog.setKeys.length, writesBefore, '未选场前不写缓存');
+  assert.equal(wxLog.navigations.length, navBefore, '未选场前不返回');
+  assert.equal(
+    savedState().activeSessionId,
+    firstSessionId,
+    '不能静默切到第 2 场'
+  );
+
+  // 取消：保持原场次、原线路和详情数据
+  detail.cancelSessionPicker();
+  assert.equal(detail.data.sessionPicker, null);
+  assert.equal(wxLog.setKeys.length, writesBefore, '取消不写缓存');
+  assert.equal(wxLog.navigations.length, navBefore, '取消不返回');
+  assert.equal(savedState().activeSessionId, firstSessionId);
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(savedState().attempts.length, 3, '取消不改动尝试');
+  assert.equal(detail.data.summaryText, '1 天 · 2 场 · 3 把', '详情数据保持原样');
+
+  // 明确选中当前场次：不改归属，但按用户选择返回今日页
+  detail.recordAgain();
+  detail.chooseSessionForAgain({
+    currentTarget: { dataset: { sessionId: firstSessionId } }
+  });
+  assert.equal(detail.data.sessionPicker, null);
+  assert.equal(detail.data.storageError, '');
+  assert.equal(savedState().activeSessionId, firstSessionId);
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(savedState().attempts.length, 3);
+  assert.equal(
+    wxLog.navigations[wxLog.navigations.length - 1].type,
+    'navigateBack'
+  );
+
+  // 明确选中另一场：切换归属后返回，尝试归属不串
+  const nextDetail = createDetailPage(ROUTE_BLUE);
+  nextDetail.recordAgain();
+  assert.ok(nextDetail.data.sessionPicker);
+  nextDetail.chooseSessionForAgain({
+    currentTarget: { dataset: { sessionId: secondSessionId } }
+  });
+  assert.equal(nextDetail.data.sessionPicker, null);
+  assert.equal(savedState().activeSessionId, secondSessionId);
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(savedState().attempts.length, 3, '切场次不复制或删除尝试');
+  assert.equal(
+    wxLog.navigations[wxLog.navigations.length - 1].type,
+    'navigateBack'
+  );
+
+  page.onShow();
+  assert.equal(page.data.activeSession.id, secondSessionId);
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(page.data.attempts.length, 1, '第 2 场只显示自己的尝试');
+  assert.equal(page.data.attempts[0].resultText, '完攀');
+});
+
+// ---- G19 ----
+test('G19 今天同岩馆只有一场直接复用；其他岩馆同日场次不算匹配', () => {
+  const page = createPage();
+  tapStart(page, 0);
+  const chalkboxSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  tapResult(page, 'fail');
+
+  // 同日再开另一岩馆场次：今天共有两场，但该线路所属岩馆只有一场
+  page.openSessionForm();
+  page.onGymChange({ detail: { value: 1 } });
+  tapStart(page, 1);
+  const northshoreSessionId = page.data.activeSession.id;
+  assert.notEqual(northshoreSessionId, chalkboxSessionId);
+  assert.equal(page.data.activeSession.gymName, store.GYMS[1].name);
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  detail.recordAgain();
+
+  assert.equal(detail.data.sessionPicker, null, '该岩馆只有一场，不弹选择');
+  let saved = savedState();
+  assert.equal(saved.sessions.length, 2, '只有一场时复用，不新建');
+  assert.equal(saved.activeSessionId, chalkboxSessionId, '复用粉笔盒的场次');
+  assert.equal(saved.activeRouteId, ROUTE_BLUE);
+  assert.equal(saved.attempts.length, 1);
+  assert.equal(
+    wxLog.navigations[wxLog.navigations.length - 1].type,
+    'navigateBack'
+  );
+
+  // 全新缓存：今天没有该岩馆场次，只有另一岩馆场次时仍新建
+  resetHarness();
+  const fresh = createPage();
+  tapStart(fresh, 1);
+  const freshNorthshoreId = fresh.data.activeSession.id;
+
+  const freshDetail = createDetailPage(ROUTE_BLUE);
+  freshDetail.recordAgain();
+
+  assert.equal(freshDetail.data.sessionPicker, null);
+  saved = savedState();
+  assert.equal(saved.sessions.length, 2);
+  const created = saved.sessions.find(
+    session => session.id !== freshNorthshoreId
+  );
+  assert.ok(created);
+  assert.equal(created.gymId, 'gym-chalkbox', '为线路所属岩馆新建');
+  assert.equal(created.date, localToday());
+  assert.equal(saved.activeSessionId, created.id);
+  assert.equal(saved.activeRouteId, ROUTE_BLUE);
+});
+
+// ---- G20 ----
+test('G20 同日多场选中后保存失败：提示可见、不切换不返回，重试成功', () => {
+  const page = createPage();
+  tapStart(page, 0);
+  const firstSessionId = page.data.activeSession.id;
+
+  page.openSessionForm();
+  tapStart(page, 0);
+  const secondSessionId = page.data.activeSession.id;
+  tapSession(page, firstSessionId);
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  detail.recordAgain();
+  assert.ok(detail.data.sessionPicker);
+
+  const navBefore = wxLog.navigations.length;
+  wxLog.setShouldThrow = true;
+  wxLog.setError = { errMsg: 'setStorageSync:fail quota exceeded' };
+
+  detail.chooseSessionForAgain({
+    currentTarget: { dataset: { sessionId: secondSessionId } }
+  });
+
+  assert.match(detail.data.storageError, /本地保存失败/);
+  assert.match(detail.data.storageError, /quota exceeded/);
+  assert.ok(detail.data.sessionPicker, '保存失败保留场次选择');
+  assert.equal(wxLog.navigations.length, navBefore, '保存失败不返回');
+  assert.equal(
+    savedState().activeSessionId,
+    firstSessionId,
+    '保存失败不切换当前场次'
+  );
+
+  wxLog.setShouldThrow = false;
+  detail.chooseSessionForAgain({
+    currentTarget: { dataset: { sessionId: secondSessionId } }
+  });
+
+  assert.equal(detail.data.storageError, '');
+  assert.equal(detail.data.sessionPicker, null);
+  assert.equal(savedState().activeSessionId, secondSessionId);
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(
+    wxLog.navigations[wxLog.navigations.length - 1].type,
+    'navigateBack'
+  );
 });

@@ -9,6 +9,7 @@
  */
 const {
   GYMS,
+  LEGACY_SUMMARY_SAMPLE,
   ROUTE_COLORS,
   GRADES,
   clone,
@@ -84,7 +85,9 @@ Page({
     quickRouteGrade: 'V3',
     quickRouteError: '',
 
-    noteEditor: null
+    noteEditor: null,
+
+    legacySample: null
   },
 
   onLoad() {
@@ -92,6 +95,7 @@ Page({
     this.state = createInitialState();
     this.setData({
       gyms: GYMS,
+      legacySample: LEGACY_SUMMARY_SAMPLE,
       quickRouteColors: ROUTE_COLORS,
       quickRouteColorIndex: 0,
       quickRouteColorName: ROUTE_COLORS[0].name,
@@ -100,6 +104,31 @@ Page({
       quickRouteGrade: 'V3'
     });
     this.loadTrial();
+  },
+
+  /**
+   * 从线路详情「今天再爬」返回时，缓存里的当前场次/线路已经变化。
+   * 只有检测到外部变化才重新读取，避免冲掉今日页正在填写的表单。
+   */
+  onShow() {
+    if (!this.data.ready) return;
+
+    const loaded = loadState();
+    if (loaded.error) {
+      if (loaded.error !== this.data.loadError) this.loadTrial();
+      return;
+    }
+
+    const current = this.state;
+    const next = loaded.state;
+    const changed =
+      next.activeSessionId !== current.activeSessionId ||
+      next.activeRouteId !== current.activeRouteId ||
+      next.sessions.length !== current.sessions.length ||
+      next.attempts.length !== current.attempts.length ||
+      next.routes.length !== current.routes.length;
+
+    if (changed) this.loadTrial();
   },
 
   /**
@@ -382,6 +411,30 @@ Page({
   },
 
   /**
+   * 线路详情按稳定 ID 打开；同色同级或同名的另一条线不会串记录。
+   */
+  openRouteDetail(event) {
+    const id = event && event.currentTarget && event.currentTarget.dataset.routeId;
+    if (!id) return;
+    if (!this.state.routes.some(route => route.id === id)) return;
+
+    wx.navigateTo({
+      url: '/pages/route-detail/route-detail?routeId=' + encodeURIComponent(id)
+    });
+  },
+
+  /**
+   * 旧汇总样例：虚构、只读，用于检查原始汇总的可读性，不参与逐次统计。
+   */
+  openLegacySample() {
+    wx.navigateTo({
+      url:
+        '/pages/route-detail/route-detail?routeId=' +
+        encodeURIComponent(LEGACY_SUMMARY_SAMPLE.id)
+    });
+  },
+
+  /**
    * 每点一次结果只追加一次尝试；保存失败时页面不会出现这一把。
    */
   recordAttempt(event) {
@@ -527,6 +580,7 @@ Page({
     next.nextRouteSeq = seq + 1;
     const route = {
       id: 'route-local-' + seq,
+      seq,
       gymId: session.gymId,
       name,
       colorName: color.name,
