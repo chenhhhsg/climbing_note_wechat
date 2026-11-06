@@ -504,12 +504,27 @@
   bottom: 0;
   z-index: 20;
   display: flex;
+  flex-wrap: wrap;
   padding: 20rpx 32rpx 20rpx;
   padding-bottom: calc(20rpx + constant(safe-area-inset-bottom));
   padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
   background: rgba(247, 244, 236, 0.98);
   border-top: 1rpx solid #ddd8ca;
   box-sizing: border-box;
+}
+
+/* 待确认锁定时提示先重试原行，按钮本身同时 disabled */
+.result-lock-hint {
+  width: 100%;
+  margin: 0 0 12rpx;
+  font-size: 24rpx;
+  line-height: 34rpx;
+  color: #a15c2b;
+  text-align: center;
+}
+
+.result-button[disabled] {
+  opacity: 0.45;
 }
 
 .result-button {
@@ -574,4 +589,91 @@
 .session-item-meta {
   color: #8a877b;
   font-size: 22rpx;
+}
+
+/* 弱网演练：本地模拟保存端入口，仅存在于试用工程 */
+.drill-card {
+  border-style: dashed;
+  border-color: #b9b3a2;
+  background: #fbf8ef;
+}
+
+.drill-hint {
+  display: block;
+  margin-top: 12rpx;
+  color: #717269;
+  font-size: 24rpx;
+  line-height: 1.5;
+}
+
+.drill-button {
+  margin-top: 18rpx;
+}
+
+.drill-armed {
+  display: block;
+  margin-top: 14rpx;
+  padding: 14rpx 18rpx;
+  background: #f6e8cf;
+  border: 1rpx solid #d9b36c;
+  border-radius: 12rpx;
+  color: #6b4a12;
+  font-size: 24rpx;
+  font-weight: 600;
+}
+
+/* 保存中 / 回执丢失提示 */
+.save-notice {
+  margin-top: 16rpx;
+  padding: 18rpx 20rpx;
+  background: #f6e8cf;
+  border: 1rpx solid #d9b36c;
+  border-radius: 14rpx;
+}
+
+.save-notice-text {
+  display: block;
+  color: #6b4a12;
+  font-size: 25rpx;
+  line-height: 1.5;
+}
+
+.save-notice-hint {
+  display: block;
+  margin-top: 8rpx;
+  color: #8a6a2f;
+  font-size: 22rpx;
+}
+
+/* 待确认操作：与已保存尝试分开显示，可重试同一操作 ID */
+.pending-attempt {
+  border-style: dashed;
+  border-color: #d9b36c;
+  background: #fbf6ea;
+}
+
+.pending-footer {
+  display: flex;
+  align-items: center;
+  margin-top: 10rpx;
+}
+
+.pending-status {
+  flex: 1;
+  font-size: 24rpx;
+}
+
+.pending-status-saving {
+  color: #6b4a12;
+  font-weight: 600;
+}
+
+.pending-status-failed {
+  color: #8f4a2f;
+  font-weight: 600;
+}
+
+.pending-retry {
+  flex: none;
+  margin-left: 16rpx;
 }

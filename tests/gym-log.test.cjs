@@ -1,9 +1,9 @@
 /**
- * 岩馆快速记录本地试用工程离线测试（G01–G17）
+ * 岩馆快速记录本地试用工程离线测试（G01–G27）
  *
  * 直接加载独立工程的两个真实页面（今日攀爬、线路详情）和数据层，
  * 只替换微信本地缓存与页面导航，验证场次、线路、尝试、备注、
- * 跨天回看、旧汇总只读样例与错误提示的真实数据逻辑。
+ * 跨天回看、旧汇总只读样例、弱网回执丢失与幂等重试的真实数据逻辑。
  *
  * 运行：node --test tests/gym-log.test.cjs
  */
@@ -21,6 +21,7 @@ const PAGE_WXSS = path.join(PAGE_DIR, 'today.wxss');
 const APP_JS = path.join(DEV_PROJECT, 'app.js');
 const APP_WXSS = path.join(DEV_PROJECT, 'app.wxss');
 const STORE_JS = path.join(DEV_PROJECT, 'utils', 'store.js');
+const SERVER_JS = path.join(DEV_PROJECT, 'utils', 'trial-save-server.js');
 const DETAIL_DIR = path.join(DEV_PROJECT, 'pages', 'route-detail');
 const DETAIL_JS = path.join(DETAIL_DIR, 'route-detail.js');
 const DETAIL_WXML = path.join(DETAIL_DIR, 'route-detail.wxml');
@@ -28,6 +29,7 @@ const DETAIL_WXSS = path.join(DETAIL_DIR, 'route-detail.wxss');
 
 const ROUTE_BLUE = 'route-chalkbox-blue-dyn';
 const ROUTE_BLUE_BALANCE = 'route-chalkbox-blue-balance';
+const ROUTE_RED = 'route-chalkbox-red-overhang';
 const ROUTE_YELLOW = 'route-northshore-yellow-small';
 const LEGACY_ROUTE = 'route-legacy-summary-v3';
 
@@ -37,6 +39,7 @@ const wxLog = {
   setKeys: [],
   setShouldThrow: false,
   setError: null,
+  failKeys: new Set(),
   navigations: []
 };
 
@@ -48,7 +51,7 @@ global.wx = {
   },
   setStorageSync(key, value) {
     wxLog.setKeys.push(key);
-    if (wxLog.setShouldThrow) {
+    if (wxLog.setShouldThrow || wxLog.failKeys.has(key)) {
       throw wxLog.setError || { errMsg: 'setStorageSync:fail mock storage error' };
     }
     storage.set(key, value);
@@ -69,6 +72,8 @@ global.wx = {
 
 const store = require(STORE_JS);
 const STORE_KEY = store.STORE_KEY;
+const server = require(SERVER_JS);
+const LEDGER_KEY = server.LEDGER_KEY;
 
 // 捕获原生 Page(...) 定义
 let pageDefinition = null;
@@ -89,6 +94,7 @@ function resetHarness() {
   wxLog.setKeys = [];
   wxLog.setShouldThrow = false;
   wxLog.setError = null;
+  wxLog.failKeys = new Set();
   wxLog.navigations = [];
 }
 
@@ -124,6 +130,8 @@ function createPage() {
   page.data = JSON.parse(JSON.stringify(pageDefinition.data));
   attachSetData(page);
   page.onLoad();
+  // 离线测试默认不留出模拟网络延迟；需要观察「保存中」的用例会单独调大。
+  page._saveDelayMs = 0;
   return page;
 }
 
@@ -149,8 +157,14 @@ function tapRoute(page, routeId) {
   page.selectRoute({ currentTarget: { dataset: { routeId } } });
 }
 
-function tapResult(page, result) {
-  page.recordAttempt({ currentTarget: { dataset: { result } } });
+async function tapResult(page, result) {
+  await page.recordAttempt({ currentTarget: { dataset: { result } } });
+}
+
+async function retryPending(page, opId) {
+  await page.retryPendingAttempt({
+    currentTarget: { dataset: { opId } }
+  });
 }
 
 function tapSession(page, sessionId) {
@@ -170,12 +184,18 @@ function savedState() {
   return raw ? JSON.parse(raw) : null;
 }
 
+// 模拟保存端账本与客户端状态分开读取，便于分别断言。
+function ledgerState() {
+  const raw = storage.get(LEDGER_KEY);
+  return raw ? JSON.parse(raw) : null;
+}
+
 function localToday() {
   return store.todayLocalDate();
 }
 
 // ---- G01 ----
-test('G01 首次进入默认今天，场次表单与虚构数据标识可见', () => {
+test('G01 首次进入默认今天，场次表单与虚构数据标识可见', async () => {
   const page = createPage();
 
   assert.equal(page.data.ready, true);
@@ -192,12 +212,20 @@ test('G01 首次进入默认今天，场次表单与虚构数据标识可见', (
     store.GYMS.map(gym => gym.id)
   );
 
-  assert.deepEqual(wxLog.getKeys, [STORE_KEY], '只读取专用缓存键');
+  assert.deepEqual(
+    wxLog.getKeys,
+    [STORE_KEY, LEDGER_KEY],
+    '只读取试用工程的两个专用键'
+  );
+  assert.ok(
+    wxLog.getKeys.every(key => key.indexOf('climbingNote.gymLogTrial.') === 0),
+    '缓存键必须与正式数据分开'
+  );
   assert.equal(wxLog.setKeys.length, 0, '首次进入不写缓存');
   assert.match(STORE_KEY, /gymLogTrial/, '缓存键必须与正式数据分开');
 });
 
-test('G01 日期按本地时间生成，不因 UTC 偏移跨天', () => {
+test('G01 日期按本地时间生成，不因 UTC 偏移跨天', async () => {
   const midnight = new Date(2026, 10, 6, 0, 30);
   const lateNight = new Date(2026, 10, 6, 23, 30);
 
@@ -209,7 +237,7 @@ test('G01 日期按本地时间生成，不因 UTC 偏移跨天', () => {
 });
 
 // ---- G02 ----
-test('G02 开始场次写入专用缓存，重新进入读回同一场次与线路', () => {
+test('G02 开始场次写入专用缓存，重新进入读回同一场次与线路', async () => {
   const page = createPage();
   tapStart(page);
 
@@ -244,14 +272,14 @@ test('G02 开始场次写入专用缓存，重新进入读回同一场次与线�
 });
 
 // ---- G03 ----
-test('G03 可选历史日期回放跨天，同日显式开始第二场并切换归属', () => {
+test('G03 可选历史日期回放跨天，同日显式开始第二场并切换归属', async () => {
   const page = createPage();
   tapStart(page, 0, '2026-10-30');
   const firstSession = page.data.activeSession.id;
   assert.equal(page.data.activeSession.dateText, '2026-10-30');
 
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   page.openSessionForm();
   assert.equal(page.data.sessionFormVisible, true);
@@ -271,7 +299,7 @@ test('G03 可选历史日期回放跨天，同日显式开始第二场并切换�
   assert.equal(page.data.selectedRoute, null, '新场次不继承上一条线路');
 
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'send');
+  await tapResult(page, 'send');
   assert.equal(page.data.attempts.length, 1);
   assert.equal(page.data.attempts[0].resultText, '完攀');
 
@@ -303,7 +331,7 @@ test('G03 可选历史日期回放跨天，同日显式开始第二场并切换�
 });
 
 // ---- G03 复现（QA）----
-test('G03 历史场次后显式开始新场次默认本地今天，历史场次仍可恢复', () => {
+test('G03 历史场次后显式开始新场次默认本地今天，历史场次仍可恢复', async () => {
   const page = createPage();
   page.onDateChange({ detail: { value: '2020-04-02' } });
   page.startSession();
@@ -336,7 +364,7 @@ test('G03 历史场次后显式开始新场次默认本地今天，历史场次�
 });
 
 // ---- G04 ----
-test('G04 已有线路按岩馆筛选，同色同级靠固定 ID 区分', () => {
+test('G04 已有线路按岩馆筛选，同色同级靠固定 ID 区分', async () => {
   const page = createPage();
   tapStart(page, 0);
 
@@ -351,11 +379,11 @@ test('G04 已有线路按岩馆筛选，同色同级靠固定 ID 区分', () => 
   assert.notEqual(twins[0].name, twins[1].name);
 
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
   tapRoute(page, ROUTE_BLUE_BALANCE);
   assert.equal(page.data.selectedRoute.id, ROUTE_BLUE_BALANCE);
   assert.equal(page.data.attempts.length, 0, '同色同级的另一条线不带第一条的尝试');
-  tapResult(page, 'send');
+  await tapResult(page, 'send');
   assert.equal(page.data.attempts.length, 1);
 
   tapRoute(page, ROUTE_BLUE);
@@ -373,7 +401,7 @@ test('G04 已有线路按岩馆筛选，同色同级靠固定 ID 区分', () => 
 });
 
 // ---- G05 ----
-test('G05 快速新建命名线路使用固定 ID，重进可读回', () => {
+test('G05 快速新建命名线路使用固定 ID，重进可读回', async () => {
   const page = createPage();
   tapStart(page, 0);
   page.toggleQuickRoute();
@@ -392,7 +420,7 @@ test('G05 快速新建命名线路使用固定 ID，重进可读回', () => {
   assert.equal(page.data.quickRouteVisible, false);
   assert.equal(page.data.quickRouteError, '');
 
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   const reentered = createPage();
   assert.equal(reentered.data.selectedRoute.id, created.id);
@@ -402,7 +430,7 @@ test('G05 快速新建命名线路使用固定 ID，重进可读回', () => {
   assert.ok(reentered.data.routes.some(route => route.id === created.id));
 });
 
-test('G05 快速新建线路必须命名，未命名不会写入缓存', () => {
+test('G05 快速新建线路必须命名，未命名不会写入缓存', async () => {
   const page = createPage();
   tapStart(page, 0);
   const routeCount = savedState().routes.length;
@@ -416,12 +444,12 @@ test('G05 快速新建线路必须命名，未命名不会写入缓存', () => {
 });
 
 // ---- G06 ----
-test('G06 两次未完成形成两条独立尝试，第二把备注单独保存并可重进读回', () => {
+test('G06 两次未完成形成两条独立尝试，第二把备注单独保存并可重进读回', async () => {
   const page = createPage();
   tapStart(page, 0);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   assert.equal(page.data.attempts.length, 2);
   assert.notEqual(page.data.attempts[0].id, page.data.attempts[1].id);
@@ -460,7 +488,7 @@ test('G06 两次未完成形成两条独立尝试，第二把备注单独保存�
 });
 
 // ---- G07 ----
-test('G07 尝试保存失败显示可见错误，不产生幻影记录，重试后成功', () => {
+test('G07 尝试保存失败显示可见错误，不产生幻影记录，重试后成功', async () => {
   const page = createPage();
   tapStart(page, 0);
   tapRoute(page, ROUTE_BLUE);
@@ -468,22 +496,29 @@ test('G07 尝试保存失败显示可见错误，不产生幻影记录，重试�
 
   wxLog.setShouldThrow = true;
   wxLog.setError = { errMsg: 'setStorageSync:fail exceed storage limit' };
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   assert.match(page.data.storageError, /本地保存失败/);
   assert.match(page.data.storageError, /exceed storage limit/);
   assert.equal(page.data.attempts.length, 0, '保存失败的尝试不得显示为已记录');
+  assert.equal(
+    page.data.pendingAttempts.length,
+    0,
+    '连待确认都没落盘时不产生幻影行'
+  );
   assert.equal(savedState().attempts.length, 0);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(ledgerState(), null, '本地待确认未落盘就不派发到保存端');
 
   wxLog.setShouldThrow = false;
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   assert.equal(page.data.storageError, '');
   assert.equal(page.data.attempts.length, 1);
   assert.equal(savedState().attempts.length, 1);
 });
 
-test('G07 开始场次保存失败时保留表单并显示错误，重试后写入', () => {
+test('G07 开始场次保存失败时保留表单并显示错误，重试后写入', async () => {
   const page = createPage();
   wxLog.setShouldThrow = true;
 
@@ -502,12 +537,12 @@ test('G07 开始场次保存失败时保留表单并显示错误，重试后写�
   assert.equal(savedState().sessions.length, 1);
 });
 
-test('G07 备注保存失败保留编辑内容与原备注，重试后写入', () => {
+test('G07 备注保存失败保留编辑内容与原备注，重试后写入', async () => {
   const page = createPage();
   tapStart(page, 0);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   tapNote(page, page.data.attempts[1].id);
   typeNote(page, '抓到后向右摆');
@@ -530,7 +565,7 @@ test('G07 备注保存失败保留编辑内容与原备注，重试后写入', (
 });
 
 // ---- G08 ----
-test('G08 缓存损坏时显示可见错误，重置后可重新开始', () => {
+test('G08 缓存损坏时显示可见错误，重置后可重新开始', async () => {
   storage.set(STORE_KEY, '{not-json');
 
   const page = createPage();
@@ -552,7 +587,7 @@ test('G08 缓存损坏时显示可见错误，重置后可重新开始', () => {
   assert.equal(savedState().sessions.length, 1);
 });
 
-test('G08 读取缓存抛错时显示可见错误', () => {
+test('G08 读取缓存抛错时显示可见错误', async () => {
   const original = global.wx.getStorageSync;
   global.wx.getStorageSync = () => {
     throw { errMsg: 'getStorageSync:fail permission denied' };
@@ -571,7 +606,7 @@ test('G08 读取缓存抛错时显示可见错误', () => {
 });
 
 // ---- G09 ----
-test('G09 独立工程配置、页面绑定与视觉要求齐全', () => {
+test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
   const devProject = JSON.parse(
     read(path.join(DEV_PROJECT, 'project.config.json'))
   );
@@ -707,7 +742,7 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', () => {
 });
 
 // ---- G10 ----
-test('G10 线路详情页已注册，今日页按稳定 ID 进入并显示线路名称、颜色与难度', () => {
+test('G10 线路详情页已注册，今日页按稳定 ID 进入并显示线路名称、颜色与难度', async () => {
   const devApp = JSON.parse(read(path.join(DEV_PROJECT, 'app.json')));
   assert.deepEqual(devApp.pages, [
     'pages/today/today',
@@ -753,15 +788,15 @@ test('G10 线路详情页已注册，今日页按稳定 ID 进入并显示线路
 });
 
 // ---- G11 ----
-test('G11 历史两天两场三把：第二把备注保留，今天再爬回到原线路', () => {
+test('G11 历史两天两场三把：第二把备注保留，今天再爬回到原线路', async () => {
   // 场景中的周四：用固定历史日期，避免与运行当天重合
   const historyDate = '2020-04-02';
 
   const page = createPage();
   tapStart(page, 0, historyDate);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   const historySessionId = page.data.activeSession.id;
   tapNote(page, page.data.attempts[1].id);
@@ -809,7 +844,7 @@ test('G11 历史两天两场三把：第二把备注保留，今天再爬回到�
   assert.equal(page.data.activeSession.dateText, localToday());
   assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
   assert.equal(page.data.attempts.length, 0);
-  tapResult(page, 'send');
+  await tapResult(page, 'send');
   assert.equal(page.data.attempts.length, 1);
   assert.equal(page.data.attempts[0].resultText, '完攀');
 
@@ -841,13 +876,13 @@ test('G11 历史两天两场三把：第二把备注保留，今天再爬回到�
 });
 
 // ---- G12 ----
-test('G12 同日两个场次在详情中分开分组，归属与结果不串', () => {
+test('G12 同日两个场次在详情中分开分组，归属与结果不串', async () => {
   const day = '2020-04-02';
   const page = createPage();
   tapStart(page, 0, day);
   const firstSessionId = page.data.activeSession.id;
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   page.openSessionForm();
   page.onDateChange({ detail: { value: day } });
@@ -855,7 +890,7 @@ test('G12 同日两个场次在详情中分开分组，归属与结果不串', (
   const secondSessionId = page.data.activeSession.id;
   assert.notEqual(secondSessionId, firstSessionId);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'send');
+  await tapResult(page, 'send');
 
   const detail = createDetailPage(ROUTE_BLUE);
   assert.equal(detail.data.summaryText, '1 天 · 2 场 · 2 把');
@@ -880,15 +915,15 @@ test('G12 同日两个场次在详情中分开分组，归属与结果不串', (
 });
 
 // ---- G13 ----
-test('G13 同色同级与同名线路按稳定 ID 独立统计', () => {
+test('G13 同色同级与同名线路按稳定 ID 独立统计', async () => {
   const page = createPage();
   tapStart(page, 0);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   tapRoute(page, ROUTE_BLUE_BALANCE);
-  tapResult(page, 'send');
-  tapResult(page, 'fail');
+  await tapResult(page, 'send');
+  await tapResult(page, 'fail');
 
   const blue = createDetailPage(ROUTE_BLUE);
   assert.equal(blue.data.route.grade, 'V3');
@@ -914,7 +949,7 @@ test('G13 同色同级与同名线路按稳定 ID 独立统计', () => {
   page.onQuickRouteNameInput({ detail: { value: '同名线' } });
   page.createQuickRoute();
   const firstQuickRouteId = page.data.selectedRoute.id;
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   page.toggleQuickRoute();
   page.onQuickRouteNameInput({ detail: { value: '同名线' } });
@@ -924,7 +959,7 @@ test('G13 同色同级与同名线路按稳定 ID 独立统计', () => {
   assert.equal(page.data.selectedRoute.name, '同名线');
   assert.equal(page.data.selectedRoute.colorName, '蓝色');
   assert.equal(page.data.selectedRoute.grade, 'V3');
-  tapResult(page, 'send');
+  await tapResult(page, 'send');
 
   const quickOne = createDetailPage(firstQuickRouteId);
   assert.equal(quickOne.data.route.name, '同名线');
@@ -944,7 +979,7 @@ test('G13 同色同级与同名线路按稳定 ID 独立统计', () => {
 });
 
 // ---- G14 ----
-test('G14 旧汇总只读样例可读，不生成五条尝试、不计入逐次统计', () => {
+test('G14 旧汇总只读样例可读，不生成五条尝试、不计入逐次统计', async () => {
   const page = createPage();
   assert.equal(page.data.legacySample.id, LEGACY_ROUTE);
   assert.equal(page.data.legacySample.legacy.summaryText, 'V3 / 尝试 5 次 / 完成');
@@ -992,7 +1027,7 @@ test('G14 旧汇总只读样例可读，不生成五条尝试、不计入逐次�
 });
 
 // ---- G15 ----
-test('G15 详情页读取损坏缓存、找不到线路与保存失败均可见且可恢复', () => {
+test('G15 详情页读取损坏缓存、找不到线路与保存失败均可见且可恢复', async () => {
   storage.set(STORE_KEY, '{not-json');
   const broken = createDetailPage(ROUTE_BLUE);
   assert.match(broken.data.loadError, /格式损坏/);
@@ -1041,7 +1076,7 @@ test('G15 详情页读取损坏缓存、找不到线路与保存失败均可见�
 });
 
 // ---- G16 ----
-test('G16 详情页 WXML 绑定、跨天分组与视觉要求齐全', () => {
+test('G16 详情页 WXML 绑定、跨天分组与视觉要求齐全', async () => {
   const detailJson = JSON.parse(read(path.join(DETAIL_DIR, 'route-detail.json')));
   assert.equal(detailJson.navigationBarTitleText, '线路详情');
 
@@ -1125,7 +1160,7 @@ test('G16 详情页 WXML 绑定、跨天分组与视觉要求齐全', () => {
 });
 
 // ---- G17 ----
-test('G17 重新进入后新建线路仍有有效稳定 ID，旧缓存从中断的序号恢复', () => {
+test('G17 重新进入后新建线路仍有有效稳定 ID，旧缓存从中断的序号恢复', async () => {
   const first = createPage();
   tapStart(first, 0);
   first.toggleQuickRoute();
@@ -1175,25 +1210,25 @@ test('G17 重新进入后新建线路仍有有效稳定 ID，旧缓存从中断�
 });
 
 // ---- G18（QA 复现）----
-test('G18 同日两场从详情「今天再爬」先显式选场，取消或选当前场次不改归属', () => {
+test('G18 同日两场从详情「今天再爬」先显式选场，取消或选当前场次不改归属', async () => {
   const page = createPage();
   tapStart(page, 0);
   const firstSessionId = page.data.activeSession.id;
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   page.openSessionForm();
   tapStart(page, 0);
   const secondSessionId = page.data.activeSession.id;
   assert.notEqual(secondSessionId, firstSessionId);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'send');
+  await tapResult(page, 'send');
 
   // QA 复现起点：同一岩馆今天已有两场，当前明确选中第 1 场
   tapSession(page, firstSessionId);
   assert.equal(page.data.activeSession.id, firstSessionId);
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   const writesBefore = wxLog.setKeys.length;
   const navBefore = wxLog.navigations.length;
@@ -1286,12 +1321,12 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
 });
 
 // ---- G19 ----
-test('G19 今天同岩馆只有一场直接复用；其他岩馆同日场次不算匹配', () => {
+test('G19 今天同岩馆只有一场直接复用；其他岩馆同日场次不算匹配', async () => {
   const page = createPage();
   tapStart(page, 0);
   const chalkboxSessionId = page.data.activeSession.id;
   tapRoute(page, ROUTE_BLUE);
-  tapResult(page, 'fail');
+  await tapResult(page, 'fail');
 
   // 同日再开另一岩馆场次：今天共有两场，但该线路所属岩馆只有一场
   page.openSessionForm();
@@ -1338,7 +1373,7 @@ test('G19 今天同岩馆只有一场直接复用；其他岩馆同日场次不�
 });
 
 // ---- G20 ----
-test('G20 同日多场选中后保存失败：提示可见、不切换不返回，重试成功', () => {
+test('G20 同日多场选中后保存失败：提示可见、不切换不返回，重试成功', async () => {
   const page = createPage();
   tapStart(page, 0);
   const firstSessionId = page.data.activeSession.id;
@@ -1382,5 +1417,748 @@ test('G20 同日多场选中后保存失败：提示可见、不切换不返回�
   assert.equal(
     wxLog.navigations[wxLog.navigations.length - 1].type,
     'navigateBack'
+  );
+});
+
+// ---- G21 ----
+test('G21 回执丢失：账本已入账、待确认保留，重试复用同一 ID 不重复', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+
+  assert.equal(page.data.faultInjectionArmed, false);
+  page.toggleReceiptLossArm();
+  assert.equal(page.data.faultInjectionArmed, true);
+  assert.equal(page.data.faultInjectionError, '');
+  assert.equal(ledgerState().loseNextReceipt, true);
+
+  await tapResult(page, 'fail');
+  const opId = page.data.pendingAttempts[0] && page.data.pendingAttempts[0].opId;
+  assert.ok(opId);
+
+  // 页面计数：待确认不计入已保存
+  assert.equal(page.data.attempts.length, 0);
+  assert.equal(page.data.pendingAttempts.length, 1);
+  assert.equal(page.data.hasPending, true);
+  assert.equal(page.data.attemptCountText, '0 把');
+  assert.equal(page.data.pendingCountText, '1 把待确认');
+  assert.equal(page.data.routeCountText, '0 把 · 1 把待确认');
+  assert.equal(page.data.pendingAttempts[0].resultText, '未完成');
+  assert.equal(page.data.pendingAttempts[0].label, '第 1 把');
+  assert.match(page.data.pendingAttempts[0].timeText, /^\d{2}:\d{2}$/);
+  assert.match(page.data.pendingAttempts[0].statusText, /保存失败/);
+  assert.match(page.data.pendingAttempts[0].statusText, /回执丢失/);
+  assert.match(page.data.saveNotice, /回执丢失/);
+  assert.equal(page.data.savingOpId, '');
+
+  // 故障注入只作用于这一次保存
+  assert.equal(page.data.faultInjectionArmed, false);
+  assert.equal(ledgerState().loseNextReceipt, false);
+
+  // 持久账本：保存端已入账一条
+  assert.equal(ledgerState().records.length, 1);
+  assert.equal(ledgerState().records[0].opId, opId);
+  assert.equal(ledgerState().records[0].result, 'fail');
+  assert.equal(ledgerState().records[0].sessionId, savedState().activeSessionId);
+  assert.equal(ledgerState().records[0].routeId, ROUTE_BLUE);
+
+  // 客户端待确认状态单独持久化
+  assert.equal(savedState().attempts.length, 0);
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(savedState().pendingSaves[0].opId, opId);
+  assert.equal(savedState().pendingSaves[0].seq, 1);
+  assert.equal(savedState().nextAttemptSeq, 2);
+
+  // 在该行重试：同一操作 ID，账本不新增
+  await retryPending(page, opId);
+
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.hasPending, false);
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].id, opId, '重试复用同一 ID');
+  assert.equal(page.data.attempts[0].label, '第 1 把');
+  assert.equal(page.data.attempts[0].resultText, '未完成');
+  assert.equal(page.data.attemptCountText, '1 把');
+  assert.equal(page.data.routeCountText, '1 把');
+  assert.equal(page.data.saveNotice, '');
+  assert.equal(ledgerState().records.length, 1, '同一操作 ID 只入账一次');
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().attempts[0].id, opId);
+
+  // 成功后再点结果：新操作 ID、新尝试
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 2);
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(ledgerState().records.length, 2);
+  assert.notEqual(page.data.attempts[1].id, opId);
+  assert.equal(page.data.attemptCountText, '2 把');
+  assert.equal(new Set(ledgerState().records.map(record => record.opId)).size, 2);
+});
+
+// ---- G22 ----
+test('G22 保存中不可重复派发；页面重进与并发重试同一操作都不重复', async () => {
+  const page = createPage();
+  page._saveDelayMs = 40;
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  page.toggleReceiptLossArm();
+
+  const originalSubmit = server.submitOperation;
+  let submitCalls = 0;
+  server.submitOperation = operation => {
+    submitCalls += 1;
+    return originalSubmit(operation);
+  };
+
+  try {
+    const first = page.recordAttempt({
+      currentTarget: { dataset: { result: 'fail' } }
+    });
+    const opId = page.data.pendingAttempts[0].opId;
+
+    // 保存中：行可见，同一行的重复点击不会发第二个请求
+    assert.equal(page.data.savingOpId, opId);
+    assert.equal(page.data.pendingAttempts[0].isSaving, true);
+    assert.equal(page.data.pendingAttempts[0].canRetry, false);
+    assert.match(page.data.pendingAttempts[0].statusText, /保存中/);
+
+    await page.retryPendingAttempt({
+      currentTarget: { dataset: { opId } }
+    });
+    assert.equal(submitCalls, 0, '保存中不得重复派发同一次');
+    assert.equal(page.data.savingOpId, opId, '重复点击不改变进行中的操作');
+
+    await first;
+    assert.equal(submitCalls, 1);
+    assert.equal(page.data.savingOpId, '');
+    assert.equal(page.data.pendingAttempts.length, 1);
+    assert.match(page.data.pendingAttempts[0].statusText, /回执丢失/);
+    assert.equal(ledgerState().records.length, 1);
+
+    // 页面重进后待确认行仍在，重试不重复入账
+    const reentered = createPage();
+    assert.equal(reentered.data.pendingAttempts.length, 1);
+    assert.equal(reentered.data.pendingAttempts[0].opId, opId);
+    assert.equal(reentered.data.pendingAttempts[0].label, '第 1 把');
+    assert.equal(reentered.data.pendingAttempts[0].resultText, '未完成');
+    assert.match(reentered.data.pendingAttempts[0].timeText, /^\d{2}:\d{2}$/);
+    assert.equal(reentered.data.attempts.length, 0);
+    assert.equal(reentered.data.attemptCountText, '0 把');
+    assert.equal(reentered.data.pendingCountText, '1 把待确认');
+    await retryPending(reentered, opId);
+    assert.equal(reentered.data.attempts.length, 1);
+    assert.equal(reentered.data.attempts[0].id, opId);
+    assert.equal(ledgerState().records.length, 1, '页面重进后重试不重复入账');
+    assert.equal(savedState().pendingSaves.length, 0);
+
+    // 再制造一条回执丢失，两个页面实例并发重试同一操作
+    const writer = createPage();
+    writer._saveDelayMs = 0;
+    writer.toggleReceiptLossArm();
+    await tapResult(writer, 'send');
+    const secondOpId = writer.data.pendingAttempts[0].opId;
+    assert.ok(secondOpId);
+    assert.notEqual(secondOpId, opId);
+    assert.equal(ledgerState().records.length, 2);
+
+    const pageA = createPage();
+    const pageB = createPage();
+    pageA._saveDelayMs = 20;
+    pageB._saveDelayMs = 20;
+    await Promise.all([
+      pageA.retryPendingAttempt({
+        currentTarget: { dataset: { opId: secondOpId } }
+      }),
+      pageB.retryPendingAttempt({
+        currentTarget: { dataset: { opId: secondOpId } }
+      })
+    ]);
+
+    assert.equal(
+      ledgerState().records.filter(record => record.opId === secondOpId).length,
+      1,
+      '并发重试同一操作只入账一次'
+    );
+    assert.equal(pageA.data.attempts.filter(item => item.id === secondOpId).length, 1);
+    assert.equal(pageB.data.attempts.filter(item => item.id === secondOpId).length, 1);
+
+    const finalState = savedState();
+    assert.equal(finalState.pendingSaves.length, 0);
+    assert.equal(finalState.attempts.length, 2);
+    assert.equal(
+      finalState.attempts.filter(item => item.id === secondOpId).length,
+      1
+    );
+  } finally {
+    server.submitOperation = originalSubmit;
+  }
+});
+
+// ---- G23 ----
+test('G23 周四两把＋周日一把：故障注入第二把，重试后仍三把且备注正确', async () => {
+  const historyDate = '2020-04-02';
+  const page = createPage();
+  tapStart(page, 0, historyDate);
+  const historySessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  assert.equal(page.data.attempts.length, 1);
+
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'fail');
+  const secondOpId = page.data.pendingAttempts[0].opId;
+  assert.ok(secondOpId);
+  assert.equal(page.data.attempts.length, 1, '第二把确认前不计入已保存');
+  assert.equal(page.data.pendingAttempts.length, 1);
+  assert.equal(ledgerState().records.length, 2);
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().pendingSaves.length, 1);
+
+  // 其他场次、线路不串：另开同日第二场后看不到这条待确认
+  page.openSessionForm();
+  page.onDateChange({ detail: { value: historyDate } });
+  tapStart(page, 0);
+  const otherSessionId = page.data.activeSession.id;
+  assert.notEqual(otherSessionId, historySessionId);
+  assert.equal(page.data.pendingAttempts.length, 0, '待确认不串到其他场次');
+  assert.equal(page.data.attempts.length, 0);
+
+  tapRoute(page, ROUTE_BLUE_BALANCE);
+  assert.equal(page.data.pendingAttempts.length, 0, '待确认不串到其他线路');
+  assert.equal(page.data.hasPending, false);
+
+  // 回到原场次原线路，待确认仍在
+  tapSession(page, historySessionId);
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.pendingAttempts.length, 1);
+  assert.equal(page.data.pendingAttempts[0].opId, secondOpId);
+
+  // 重试并给第二把补备注
+  await retryPending(page, secondOpId);
+  assert.equal(page.data.attempts.length, 2);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(ledgerState().records.length, 2, '重试不新增账本记录');
+  assert.equal(page.data.attempts[1].id, secondOpId);
+  assert.equal(page.data.attempts[1].label, '第 2 把');
+  tapNote(page, page.data.attempts[1].id);
+  typeNote(page, '第二把换左脚');
+  page.saveNote();
+  assert.equal(page.data.attempts[1].note, '第二把换左脚');
+
+  // 详情：周四一天一场两把，第二把备注保留
+  let detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '1 天 · 1 场 · 2 把');
+  assert.equal(detail.data.groups.length, 1);
+  assert.equal(detail.data.groups[0].sessionId, historySessionId);
+  assert.equal(detail.data.groups[0].attempts[1].id, secondOpId);
+  assert.equal(detail.data.groups[0].attempts[1].note, '第二把换左脚');
+
+  // 周日从历史回同一线路再记一把
+  detail.recordAgain();
+  assert.equal(detail.data.storageError, '');
+  page.onShow();
+  assert.equal(page.data.activeSession.dateText, localToday());
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(page.data.attempts.length, 0, '今天场次只显示自己的尝试');
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 1);
+
+  detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.summaryText, '2 天 · 2 场 · 3 把');
+  assert.equal(detail.data.sendCount, 1);
+  assert.equal(detail.data.attemptCount, 3);
+  assert.equal(detail.data.groups[1].dateText, historyDate);
+  assert.equal(detail.data.groups[1].attempts[1].note, '第二把换左脚');
+
+  // 账本、待确认状态与页面计数分别对齐
+  const records = ledgerState().records;
+  assert.equal(records.length, 3);
+  assert.equal(new Set(records.map(record => record.opId)).size, 3);
+  assert.equal(savedState().attempts.length, 3);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(new Set(savedState().attempts.map(item => item.id)).size, 3);
+  assert.equal(page.data.attemptCountText, '1 把');
+  assert.equal(page.data.pendingCountText, '');
+});
+// ---- G24 ----
+test('G24 页面提供演练与重试入口，故障注入不进入正式页面', async () => {
+  const wxml = read(PAGE_WXML);
+  for (const binding of [
+    'bindtap="toggleReceiptLossArm"',
+    'bindtap="retryPendingAttempt"',
+    'bindtap="dismissSaveNotice"'
+  ]) {
+    assert.ok(wxml.includes(binding), `今日页应包含 ${binding}`);
+  }
+  assert.match(wxml, /id="arm-receipt-loss"/);
+  assert.match(wxml, /模拟下一次保存回执丢失/);
+  assert.match(wxml, /已就绪：下一次保存会写入模拟账本/);
+  assert.match(wxml, /wx:for="\{\{pendingAttempts\}\}"/);
+  assert.match(wxml, /data-op-id="\{\{item\.opId\}\}"/);
+  assert.match(wxml, /\{\{item\.statusText\}\}/);
+  assert.match(wxml, /\{\{saveNotice\}\}/);
+  assert.match(wxml, /重试保存/);
+  assert.match(wxml, /\{\{faultInjectionArmed\}\}/);
+
+  for (const method of [
+    'recordAttempt',
+    'dispatchPending',
+    'finishDispatch',
+    'retryPendingAttempt',
+    'toggleReceiptLossArm',
+    'refreshFaultInjection',
+    'dismissSaveNotice'
+  ]) {
+    assert.equal(typeof pageDefinition[method], 'function', `${method} 应为页面方法`);
+  }
+
+  // 模拟保存端只写独立账本，不接云、不读正式数据
+  const serverSource = read(SERVER_JS);
+  assert.match(serverSource, /climbingNote\.gymLogTrial\.saveLedger\.v1/);
+  assert.doesNotMatch(
+    serverSource,
+    /wx\.cloud|climbing_records|climbing_sessions/,
+    '模拟保存端不得访问云或正式记录'
+  );
+
+  // 根工程正式页面不得出现故障注入入口或模拟账本
+  const formalRoot = path.join(ROOT, 'pages');
+  const formalFiles = fs
+    .readdirSync(formalRoot, { recursive: true })
+    .filter(entry => /\.(js|json|wxml|wxss)$/.test(entry));
+  assert.ok(formalFiles.length > 0);
+  for (const entry of formalFiles) {
+    const source = read(path.join(formalRoot, entry));
+    assert.doesNotMatch(
+      source,
+      /saveLedger|模拟下一次保存回执丢失|trial-save-server/,
+      `正式页面 ${entry} 不得包含故障注入`
+    );
+  }
+
+  // 开发者工具复现入口记录在试用工程说明里
+  const readme = read(path.join(DEV_PROJECT, 'README.md'));
+  assert.match(readme, /模拟下一次保存回执丢失/);
+  assert.match(readme, /重试保存/);
+  assert.match(readme, /climbingNote\.gymLogTrial\.saveLedger\.v1/);
+});
+// ---- G25 ----
+test('G25 模拟保存端按操作 ID 幂等，写账本失败不消耗回执丢失注入', async () => {
+  const base = {
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    result: 'fail',
+    note: ''
+  };
+
+  const first = server.submitOperation({ ...base, opId: 'attempt-1' });
+  assert.equal(first.ok, true);
+  assert.equal(first.duplicate, false);
+  assert.equal(ledgerState().records.length, 1);
+
+  const duplicate = server.submitOperation({ ...base, opId: 'attempt-1' });
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(ledgerState().records.length, 1, '同一操作 ID 只入账一次');
+
+  const other = server.submitOperation({
+    ...base,
+    opId: 'attempt-2',
+    result: 'send'
+  });
+  assert.equal(other.ok, true);
+  assert.equal(ledgerState().records.length, 2);
+
+  // 回执丢失：先入账、再返回失败；注入只用一次
+  assert.equal(server.armReceiptLoss().ok, true);
+  assert.equal(ledgerState().loseNextReceipt, true);
+  const lost = server.submitOperation({ ...base, opId: 'attempt-3' });
+  assert.equal(lost.ok, false);
+  assert.equal(lost.receiptLost, true);
+  assert.equal(ledgerState().records.length, 3);
+  assert.equal(ledgerState().loseNextReceipt, false);
+
+  const retried = server.submitOperation({ ...base, opId: 'attempt-3' });
+  assert.equal(retried.ok, true);
+  assert.equal(retried.duplicate, true);
+  assert.equal(ledgerState().records.length, 3, '重试不重复入账');
+
+  // 账本写入失败：不入账，也不消耗下一次注入
+  assert.equal(server.armReceiptLoss().ok, true);
+  wxLog.failKeys.add(LEDGER_KEY);
+  const failed = server.submitOperation({ ...base, opId: 'attempt-4' });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /模拟保存账本写入失败/);
+  assert.equal(ledgerState().records.length, 3);
+  assert.equal(ledgerState().loseNextReceipt, true, '写失败不消耗注入');
+
+  wxLog.failKeys.delete(LEDGER_KEY);
+  const recovered = server.submitOperation({ ...base, opId: 'attempt-4' });
+  assert.equal(recovered.ok, false);
+  assert.equal(recovered.receiptLost, true);
+  assert.equal(ledgerState().records.length, 4);
+  assert.equal(ledgerState().loseNextReceipt, false);
+
+  // 账本与客户端键完全分开
+  assert.equal(storage.has(STORE_KEY), false);
+
+  const invalid = server.submitOperation({
+    opId: '',
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    result: 'fail'
+  });
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.error, /操作 ID/);
+});
+// ---- G26 ----
+test('G26 保存端已入账但本地确认写入失败：保留待确认，重试拿到重复确认', async () => {
+  const page = createPage();
+  page._saveDelayMs = 30;
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+
+  const originalSubmit = server.submitOperation;
+  let submitCalls = 0;
+  server.submitOperation = operation => {
+    submitCalls += 1;
+    return originalSubmit(operation);
+  };
+
+  try {
+    const saving = page.recordAttempt({
+      currentTarget: { dataset: { result: 'fail' } }
+    });
+    const opId = page.data.pendingAttempts[0].opId;
+    // 待确认已落盘后，只让客户端状态写入失败；模拟账本仍可写
+    wxLog.failKeys.add(STORE_KEY);
+    await saving;
+
+    assert.equal(submitCalls, 1);
+    assert.match(page.data.storageError, /本地保存失败/);
+    assert.match(page.data.saveNotice, /保存端已确认，但本地写入失败/);
+    assert.equal(page.data.attempts.length, 0, '本地未确认不得显示为已保存');
+    assert.equal(page.data.pendingAttempts.length, 1);
+    assert.equal(page.data.savingOpId, '');
+    assert.equal(ledgerState().records.length, 1);
+    assert.equal(ledgerState().records[0].opId, opId);
+    assert.equal(savedState().pendingSaves.length, 1);
+    assert.equal(savedState().attempts.length, 0);
+
+    wxLog.failKeys.delete(STORE_KEY);
+    await retryPending(page, opId);
+
+    assert.equal(page.data.storageError, '');
+    assert.equal(page.data.attempts.length, 1);
+    assert.equal(page.data.attempts[0].id, opId);
+    assert.equal(page.data.pendingAttempts.length, 0);
+    assert.equal(ledgerState().records.length, 1, '重复确认不再入账');
+    assert.equal(savedState().attempts.length, 1);
+    assert.equal(savedState().pendingSaves.length, 0);
+  } finally {
+    server.submitOperation = originalSubmit;
+  }
+});
+// ---- G27 ----
+test('G27 T007 旧缓存没有 pendingSaves 字段时仍可读，不判定损坏', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  // 模拟 T007 写下的缓存：没有待确认数组
+  const legacyCache = savedState();
+  delete legacyCache.pendingSaves;
+  storage.set(STORE_KEY, JSON.stringify(legacyCache));
+
+  const reentered = createPage();
+  assert.equal(reentered.data.loadError, '', '旧缓存不得判定为损坏');
+  assert.equal(reentered.data.attempts.length, 1);
+  assert.equal(reentered.data.attempts[0].resultText, '未完成');
+  assert.equal(reentered.data.pendingAttempts.length, 0);
+
+  // 新流程继续记录时补回待确认字段
+  await tapResult(reentered, 'send');
+  assert.equal(reentered.data.attempts.length, 2);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(ledgerState().records.length, 2);
+});
+
+// ---- G28 ----
+test('G28 旧实例卸载后延迟回执不覆盖新实例：两把保留且序号不回退', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0);
+  tapRoute(pageA, ROUTE_BLUE);
+
+  // 确定性控制 A 的回执时机：先扣住定时器，等 B 完成全部操作后再放行。
+  const originalSetTimeout = global.setTimeout;
+  const heldTimers = [];
+  let savingA;
+  global.setTimeout = (fn, ms) => {
+    heldTimers.push({ fn, ms });
+    return heldTimers.length;
+  };
+  try {
+    pageA._saveDelayMs = 80;
+    savingA = pageA.recordAttempt({
+      currentTarget: { dataset: { result: 'fail' } }
+    });
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+
+  const firstOpId = pageA.data.pendingAttempts[0].opId;
+  assert.equal(firstOpId, 'attempt-1');
+  assert.equal(pageA.data.savingOpId, firstOpId);
+  assert.equal(pageA.data.resultLocked, true);
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(ledgerState(), null, 'A 的回执尚未到，账本还没有记录');
+
+  // 用户离开今日页（旧实例卸载），再从缓存重进
+  pageA.onUnload();
+  const pageB = createPage();
+  pageB._saveDelayMs = 0;
+  assert.equal(pageB.data.pendingAttempts.length, 1);
+  assert.equal(pageB.data.pendingAttempts[0].opId, firstOpId);
+  assert.equal(pageB.data.resultLocked, true);
+
+  // B 重试第一把成功，再正常记第二把
+  await retryPending(pageB, firstOpId);
+  assert.equal(ledgerState().records.length, 1);
+  assert.equal(pageB.data.attempts.length, 1);
+  assert.equal(pageB.data.resultLocked, false, '确认后结果按钮解锁');
+  await tapResult(pageB, 'send');
+  const secondOpId = pageB.data.attempts[1].id;
+  assert.equal(secondOpId, 'attempt-2');
+  assert.equal(pageB.data.attempts.length, 2);
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(savedState().nextAttemptSeq, 3);
+
+  // A 的旧回执这时才返回：不得把只有一把的旧快照写回
+  assert.equal(heldTimers.length, 1, '应只有 A 的延迟回执');
+  heldTimers[0].fn();
+  await savingA;
+
+  const finalState = savedState();
+  assert.equal(finalState.attempts.length, 2, '旧回执不得把两把变回一把');
+  assert.deepEqual(
+    finalState.attempts.map(item => item.id),
+    [firstOpId, secondOpId]
+  );
+  assert.equal(finalState.pendingSaves.length, 0);
+  assert.equal(finalState.nextAttemptSeq, 3, '旧回执不得让序号退回 2');
+  assert.equal(ledgerState().records.length, 2);
+  assert.equal(
+    ledgerState().records.filter(record => record.opId === firstOpId).length,
+    1,
+    '旧回执按同一操作 ID 幂等'
+  );
+  assert.equal(pageB.data.attempts.length, 2, 'B 的页面显示不被旧实例改动');
+
+  const reentered = createPage();
+  assert.equal(reentered.data.attempts.length, 2);
+  assert.equal(reentered.data.attemptCountText, '2 把');
+  assert.equal(reentered.data.attempts[1].label, '第 2 把');
+});
+
+// ---- G29 ----
+test('G29 隐藏旧实例延迟回执只按 opId 合并，不覆盖其他线路、备注与场次', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0);
+  tapRoute(pageA, ROUTE_BLUE);
+
+  const originalSetTimeout = global.setTimeout;
+  const heldTimers = [];
+  let savingA;
+  global.setTimeout = (fn, ms) => {
+    heldTimers.push({ fn, ms });
+    return heldTimers.length;
+  };
+  try {
+    pageA._saveDelayMs = 80;
+    savingA = pageA.recordAttempt({
+      currentTarget: { dataset: { result: 'fail' } }
+    });
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+
+  const firstOpId = pageA.data.pendingAttempts[0].opId;
+
+  // 新实例 B 在另一条线上记录并补备注；A 的第一把还没有回执
+  const pageB = createPage();
+  pageB._saveDelayMs = 0;
+  tapRoute(pageB, ROUTE_RED);
+  await tapResult(pageB, 'send');
+  const redOpId = pageB.data.attempts[0].id;
+  assert.equal(redOpId, 'attempt-2');
+  tapNote(pageB, redOpId);
+  typeNote(pageB, '红线上右脚');
+  pageB.saveNote();
+  assert.equal(pageB.data.attempts[0].note, '红线上右脚');
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(savedState().activeRouteId, ROUTE_RED);
+
+  heldTimers[0].fn();
+  await savingA;
+
+  const merged = savedState();
+  assert.equal(merged.attempts.length, 2, '旧回执只补自己那一把');
+  const first = merged.attempts.find(item => item.id === firstOpId);
+  const red = merged.attempts.find(item => item.id === redOpId);
+  assert.ok(first && red);
+  assert.equal(first.result, 'fail');
+  assert.equal(first.routeId, ROUTE_BLUE);
+  assert.equal(red.result, 'send');
+  assert.equal(red.note, '红线上右脚', '其他线路备注不被旧快照覆盖');
+  assert.equal(merged.pendingSaves.length, 0);
+  assert.equal(merged.nextAttemptSeq, 3);
+  assert.equal(merged.activeRouteId, ROUTE_RED, '当前线路仍是新实例的选择');
+  assert.equal(merged.sessions.length, 1);
+  assert.equal(ledgerState().records.length, 2);
+
+  const detailBlue = createDetailPage(ROUTE_BLUE);
+  assert.equal(detailBlue.data.attemptCountText, '1 把');
+});
+
+// ---- G30 ----
+test('G30 保存中进入详情再操作：详情页旧快照不复活待确认、不吞已保存尝试', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'fail');
+  const firstOpId = page.data.pendingAttempts[0].opId;
+  assert.equal(savedState().pendingSaves.length, 1);
+
+  // 待确认时进入详情：详情页快照里只有待确认，没有已保存尝试
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.attemptCountText, '0 把');
+  assert.equal(detail.data.summaryText, '0 天 · 0 场 · 0 把');
+
+  // 回到今日页确认第一把；详情页仍持有旧快照
+  await retryPending(page, firstOpId);
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().pendingSaves.length, 0);
+
+  detail.recordAgain();
+  assert.equal(detail.data.storageError, '');
+  const afterAgain = savedState();
+  assert.equal(afterAgain.attempts.length, 1, '详情页写回不得吞掉刚确认的一把');
+  assert.equal(afterAgain.pendingSaves.length, 0, '详情页写回不得复活待确认');
+  assert.equal(afterAgain.activeRouteId, ROUTE_BLUE);
+
+  // 同日再开第二场，制造「多场选场」路径；详情页再次在保存期间打开
+  page.onShow();
+  page.openSessionForm();
+  tapStart(page, 0);
+  const secondSessionId = page.data.activeSession.id;
+  assert.notEqual(secondSessionId, 'session-1');
+  tapRoute(page, ROUTE_BLUE);
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'fail');
+  const secondOpId = page.data.pendingAttempts[0].opId;
+
+  const staleDetail = createDetailPage(ROUTE_BLUE);
+  assert.equal(
+    staleDetail.data.summaryText,
+    '1 天 · 1 场 · 1 把',
+    '待确认不计入详情'
+  );
+
+  await retryPending(page, secondOpId);
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(savedState().pendingSaves.length, 0);
+
+  staleDetail.recordAgain();
+  assert.ok(staleDetail.data.sessionPicker, '同日两场应让用户明确选场');
+  assert.equal(staleDetail.data.sessionPicker.sessions.length, 2);
+  staleDetail.chooseSessionForAgain({
+    currentTarget: { dataset: { sessionId: secondSessionId } }
+  });
+  assert.equal(staleDetail.data.storageError, '');
+  const finalState = savedState();
+  assert.equal(finalState.attempts.length, 2, '选场写回不得吞掉已确认的一把');
+  assert.equal(finalState.pendingSaves.length, 0, '选场写回不得复活待确认');
+  assert.equal(finalState.activeSessionId, secondSessionId);
+  assert.equal(finalState.activeRouteId, ROUTE_BLUE);
+});
+
+// ---- G31 ----
+test('G31 前一把保存中或回执丢失时点结果不生成第二个待确认，确认后可连记', async () => {
+  const page = createPage();
+  page._saveDelayMs = 30;
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  page.toggleReceiptLossArm();
+
+  const originalSubmit = server.submitOperation;
+  let submitCalls = 0;
+  server.submitOperation = operation => {
+    submitCalls += 1;
+    return originalSubmit(operation);
+  };
+
+  try {
+    const saving = page.recordAttempt({
+      currentTarget: { dataset: { result: 'fail' } }
+    });
+    const firstOpId = page.data.pendingAttempts[0].opId;
+    assert.equal(page.data.savingOpId, firstOpId);
+    assert.equal(page.data.resultLocked, true);
+    assert.ok(page.data.resultLockHint);
+
+    // 保存中再点「完攀」：方法兜底不生成第二个待确认，也不发第二个请求
+    await tapResult(page, 'send');
+    assert.equal(submitCalls, 0, '保存尚未完成，不派发新操作');
+    assert.equal(page.data.pendingAttempts.length, 1);
+    assert.equal(savedState().pendingSaves.length, 1);
+    assert.equal(savedState().pendingSaves[0].opId, firstOpId);
+    assert.equal(savedState().nextAttemptSeq, 2);
+    assert.match(page.data.saveNotice, /上一把还在保存或待确认/);
+
+    await saving;
+    assert.equal(submitCalls, 1);
+    assert.equal(page.data.pendingAttempts.length, 1);
+    assert.match(page.data.pendingAttempts[0].statusText, /回执丢失/);
+    assert.equal(page.data.resultLocked, true);
+
+    // 回执丢失后再点结果：仍然只保留原待确认
+    await tapResult(page, 'send');
+    assert.equal(submitCalls, 1);
+    assert.equal(page.data.pendingAttempts.length, 1);
+    assert.equal(savedState().pendingSaves.length, 1);
+    assert.equal(savedState().attempts.length, 0);
+    assert.equal(ledgerState().records.length, 1);
+
+    // 在原行重试确认后解锁，再点结果生成新的 ID
+    await retryPending(page, firstOpId);
+    assert.equal(page.data.resultLocked, false);
+    assert.equal(page.data.attempts.length, 1);
+    assert.equal(page.data.attempts[0].id, firstOpId);
+
+    await tapResult(page, 'send');
+    assert.equal(page.data.attempts.length, 2);
+    assert.equal(page.data.attempts[1].id, 'attempt-2');
+    assert.notEqual(page.data.attempts[1].id, firstOpId);
+    assert.equal(page.data.resultLocked, false);
+    assert.equal(ledgerState().records.length, 2);
+    assert.equal(savedState().nextAttemptSeq, 3);
+  } finally {
+    server.submitOperation = originalSubmit;
+  }
+
+  // 界面元素：按钮 disabled 绑定与方法兜底同在；不得全页清空存储
+  const wxml = read(PAGE_WXML);
+  assert.match(wxml, /disabled="\{\{resultLocked\}\}"/);
+  assert.match(wxml, /id="result-locked-hint"/);
+  assert.equal(typeof pageDefinition.onUnload, 'function', '应处理页面卸载');
+  assert.doesNotMatch(
+    read(PAGE_JS) + read(DETAIL_JS),
+    /clearStorageSync/,
+    '试用页面不得用 clearStorageSync 清空其他业务缓存'
   );
 });
