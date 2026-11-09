@@ -8,6 +8,10 @@
  *
  * 只做类型与等级的匹配与展示；不读写缓存，也不改动画线、场次或尝试。
  * 旧线路没有 climbType 字段（旧 V 级线路）时按抱石读取，浏览不会写回或迁移。
+ *
+ * 这里同时给出「抱石首次完攀」的共用判定：抱石（含缺类型的旧 V 级线路）一次完攀后
+ * 不再新增，顶绳和先锋可重复；归属按「试用用户 + 数据集 + 长期线路 ID」比较。
+ * 判定是纯函数，今日页、详情页与模拟保存账本用同一份规则。
  */
 const CLIMB_TYPES = ['抱石', '顶绳', '先锋'];
 
@@ -72,6 +76,8 @@ const DEFAULT_CLIMB_TYPE = '抱石';
 const DEFAULT_GRADE = 'V3';
 // 类型切换后原等级失效时，选择器显示的占位文案。
 const GRADE_PLACEHOLDER = '请选择等级';
+// 抱石按「首次完攀」记录；顶绳和先锋可以重复完攀。
+const BOULDER_CLIMB_TYPE = '抱石';
 
 function isClimbType(value) {
   return typeof value === 'string' && CLIMB_TYPES.indexOf(value) !== -1;
@@ -110,6 +116,40 @@ function gradeText(grade) {
     : GRADE_PLACEHOLDER;
 }
 
+/**
+ * 是否按抱石处理：已知类型按名称比较；缺字段或空值的旧 V 级线路按抱石读取
+ * （与 climbTypeOf 的兼容规则一致）。非空但非法的类型不回落成抱石。
+ */
+function isBoulderClimbType(value) {
+  if (isClimbType(value)) return value === BOULDER_CLIMB_TYPE;
+  return value === undefined || value === null || value === '';
+}
+
+function isBoulderRoute(route) {
+  return isBoulderClimbType(route ? route.climbType : undefined);
+}
+
+/**
+ * 该线路是否允许重复完攀：抱石（含旧 V 级）首次完攀即结束，顶绳和先锋可以再记。
+ */
+function allowsRepeatSend(route) {
+  return !isBoulderRoute(route);
+}
+
+/**
+ * 「已完攀」归属：同一个试用用户 + 同一数据集 + 同一条长期线路 ID。
+ * 三者任一不同都不算同一条已完攀线路，避免不同用户上下文或重置后复用编号互相上锁。
+ * 线路类型只从路线档案取：账本记录里可省略、可伪造的 climbType 不参与判定。
+ */
+function isSameSendOwner(left, right) {
+  if (!left || !right) return false;
+  return (
+    String(left.ownerId || '') === String(right.ownerId || '') &&
+    String(left.datasetId || '') === String(right.datasetId || '') &&
+    String(left.routeId || '') === String(right.routeId || '')
+  );
+}
+
 module.exports = {
   CLIMB_TYPES,
   BOULDER_GRADES,
@@ -118,9 +158,14 @@ module.exports = {
   DEFAULT_CLIMB_TYPE,
   DEFAULT_GRADE,
   GRADE_PLACEHOLDER,
+  BOULDER_CLIMB_TYPE,
   isClimbType,
   gradesForType,
   isGradeForType,
   climbTypeOf,
-  gradeText
+  gradeText,
+  isBoulderClimbType,
+  isBoulderRoute,
+  allowsRepeatSend,
+  isSameSendOwner
 };
