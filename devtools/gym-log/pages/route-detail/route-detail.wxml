@@ -50,7 +50,7 @@
         <view class="route-swatch" style="background: {{route.colorHex}};"></view>
         <view class="route-heading">
           <text class="route-title">{{route.name}}</text>
-          <text class="route-meta">{{route.grade}} · {{route.colorName}} · {{route.gymName}}</text>
+          <text class="route-meta">{{route.climbType}} {{route.grade}} · {{route.colorName}} · {{route.gymName}}</text>
         </view>
       </view>
 

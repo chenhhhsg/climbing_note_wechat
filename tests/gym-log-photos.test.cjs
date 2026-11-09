@@ -1837,3 +1837,88 @@ test('picker-contract 快速新建在两种返回形状下都保留“创建并�
     resetHarness();
   }
 });
+
+// ---- PU07 ----
+test('PU07 切换攀岩类型保留已选照片；带照片创建绳攀线路并绑定到新线路', async () => {
+  const page = await createPage();
+  await tapStart(page);
+
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '顶绳带照片线' } });
+  await page.chooseQuickRoutePhoto({
+    currentTarget: { dataset: { source: 'album' } }
+  });
+  assert.ok(page.data.quickRoutePhoto);
+  assert.match(page.data.quickRoutePhoto.statusText, /创建线路后保存/);
+
+  // 抱石 → 顶绳：已选照片仍属于当前表单，等级失效清空。
+  page.onQuickRouteTypeChange({
+    detail: { value: page.data.quickRouteTypes.indexOf('顶绳') }
+  });
+  assert.ok(page.data.quickRoutePhoto, '切换类型不丢已选照片');
+  assert.equal(page.data.quickRouteGrade, '');
+  assert.equal(page.data.quickRouteGradeText, '请选择等级');
+
+  // 未选等级时创建被拒绝：不建线路、不动已选照片。
+  await page.createQuickRoute();
+  assert.match(page.data.quickRouteError, /请选择等级/);
+  assert.ok(page.data.quickRoutePhoto, '拒绝创建时保留已选照片');
+  assert.equal(page.data.quickRouteVisible, true);
+  assert.equal(page._quickPhotoSource !== '', true, '仍保留本地选图路径');
+  assert.equal(
+    savedState().routes.some(route => route.name === '顶绳带照片线'),
+    false,
+    '未选等级不新增线路'
+  );
+
+  // 选好 YDS 等级后创建：类型、等级正确，照片绑定到新线路。
+  page.onQuickRouteGradeChange({
+    detail: { value: page.data.quickRouteGrades.indexOf('5.10a') }
+  });
+  await page.createQuickRoute();
+  const routeId = page.data.selectedRoute.id;
+  assert.equal(page.data.selectedRoute.climbType, '顶绳');
+  assert.equal(page.data.selectedRoute.grade, '5.10a');
+  assert.equal(page.data.selectedRoute.name, '顶绳带照片线');
+  assert.equal(page.data.quickRoutePhoto, null, '创建后清空表单照片预览');
+  assert.equal(page.data.routePhoto.status, 'saved');
+
+  const bound = photoOfRoute(routeId, page.state.datasetId);
+  assert.ok(bound, '照片绑定到新建的顶绳线路');
+  assert.equal(page.data.routePhoto.mainPath, bound.storage.location);
+  assert.equal(virtual.files.has(bound.storage.location), true);
+});
+
+// ---- PU08 ----
+test('PU08 缺类型的旧 V 级线路按抱石读取，照片与备注归属不变且不迁移', async () => {
+  const page = await createPage();
+  await tapStart(page);
+  await tapRoute(page, ROUTE_BLUE);
+  await record(page, 'fail');
+  await savePhoto(page, ROUTE_BLUE, 'album');
+  const bound = photoOfRoute(ROUTE_BLUE, page.state.datasetId);
+  assert.ok(bound, '旧线路照片已保存');
+  const mainPath = bound.storage.location;
+
+  const stateBefore = JSON.stringify(savedState());
+  const indexBefore = storage.get(INDEX_KEY);
+
+  // 详情页按抱石展示这条没有 climbType 的旧 V 级线路，照片仍是同一条。
+  const detail = await createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.route.climbType, '抱石');
+  assert.equal(detail.data.route.grade, 'V3');
+  assert.equal(detail.data.routePhoto.status, 'saved');
+  assert.equal(detail.data.routePhoto.mainPath, mainPath);
+  assert.equal(
+    photoOfRoute(ROUTE_BLUE, page.state.datasetId).storage.location,
+    mainPath
+  );
+
+  assert.equal(
+    JSON.stringify(savedState()),
+    stateBefore,
+    '打开详情不改动线路/尝试缓存'
+  );
+  assert.equal(storage.get(INDEX_KEY), indexBefore, '打开详情不改动照片索引');
+  assert.equal(virtual.files.has(mainPath), true, '照片文件仍在');
+});

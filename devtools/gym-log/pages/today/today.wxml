@@ -171,7 +171,7 @@
           <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
           <view class="selected-route-info">
             <text class="selected-route-name">{{selectedRoute.name}}</text>
-            <text class="selected-route-meta">{{selectedRoute.grade}} · 本场 {{routeCountText}}</text>
+            <text class="selected-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · 本场 {{routeCountText}}</text>
           </view>
           <button
             id="selected-route-detail"
@@ -415,7 +415,7 @@
               />
               <view class="route-info">
                 <text class="route-name">{{item.name}}</text>
-                <text class="route-meta">{{item.grade}} · {{item.colorName}}</text>
+                <text class="route-meta">{{item.climbType}} {{item.grade}} · {{item.colorName}}</text>
                 <text wx:if="{{item.photoMissing}}" class="route-photo-missing">本机照片不可用</text>
               </view>
               <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
@@ -448,27 +448,8 @@
             value="{{quickRouteName}}"
             bindinput="onQuickRouteNameInput"
           />
-          <view class="quick-route-row">
-            <picker
-              mode="selector"
-              range="{{quickRouteColors}}"
-              range-key="name"
-              value="{{quickRouteColorIndex}}"
-              bindchange="onQuickRouteColorChange"
-            >
-              <view class="picker-value">颜色：{{quickRouteColorName}}</view>
-            </picker>
-            <picker
-              mode="selector"
-              range="{{quickRouteGrades}}"
-              value="{{quickRouteGradeIndex}}"
-              bindchange="onQuickRouteGradeChange"
-            >
-              <view class="picker-value">难度：{{quickRouteGrade}}</view>
-            </picker>
-          </view>
 
-          <!-- 新建线路可选一张照片；跳过也能创建，照片失败不回滚线路 -->
+          <!-- 新建线路可选一张照片，紧邻名称；跳过也能创建，照片失败不回滚线路 -->
           <view class="quick-route-photo">
             <text class="field-label">线路照片（可选）</text>
             <view wx:if="{{quickRoutePhoto}}" class="quick-photo-preview">
@@ -500,6 +481,40 @@
               >从相册选择</button>
             </view>
             <text class="photo-hint">不添加照片也能创建线路；创建后照片保存到本机。</text>
+          </view>
+
+          <!-- 攀岩类型在左、等级在右；等级选项随类型重算，失效时显示「请选择等级」 -->
+          <view class="quick-route-row">
+            <picker
+              mode="selector"
+              range="{{quickRouteTypes}}"
+              value="{{quickRouteTypeIndex}}"
+              bindchange="onQuickRouteTypeChange"
+            >
+              <view class="picker-value">攀岩类型：{{quickRouteType}}</view>
+            </picker>
+            <picker
+              mode="selector"
+              range="{{quickRouteGrades}}"
+              value="{{quickRouteGradeIndex}}"
+              bindchange="onQuickRouteGradeChange"
+            >
+              <view class="picker-value">等级：{{quickRouteGradeText}}</view>
+            </picker>
+          </view>
+
+          <!-- 颜色是独立属性，与类型和等级无关，切换类型时保持不变 -->
+          <view class="field">
+            <text class="field-label">颜色</text>
+            <picker
+              mode="selector"
+              range="{{quickRouteColors}}"
+              range-key="name"
+              value="{{quickRouteColorIndex}}"
+              bindchange="onQuickRouteColorChange"
+            >
+              <view class="picker-value">{{quickRouteColorName}}</view>
+            </picker>
           </view>
 
           <text wx:if="{{quickRouteError}}" class="field-error">{{quickRouteError}}</text>

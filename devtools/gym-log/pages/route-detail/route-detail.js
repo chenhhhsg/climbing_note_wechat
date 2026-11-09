@@ -20,6 +20,7 @@ const {
   createPhotoController,
   buildView
 } = require('../../utils/photo-controller.js');
+const { climbTypeOf } = require('../../utils/route-rules.js');
 
 const TRIAL_BADGE = '本地试用 · 虚构数据';
 const TODAY_URL = '/pages/today/today';
@@ -256,6 +257,8 @@ Page({
           id: LEGACY_SUMMARY_SAMPLE.id,
           gymId: LEGACY_SUMMARY_SAMPLE.gymId,
           name: LEGACY_SUMMARY_SAMPLE.name,
+          // 旧样例没有类型字段，按抱石只读展示，不改写缓存。
+          climbType: climbTypeOf(LEGACY_SUMMARY_SAMPLE),
           colorName: LEGACY_SUMMARY_SAMPLE.colorName,
           colorHex: LEGACY_SUMMARY_SAMPLE.colorHex,
           grade: LEGACY_SUMMARY_SAMPLE.grade,
@@ -326,6 +329,8 @@ Page({
         id: route.id,
         gymId: route.gymId,
         name: route.name,
+        // 旧 V 级线路没有 climbType，按抱石读取；只读展示，不回写缓存。
+        climbType: climbTypeOf(route),
         colorName: route.colorName,
         colorHex: route.colorHex,
         grade: route.grade,

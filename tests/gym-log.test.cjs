@@ -407,7 +407,12 @@ test('G05 快速新建命名线路使用固定 ID，重进可读回', async () =
   page.toggleQuickRoute();
   page.onQuickRouteNameInput({ detail: { value: '  屋檐小点线  ' } });
   page.onQuickRouteColorChange({ detail: { value: 2 } });
-  page.onQuickRouteGradeChange({ detail: { value: 4 } });
+  // 抱石默认选 V3；这里按等级取值选择 V4，不依赖选项下标。
+  assert.equal(page.data.quickRouteType, '抱石');
+  assert.equal(page.data.quickRouteGrade, 'V3');
+  page.onQuickRouteGradeChange({
+    detail: { value: page.data.quickRouteGrades.indexOf('V4') }
+  });
   page.createQuickRoute();
 
   const created = page.data.selectedRoute;
@@ -415,6 +420,7 @@ test('G05 快速新建命名线路使用固定 ID，重进可读回', async () =
   assert.match(created.id, /^route-local-\d+$/, '新建线路也有稳定 ID');
   assert.equal(created.name, '屋檐小点线');
   assert.equal(created.gymId, 'gym-chalkbox');
+  assert.equal(created.climbType, '抱石');
   assert.equal(created.colorName, '黄色');
   assert.equal(created.grade, 'V4');
   assert.equal(page.data.quickRouteVisible, false);
@@ -425,6 +431,7 @@ test('G05 快速新建命名线路使用固定 ID，重进可读回', async () =
   const reentered = createPage();
   assert.equal(reentered.data.selectedRoute.id, created.id);
   assert.equal(reentered.data.selectedRoute.name, '屋檐小点线');
+  assert.equal(reentered.data.selectedRoute.climbType, '抱石');
   assert.equal(reentered.data.selectedRoute.grade, 'V4');
   assert.equal(reentered.data.attempts.length, 1);
   assert.ok(reentered.data.routes.some(route => route.id === created.id));
@@ -695,6 +702,7 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
     'toggleQuickRoute',
     'onQuickRouteNameInput',
     'onQuickRouteColorChange',
+    'onQuickRouteTypeChange',
     'onQuickRouteGradeChange',
     'createQuickRoute',
     'dismissStorageError',
@@ -2166,5 +2174,304 @@ test('G31 前一把保存中或回执丢失时点结果不生成第二个待确�
     read(PAGE_JS) + read(DETAIL_JS),
     /clearStorageSync/,
     '试用页面不得用 clearStorageSync 清空其他业务缓存'
+  );
+});
+
+// ---- G32 ----
+test('G32 三种攀岩类型的名称与等级选项按正式等级表核对', async () => {
+  const rules = require(path.join(DEV_PROJECT, 'utils', 'route-rules.js'));
+  // 正式工程等级表只读参照，用来核对试用工程的取值与顺序。
+  const official = require(path.join(ROOT, 'utils', 'grade.js'));
+
+  assert.deepEqual(
+    rules.CLIMB_TYPES,
+    ['抱石', '顶绳', '先锋'],
+    '三种类型名称与计划一致'
+  );
+  assert.deepEqual(
+    rules.gradesForType('抱石'),
+    official.vScaleGrades.map(grade => grade.value),
+    '抱石的选项与顺序按正式 V 级表'
+  );
+  assert.deepEqual(
+    rules.gradesForType('顶绳'),
+    official.ydsGrades.map(grade => grade.value),
+    '顶绳的选项与顺序按正式 YDS 表'
+  );
+  assert.deepEqual(
+    rules.gradesForType('先锋'),
+    official.ydsGrades.map(grade => grade.value),
+    '先锋的选项与顺序按正式 YDS 表'
+  );
+
+  // 旧的固定 V0–V8 已不再是抱石的完整选项；旧值仍可读写。
+  assert.ok(rules.gradesForType('抱石').includes('VB'));
+  assert.ok(rules.gradesForType('抱石').includes('V16'));
+  assert.equal(rules.isGradeForType('抱石', 'V0'), true);
+  assert.equal(rules.isGradeForType('抱石', 'V8'), true);
+  assert.equal(rules.isGradeForType('抱石', '5.10a'), false, 'V 级不含 YDS');
+  assert.equal(rules.isGradeForType('顶绳', '5.10a'), true);
+  assert.equal(rules.isGradeForType('先锋', '5.11b'), true);
+
+  // 页面默认类型与等级：抱石 V3，且默认等级必须属于默认类型。
+  const page = createPage();
+  assert.equal(page.data.quickRouteType, '抱石');
+  assert.equal(page.data.quickRouteGrade, 'V3');
+  assert.deepEqual(page.data.quickRouteTypes, ['抱石', '顶绳', '先锋']);
+  assert.deepEqual(
+    page.data.quickRouteGrades,
+    official.vScaleGrades.map(grade => grade.value)
+  );
+  assert.equal(page.data.quickRouteGradeText, 'V3');
+
+  // 表单结构：类型选择器在左、等级选择器在右；等级显示占位文案；颜色独立可选。
+  const wxml = read(PAGE_WXML);
+  assert.match(wxml, /range="\{\{quickRouteTypes\}\}"/);
+  assert.match(wxml, /bindchange="onQuickRouteTypeChange"/);
+  assert.match(wxml, /range="\{\{quickRouteGrades\}\}"/);
+  assert.match(wxml, /\{\{quickRouteGradeText\}\}/);
+  assert.match(wxml, /bindchange="onQuickRouteGradeChange"/);
+  assert.match(wxml, /bindchange="onQuickRouteColorChange"/);
+  assert.ok(
+    wxml.indexOf('onQuickRouteTypeChange') <
+      wxml.indexOf('onQuickRouteGradeChange'),
+    '攀岩类型选择器在等级选择器左侧'
+  );
+});
+
+// ---- G33 ----
+test('G33 切换类型即时重算等级：共有值保留，失效值清空显示「请选择等级」，颜色不变', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '联动线' } });
+  page.onQuickRouteColorChange({ detail: { value: 3 } });
+  assert.equal(page.data.quickRouteGrade, 'V3');
+  assert.equal(page.data.quickRouteColorName, '绿色');
+
+  // 抱石 V3 → 顶绳：V3 不在 YDS 里 → 清空并要求重选
+  page.onQuickRouteTypeChange({
+    detail: { value: page.data.quickRouteTypes.indexOf('顶绳') }
+  });
+  assert.equal(page.data.quickRouteType, '顶绳');
+  assert.equal(page.data.quickRouteGrade, '');
+  assert.equal(page.data.quickRouteGradeText, '请选择等级');
+  assert.deepEqual(
+    page.data.quickRouteGrades,
+    store.GRADES_BY_TYPE['顶绳']
+  );
+  assert.equal(page.data.quickRouteColorName, '绿色', '切换类型不动颜色');
+
+  // 顶绳 5.10a → 先锋：同属 YDS，共有等级保留
+  page.onQuickRouteGradeChange({
+    detail: { value: page.data.quickRouteGrades.indexOf('5.10a') }
+  });
+  assert.equal(page.data.quickRouteGrade, '5.10a');
+  page.onQuickRouteTypeChange({
+    detail: { value: page.data.quickRouteTypes.indexOf('先锋') }
+  });
+  assert.equal(page.data.quickRouteType, '先锋');
+  assert.equal(page.data.quickRouteGrade, '5.10a');
+  assert.equal(page.data.quickRouteGradeText, '5.10a');
+  assert.equal(page.data.quickRouteColorName, '绿色');
+
+  // 先锋 5.10a → 抱石：失效 → 清空
+  page.onQuickRouteTypeChange({
+    detail: { value: page.data.quickRouteTypes.indexOf('抱石') }
+  });
+  assert.equal(page.data.quickRouteType, '抱石');
+  assert.equal(page.data.quickRouteGrade, '');
+  assert.equal(page.data.quickRouteGradeText, '请选择等级');
+  assert.equal(page.data.quickRouteColorName, '绿色', '颜色仍属于当前表单');
+
+  // 重选 V3 后可以创建，写入的是类型与等级的组合
+  page.onQuickRouteGradeChange({
+    detail: { value: page.data.quickRouteGrades.indexOf('V3') }
+  });
+  page.createQuickRoute();
+  assert.equal(page.data.quickRouteError, '');
+  assert.equal(page.data.selectedRoute.climbType, '抱石');
+  assert.equal(page.data.selectedRoute.grade, 'V3');
+  assert.equal(page.data.selectedRoute.colorName, '绿色');
+});
+
+// ---- G34 ----
+test('G34 空值、越界或类型与等级错配时创建入口直接拒绝，不新建也不回落', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  const routesBefore = savedState().routes.length;
+  const activeBefore = page.state.activeRouteId;
+  const selectedBefore = page.data.selectedRoute.id;
+
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '非法组合线' } });
+
+  // 1) 等级为空：不能创建
+  page.onQuickRouteTypeChange({
+    detail: { value: page.data.quickRouteTypes.indexOf('顶绳') }
+  });
+  assert.equal(page.data.quickRouteGrade, '');
+  page.createQuickRoute();
+  assert.match(page.data.quickRouteError, /请选择等级/);
+  assert.equal(savedState().routes.length, routesBefore, '空值不新增线路');
+  assert.equal(page.state.activeRouteId, activeBefore, '活动线路不变');
+  assert.equal(page._quickPhotoSource, '', '未创建时不动已选照片');
+
+  // 2) 等级索引越界：不静默落到首个等级
+  page.onQuickRouteGradeChange({ detail: { value: 99 } });
+  assert.equal(page.data.quickRouteGrade, '');
+  assert.equal(page.data.quickRouteGradeText, '请选择等级');
+  page.createQuickRoute();
+  assert.match(page.data.quickRouteError, /请选择等级/);
+  assert.equal(savedState().routes.length, routesBefore, '越界不新增线路');
+  assert.equal(page.state.activeRouteId, activeBefore);
+
+  // 3) 类型与等级错配：直接改状态后再调创建入口
+  page.setData({
+    quickRouteType: '抱石',
+    quickRouteTypeIndex: page.data.quickRouteTypes.indexOf('抱石'),
+    quickRouteGrades: store.GRADES_BY_TYPE['抱石'],
+    quickRouteGrade: '5.10a',
+    quickRouteGradeIndex: 0
+  });
+  page.createQuickRoute();
+  assert.match(page.data.quickRouteError, /不匹配/);
+  assert.equal(savedState().routes.length, routesBefore, '错配不新增线路');
+  assert.equal(page.state.activeRouteId, activeBefore);
+  assert.equal(page.data.selectedRoute.id, selectedBefore, '当前线路不变');
+
+  // 4) 非法类型：拒绝且不回落
+  page.setData({ quickRouteType: '室内', quickRouteGrade: 'V3' });
+  page.createQuickRoute();
+  assert.match(page.data.quickRouteError, /攀岩类型/);
+  assert.equal(savedState().routes.length, routesBefore);
+
+  // 修正为有效组合后才创建
+  page.setData({
+    quickRouteType: '抱石',
+    quickRouteTypeIndex: page.data.quickRouteTypes.indexOf('抱石'),
+    quickRouteGrades: store.GRADES_BY_TYPE['抱石'],
+    quickRouteGrade: 'V3',
+    quickRouteGradeIndex: store.GRADES_BY_TYPE['抱石'].indexOf('V3')
+  });
+  page.createQuickRoute();
+  assert.equal(page.data.quickRouteError, '');
+  assert.equal(savedState().routes.length, routesBefore + 1);
+  assert.equal(page.data.selectedRoute.climbType, '抱石');
+  assert.equal(page.data.selectedRoute.grade, 'V3');
+});
+
+// ---- G35 ----
+test('G35 三种类型分别保存后重开：类型、等级、颜色与长期 ID 稳定', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+
+  const cases = [
+    { type: '抱石', grade: 'V3', colorIndex: 0 },
+    { type: '顶绳', grade: '5.10a', colorIndex: 1 },
+    { type: '先锋', grade: '5.11b', colorIndex: 4 }
+  ];
+  const created = [];
+  for (const item of cases) {
+    page.toggleQuickRoute();
+    page.onQuickRouteNameInput({ detail: { value: item.type + '线' } });
+    page.onQuickRouteColorChange({ detail: { value: item.colorIndex } });
+    page.onQuickRouteTypeChange({
+      detail: { value: page.data.quickRouteTypes.indexOf(item.type) }
+    });
+    page.onQuickRouteGradeChange({
+      detail: { value: page.data.quickRouteGrades.indexOf(item.grade) }
+    });
+    page.createQuickRoute();
+    assert.equal(page.data.quickRouteError, '', item.type + ' 应可创建');
+    created.push({
+      id: page.data.selectedRoute.id,
+      type: item.type,
+      grade: item.grade,
+      colorName: page.data.selectedRoute.colorName
+    });
+  }
+  assert.equal(
+    new Set(created.map(item => item.id)).size,
+    3,
+    '三条线路的长期 ID 各不相同'
+  );
+  assert.ok(created.every(item => /^route-local-\d+$/.test(item.id)));
+
+  const reentered = createPage();
+  for (const item of created) {
+    const route = reentered.data.routes.find(entry => entry.id === item.id);
+    assert.ok(route, '重开后仍能读回 ' + item.type + ' 线路');
+    assert.equal(route.climbType, item.type);
+    assert.equal(route.grade, item.grade);
+    assert.equal(route.colorName, item.colorName);
+  }
+
+  // 新建线路的类型写入缓存，不是只在前端展示。
+  const stored = savedState().routes.filter(route =>
+    created.some(item => item.id === route.id)
+  );
+  assert.equal(stored.length, 3);
+  assert.ok(
+    stored.every(
+      route => typeof route.climbType === 'string' && route.climbType.length > 0
+    ),
+    '新建线路持久化 climbType'
+  );
+
+  // 详情页展示同一条线的类型与等级
+  const detail = createDetailPage(created[1].id);
+  assert.equal(detail.data.route.climbType, '顶绳');
+  assert.equal(detail.data.route.grade, '5.10a');
+  assert.equal(detail.data.notFound, false);
+});
+
+// ---- G36 ----
+test('G36 缺类型的旧 V 级线路按抱石读取，原把次与备注一致且浏览不迁移', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  tapNote(page, page.data.attempts[1].id);
+  typeNote(page, '旧线备注');
+  page.saveNote();
+
+  // 样例与旧汇总都没有 climbType 字段，读取时按抱石展示。
+  const blue = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(blue.climbType, '抱石');
+  assert.equal(blue.grade, 'V3');
+  assert.ok(
+    savedState().routes.every(route => route.climbType === undefined),
+    '读取不给旧线路补写类型'
+  );
+
+  const stateBefore = JSON.stringify(savedState());
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.route.climbType, '抱石');
+  assert.equal(detail.data.route.grade, 'V3');
+  assert.equal(detail.data.attemptCount, 2, '原把次不变');
+  assert.equal(detail.data.groups[0].attempts[1].note, '旧线备注', '旧备注归属不变');
+  assert.match(detail.data.summaryText, /2 把/);
+
+  const legacy = createDetailPage(LEGACY_ROUTE);
+  assert.equal(legacy.data.isLegacy, true);
+  assert.equal(legacy.data.route.climbType, '抱石');
+  assert.equal(legacy.data.attemptCount, 0, '旧汇总不生成逐次尝试');
+
+  createPage();
+  assert.equal(
+    JSON.stringify(savedState()),
+    stateBefore,
+    '浏览详情与重进不改动线路缓存，也不迁移'
+  );
+
+  // normalizeState 只做兼容读取，不补齐或改写类型字段。
+  const normalized = store.normalizeState(store.createInitialState());
+  assert.ok(normalized);
+  assert.ok(
+    normalized.routes.every(route => route.climbType === undefined),
+    '兼容读取不写入类型'
   );
 });
