@@ -46,9 +46,76 @@ function attemptResultText(result) {
   return result === 'send' ? '完攀' : '未完成';
 }
 
+/**
+ * 待确认完攀的原始把次（T015）：这条抱石线还在待确认的完攀属于哪个场次、第几把。
+ *
+ * 只读计算，供详情页展示「完攀待确认」状态与回原把次重试的入口使用；
+ * 不新建场次、不生成新的 opId，也不改动任何记录。
+ * 找不到原场次（例如已被重置）时返回 null，由调用方按最新状态刷新，不猜、不补。
+ */
+function pendingRetryInfo(state, routeId) {
+  const op =
+    (state.pendingSaves || [])
+      .filter(item => item.routeId === routeId && item.result === 'send')
+      .sort((left, right) => left.seq - right.seq)[0] || null;
+  if (!op) return null;
+
+  const session = findSession(state, op.sessionId);
+  if (!session) return null;
+
+  // 同一把的序号与已确认把次共用：重试后编号稳定，用户能对上原把次。
+  const ordered = (state.attempts || [])
+    .filter(item => item.sessionId === session.id && item.routeId === routeId)
+    .map(item => item.seq)
+    .concat([op.seq])
+    .sort((left, right) => left - right);
+  const label = '第 ' + (ordered.indexOf(op.seq) + 1) + ' 把';
+
+  return {
+    opId: op.opId,
+    sessionId: session.id,
+    attemptLabel: label,
+    sessionText:
+      session.date +
+      ' ' +
+      sessionLabel(state, session) +
+      ' · ' +
+      gymName(session.gymId),
+    hint:
+      '这条抱石线的完攀还在待确认（' +
+      session.date +
+      ' ' +
+      sessionLabel(state, session) +
+      ' ' +
+      label +
+      '）：回到原把次点「重试保存」，确认后只能回看。'
+  };
+}
+
 function timeText(createdAt) {
   const date = new Date(createdAt);
   return Number.isNaN(date.getTime()) ? '--:--' : formatLocalTime(date);
+}
+
+/**
+ * 已确认或仍在待确认时，迟到的「今天再爬」/选场事件给出的说明（T015）。
+ *
+ * 待确认时优先点名原场次与原把次，避免只给泛泛提示、让用户猜原场次；
+ * 找不到原把次（例如已被重置）时退回原有说明，不新建场次也不改数据。
+ */
+function noticeForClosed(state, routeId, completedText) {
+  if (completedText) return completedText;
+  const info = pendingRetryInfo(state, routeId);
+  if (!info) {
+    return '这条抱石线路的完攀还在待确认：请先在原把次上重试保存；确认后只能回看。';
+  }
+  return (
+    '这条抱石线路的完攀还在待确认（' +
+    info.sessionText +
+    ' ' +
+    info.attemptLabel +
+    '）：先回原把次重试保存，确认后只能回看。'
+  );
 }
 
 Page({
@@ -76,6 +143,10 @@ Page({
     routeClosed: false,
     canRecordAgain: true,
     routeStateText: '',
+    // 待确认的完攀（T015）：与已确认的「已完攀」分开展示，并给出回原把次重试的入口。
+    routePendingSend: false,
+    pendingRetry: null,
+    pendingRetryHint: '',
     recordNotice: '',
 
     // 主照片可以在详情页直接补、换、移除；列表缩略图仍由今日页读取同一索引。
@@ -129,6 +200,9 @@ Page({
       routeClosed: false,
       canRecordAgain: true,
       routeStateText: '',
+      routePendingSend: false,
+      pendingRetry: null,
+      pendingRetryHint: '',
       recordNotice: '',
       routePhoto: null,
       photoNotice: '',
@@ -300,6 +374,9 @@ Page({
         routeClosed: false,
         canRecordAgain: false,
         routeStateText: '',
+        routePendingSend: false,
+        pendingRetry: null,
+        pendingRetryHint: '',
         routePhoto: null
       });
       return;
@@ -314,7 +391,10 @@ Page({
         routeCompleted: false,
         routeClosed: false,
         canRecordAgain: false,
-        routeStateText: ''
+        routeStateText: '',
+        routePendingSend: false,
+        pendingRetry: null,
+        pendingRetryHint: ''
       });
       return;
     }
@@ -356,6 +436,10 @@ Page({
     const sendCount = related.filter(attempt => attempt.result === 'send').length;
     // 完攀状态与今日页、历史选线同源：已完攀的抱石线只回看，顶绳和先锋可再记。
     const completion = routeCompletion(state, route.id);
+    // 待确认与已确认分开：只有已确认才显示「已完攀」；待确认给出回原把次的入口。
+    // 只有因此被关闭入口的抱石线才算「完攀待确认」——顶绳、先锋可重复完攀。
+    const pendingSend = completion.closed && !completion.completed;
+    const pendingRetry = pendingSend ? pendingRetryInfo(state, route.id) : null;
 
     this.setData({
       route: {
@@ -382,9 +466,12 @@ Page({
       canRecordAgain: completion.canRecord,
       routeStateText: completion.completed
         ? '已完攀'
-        : completion.hasPendingSend
+        : completion.closed
           ? '完攀待确认'
           : '',
+      routePendingSend: pendingSend,
+      pendingRetry,
+      pendingRetryHint: pendingRetry ? pendingRetry.hint : '',
       summaryText:
         dayCount + ' 天 · ' + groups.length + ' 场 · ' + related.length + ' 把',
       routePhoto: this._photoUi
@@ -421,9 +508,13 @@ Page({
       this.refreshView();
       this.setData({
         storageError: '',
-        recordNotice: completion.completed
-          ? '这条抱石线路已完攀，只能回看，不能再新增把次。'
-          : '这条抱石线路的完攀还在待确认：请回到原场次的原把次重试保存，确认后只能回看。'
+        recordNotice: noticeForClosed(
+          loaded.state,
+          routeId,
+          completion.completed
+            ? '这条抱石线路已完攀，只能回看，不能再新增把次。'
+            : ''
+        )
       });
       return;
     }
@@ -511,13 +602,18 @@ Page({
     // 已完攀时收起弹层并只刷新回看，不切换场次、不发起尝试。
     const completion = routeCompletion(loaded.state, this._pendingRouteId);
     if (completion.known && completion.closed) {
+      const routeId = this._pendingRouteId;
       this._pendingRouteId = '';
       this.setData({
         sessionPicker: null,
         storageError: '',
-        recordNotice: completion.completed
-          ? '这条抱石线路已完攀，只能回看，本次选场未生效。'
-          : '这条抱石线路的完攀还在待确认：请先处理原把次，本次选场未生效。'
+        recordNotice: noticeForClosed(
+          loaded.state,
+          routeId,
+          completion.completed
+            ? '这条抱石线路已完攀，只能回看，本次选场未生效。'
+            : ''
+        )
       });
       this.refreshView();
       return;
@@ -569,6 +665,50 @@ Page({
   cancelSessionPicker() {
     this._pendingRouteId = '';
     this.setData({ sessionPicker: null });
+  },
+
+  /**
+   * 待确认完攀的回原把次入口（T015）：把「当前场次/线路」指到原把次所在的场次与
+   * 这条线路，再返回今日页，让用户在原待确认行点「重试保存」。
+   *
+   * 只切换当前选择，不新建场次、不生成新的 opId、不发起任何尝试：
+   * 重试始终复用原 opId，保存端按该 ID 幂等。
+   * 原把次已不在（被确认或被重置）时按最新状态刷新，不猜、不补一个新场次。
+   */
+  openPendingRetry() {
+    if (this.data.loadError || this.data.notFound || this.data.isLegacy) return;
+
+    const routeId = this.data.route && this.data.route.id;
+    if (!routeId) return;
+
+    const loaded = loadState();
+    if (loaded.error) {
+      this.setData({ storageError: loaded.error });
+      return;
+    }
+
+    const next = clone(loaded.state);
+    const route = next.routes.find(item => item.id === routeId);
+    const info = pendingRetryInfo(next, routeId);
+    const session = info ? findSession(next, info.sessionId) : null;
+    if (!route || !session) {
+      this.state = next;
+      this.refreshView();
+      return;
+    }
+
+    next.activeSessionId = session.id;
+    next.activeRouteId = route.id;
+
+    const saved = saveState(next);
+    if (!saved.ok) {
+      this.setData({ storageError: saved.error });
+      return;
+    }
+
+    this.state = next;
+    this.setData({ storageError: '' });
+    this.goBackToToday();
   },
 
   goBackToToday() {

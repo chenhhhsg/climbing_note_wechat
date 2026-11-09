@@ -256,7 +256,7 @@
     </block>
   </block>
 
-  <!-- 已完攀的抱石线不再提供「今天再爬」，只保留回看；顶绳和先锋可重复完攀，入口照旧 -->
+  <!-- 可再记：顶绳、先锋完攀后仍可用「今天再爬」；未完攀的抱石线也在此入口 -->
   <view
     wx:if="{{!isLegacy && route && canRecordAgain}}"
     class="record-again-footer"
@@ -264,13 +264,32 @@
     <button id="record-again" class="record-again-button" bindtap="recordAgain">今天再爬</button>
     <text class="record-again-hint">今天该岩馆只有一场时直接沿用；多场先选归属；没有就新建一场</text>
   </view>
+  <!-- 已确认完攀：只回看，不显示「今天再爬」 -->
   <view
-    wx:elif="{{!isLegacy && route}}"
+    wx:elif="{{!isLegacy && route && routeCompleted}}"
     id="detail-completed-footer"
     class="record-again-footer detail-completed-footer"
   >
     <text id="detail-completed-state" class="detail-completed-title">已完攀</text>
     <text class="detail-completed-hint">这条抱石线路已完攀，只能回看；逐把记录、备注与照片都保留在本机。</text>
+  </view>
+  <!--
+    完攀待确认：明确展示「还在待确认」而不是「已完攀」，并给出回原把次重试的入口。
+    入口只切换当前场次/线路指到原把次，不新建场次、不生成新 opId。
+  -->
+  <view
+    wx:elif="{{!isLegacy && route && routePendingSend}}"
+    id="detail-pending-footer"
+    class="record-again-footer detail-pending-footer"
+  >
+    <text id="detail-pending-state" class="detail-pending-title">完攀待确认</text>
+    <text class="detail-pending-hint">{{pendingRetryHint}}</text>
+    <button
+      wx:if="{{pendingRetry}}"
+      id="detail-pending-retry"
+      class="secondary-button detail-pending-retry"
+      bindtap="openPendingRetry"
+    >回到原把次重试</button>
   </view>
 
   <!--

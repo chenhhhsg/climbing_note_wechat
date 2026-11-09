@@ -631,6 +631,36 @@
   width: 100%;
 }
 
+/* 抱石完攀待确认：与「已完攀」区分，给出回原场次的入口 */
+.route-pending-panel {
+  width: 100%;
+  margin: 0 0 12rpx;
+  padding: 18rpx 24rpx;
+  background: #fbf1de;
+  border: 2rpx solid #dfc79a;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.route-pending-title {
+  display: block;
+  color: #8a6414;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.route-pending-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-pending-goto {
+  width: 100%;
+}
+
 .session-history {
   margin-top: 44rpx;
   padding-top: 4rpx;

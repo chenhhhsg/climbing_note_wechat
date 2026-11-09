@@ -75,13 +75,13 @@ function attemptResultText(result) {
  * 线路上的完攀标记文案（T015）：判定来自 store.routeCompletion，
  * 今日页、历史选线与详情页显示同一份结果。
  * - 已确认完攀：抱石线只能回看；
- * - 完攀还在待确认：提示先处理原把次；
- * - 顶绳、先锋可重复完攀，不显示标记。
+ * - 完攀还在待确认：只有因此被关闭入口的抱石线才显示，顶绳、先锋可重复完攀，
+ *   保存中的那一把由待确认行本身表达，不升级成线路级标记。
  */
 function completionText(completion) {
   if (!completion || !completion.known) return '';
   if (completion.completed) return '已完攀';
-  if (completion.hasPendingSend) return '完攀待确认';
+  if (completion.closed) return '完攀待确认';
   return '';
 }
 
@@ -150,6 +150,10 @@ Page({
     routeRepeatable: true,
     routeSendCount: 0,
     routeStateText: '',
+    // 待确认的完攀（T015）：与已确认的「已完攀」分开展示；跨场时给出回原场次的入口。
+    routePendingSend: false,
+    pendingSendOtherSession: false,
+    pendingSendHint: '',
     saveNotice: '',
 
     // 弱网演练：只影响下一次保存，且只存在于本试用工程。
@@ -496,6 +500,44 @@ Page({
       ? routeCompletion(state, selectedRoute.id)
       : null;
 
+    // 待确认的完攀（T015）：与已确认的「已完攀」分开。
+    // 只有因此被关闭入口的抱石线才算「完攀待确认」——顶绳、先锋可重复完攀，
+    // 保存中的那一把由待确认行本身表达，不升级成线路级状态。
+    // 待确认可能落在别的场次：这里点名原场次，并提供回到原场次的入口，
+    // 避免只显示能点却没用的结果按钮，或让用户自己猜原场次。
+    const pendingSendOp =
+      selectedRoute && state.pendingSaves
+        ? state.pendingSaves
+            .filter(
+              op => op.routeId === selectedRoute.id && op.result === 'send'
+            )
+            .sort((left, right) => left.seq - right.seq)[0] || null
+        : null;
+    const routePendingSend = Boolean(
+      completion && completion.closed && !completion.completed
+    );
+    const pendingSendOtherSession = Boolean(
+      routePendingSend && pendingSendOp && activeRaw &&
+        pendingSendOp.sessionId !== activeRaw.id
+    );
+    let pendingSendHint = '';
+    if (routePendingSend && pendingSendOp) {
+      const opSession = findSession(state, pendingSendOp.sessionId);
+      if (pendingSendOtherSession && opSession) {
+        pendingSendHint =
+          '这一把的完攀还在 ' +
+          opSession.date +
+          ' ' +
+          sessionLabel(state, opSession) +
+          ' · ' +
+          gymName(opSession.gymId) +
+          ' 待确认：回到原场次，在待确认行点「重试保存」；确认后只能回看。';
+      } else {
+        pendingSendHint =
+          '这一把的完攀还在待确认：在下方待确认行点「重试保存」；确认后只能回看。';
+      }
+    }
+
     // 照片展示是叠加在尝试视图上的独立状态，不改变线路与尝试本身。
     this._baseRoutes = routes;
     this._baseSelectedRoute = selectedRoute;
@@ -524,9 +566,12 @@ Page({
       routeStateText:
         completion && completion.completed
           ? '已完攀'
-          : completion && completion.hasPendingSend
+          : completion && completion.closed
             ? '完攀待确认'
             : '',
+      routePendingSend,
+      pendingSendOtherSession,
+      pendingSendHint,
       routePhoto: selectedRoute ? this.photoView(selectedRoute.id) : null,
       noteEditor
     });
@@ -1388,6 +1433,38 @@ Page({
     if (!opId) return Promise.resolve();
     if (this.data.loadError) return Promise.resolve();
     return this.dispatchPending(opId);
+  },
+
+  /**
+   * 待确认完攀的回原场次入口（T015）：当前线路的完攀待确认落在别的场次时，
+   * 切到那个场次并保持这条线路被选中，让待确认行可见、可就地重试。
+   *
+   * 只切换当前选择，不新建场次、不生成新的 opId、不发起尝试：
+   * 重试沿用原 opId，保存端按该 ID 幂等。
+   */
+  goToPendingAttempt() {
+    if (this.data.loadError) return;
+    const routeId = this._baseSelectedRoute && this._baseSelectedRoute.id;
+    if (!routeId) return;
+
+    const outcome = this.commitLatest(next => {
+      const op = (next.pendingSaves || [])
+        .filter(item => item.routeId === routeId && item.result === 'send')
+        .sort((left, right) => left.seq - right.seq)[0];
+      if (!op) return false;
+      if (!findSession(next, op.sessionId)) return false;
+      next.activeSessionId = op.sessionId;
+      next.activeRouteId = routeId;
+    });
+    if (!outcome.ok) {
+      if (outcome.skipped) this.refreshView();
+      return;
+    }
+
+    this._editingAttemptId = '';
+    this.setData({ noteEditor: null });
+    this.refreshView();
+    return this.initPhotoUi();
   },
 
   /**

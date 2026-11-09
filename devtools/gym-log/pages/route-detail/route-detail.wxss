@@ -415,6 +415,33 @@
   text-align: center;
 }
 
+/* 抱石完攀待确认：与「已完攀」区分开，给出回原把次重试的入口 */
+.detail-pending-footer {
+  background: rgba(251, 241, 222, 0.98);
+  border-top: 1rpx solid #dfc79a;
+}
+
+.detail-pending-title {
+  display: block;
+  color: #8a6414;
+  font-size: 34rpx;
+  font-weight: 700;
+  text-align: center;
+}
+
+.detail-pending-hint {
+  display: block;
+  margin-top: 8rpx;
+  color: #55564e;
+  font-size: 22rpx;
+  line-height: 32rpx;
+  text-align: center;
+}
+
+.detail-pending-retry {
+  margin-top: 16rpx;
+}
+
 /* 同日多场选择：底部面板，编号 + 开始时刻 + 当前标记 */
 .picker-mask {
   position: fixed;

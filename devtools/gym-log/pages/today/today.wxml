@@ -537,7 +537,8 @@
 
       <!-- 拇指可及的两个大按钮，底部留出安全区；
            本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把。
-           抱石首次完攀确认后，原按钮位置改成「已完攀」并只留回看入口。 -->
+           抱石首次完攀确认后，原按钮位置改成「已完攀」并只留回看入口；
+           完攀还在待确认时显示待确认面板，绝不放能点却没用的结果按钮。 -->
       <view wx:if="{{selectedRoute && !noteEditor}}" class="result-footer">
         <block wx:if="{{routeCompleted}}">
           <view id="route-completed-panel" class="route-completed-panel">
@@ -550,6 +551,18 @@
             data-route-id="{{selectedRoute.id}}"
             bindtap="openRouteDetail"
           >查看记录</button>
+        </block>
+        <block wx:elif="{{routePendingSend}}">
+          <view id="route-pending-panel" class="route-pending-panel">
+            <text class="route-pending-title">完攀待确认</text>
+            <text id="route-pending-hint" class="route-pending-hint">{{pendingSendHint}}</text>
+          </view>
+          <button
+            wx:if="{{pendingSendOtherSession}}"
+            id="route-pending-goto"
+            class="secondary-button route-pending-goto"
+            bindtap="goToPendingAttempt"
+          >回到原场次重试</button>
         </block>
         <block wx:else>
           <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>

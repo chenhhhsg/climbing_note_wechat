@@ -3932,3 +3932,205 @@ test('T015-A4 旧夹具多条历史完攀与旧汇总原样只读，今日页与
     '详情页显示同一份完攀状态'
   );
 });
+
+// ---- T015 / A5：待确认与已完攀分开显示，并给出回原把次的准确入口 ----
+test('T015-A5 待确认与已完攀分开：详情不误报「已完攀」，跨场待确认可回到原把次重试', async () => {
+  const todayWxml = read(PAGE_WXML);
+  const detailWxml = read(DETAIL_WXML);
+
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  const sessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  // 完攀点下去丢回执：这一把留在待确认，原 opId 与序号不变
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+  const pendingBefore = savedState().pendingSaves;
+  assert.equal(pendingBefore.length, 1);
+  const opId = pendingBefore[0].opId;
+  assert.equal(pendingBefore[0].sessionId, sessionId);
+
+  // 本场待确认：结果按钮已被待确认面板替换，而不是能点却没用的按钮
+  assert.equal(page.data.routeCompleted, false, '待确认不算已完攀');
+  assert.equal(page.data.routeClosed, true, '待确认即关闭新增入口');
+  assert.equal(page.data.routePendingSend, true);
+  assert.equal(page.data.pendingSendOtherSession, false, '本场待确认无需跳场');
+  assert.equal(page.data.resultLocked, true);
+  assert.match(page.data.pendingSendHint, /待确认/);
+
+  // 详情页：同一线路与今日页读数一致，且不再把待确认渲染成「已完攀」
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeClosed, true);
+  assert.equal(detail.data.canRecordAgain, false);
+  assert.equal(detail.data.routeStateText, '完攀待确认');
+  assert.equal(detail.data.routePendingSend, true);
+  assert.equal(detail.data.pendingRetry.opId, opId);
+  assert.equal(detail.data.pendingRetry.sessionId, sessionId, '入口指向原把次所在场次');
+  assert.equal(detail.data.pendingRetry.attemptLabel, '第 2 把');
+  assert.match(detail.data.pendingRetryHint, /待确认/);
+
+  // 旧写法（wx:elif="{{!isLegacy && route}}" 直接渲染「已完攀」）必须消失
+  assert.ok(
+    !/<view\s+wx:elif="\{\{!isLegacy && route\}\}"\s+id="detail-completed-footer"[\s\S]*?id="detail-completed-state"[^>]*>已完攀<\/text>/.test(
+      detailWxml
+    ),
+    '详情底部不再用「可再记之外」的分支兜底显示「已完攀」'
+  );
+  assert.ok(detailWxml.includes('id="detail-pending-footer"'), '待确认页脚独立存在');
+  assert.ok(detailWxml.includes('id="detail-pending-retry"'), '待确认给出重试入口');
+  assert.ok(detailWxml.includes('bindtap="openPendingRetry"'));
+  assert.ok(
+    detailWxml.includes('wx:elif="{{!isLegacy && route && routeCompleted}}"') &&
+      detailWxml.includes('wx:elif="{{!isLegacy && route && routePendingSend}}"'),
+    '已完攀与待确认是两个互斥分支'
+  );
+  // 待确认分支里不得出现「已完攀」字样
+  const pendingBlock = detailWxml.slice(
+    detailWxml.indexOf('routePendingSend'),
+    detailWxml.indexOf('同日多场')
+  );
+  assert.ok(pendingBlock.length > 0 && !pendingBlock.includes('已完攀'));
+  // 今日页绑定：待确认面板与结果按钮互斥
+  assert.ok(todayWxml.includes('wx:elif="{{routePendingSend}}"'));
+  assert.ok(todayWxml.includes('id="route-pending-panel"'));
+  assert.ok(todayWxml.includes('id="route-pending-goto"'));
+
+  // 迟到的「今天再爬」在待确认期间不越过状态：不新建场次、不生成 opId、不导航、不开弹层
+  const before = {
+    sessions: savedState().sessions.length,
+    attempts: savedState().attempts.length,
+    pending: savedState().pendingSaves.length,
+    nav: wxLog.navigations.length
+  };
+  detail.recordAgain();
+  assert.match(detail.data.recordNotice, /待确认/);
+  assert.match(detail.data.recordNotice, /第 2 把/, '说明里点名原把次');
+  assert.equal(detail.data.sessionPicker, null, '待确认时不打开选场弹层');
+  assert.equal(savedState().sessions.length, before.sessions);
+  assert.equal(savedState().attempts.length, before.attempts);
+  assert.equal(savedState().pendingSaves.length, before.pending);
+  assert.equal(wxLog.navigations.length, before.nav);
+
+  // 换到另一场次再看同一条线路：不能显示成能新增；应给出回原场次的入口
+  page.openSessionForm();
+  page.startSession();
+  const otherSessionId = page.data.activeSession.id;
+  assert.notEqual(otherSessionId, sessionId);
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(page.data.routePendingSend, true);
+  assert.equal(page.data.pendingSendOtherSession, true, '待确认落在另一场次');
+  assert.match(page.data.pendingSendHint, /2026-11-05/);
+  assert.match(page.data.pendingSendHint, /第 1 场/);
+
+  // 跨场直接点结果不生成第二个待确认（面板之外的方法兜底）
+  const otherPendingBefore = savedState().pendingSaves.length;
+  await tapResult(page, 'send');
+  assert.equal(savedState().pendingSaves.length, otherPendingBefore, '跨场不新增待确认');
+  assert.match(page.data.saveNotice, /待确认/);
+
+  // 从另一页面/另一场次打开同一线路：详情同样识别待确认并指向原把次
+  const detailFromOther = createDetailPage(ROUTE_BLUE);
+  assert.equal(detailFromOther.data.routePendingSend, true);
+  assert.equal(detailFromOther.data.routeCompleted, false);
+  assert.equal(detailFromOther.data.pendingRetry.sessionId, sessionId);
+
+  // 回原把次：只切换当前场次/线路，不新建场次、不生成新 opId、不发起尝试
+  const gotoBefore = {
+    sessions: savedState().sessions.length,
+    attempts: savedState().attempts.length,
+    pending: savedState().pendingSaves.length
+  };
+  wxLog.navigations = [];
+  detailFromOther.openPendingRetry();
+  assert.equal(savedState().activeSessionId, sessionId, '切换回原场次');
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE, '保持这条线路被选中');
+  assert.equal(savedState().sessions.length, gotoBefore.sessions, '不新建场次');
+  assert.equal(savedState().pendingSaves.length, gotoBefore.pending, '不生成新的 opId');
+  assert.equal(savedState().pendingSaves[0].opId, opId, '仍复用原 opId');
+  assert.equal(savedState().attempts.length, gotoBefore.attempts);
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(wxLog.navigations[0].type, 'navigateBack');
+
+  // 回到今日页后可找到原把次并就地重试
+  page.onShow();
+  assert.equal(page.data.activeSession.id, sessionId);
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(page.data.pendingAttempts.length, 1, '原把次可见');
+  assert.equal(page.data.pendingAttempts[0].opId, opId);
+  assert.equal(page.data.pendingAttempts[0].canRetry, true);
+  assert.equal(page.data.pendingAttempts[0].label, '第 2 把');
+
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.routePendingSend, false);
+  assert.equal(page.data.routeCompleted, true, '确认后才显示已完攀');
+  assert.equal(page.data.routeStateText, '已完攀');
+  assert.ok(savedState().attempts.some(item => item.id === opId));
+  assert.equal(
+    savedState().attempts.find(item => item.id === opId).sessionId,
+    sessionId,
+    '完攀归属原场次'
+  );
+  assert.equal(
+    ledgerState().records.filter(record => record.result === 'send').length,
+    1,
+    '重试不重复入账'
+  );
+
+  // 确认成功后详情与今日页一致显示「已完攀」，待确认入口收起
+  const doneDetail = createDetailPage(ROUTE_BLUE);
+  assert.equal(doneDetail.data.routeCompleted, true);
+  assert.equal(doneDetail.data.routePendingSend, false);
+  assert.equal(doneDetail.data.pendingRetry, null);
+  assert.equal(doneDetail.data.pendingRetryHint, '');
+  assert.equal(doneDetail.data.routeStateText, '已完攀');
+  assert.equal(doneDetail.data.canRecordAgain, false);
+  const doneItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(doneItem.completionText, '已完攀');
+});
+
+// ---- T015 / A6：绳攀待确认不升级成线路级状态，完攀后仍可记录 ----
+test('T015-A6 顶绳完攀待确认只留在待确认行，不显示线路级「完攀待确认」，确认后仍可再记', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  const ropeId = createTypedRoute(page, '顶绳待确认线', '顶绳', '5.10a');
+
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+  assert.equal(savedState().pendingSaves.length, 1);
+  const opId = savedState().pendingSaves[0].opId;
+
+  // 绳攀没有「首次完攀」概念：待确认只体现在待确认行，不关闭入口、不出线路级标记
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false, '顶绳不因待确认关闭新增入口');
+  assert.equal(page.data.routePendingSend, false, '绳攀不显示线路级待确认面板');
+  assert.equal(page.data.pendingSendHint, '');
+  assert.equal(page.data.routeStateText, '');
+  assert.equal(page.data.resultLocked, true, '同一把仍保存中被锁定');
+  const item = page.data.routes.find(route => route.id === ropeId);
+  assert.equal(item.completionText, '', '列表不显示线路级待确认标记');
+  assert.equal(item.isClosed, false);
+
+  // 待确认行本身可重试，确认后原按钮位置照旧可以继续记录
+  assert.equal(page.data.pendingAttempts.length, 1);
+  assert.equal(page.data.pendingAttempts[0].canRetry, true);
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.attempts.length, 1);
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 2, '绳攀完攀后仍可记录');
+  assert.equal(page.data.routeCompleted, false);
+
+  // 详情页与今日页一致：绳攀仍提供「今天再爬」，不显示待确认或已完攀页脚
+  const detail = createDetailPage(ropeId);
+  assert.equal(detail.data.canRecordAgain, true);
+  assert.equal(detail.data.routePendingSend, false);
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeStateText, '');
+  assert.equal(detail.data.pendingRetry, null);
+});
