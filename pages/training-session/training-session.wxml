@@ -400,6 +400,33 @@
             <text id="summary-count" class="summary-count">{{summaryCountText}}</text>
             <text wx:if="{{summarySendText}}" id="summary-send" class="summary-send">{{summarySendText}}</text>
           </view>
+
+          <!--
+            只读回看入口（T029）：直接选要看哪一场的小结（日期 · 岩馆 · 第 N 场），
+            不必手工拼 ?sessionId=。选择只换所看的小结，不改正在记录的当前场次、
+            不新建场次、不写训练；放在结果按钮下方的小结区里，不占上方首屏。
+          -->
+          <view
+            wx:if="{{summarySessionPickerVisible}}"
+            id="summary-session-picker"
+            class="summary-session-picker"
+          >
+            <text class="summary-session-title">回看场次（只读）</text>
+            <picker
+              mode="selector"
+              range="{{summarySessionOptions}}"
+              range-key="label"
+              value="{{summarySessionIndex}}"
+              bindchange="onSummarySessionChange"
+            >
+              <view id="summary-session-value" class="summary-session-value">
+                <text class="summary-session-value-text">{{summarySessionValue}}</text>
+                <text class="summary-session-arrow">切换 ›</text>
+              </view>
+            </picker>
+            <text class="summary-session-hint">只切换看哪一场小结：当前场次与正在记录的线路都不变。</text>
+          </view>
+
           <text wx:if="{{summaryViewingOther}}" id="summary-other" class="summary-other">
             正在回看 {{summaryLabel}}（{{summaryGymName}} · {{summaryDate}}）；当前场次不变。
           </text>

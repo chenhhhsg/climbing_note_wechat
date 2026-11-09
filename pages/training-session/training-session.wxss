@@ -693,6 +693,13 @@
 .summary-send { flex:none; font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size:26rpx; color:#ff793f; }
 .summary-other,.summary-pending,.summary-hint { display:block; margin-top:10rpx; font-size:24rpx; line-height:1.6; color:#526157; }
 .summary-pending { color:#9c5222; }
+/* 只读回看入口：只换所看的小结，不改当前场次 */
+.summary-session-picker { margin-top:16rpx; padding:18rpx 20rpx; background:#f3f1e6; border:1px solid #d6d5c6; border-radius:8rpx; }
+.summary-session-title { display:block; font-size:24rpx; color:#526157; }
+.summary-session-value { display:flex; align-items:center; justify-content:space-between; gap:16rpx; margin-top:10rpx; padding:14rpx 18rpx; background:#fffcf3; border:1px solid #c9c8b8; border-radius:8rpx; }
+.summary-session-value-text { flex:1; min-width:0; font-size:28rpx; color:#173d32; word-break:break-all; }
+.summary-session-arrow { flex:none; font-size:26rpx; color:#d2784f; }
+.summary-session-hint { display:block; margin-top:10rpx; font-size:22rpx; line-height:1.6; color:#606d61; }
 .summary-row { background:#fffcf3; border:1px solid #d6d5c6; border-radius:8rpx; padding:20rpx; margin-top:12rpx; }
 .summary-row-main { display:flex; align-items:flex-start; }
 .summary-row .route-swatch { flex:none; margin-top:6rpx; }

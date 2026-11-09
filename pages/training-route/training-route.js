@@ -1131,6 +1131,15 @@ Page({
   },
 
   /**
+   * 清单写入口的原归属：本页渲染时用的档案 ID。数据层据此核对这条操作是不是还落在
+   * 同一份档案上——换档之后的迟到点击会被拒绝，不会改到另一份档案里同名线路 ID 的收藏。
+   */
+  wishlistOwnership() {
+    const archiveId = this.archive && this.archive.archiveId;
+    return archiveId ? { archiveId: archiveId } : undefined;
+  },
+
+  /**
    * 加入下次想爬。只写清单这一份独立记录：线路、照片、把次与备注都不动。
    * 重复点击幂等（已在清单里不写盘）；落盘失败不报已保存，可再点一次重试。
    */
@@ -1139,7 +1148,7 @@ Page({
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
 
-    const outcome = wishlist.addWishlist(routeId);
+    const outcome = wishlist.addWishlist(routeId, this.wishlistOwnership());
     if (!outcome.ok) {
       this.setData({
         storageError: outcome.code === 'write-failed' ? outcome.error : '',
@@ -1168,7 +1177,7 @@ Page({
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
 
-    const outcome = wishlist.removeWishlist(routeId);
+    const outcome = wishlist.removeWishlist(routeId, this.wishlistOwnership());
     if (!outcome.ok) {
       this.setData({
         storageError: outcome.code === 'write-failed' ? outcome.error : '',
@@ -1194,7 +1203,7 @@ Page({
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
 
-    const outcome = wishlist.archiveWishlist(routeId);
+    const outcome = wishlist.archiveWishlist(routeId, this.wishlistOwnership());
     if (!outcome.ok) {
       this.setData({
         storageError: outcome.code === 'write-failed' ? outcome.error : '',
