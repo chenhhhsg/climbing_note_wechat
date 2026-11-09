@@ -172,6 +172,11 @@
           <view class="selected-route-info">
             <text class="selected-route-name">{{selectedRoute.name}}</text>
             <text class="selected-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · 本场 {{routeCountText}}</text>
+            <text
+              wx:if="{{routeStateText}}"
+              id="selected-route-state"
+              class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
+            >{{routeStateText}}</text>
           </view>
           <button
             id="selected-route-detail"
@@ -390,6 +395,56 @@
             </view>
           </view>
         </block>
+
+        <!--
+          误点完攀的更正（T015 返工）：这条线**每一把**仍可更正的原把次各占一行，
+          各带自己的「改为未完成」并写明日期/场次/第几把。更正成功的那一把留在
+          原位置变成只读结果——同一个位置不会自动接上下一把，双击/连点原坐标只会
+          读到「已改为未完成」，不会写到另一把。改另一把必须再点它自己那一行。
+          这里只改正原把次，与普通新增一把「未完成」是两件事。
+          放在本场记录下方（不在底部结果条里）：底部按钮随完攀状态切换也不会
+          把这份控件的坐标让给别的写操作。
+        -->
+        <view
+          wx:if="{{routeCorrectionRows.length > 0}}"
+          id="route-correction"
+          class="route-correction"
+        >
+          <text class="route-correction-title">点错了完攀？</text>
+          <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
+          <text
+            wx:if="{{routeCorrectionStatusText}}"
+            id="route-correction-status"
+            class="route-correction-status"
+          >{{routeCorrectionStatusText}}</text>
+          <view
+            wx:for="{{routeCorrectionRows}}"
+            wx:key="attemptId"
+            class="route-correction-row"
+          >
+            <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}}</text>
+            <view class="route-correction-slot">
+              <button
+                wx:if="{{item.state !== 'corrected'}}"
+                id="route-correct-{{item.attemptId}}"
+                class="secondary-button route-correct-button"
+                disabled="{{item.disabled || item.state === 'correcting'}}"
+                data-attempt-id="{{item.context.attemptId}}"
+                data-route-id="{{item.context.routeId}}"
+                data-session-id="{{item.context.sessionId}}"
+                data-generation="{{item.context.generation}}"
+                data-dataset-id="{{item.context.datasetId}}"
+                data-owner-id="{{item.context.ownerId}}"
+                bindtap="correctSend"
+              >{{item.state === 'retry' ? '重试改为未完成' : '改为未完成'}}</button>
+              <text
+                wx:else
+                id="route-corrected-{{item.attemptId}}"
+                class="route-corrected-text"
+              >{{item.statusText}}</text>
+            </view>
+          </view>
+        </view>
       </view>
 
       <view class="section">
@@ -401,7 +456,7 @@
             id="route-{{item.id}}"
             class="route-item {{item.isSelected ? 'route-selected' : ''}}"
             data-route-id="{{item.id}}"
-            bindtap="selectRoute"
+            bindtap="onRouteTap"
           >
             <view class="route-main">
               <view class="route-swatch" style="background: {{item.colorHex}};"></view>
@@ -418,6 +473,12 @@
                 <text class="route-meta">{{item.climbType}} {{item.grade}} · {{item.colorName}}</text>
                 <text wx:if="{{item.photoMissing}}" class="route-photo-missing">本机照片不可用</text>
               </view>
+              <!-- 已完攀：历史项直接进入详情回看，不再转入新增流程 -->
+              <text
+                wx:if="{{item.completionText}}"
+                id="route-state-{{item.id}}"
+                class="route-state {{item.isCompleted ? 'route-state-done' : 'route-state-pending'}}"
+              >{{item.completionText}}</text>
               <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
             </view>
             <view class="route-actions">
@@ -525,23 +586,53 @@
       </view>
 
       <!-- 拇指可及的两个大按钮，底部留出安全区；
-           本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把 -->
+           本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把。
+           抱石首次完攀确认后，原按钮位置改成「已完攀」并只留回看入口，
+           不再出现「完攀」；更正入口在本场记录下方的「点错了完攀？」里逐把给出。
+           完攀还在待确认时显示待确认面板，绝不放能点却没用的结果按钮。 -->
       <view wx:if="{{selectedRoute && !noteEditor}}" class="result-footer">
-        <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
-        <button
-          id="record-fail"
-          class="result-button result-fail"
-          data-result="fail"
-          disabled="{{resultLocked}}"
-          bindtap="recordAttempt"
-        >未完成</button>
-        <button
-          id="record-send"
-          class="result-button result-send"
-          data-result="send"
-          disabled="{{resultLocked}}"
-          bindtap="recordAttempt"
-        >完攀</button>
+        <block wx:if="{{routeCompleted}}">
+          <view id="route-completed-panel" class="route-completed-panel">
+            <text class="route-completed-title">已完攀</text>
+            <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次、备注与照片都保留在本机。</text>
+            <text wx:if="{{routeCorrectable}}" class="route-completed-hint">点错了完攀？在上方「点错了完攀？」里点那一把自己那行改成未完成。</text>
+          </view>
+          <button
+            id="route-completed-detail"
+            class="secondary-button route-completed-detail"
+            data-route-id="{{selectedRoute.id}}"
+            bindtap="openRouteDetail"
+          >查看记录</button>
+        </block>
+        <block wx:elif="{{routePendingSend}}">
+          <view id="route-pending-panel" class="route-pending-panel">
+            <text class="route-pending-title">完攀待确认</text>
+            <text id="route-pending-hint" class="route-pending-hint">{{pendingSendHint}}</text>
+          </view>
+          <button
+            wx:if="{{pendingSendOtherSession}}"
+            id="route-pending-goto"
+            class="secondary-button route-pending-goto"
+            bindtap="goToPendingAttempt"
+          >回到原场次重试</button>
+        </block>
+        <block wx:else>
+          <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
+          <button
+            id="record-fail"
+            class="result-button result-fail"
+            data-result="fail"
+            disabled="{{resultLocked}}"
+            bindtap="recordAttempt"
+          >未完成</button>
+          <button
+            id="record-send"
+            class="result-button result-send"
+            data-result="send"
+            disabled="{{resultLocked}}"
+            bindtap="recordAttempt"
+          >完攀</button>
+        </block>
       </view>
 
       <view class="section session-history">

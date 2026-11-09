@@ -315,6 +315,34 @@
   font-weight: 600;
 }
 
+/* 完攀标记：今日页选定线路与历史选线列表共用同一份状态文案 */
+.route-state {
+  display: inline-block;
+  margin-top: 8rpx;
+  padding: 2rpx 14rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  font-weight: 700;
+  line-height: 32rpx;
+}
+
+.route-main .route-state {
+  flex: none;
+  margin: 0 0 0 12rpx;
+}
+
+.route-state-done {
+  background: #e7efe4;
+  border: 1rpx solid #bcd3b6;
+  color: #3f6a3c;
+}
+
+.route-state-pending {
+  background: #faf0dd;
+  border: 1rpx solid #e0cf9f;
+  color: #8a6d1f;
+}
+
 /* 线路详情入口：从今日/历史线路找回稳定 ID */
 .route-detail-link,
 .route-item-detail {
@@ -571,6 +599,146 @@
   background: #23241f;
   color: #fdfbf5;
   border: 3rpx solid #23241f;
+}
+
+/* 抱石已完攀：原两个结果按钮的位置改成状态面板 + 回看入口 */
+.route-completed-panel {
+  width: 100%;
+  margin: 0 0 12rpx;
+  padding: 18rpx 24rpx;
+  background: #e7efe4;
+  border: 2rpx solid #bcd3b6;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.route-completed-title {
+  display: block;
+  color: #3f6a3c;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.route-completed-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-completed-detail {
+  width: 100%;
+}
+
+/* 误点完攀的更正：这条线每一把仍可更正的原把次各占一行，各带自己的控件 */
+.route-correction {
+  width: 100%;
+  margin-top: 16rpx;
+  padding: 18rpx 24rpx;
+  background: #fffdf8;
+  border: 2rpx solid #e3ded0;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.route-correction-title {
+  display: block;
+  color: #23241f;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.route-correction-target {
+  display: block;
+  margin-top: 8rpx;
+  color: #2f4a7a;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+
+.route-correction-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-correction-status {
+  display: block;
+  margin-top: 8rpx;
+  color: #8a6414;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+/* 一行 = 一把原把次；行与行之间用分隔线区分，点哪一行就只改哪一把 */
+.route-correction-row {
+  margin-top: 14rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx dashed #e3ded0;
+}
+
+/*
+  操作位：控件与只读结果占同一格、同一高度。
+  改完这一格不塌陷，下面的行不上移——同一坐标因此不会被下一把的控件接管，
+  双击/连点原位置只会读到「已改为未完成」，不会写到另一把。
+*/
+.route-correction-slot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 72rpx;
+  margin-top: 10rpx;
+}
+
+.route-correct-button {
+  height: 72rpx;
+  min-height: 72rpx;
+  line-height: 72rpx;
+  margin: 0;
+  padding: 0 28rpx;
+  border-radius: 14rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.route-corrected-text {
+  color: #3f6a3c;
+  font-size: 26rpx;
+  font-weight: 700;
+  line-height: 72rpx;
+}
+
+/* 抱石完攀待确认：与「已完攀」区分，给出回原场次的入口 */
+.route-pending-panel {
+  width: 100%;
+  margin: 0 0 12rpx;
+  padding: 18rpx 24rpx;
+  background: #fbf1de;
+  border: 2rpx solid #dfc79a;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.route-pending-title {
+  display: block;
+  color: #8a6414;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.route-pending-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-pending-goto {
+  width: 100%;
 }
 
 .session-history {

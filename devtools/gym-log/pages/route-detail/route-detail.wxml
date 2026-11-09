@@ -29,6 +29,12 @@
       <text class="storage-error-hint">当前操作未生效，请重试；点击可收起</text>
     </view>
 
+    <!-- 已完攀只回看：迟到的「今天再爬」或选场不再新增，只给一次提示 -->
+    <view wx:if="{{recordNotice}}" id="record-notice" class="storage-error" bindtap="dismissRecordNotice">
+      <text class="storage-error-text">{{recordNotice}}</text>
+      <text class="storage-error-hint">点击可收起</text>
+    </view>
+
     <view
       wx:if="{{photoNotice}}"
       id="photo-notice"
@@ -201,6 +207,13 @@
         <text wx:if="{{hasAttempts}}" class="summary-detail">完攀 {{sendCount}} 把</text>
       </view>
 
+      <!-- 已完攀标记：与今日页、历史选线显示同一份判定 -->
+      <text
+        wx:if="{{routeStateText}}"
+        id="detail-route-state"
+        class="detail-route-state {{routeCompleted ? 'detail-route-state-done' : 'detail-route-state-pending'}}"
+      >{{routeStateText}}</text>
+
       <!-- 旧汇总：只读原样展示，不生成逐次尝试，不参与统计 -->
       <view wx:if="{{isLegacy}}" class="card legacy-card">
         <text class="legacy-label">{{legacySummary.label}}</text>
@@ -232,6 +245,32 @@
               <text class="attempt-time">{{attempt.timeText}}</text>
             </view>
             <text wx:if="{{attempt.hasNote}}" class="attempt-note">{{attempt.note}}</text>
+            <!--
+              误点完攀的更正：这一把仍是完攀时，在**这一把自己的行**上给一个
+              「改为未完成」；dataset 只带这一把的原把次与线路/场次/世代/数据集/归属。
+              更正成功后这一格原位置变成只读结果（不含按钮、不可点），所以同一位置
+              不会自动接上另一把：双击/连点原坐标只会读到「已改为未完成」。
+            -->
+            <view wx:if="{{attempt.correctionState}}" class="attempt-correct-slot">
+              <button
+                wx:if="{{attempt.correctionState !== 'corrected'}}"
+                id="detail-correct-{{attempt.id}}"
+                class="secondary-button attempt-correct-button"
+                disabled="{{attempt.correctionDisabled || attempt.correctionState === 'correcting'}}"
+                data-attempt-id="{{attempt.correctionContext.attemptId}}"
+                data-route-id="{{attempt.correctionContext.routeId}}"
+                data-session-id="{{attempt.correctionContext.sessionId}}"
+                data-generation="{{attempt.correctionContext.generation}}"
+                data-dataset-id="{{attempt.correctionContext.datasetId}}"
+                data-owner-id="{{attempt.correctionContext.ownerId}}"
+                bindtap="correctSend"
+              >{{attempt.correctionState === 'retry' ? '重试改为未完成' : '改为未完成'}}</button>
+              <text
+                wx:else
+                id="detail-corrected-{{attempt.id}}"
+                class="attempt-corrected-text"
+              >{{attempt.correctionStatusText}}</text>
+            </view>
           </view>
         </view>
       </view>
@@ -243,9 +282,50 @@
     </block>
   </block>
 
-  <view wx:if="{{!isLegacy && route}}" class="record-again-footer">
+  <!-- 可再记：顶绳、先锋完攀后仍可用「今天再爬」；未完攀的抱石线也在此入口 -->
+  <view
+    wx:if="{{!isLegacy && route && canRecordAgain}}"
+    class="record-again-footer"
+  >
     <button id="record-again" class="record-again-button" bindtap="recordAgain">今天再爬</button>
     <text class="record-again-hint">今天该岩馆只有一场时直接沿用；多场先选归属；没有就新建一场</text>
+  </view>
+  <!-- 已确认完攀：只回看，不显示「今天再爬」；点错了在每把记录上「改为未完成」更正 -->
+  <view
+    wx:elif="{{!isLegacy && route && routeCompleted}}"
+    id="detail-completed-footer"
+    class="record-again-footer detail-completed-footer"
+  >
+    <text id="detail-completed-state" class="detail-completed-title">已完攀</text>
+    <text class="detail-completed-hint">这条抱石线路已完攀，不再新增把次；逐把记录、备注与照片都保留在本机。</text>
+    <!--
+      更正入口在每把记录自己那行：这里只说清「怎么改」与当前状态。
+      一次只改点中的那一把；要改另一把必须再点它自己那行的按钮。
+    -->
+    <text wx:if="{{routeCorrectable}}" class="detail-correction-hint">点错了完攀？在下面那一把记录的右侧点「改为未完成」，一次只改你点的那一把。</text>
+    <text
+      wx:if="{{routeCorrectionStatusText}}"
+      id="detail-correction-status"
+      class="detail-correction-status"
+    >{{routeCorrectionStatusText}}</text>
+  </view>
+  <!--
+    完攀待确认：明确展示「还在待确认」而不是「已完攀」，并给出回原把次重试的入口。
+    入口只切换当前场次/线路指到原把次，不新建场次、不生成新 opId。
+  -->
+  <view
+    wx:elif="{{!isLegacy && route && routePendingSend}}"
+    id="detail-pending-footer"
+    class="record-again-footer detail-pending-footer"
+  >
+    <text id="detail-pending-state" class="detail-pending-title">完攀待确认</text>
+    <text class="detail-pending-hint">{{pendingRetryHint}}</text>
+    <button
+      wx:if="{{pendingRetry}}"
+      id="detail-pending-retry"
+      class="secondary-button detail-pending-retry"
+      bindtap="openPendingRetry"
+    >回到原把次重试</button>
   </view>
 
   <!--

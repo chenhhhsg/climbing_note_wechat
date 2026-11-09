@@ -164,6 +164,83 @@ async function tapResult(page, result) {
   await page.recordAttempt({ currentTarget: { dataset: { result } } });
 }
 
+// 「改为未完成」按**真实渲染出来的控件**取：
+// 今日页取 routeCorrectionRows（每把一行），详情页取每把记录行上的
+// correctionState / correctionContext（控件就在这一把记录自己那一行）。
+// 顺序与列表一致：index 0 就是最上面那个控件。
+function renderedCorrectionControls(page) {
+  if (Array.isArray(page.data.groups)) {
+    const rows = [];
+    page.data.groups.forEach(group => {
+      (group.attempts || []).forEach(attempt => {
+        if (!attempt.correctionState) return;
+        rows.push({
+          attemptId: attempt.id,
+          state: attempt.correctionState,
+          disabled: Boolean(attempt.correctionDisabled),
+          context: attempt.correctionContext
+        });
+      });
+    });
+    return rows;
+  }
+  return (page.data.routeCorrectionRows || []).map(row => ({
+    attemptId: row.attemptId,
+    state: row.state,
+    disabled: Boolean(row.disabled),
+    context: row.context
+  }));
+}
+
+function correctControlFor(page, attemptId) {
+  return (
+    renderedCorrectionControls(page).find(row => row.attemptId === attemptId) ||
+    null
+  );
+}
+
+function datasetOf(context) {
+  return {
+    attemptId: context.attemptId,
+    routeId: context.routeId,
+    sessionId: context.sessionId,
+    generation: context.generation,
+    datasetId: context.datasetId,
+    ownerId: context.ownerId
+  };
+}
+
+// 按 WXML 的 data-* → dataset 映射（data-attempt-id → dataset.attemptId）构造真实点按事件。
+// 该位置此刻已是只读结果（或没有控件）时返回 null：这次点击不构成任何写操作。
+function correctEventAt(page, index) {
+  const control = renderedCorrectionControls(page)[index];
+  if (!control || control.state === 'corrected' || !control.context) return null;
+  return { currentTarget: { dataset: datasetOf(control.context) } };
+}
+
+function correctEvent(page, index) {
+  return correctEventAt(page, index === undefined ? 0 : index);
+}
+
+// 点第 index 个真实渲染出来的控件（默认第一个）。
+// 位置已变成只读结果时不做任何事——正是要回归的「同坐标第二次点击」。
+async function tapCorrect(page, index) {
+  const event = correctEventAt(page, index === undefined ? 0 : index);
+  if (!event) return undefined;
+  return page.correctSend(event);
+}
+
+// 单独点某一把自己的控件：模拟用户为「另一把」重新做出的明确选择。
+async function tapCorrectFor(page, attemptId) {
+  const control = correctControlFor(page, attemptId);
+  if (!control || control.state === 'corrected' || !control.context) {
+    return undefined;
+  }
+  return page.correctSend({
+    currentTarget: { dataset: datasetOf(control.context) }
+  });
+}
+
 async function retryPending(page, opId) {
   await page.retryPendingAttempt({
     currentTarget: { dataset: { opId } }
@@ -182,6 +259,24 @@ function typeNote(page, text) {
   page.onNoteInput({ detail: { value: text } });
 }
 
+// 新建一条指定类型与等级的线路并选中；不传类型/等级时沿用表单默认（抱石 V3）。
+function createTypedRoute(page, name, climbType, grade) {
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: name } });
+  if (climbType) {
+    page.onQuickRouteTypeChange({
+      detail: { value: page.data.quickRouteTypes.indexOf(climbType) }
+    });
+  }
+  if (grade) {
+    page.onQuickRouteGradeChange({
+      detail: { value: page.data.quickRouteGrades.indexOf(grade) }
+    });
+  }
+  page.createQuickRoute();
+  return page.data.selectedRoute.id;
+}
+
 function savedState() {
   const raw = storage.get(STORE_KEY);
   return raw ? JSON.parse(raw) : null;
@@ -191,6 +286,12 @@ function savedState() {
 function ledgerState() {
   const raw = storage.get(LEDGER_KEY);
   return raw ? JSON.parse(raw) : null;
+}
+
+// 账本行数：重置后账本会被写成空账本（而非删除），空账本同样按 0 行计。
+function ledgerRows() {
+  const ledger = ledgerState();
+  return ledger ? ledger.records.length : 0;
 }
 
 function localToday() {
@@ -675,7 +776,7 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
     'bindtap="startSession"',
     'bindtap="openSessionForm"',
     'bindtap="switchSession"',
-    'bindtap="selectRoute"',
+    'bindtap="onRouteTap"',
     'bindtap="recordAttempt"',
     'bindtap="openNoteEditor"',
     'bindtap="saveNote"',
@@ -715,6 +816,7 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
     'startSession',
     'switchSession',
     'selectRoute',
+    'onRouteTap',
     'recordAttempt',
     'openNoteEditor',
     'onNoteInput',
@@ -1154,8 +1256,16 @@ test('G16 详情页 WXML 绑定、跨天分组与视觉要求齐全', async () =
   }
   assert.ok(wxml.includes('旧汇总'), '旧汇总必须明确标注');
   assert.ok(
-    wxml.includes('wx:if="{{!isLegacy && route}}"'),
-    '旧汇总只读样例不显示「今天再爬」'
+    wxml.includes('wx:if="{{!isLegacy && route && canRecordAgain}}"'),
+    '旧汇总与已完攀线路都不显示「今天再爬」'
+  );
+  assert.ok(
+    wxml.includes('id="detail-completed-footer"') && wxml.includes('已完攀'),
+    '已完攀线路在同一页脚位置显示状态说明'
+  );
+  assert.ok(
+    wxml.includes('bindtap="dismissRecordNotice"'),
+    '已完攀的迟到操作提示可收起'
   );
   assert.match(wxml, /wx:if="\{\{sessionPicker\}\}"/, '同日多场显示选择面板');
   assert.ok(wxml.includes('{{sessionPicker.dateText}}'), '选择面板显示日期');
@@ -1185,7 +1295,8 @@ test('G16 详情页 WXML 绑定、跨天分组与视觉要求齐全', async () =
     'chooseSessionForAgain',
     'cancelSessionPicker',
     'goBackToToday',
-    'dismissStorageError'
+    'dismissStorageError',
+    'dismissRecordNotice'
   ]) {
     assert.equal(
       typeof detailDefinition[method],
@@ -1250,8 +1361,9 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   const page = createPage();
   tapStart(page, 0);
   const firstSessionId = page.data.activeSession.id;
-  tapRoute(page, ROUTE_BLUE);
-  // 抱石首次完攀后不再新增：两把未完成放在先，唯一一把完攀放在第 2 场最后。
+  // T015：已完攀的抱石线在详情只回看，「今天再爬」与选场流程只对仍可再记的线路开放，
+  // 因此这条用例改用可重复完攀的顶绳线路，仍保持两场三把与选场归属断言不变。
+  const ropeId = createTypedRoute(page, '顶绳选场线', '顶绳', '5.10a');
   await tapResult(page, 'fail');
   await tapResult(page, 'fail');
 
@@ -1259,18 +1371,18 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   tapStart(page, 0);
   const secondSessionId = page.data.activeSession.id;
   assert.notEqual(secondSessionId, firstSessionId);
-  tapRoute(page, ROUTE_BLUE);
+  tapRoute(page, ropeId);
   await tapResult(page, 'send');
 
   // QA 复现起点：同一岩馆今天已有两场，当前明确选中第 1 场
   tapSession(page, firstSessionId);
   assert.equal(page.data.activeSession.id, firstSessionId);
-  tapRoute(page, ROUTE_BLUE);
+  tapRoute(page, ropeId);
 
   const writesBefore = wxLog.setKeys.length;
   const navBefore = wxLog.navigations.length;
 
-  const detail = createDetailPage(ROUTE_BLUE);
+  const detail = createDetailPage(ropeId);
   assert.equal(detail.data.summaryText, '1 天 · 2 场 · 3 把');
 
   detail.recordAgain();
@@ -1315,7 +1427,7 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   assert.equal(wxLog.setKeys.length, writesBefore, '取消不写缓存');
   assert.equal(wxLog.navigations.length, navBefore, '取消不返回');
   assert.equal(savedState().activeSessionId, firstSessionId);
-  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(savedState().activeRouteId, ropeId);
   assert.equal(savedState().attempts.length, 3, '取消不改动尝试');
   assert.equal(detail.data.summaryText, '1 天 · 2 场 · 3 把', '详情数据保持原样');
 
@@ -1327,7 +1439,7 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   assert.equal(detail.data.sessionPicker, null);
   assert.equal(detail.data.storageError, '');
   assert.equal(savedState().activeSessionId, firstSessionId);
-  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(savedState().activeRouteId, ropeId);
   assert.equal(savedState().attempts.length, 3);
   assert.equal(
     wxLog.navigations[wxLog.navigations.length - 1].type,
@@ -1335,7 +1447,7 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   );
 
   // 明确选中另一场：切换归属后返回，尝试归属不串
-  const nextDetail = createDetailPage(ROUTE_BLUE);
+  const nextDetail = createDetailPage(ropeId);
   nextDetail.recordAgain();
   assert.ok(nextDetail.data.sessionPicker);
   nextDetail.chooseSessionForAgain({
@@ -1343,7 +1455,7 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   });
   assert.equal(nextDetail.data.sessionPicker, null);
   assert.equal(savedState().activeSessionId, secondSessionId);
-  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(savedState().activeRouteId, ropeId);
   assert.equal(savedState().attempts.length, 3, '切场次不复制或删除尝试');
   assert.equal(
     wxLog.navigations[wxLog.navigations.length - 1].type,
@@ -1352,7 +1464,7 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
 
   page.onShow();
   assert.equal(page.data.activeSession.id, secondSessionId);
-  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(page.data.selectedRoute.id, ropeId);
   assert.equal(page.data.attempts.length, 1, '第 2 场只显示自己的尝试');
   assert.equal(page.data.attempts[0].resultText, '完攀');
 });
@@ -3363,4 +3475,2033 @@ test('T014-A5 直接保存入口按权威线路与当前上下文判定：旧签
   assert.equal(blockedByConfirmed.ok, false);
   assert.equal(blockedByConfirmed.alreadySent, true);
   assert.equal(ledgerState(), null, '被拒的提交不得写账本');
+});
+
+// ---- T014 / A6：重置或切换数据集后的迟到回执 ----
+// 复现 PM 探针：页面 A 的完攀回执晚到；页面 B 重置（或切到新数据集）后在
+// 同一条固定线路重新开场，新数据从零分配，旧请求的 opId/sessionId 会被复用。
+// 迟到的 deliver / finish 必须无副作用：不落账、不写新把次、不消费新数据。
+test('T014-A6 无照片重置复用数据集后，旧页面的迟到完攀不落账、不写新把次、不误锁', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0, '2026-11-05');
+  tapRoute(pageA, ROUTE_BLUE);
+  pageA._saveDelayMs = 60; // 页面 A 的完攀回执晚到
+  const outstanding = pageA.recordAttempt({
+    currentTarget: { dataset: { result: 'send' } }
+  });
+  const oldOpId = pageA.data.pendingAttempts[0].opId;
+  const oldSessionId = pageA.data.activeSession.id;
+  assert.equal(oldOpId, 'attempt-1');
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(ledgerState(), null, 'A 的回执还没到，账本尚未写入');
+
+  // 页面 B：无照片重置保持同一 datasetId，却在同一固定线路重新开场
+  const pageB = createPage();
+  assert.equal(await pageB.resetTrialData(), true);
+  assert.equal(
+    savedState().datasetId,
+    trialProfile.TRIAL_DATASET_ID,
+    '无照片重置保持同一数据集'
+  );
+  tapStart(pageB, 0, '2026-11-09');
+  tapRoute(pageB, ROUTE_BLUE);
+  assert.equal(savedState().attempts.length, 0);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(ledgerRows(), 0, '重置后账本已清空');
+
+  // A 的迟到完攀回执到达：新数据此刻还没有自己的把次，
+  // 旧请求的 opId/sessionId 会被新数据复用，这里必须无副作用。
+  await outstanding;
+  assert.equal(ledgerRows(), 0, '迟到旧回执不落账');
+  assert.equal(savedState().attempts.length, 0, '迟到旧回执不写新把次');
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).closed,
+    false,
+    '旧完攀不得误锁新数据'
+  );
+
+  // 新数据从零分配，复用同一 opId 与 sessionId 正常记一把未完成
+  await tapResult(pageB, 'fail');
+  assert.equal(pageB.data.attempts[0].id, oldOpId, '新数据复用同一 opId');
+  assert.equal(pageB.data.activeSession.id, oldSessionId, '新数据复用同一 sessionId');
+  assert.equal(ledgerState().records.length, 1, '新数据自己那一把正常入账');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).closed,
+    false,
+    '新一把是未完成，不被旧的完攀影响'
+  );
+
+  // 新上下文仍可继续：同一编号空间里正常再记一把完攀
+  await tapResult(pageB, 'send');
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).completed,
+    true,
+    '新数据自己的完攀正常生效'
+  );
+  assert.equal(ledgerState().records.length, 2);
+});
+
+test('T014-A7 切到新数据集后，旧页面的迟到回执不消费新数据的待确认与把次', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0, '2026-11-05');
+  tapRoute(pageA, ROUTE_BLUE);
+
+  // 用固定计时器扣住 A 的回执，等 B 重置并在新数据集重开后按确定顺序放行。
+  const originalSetTimeout = global.setTimeout;
+  const heldTimers = [];
+  let outstanding;
+  global.setTimeout = fn => {
+    heldTimers.push(fn);
+    return heldTimers.length;
+  };
+  try {
+    pageA._saveDelayMs = 60;
+    outstanding = pageA.recordAttempt({
+      currentTarget: { dataset: { result: 'send' } }
+    });
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+  const oldOpId = pageA.data.pendingAttempts[0].opId;
+  const oldSessionId = pageA.data.activeSession.id;
+
+  // 页面 B：显式切到新数据集（有照片轮换走的也是这条路径）
+  const pageB = createPage();
+  assert.equal(pageB.applyTrialReset('trial-dataset-local-2'), true);
+  assert.equal(savedState().datasetId, 'trial-dataset-local-2');
+  tapStart(pageB, 0, '2026-11-09');
+  tapRoute(pageB, ROUTE_BLUE);
+
+  // 新数据自己那一把：丢回执，保留待确认，同时账本已有一行
+  pageB.toggleReceiptLossArm();
+  await tapResult(pageB, 'fail');
+  assert.equal(savedState().pendingSaves.length, 1, '新数据的待确认已落盘');
+  assert.equal(savedState().pendingSaves[0].opId, oldOpId, '新数据复用同一 opId');
+  assert.equal(ledgerState().records.length, 1);
+  assert.equal(ledgerState().records[0].opId, oldOpId);
+
+  // 放行 A 的迟到完攀：不落账，也不动新数据仍在待确认的那一把
+  assert.equal(heldTimers.length, 1, '应只有 A 的延迟回执');
+  heldTimers[0]();
+  await outstanding;
+  assert.equal(savedState().pendingSaves.length, 1, '旧回调不消费新数据的待确认');
+  assert.equal(savedState().pendingSaves[0].opId, oldOpId);
+  assert.equal(savedState().pendingSaves[0].result, 'fail', '新一把仍是未完成');
+  assert.equal(savedState().attempts.length, 0);
+  assert.equal(ledgerState().records.length, 1, '旧回调不落账');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).hasPendingSend,
+    false,
+    '旧回执不得把新线路标成完攀待确认'
+  );
+
+  // 新数据自己的回执仍可用原 opId 恢复，且只入账一次
+  await retryPending(pageB, oldOpId);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().attempts[0].id, oldOpId);
+  assert.equal(ledgerState().records.length, 1, '原操作 ID 仍幂等，不重复入账');
+});
+
+test('T014-A8 新数据先记未完成：复用同 opId 的旧完攀不得落账、不得当确认、不得误锁', async () => {
+  // 新数据集里正常记一把未完成
+  const page = createPage();
+  assert.equal(page.applyTrialReset('trial-dataset-local-2'), true);
+  tapStart(page, 0, '2026-11-09');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  const newOpId = page.data.attempts[0].id;
+  const newSessionId = page.data.activeSession.id;
+  assert.equal(ledgerState().records.length, 1);
+
+  // 重置前编号空间的迟到完攀：opId / sessionId / routeId 都被新数据复用，
+  // 只有世代还是旧的——直接走实际保存入口也不能拿新记录当确认。
+  const staleSend = server.submitOperation({
+    opId: newOpId,
+    sessionId: newSessionId,
+    routeId: ROUTE_BLUE,
+    result: 'send',
+    note: '',
+    generation: 'gen-stale-before-reset'
+  });
+  assert.equal(staleSend.ok, false);
+  assert.equal(staleSend.stale, true, '旧世代一律不入账');
+  assert.equal(staleSend.duplicate, undefined, '不得返回错误确认');
+  assert.equal(staleSend.alreadySent, undefined);
+  assert.equal(ledgerState().records.length, 1, '不新增账本行');
+  assert.equal(savedState().attempts.length, 1, '不写试用数据');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).closed,
+    false,
+    '新数据的未完成不被旧完攀误锁'
+  );
+
+  // 新数据自己的完攀仍能记录，且与旧请求互不影响
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 2);
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).completed,
+    true
+  );
+  assert.equal(ledgerState().records.length, 2);
+});
+
+
+// ---- T015 / A1：今日页、历史选线与详情统一展示 ----
+test('T015-A1 抱石首次完攀：按钮位置显示「已完攀」，历史项直达详情，同色另一条与绳攀仍可记', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+
+  // 完攀前：允许连记未完成，结果按钮仍在，列表不带标记
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  tapNote(page, page.data.attempts[1].id);
+  typeNote(page, '第二把换左脚');
+  page.saveNote();
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false);
+  assert.equal(page.data.routeStateText, '');
+  let blueItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(blueItem.completionText, '');
+  assert.equal(blueItem.isCompleted, false);
+
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(page.data.routeCompleted, true, '确认成功后按已完攀显示');
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(page.data.routeStateText, '已完攀');
+  assert.equal(page.data.routeSendCount, 1);
+
+  // 今日页历史选线列表一致显示「已完攀」，同色同级另一条不带标记
+  blueItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  const balanceItem = page.data.routes.find(
+    route => route.id === ROUTE_BLUE_BALANCE
+  );
+  assert.equal(blueItem.completionText, '已完攀');
+  assert.equal(blueItem.isCompleted, true);
+  assert.equal(blueItem.isClosed, true);
+  assert.equal(balanceItem.completionText, '');
+  assert.equal(balanceItem.isClosed, false);
+
+  // 历史项直达详情：只导航、不改选线、不新增把次
+  const attemptsBefore = savedState().attempts.length;
+  const writesBefore = wxLog.setKeys.length;
+  wxLog.navigations = [];
+  page.onRouteTap({ currentTarget: { dataset: { routeId: ROUTE_BLUE } } });
+  assert.equal(wxLog.navigations.length, 1, '历史项直接进入详情');
+  assert.equal(wxLog.navigations[0].type, 'navigateTo');
+  assert.ok(wxLog.navigations[0].url.includes(ROUTE_BLUE));
+  assert.equal(wxLog.setKeys.length, writesBefore, '直达详情不写新增数据');
+  assert.equal(savedState().attempts.length, attemptsBefore);
+
+  // 同色同级另一条抱石线仍能记下一把
+  page.onRouteTap({
+    currentTarget: { dataset: { routeId: ROUTE_BLUE_BALANCE } }
+  });
+  assert.equal(
+    page.data.selectedRoute.id,
+    ROUTE_BLUE_BALANCE,
+    '未完攀线路仍可选中'
+  );
+  await tapResult(page, 'fail');
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(
+    savedState().attempts.filter(
+      item => item.routeId === ROUTE_BLUE_BALANCE
+    ).length,
+    1
+  );
+
+  // 详情页与今日页显示同一份状态，且不再提供「今天再爬」
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.routeClosed, true);
+  assert.equal(detail.data.canRecordAgain, false);
+  assert.equal(detail.data.routeStateText, '已完攀');
+  assert.equal(detail.data.summaryText, '1 天 · 1 场 · 3 把');
+  assert.equal(
+    detail.data.groups[0].attempts[1].note,
+    '第二把换左脚',
+    '详情回看原把次备注'
+  );
+
+  // 原线路三把归属第一场，备注只在第二把
+  const blueAttempts = savedState()
+    .attempts.filter(item => item.routeId === ROUTE_BLUE)
+    .sort((left, right) => left.seq - right.seq);
+  assert.deepEqual(
+    blueAttempts.map(item => item.result),
+    ['fail', 'fail', 'send']
+  );
+  assert.equal(blueAttempts[1].note, '第二把换左脚');
+  assert.equal(new Set(blueAttempts.map(item => item.id)).size, 3);
+
+  // 绳攀完攀后仍可经「今天再爬」继续记录
+  const ropePage = createPage();
+  tapStart(ropePage, 0, '2026-11-05');
+  const ropeId = createTypedRoute(ropePage, '顶绳再爬线', '顶绳', '5.10a');
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.routeCompleted, false, '顶绳不因完攀关闭入口');
+  const ropeDetail = createDetailPage(ropeId);
+  assert.equal(ropeDetail.data.canRecordAgain, true);
+  ropeDetail.recordAgain();
+  assert.equal(ropeDetail.data.recordNotice, '', '绳攀仍可继续记录');
+  assert.equal(
+    wxLog.navigations[wxLog.navigations.length - 1].type,
+    'navigateBack'
+  );
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.attempts.length, 2);
+});
+
+// ---- T015 / A2：保存中、失败与丢回执的一致状态 ----
+test('T015-A2 保存中与丢回执保留原把次和重试入口，确认后原按钮位置显示「已完攀」', async () => {
+  const page = createPage();
+  page._saveDelayMs = 40;
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  // 点完攀前先就绪「下一次丢回执」：保存中 → 丢回执 → 重试确认
+  page.toggleReceiptLossArm();
+  const saving = page.recordAttempt({
+    currentTarget: { dataset: { result: 'send' } }
+  });
+  const savingRow = page.data.pendingAttempts[0];
+  assert.ok(savingRow, '保存中保留原把次');
+  assert.equal(savingRow.isSaving, true);
+  assert.equal(savingRow.statusText, '保存中…');
+  assert.equal(savingRow.label, '第 2 把', '原把次编号不变');
+  assert.equal(page.data.resultLocked, true, '保存中不生成新的一把');
+  assert.equal(page.data.routeCompleted, false, '未确认前不算已完攀');
+  assert.equal(page.data.routeClosed, true, '抱石完攀待确认即关闭新增入口');
+  assert.equal(page.data.routeStateText, '完攀待确认');
+  await saving;
+
+  // 丢回执：原把次保留，可见重试入口，等待确认期间不能新增
+  const lostRow = page.data.pendingAttempts[0];
+  assert.ok(lostRow);
+  assert.equal(lostRow.canRetry, true);
+  assert.match(lostRow.statusText, /回执丢失/);
+  assert.equal(page.data.attempts.length, 1, '未确认的完攀不计入已保存');
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, true);
+  const lostItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(lostItem.completionText, '完攀待确认', '列表同步显示待确认');
+
+  const opId = lostRow.opId;
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1,
+    '保存端只入账一次完攀'
+  );
+
+  // 重试同一操作：确认成功后原按钮位置显示「已完攀」
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.attempts.length, 2);
+  assert.equal(page.data.attempts[1].id, opId);
+  assert.equal(page.data.attempts[1].resultText, '完攀');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeStateText, '已完攀');
+  assert.equal(page.data.saveNotice, '');
+  const doneItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(doneItem.completionText, '已完攀');
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1,
+    '重试不重复入账'
+  );
+
+  // 页面重开或跨日：不出现新增把次入口
+  const reopened = createPage();
+  assert.equal(reopened.data.routeCompleted, true);
+  assert.equal(reopened.data.routeStateText, '已完攀');
+  const reopenedDetail = createDetailPage(ROUTE_BLUE);
+  assert.equal(reopenedDetail.data.canRecordAgain, false);
+
+  // 绑定断言：按钮位置渲染的是「已完攀」面板与回看入口
+  const wxml = read(PAGE_WXML);
+  assert.ok(
+    wxml.includes('id="route-completed-panel"'),
+    '已完攀面板在原按钮位置'
+  );
+  assert.ok(
+    wxml.includes('id="route-completed-detail"'),
+    '已完攀后只留回看入口'
+  );
+  assert.ok(
+    wxml.includes('wx:if="{{routeCompleted}}"') &&
+      wxml.includes('id="record-send"'),
+    '结果按钮与已完攀面板互斥渲染'
+  );
+  const wxss = read(PAGE_WXSS);
+  assert.match(wxss, /\.route-completed-panel/, '已完攀面板样式');
+  assert.match(wxss, /\.route-state-done/, '完攀标记样式');
+
+  // 详情页绑定：已完攀不显示「今天再爬」，改在同一页脚显示状态说明
+  const detailWxml = read(DETAIL_WXML);
+  assert.ok(
+    detailWxml.includes('wx:if="{{!isLegacy && route && canRecordAgain}}"') &&
+      detailWxml.includes('id="record-again"'),
+    '「今天再爬」只在可再记时出现'
+  );
+  assert.ok(
+    detailWxml.includes('id="detail-completed-footer"'),
+    '已完攀线路在同一页脚位置显示状态'
+  );
+  assert.match(read(DETAIL_WXSS), /\.detail-completed-footer/);
+});
+
+// ---- T015 / A3：迟到的旧页面事件与已打开的选场弹层 ----
+test('T015-A3 详情迟到事件与已打开选场弹层都不新建场次、不发起尝试', async () => {
+  const page = createPage();
+  tapStart(page, 0);
+  const firstSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  // 同日第二场，再回到第一场，保持当前选线为这条抱石线
+  page.openSessionForm();
+  page.startSession();
+  const secondSessionId = page.data.activeSession.id;
+  assert.notEqual(secondSessionId, firstSessionId);
+  tapSession(page, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.routeClosed, false, '尚未完攀时可进入选场流程');
+
+  // 详情页打开同日选场弹层（此时线路还没完攀）
+  const detail = createDetailPage(ROUTE_BLUE);
+  detail.recordAgain();
+  assert.ok(detail.data.sessionPicker, '同日多场先显式选场');
+  assert.equal(detail.data.sessionPicker.sessions.length, 2);
+
+  // 另一个页面实例确认这条抱石线的首次完攀
+  await tapResult(page, 'send');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).completed,
+    true,
+    '另一实例已确认完攀'
+  );
+
+  // 已打开的选场弹层再选中另一场：不切换归属、不新增尝试、不返回
+  const attemptsBefore = savedState().attempts.length;
+  const sessionsBefore = savedState().sessions.length;
+  const activeBefore = savedState().activeSessionId;
+  const navBefore = wxLog.navigations.length;
+  detail.chooseSessionForAgain({
+    currentTarget: { dataset: { sessionId: secondSessionId } }
+  });
+  assert.equal(detail.data.sessionPicker, null);
+  assert.match(detail.data.recordNotice, /已完攀/);
+  assert.equal(savedState().activeSessionId, activeBefore, '不切换场次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不新建场次');
+  assert.equal(savedState().attempts.length, attemptsBefore, '不发起尝试');
+  assert.equal(wxLog.navigations.length, navBefore, '不返回今日页');
+  assert.equal(detail.data.canRecordAgain, false, '详情随即按已完攀收起入口');
+
+  // 迟到的「今天再爬」事件：同样不新建场次、不发起尝试
+  const lateNavBefore = wxLog.navigations.length;
+  detail.recordAgain();
+  assert.match(detail.data.recordNotice, /已完攀/);
+  assert.equal(savedState().sessions.length, sessionsBefore);
+  assert.equal(savedState().attempts.length, attemptsBefore);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(wxLog.navigations.length, lateNavBefore);
+
+  // 已完攀线路不再显示「今天再爬」入口
+  const doneDetail = createDetailPage(ROUTE_BLUE);
+  assert.equal(doneDetail.data.canRecordAgain, false);
+  assert.equal(doneDetail.data.routeCompleted, true);
+});
+
+// ---- T015 / A4：旧夹具与旧汇总 ----
+test('T015-A4 旧夹具多条历史完攀与旧汇总原样只读，今日页与详情一致', async () => {
+  // 旧格式缓存：缺 climbType 的 V 级线路，历史已有三条完攀（含备注）
+  const legacyState = store.createInitialState();
+  legacyState.sessions.push({
+    id: 'session-1',
+    seq: 1,
+    gymId: 'gym-chalkbox',
+    date: '2026-10-20',
+    createdAt: new Date().toISOString()
+  });
+  legacyState.nextSessionSeq = 2;
+  legacyState.activeSessionId = 'session-1';
+  legacyState.activeRouteId = ROUTE_BLUE;
+  [1, 2, 3].forEach(index => {
+    legacyState.attempts.push({
+      id: 'legacy-attempt-' + index,
+      seq: index,
+      sessionId: 'session-1',
+      routeId: ROUTE_BLUE,
+      result: 'send',
+      note: '历史第 ' + index + ' 把',
+      createdAt: new Date().toISOString()
+    });
+  });
+  legacyState.nextAttemptSeq = 4;
+  storage.set(STORE_KEY, JSON.stringify(legacyState));
+
+  const page = createPage();
+  assert.equal(page.data.loadError, '', '旧缓存仍可读');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeStateText, '已完攀');
+  assert.equal(page.data.routeSendCount, 3, '历史多条完攀按原数目展示');
+  const legacyItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(legacyItem.completionText, '已完攀');
+  assert.equal(legacyItem.climbType, '抱石', '缺类型的旧 V 级线路按抱石读取');
+
+  // 历史项直达详情，详情原样回看三条备注
+  wxLog.navigations = [];
+  page.onRouteTap({ currentTarget: { dataset: { routeId: ROUTE_BLUE } } });
+  assert.equal(wxLog.navigations.length, 1);
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.attemptCount, 3, '原三条记录保持原数目');
+  assert.deepEqual(
+    detail.data.groups[0].attempts.map(attempt => attempt.note),
+    ['历史第 1 把', '历史第 2 把', '历史第 3 把']
+  );
+  assert.equal(detail.data.canRecordAgain, false);
+  assert.equal(detail.data.routeStateText, '已完攀');
+  assert.ok(
+    savedState().routes.every(route => route.climbType === undefined),
+    '读取不补写类型，也不迁移'
+  );
+
+  // 之后无法新增（完攀或未完成），旧账本仍未被写
+  await tapResult(page, 'send');
+  await tapResult(page, 'fail');
+  assert.equal(savedState().attempts.length, 3);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(ledgerState(), null, '被拒绝的提交不得写账本');
+
+  // 旧汇总只读样例：今日页入口在原处，详情按原文展示，不生成逐次尝试
+  assert.equal(page.data.legacySample.id, LEGACY_ROUTE);
+  wxLog.navigations = [];
+  page.openLegacySample();
+  assert.ok(wxLog.navigations[0].url.includes(LEGACY_ROUTE));
+  const legacyDetail = createDetailPage(LEGACY_ROUTE);
+  assert.equal(legacyDetail.data.isLegacy, true);
+  assert.equal(legacyDetail.data.attemptCountText, '0 把', '不生成 5 条逐次尝试');
+  assert.equal(
+    legacyDetail.data.legacySummary.summaryText,
+    store.LEGACY_SUMMARY_SAMPLE.legacy.summaryText,
+    '旧汇总按原文展示'
+  );
+  assert.equal(legacyDetail.data.canRecordAgain, false, '旧汇总无新增入口');
+
+  // WXML 绑定：今日页完攀标记与详情状态说明都按同一份字段渲染
+  const todayWxml = read(PAGE_WXML);
+  assert.ok(todayWxml.includes('bindtap="onRouteTap"'), '历史项绑定完攀感知入口');
+  assert.ok(
+    todayWxml.includes('{{item.completionText}}') &&
+      todayWxml.includes('{{routeStateText}}'),
+    '今日页列表与当前线路都显示完攀标记'
+  );
+  const detailWxml = read(DETAIL_WXML);
+  assert.ok(
+    detailWxml.includes('{{routeStateText}}') &&
+      detailWxml.includes('id="detail-completed-footer"'),
+    '详情页显示同一份完攀状态'
+  );
+});
+
+// ---- T015 / A5：待确认与已完攀分开显示，并给出回原把次的准确入口 ----
+test('T015-A5 待确认与已完攀分开：详情不误报「已完攀」，跨场待确认可回到原把次重试', async () => {
+  const todayWxml = read(PAGE_WXML);
+  const detailWxml = read(DETAIL_WXML);
+
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  const sessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  // 完攀点下去丢回执：这一把留在待确认，原 opId 与序号不变
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+  const pendingBefore = savedState().pendingSaves;
+  assert.equal(pendingBefore.length, 1);
+  const opId = pendingBefore[0].opId;
+  assert.equal(pendingBefore[0].sessionId, sessionId);
+
+  // 本场待确认：结果按钮已被待确认面板替换，而不是能点却没用的按钮
+  assert.equal(page.data.routeCompleted, false, '待确认不算已完攀');
+  assert.equal(page.data.routeClosed, true, '待确认即关闭新增入口');
+  assert.equal(page.data.routePendingSend, true);
+  assert.equal(page.data.pendingSendOtherSession, false, '本场待确认无需跳场');
+  assert.equal(page.data.resultLocked, true);
+  assert.match(page.data.pendingSendHint, /待确认/);
+
+  // 详情页：同一线路与今日页读数一致，且不再把待确认渲染成「已完攀」
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeClosed, true);
+  assert.equal(detail.data.canRecordAgain, false);
+  assert.equal(detail.data.routeStateText, '完攀待确认');
+  assert.equal(detail.data.routePendingSend, true);
+  assert.equal(detail.data.pendingRetry.opId, opId);
+  assert.equal(detail.data.pendingRetry.sessionId, sessionId, '入口指向原把次所在场次');
+  assert.equal(detail.data.pendingRetry.attemptLabel, '第 2 把');
+  assert.match(detail.data.pendingRetryHint, /待确认/);
+
+  // 旧写法（wx:elif="{{!isLegacy && route}}" 直接渲染「已完攀」）必须消失
+  assert.ok(
+    !/<view\s+wx:elif="\{\{!isLegacy && route\}\}"\s+id="detail-completed-footer"[\s\S]*?id="detail-completed-state"[^>]*>已完攀<\/text>/.test(
+      detailWxml
+    ),
+    '详情底部不再用「可再记之外」的分支兜底显示「已完攀」'
+  );
+  assert.ok(detailWxml.includes('id="detail-pending-footer"'), '待确认页脚独立存在');
+  assert.ok(detailWxml.includes('id="detail-pending-retry"'), '待确认给出重试入口');
+  assert.ok(detailWxml.includes('bindtap="openPendingRetry"'));
+  assert.ok(
+    detailWxml.includes('wx:elif="{{!isLegacy && route && routeCompleted}}"') &&
+      detailWxml.includes('wx:elif="{{!isLegacy && route && routePendingSend}}"'),
+    '已完攀与待确认是两个互斥分支'
+  );
+  // 待确认分支里不得出现「已完攀」字样
+  const pendingBlock = detailWxml.slice(
+    detailWxml.indexOf('routePendingSend'),
+    detailWxml.indexOf('同日多场')
+  );
+  assert.ok(pendingBlock.length > 0 && !pendingBlock.includes('已完攀'));
+  // 今日页绑定：待确认面板与结果按钮互斥
+  assert.ok(todayWxml.includes('wx:elif="{{routePendingSend}}"'));
+  assert.ok(todayWxml.includes('id="route-pending-panel"'));
+  assert.ok(todayWxml.includes('id="route-pending-goto"'));
+
+  // 迟到的「今天再爬」在待确认期间不越过状态：不新建场次、不生成 opId、不导航、不开弹层
+  const before = {
+    sessions: savedState().sessions.length,
+    attempts: savedState().attempts.length,
+    pending: savedState().pendingSaves.length,
+    nav: wxLog.navigations.length
+  };
+  detail.recordAgain();
+  assert.match(detail.data.recordNotice, /待确认/);
+  assert.match(detail.data.recordNotice, /第 2 把/, '说明里点名原把次');
+  assert.equal(detail.data.sessionPicker, null, '待确认时不打开选场弹层');
+  assert.equal(savedState().sessions.length, before.sessions);
+  assert.equal(savedState().attempts.length, before.attempts);
+  assert.equal(savedState().pendingSaves.length, before.pending);
+  assert.equal(wxLog.navigations.length, before.nav);
+
+  // 换到另一场次再看同一条线路：不能显示成能新增；应给出回原场次的入口
+  page.openSessionForm();
+  page.startSession();
+  const otherSessionId = page.data.activeSession.id;
+  assert.notEqual(otherSessionId, sessionId);
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(page.data.routePendingSend, true);
+  assert.equal(page.data.pendingSendOtherSession, true, '待确认落在另一场次');
+  assert.match(page.data.pendingSendHint, /2026-11-05/);
+  assert.match(page.data.pendingSendHint, /第 1 场/);
+
+  // 跨场直接点结果不生成第二个待确认（面板之外的方法兜底）
+  const otherPendingBefore = savedState().pendingSaves.length;
+  await tapResult(page, 'send');
+  assert.equal(savedState().pendingSaves.length, otherPendingBefore, '跨场不新增待确认');
+  assert.match(page.data.saveNotice, /待确认/);
+
+  // 从另一页面/另一场次打开同一线路：详情同样识别待确认并指向原把次
+  const detailFromOther = createDetailPage(ROUTE_BLUE);
+  assert.equal(detailFromOther.data.routePendingSend, true);
+  assert.equal(detailFromOther.data.routeCompleted, false);
+  assert.equal(detailFromOther.data.pendingRetry.sessionId, sessionId);
+
+  // 回原把次：只切换当前场次/线路，不新建场次、不生成新 opId、不发起尝试
+  const gotoBefore = {
+    sessions: savedState().sessions.length,
+    attempts: savedState().attempts.length,
+    pending: savedState().pendingSaves.length
+  };
+  wxLog.navigations = [];
+  detailFromOther.openPendingRetry();
+  assert.equal(savedState().activeSessionId, sessionId, '切换回原场次');
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE, '保持这条线路被选中');
+  assert.equal(savedState().sessions.length, gotoBefore.sessions, '不新建场次');
+  assert.equal(savedState().pendingSaves.length, gotoBefore.pending, '不生成新的 opId');
+  assert.equal(savedState().pendingSaves[0].opId, opId, '仍复用原 opId');
+  assert.equal(savedState().attempts.length, gotoBefore.attempts);
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(wxLog.navigations[0].type, 'navigateBack');
+
+  // 回到今日页后可找到原把次并就地重试
+  page.onShow();
+  assert.equal(page.data.activeSession.id, sessionId);
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(page.data.pendingAttempts.length, 1, '原把次可见');
+  assert.equal(page.data.pendingAttempts[0].opId, opId);
+  assert.equal(page.data.pendingAttempts[0].canRetry, true);
+  assert.equal(page.data.pendingAttempts[0].label, '第 2 把');
+
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.routePendingSend, false);
+  assert.equal(page.data.routeCompleted, true, '确认后才显示已完攀');
+  assert.equal(page.data.routeStateText, '已完攀');
+  assert.ok(savedState().attempts.some(item => item.id === opId));
+  assert.equal(
+    savedState().attempts.find(item => item.id === opId).sessionId,
+    sessionId,
+    '完攀归属原场次'
+  );
+  assert.equal(
+    ledgerState().records.filter(record => record.result === 'send').length,
+    1,
+    '重试不重复入账'
+  );
+
+  // 确认成功后详情与今日页一致显示「已完攀」，待确认入口收起
+  const doneDetail = createDetailPage(ROUTE_BLUE);
+  assert.equal(doneDetail.data.routeCompleted, true);
+  assert.equal(doneDetail.data.routePendingSend, false);
+  assert.equal(doneDetail.data.pendingRetry, null);
+  assert.equal(doneDetail.data.pendingRetryHint, '');
+  assert.equal(doneDetail.data.routeStateText, '已完攀');
+  assert.equal(doneDetail.data.canRecordAgain, false);
+  const doneItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(doneItem.completionText, '已完攀');
+});
+
+// ---- T015 / A6：绳攀待确认不升级成线路级状态，完攀后仍可记录 ----
+test('T015-A6 顶绳完攀待确认只留在待确认行，不显示线路级「完攀待确认」，确认后仍可再记', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  const ropeId = createTypedRoute(page, '顶绳待确认线', '顶绳', '5.10a');
+
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+  assert.equal(savedState().pendingSaves.length, 1);
+  const opId = savedState().pendingSaves[0].opId;
+
+  // 绳攀没有「首次完攀」概念：待确认只体现在待确认行，不关闭入口、不出线路级标记
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false, '顶绳不因待确认关闭新增入口');
+  assert.equal(page.data.routePendingSend, false, '绳攀不显示线路级待确认面板');
+  assert.equal(page.data.pendingSendHint, '');
+  assert.equal(page.data.routeStateText, '');
+  assert.equal(page.data.resultLocked, true, '同一把仍保存中被锁定');
+  const item = page.data.routes.find(route => route.id === ropeId);
+  assert.equal(item.completionText, '', '列表不显示线路级待确认标记');
+  assert.equal(item.isClosed, false);
+
+  // 待确认行本身可重试，确认后原按钮位置照旧可以继续记录
+  assert.equal(page.data.pendingAttempts.length, 1);
+  assert.equal(page.data.pendingAttempts[0].canRetry, true);
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.attempts.length, 1);
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 2, '绳攀完攀后仍可记录');
+  assert.equal(page.data.routeCompleted, false);
+
+  // 详情页与今日页一致：绳攀仍提供「今天再爬」，不显示待确认或已完攀页脚
+  const detail = createDetailPage(ropeId);
+  assert.equal(detail.data.canRecordAgain, true);
+  assert.equal(detail.data.routePendingSend, false);
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeStateText, '');
+  assert.equal(detail.data.pendingRetry, null);
+});
+
+// ---- T015 / A7：误点完攀的撤销（「改为未完成」更正原把次） ----
+
+// 让第 n 次写客户端试用缓存的调用失败一次，用来模拟「保存端已改、本地没落盘」。
+function failStoreWrites(n) {
+  const original = global.wx.setStorageSync;
+  let count = 0;
+  global.wx.setStorageSync = function (key, value) {
+    if (key === STORE_KEY) {
+      count += 1;
+      if (count === n) {
+        throw { errMsg: 'setStorageSync:fail mock storage error' };
+      }
+    }
+    return original.call(this, key, value);
+  };
+  return () => {
+    global.wx.setStorageSync = original;
+  };
+}
+
+test('T015-A7 误点完攀可原把改正：只翻那一把的结果，模型与账本同步，之后可再次完攀', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  await tapResult(page, 'send');
+
+  // 给已完攀那一把补备注，核对更正后仍留在原把次上
+  const sendAttempt = savedState().attempts.find(item => item.result === 'send');
+  tapNote(page, sendAttempt.id);
+  typeNote(page, '完攀那把的备注');
+  page.saveNote();
+
+  assert.equal(page.data.routeCompleted, true, '确认成功后仍显示「已完攀」');
+  assert.equal(page.data.routeCorrectable, true, '已完攀时给出「改为未完成」入口');
+  assert.equal(page.data.routeCorrectionPending, false);
+  assert.equal(page.data.routeCorrectionRows.length, 1, '每一把各占一行');
+  assert.equal(page.data.routeCorrectionRows[0].label, '第 3 把', '明确说清改正的是哪一把');
+  assert.match(page.data.routeCorrectionRows[0].contextText, /2026-11-05/);
+  assert.match(page.data.routeCorrectionRows[0].contextText, /第 1 场/);
+  assert.equal(page.data.routeCorrectionRows[0].state, 'correctable');
+  // 已完攀的分支只留回看与更正：不再渲染「完攀」结果按钮
+  const todayWxml = read(PAGE_WXML);
+  const completedBlock = todayWxml.slice(
+    todayWxml.indexOf('wx:if="{{routeCompleted}}"'),
+    todayWxml.indexOf('wx:elif="{{routePendingSend}}"')
+  );
+  assert.ok(completedBlock.length > 0);
+  assert.ok(!completedBlock.includes('data-result="send"'), '已完攀后不再出现「完攀」按钮');
+  assert.ok(!completedBlock.includes('data-result="fail"'), '普通「未完成」也不在已完攀分支里');
+  // 更正控件逐把渲染在本场记录下方（不在结果条里），每把各自带 dataset
+  const correctionCard = todayWxml.slice(
+    todayWxml.indexOf('id="route-correction"'),
+    todayWxml.indexOf('wx:if="{{selectedRoute && !noteEditor}}"')
+  );
+  assert.ok(correctionCard.includes('wx:for="{{routeCorrectionRows}}"'), '每把一行');
+  assert.ok(
+    correctionCard.includes('id="route-correct-{{item.attemptId}}"'),
+    '每把各有一个「改为未完成」按钮'
+  );
+  assert.ok(correctionCard.includes('bindtap="correctSend"'));
+  assert.ok(
+    correctionCard.includes('data-attempt-id="{{item.context.attemptId}}"'),
+    '按钮把这一把自己的原把次带进 dataset'
+  );
+  assert.match(read(PAGE_WXSS), /\.route-correct-button/, '更正按钮样式');
+
+  const before = {
+    attempts: savedState().attempts.length,
+    sessions: savedState().sessions.length,
+    ledgerRows: ledgerState().records.length,
+    source: store.clone(
+      savedState().attempts.find(item => item.id === sendAttempt.id)
+    )
+  };
+
+  wxLog.setKeys = [];
+  await tapCorrect(page);
+  assert.deepEqual(
+    Array.from(new Set(wxLog.setKeys)).sort(),
+    [LEDGER_KEY, STORE_KEY].sort(),
+    '更正只写试用数据与模拟账本，不碰照片、索引等其他键'
+  );
+
+  const state = savedState();
+  assert.equal(state.attempts.length, before.attempts, '把数不变');
+  assert.equal(state.sessions.length, before.sessions, '不为纠错新建场次');
+  assert.equal(state.pendingCorrections.length, 0, '待更正已结清');
+
+  const corrected = state.attempts.find(item => item.id === sendAttempt.id);
+  assert.equal(corrected.result, 'fail', '原位改成未完成');
+  assert.equal(corrected.id, before.source.id, '原 stable ID 不变');
+  assert.equal(corrected.seq, before.source.seq, '序号不变');
+  assert.equal(corrected.sessionId, before.source.sessionId, '原场次不变');
+  assert.equal(corrected.createdAt, before.source.createdAt, '时间不变');
+  assert.equal(corrected.note, '完攀那把的备注', '备注保留在原把次上');
+
+  // 账本同步：同一条记录被翻成未完成，没有留下第二条，也没有新增行
+  const ledger = ledgerState();
+  assert.equal(ledger.records.length, before.ledgerRows, '不新增账本行');
+  assert.equal(ledger.records.filter(row => row.result === 'send').length, 0);
+  const ledgerRow = ledger.records.find(row => row.opId === sendAttempt.id);
+  assert.equal(ledgerRow.result, 'fail');
+  assert.ok(ledgerRow.correctedAt, '账本记录标出更正时间');
+
+  // 今日页立刻一致：状态、统计与列表标记都回到未完攀
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false);
+  assert.equal(page.data.routeStateText, '');
+  assert.equal(page.data.routeSendCount, 0);
+  assert.equal(page.data.routeCorrectable, false);
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(page.data.attempts[2].resultText, '未完成');
+  assert.equal(page.data.attempts[2].note, '完攀那把的备注');
+  const listItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(listItem.completionText, '');
+  assert.equal(listItem.isClosed, false);
+
+  // 详情页统计与逐把结果立刻一致，并恢复「今天再爬」
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeStateText, '');
+  assert.equal(detail.data.sendCount, 0);
+  assert.equal(detail.data.canRecordAgain, true);
+  assert.equal(detail.data.routeCorrectable, false);
+  assert.equal(detail.data.groups[0].attempts[2].resultText, '未完成');
+  assert.equal(detail.data.groups[0].attempts[2].note, '完攀那把的备注');
+  const detailWxml = read(DETAIL_WXML);
+  assert.ok(
+    detailWxml.includes('id="detail-correct-{{attempt.id}}"'),
+    '详情页每把记录各有一个更正控件'
+  );
+  assert.ok(detailWxml.includes('id="detail-corrected-{{attempt.id}}"'), '改完变只读结果');
+  assert.ok(detailWxml.includes('bindtap="correctSend"'));
+  assert.ok(
+    detailWxml.includes('class="attempt-correct-slot"'),
+    '控件与只读结果占同一固定高度格，改完不塌陷'
+  );
+  assert.ok(
+    detailWxml.includes('wx:if="{{!isLegacy && route && canRecordAgain}}"') &&
+      detailWxml.includes('id="record-again"'),
+    '更正后详情恢复「今天再爬」'
+  );
+
+  // 之后可以正常再记并再次完攀（同一线路，新的操作 ID）
+  await tapResult(page, 'send');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(savedState().attempts.length, 4, '新增第 4 把');
+  assert.notEqual(savedState().attempts[3].id, sendAttempt.id);
+  assert.equal(ledgerState().records.length, 4, '新的一把按新操作 ID 入账');
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    1,
+    '再次完攀只入账一次'
+  );
+});
+
+test('T015-A7 更正后的原账本重放与迟到操作：不复活旧完攀、不误撤后来的新完攀', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  const firstOpId = savedState().attempts[0].id;
+
+  await tapCorrect(page);
+  assert.equal(savedState().attempts[0].result, 'fail');
+
+  // 1) 用原 opId 直接重放一次：账本按幂等返回那条已改正的记录，不复活 send
+  const replay = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', firstOpId)
+  );
+  assert.equal(replay.ok, true);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.record.result, 'fail', '重放取回的是已改正的记录');
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0,
+    '重放不新增完攀记录'
+  );
+
+  // 2) 那份旧回执照样送到页面：本地已是未完成，不得被翻回完攀
+  page.finishDispatch(firstOpId, replay, {
+    opId: firstOpId,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    result: 'send',
+    generation: ''
+  });
+  assert.equal(savedState().attempts.length, 1, '不新增把次');
+  assert.equal(savedState().attempts[0].result, 'fail', '旧回执不复活旧完攀');
+  assert.equal(savedState().pendingSaves.length, 0);
+
+  // 3) 更正后重新完攀，再收到针对旧把次的迟到更正：不得误撤后来的新完攀
+  await tapResult(page, 'send');
+  const secondOpId = savedState().attempts.find(
+    item => item.result === 'send'
+  ).id;
+  assert.notEqual(secondOpId, firstOpId);
+  assert.equal(page.data.routeCompleted, true);
+
+  const lateCorrection = server.submitCorrection({
+    opId: firstOpId,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    generation: savedState().generation
+  });
+  assert.equal(lateCorrection.ok, true);
+  assert.equal(lateCorrection.duplicate, true, '迟到的更正按幂等处理');
+  assert.equal(lateCorrection.alreadyCorrected, true);
+  assert.equal(
+    ledgerState().records.find(row => row.opId === secondOpId).result,
+    'send',
+    '后来的新完攀不被误撤'
+  );
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    1
+  );
+
+  page.finishCorrection(firstOpId, lateCorrection, {
+    attemptId: firstOpId,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    generation: savedState().generation
+  });
+  assert.equal(
+    savedState().attempts.find(item => item.id === secondOpId).result,
+    'send',
+    '迟到的更正回调不改动新完攀'
+  );
+  assert.equal(
+    savedState().attempts.filter(item => item.result === 'send').length,
+    1
+  );
+});
+
+test('T015-A7 连点「改为未完成」只派发一次：不生成第二条待更正，也不新增把次', async () => {
+  const page = createPage();
+  page._saveDelayMs = 40;
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  await tapResult(page, 'send');
+  const opId = savedState().attempts[1].id;
+
+  // 连点同一次渲染：两次都用渲染当时带下来的上下文，第二次只复用同一条待更正。
+  const rendered = correctEvent(page);
+  const first = page.correctSend(rendered);
+  const second = page.correctSend(rendered);
+  assert.equal(savedState().pendingCorrections.length, 1, '只有一条待更正');
+  assert.equal(
+    savedState().pendingCorrections[0].attemptId,
+    opId,
+    '待更正指向原把次'
+  );
+  assert.equal(Object.keys(page._dispatchingCorrections).length, 1);
+  assert.equal(page.data.savingCorrectionId, opId, '更正保存中');
+  assert.equal(page.data.routeCorrectionSaving, true);
+  assert.equal(page.data.routeCorrectionStatusText, '更正保存中…');
+  assert.equal(page.data.routeCorrectable, true, '保存中仍能看到这条更正');
+  assert.equal(page.data.routeCorrectable, true);
+  await Promise.all([first, second]);
+
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(savedState().attempts.length, 2, '连点不新增把次');
+  assert.equal(savedState().attempts[1].result, 'fail');
+  assert.equal(ledgerState().records.length, 2, '账本仍只有两行');
+  assert.equal(ledgerState().records.filter(row => row.result === 'send').length, 0);
+  assert.equal(page.data.savingCorrectionId, '', '派发状态已清空');
+  assert.equal(Object.keys(page._dispatchingCorrections).length, 0);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeCorrectionPending, false);
+});
+
+test('T015-A7 更正已入账但本地写入失败：保留待更正，再点一次按同一把重试到两边一致', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  const opId = savedState().attempts[0].id;
+
+  // 第 2 次写试用缓存（即确认后的原位改正）失败：账本已改，本地没落盘
+  const restore = failStoreWrites(2);
+  await tapCorrect(page);
+  restore();
+
+  assert.match(page.data.storageError, /mock storage error/);
+  assert.equal(savedState().attempts[0].result, 'send', '本地仍显示已完攀');
+  assert.equal(savedState().attempts.length, 1, '不新增把次');
+  assert.equal(savedState().pendingCorrections.length, 1, '待更正保留在本地');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeCorrectionPending, true);
+  assert.equal(page.data.routeCorrectable, true, '失败后仍可再点重试');
+  assert.match(page.data.routeCorrectionStatusText, /未确认/);
+  assert.match(page.data.routeCorrectionStatusText, /重试/);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0,
+    '保存端账本已改正'
+  );
+
+  // 再点一次：保存端按原 opId 幂等，本地原位改正后两边一致
+  await tapCorrect(page);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeCorrectionPending, false);
+  assert.equal(page.data.storageError, '');
+  assert.equal(ledgerState().records.length, 1, '重试不新增账本行');
+  assert.equal(ledgerState().records.filter(row => row.result === 'send').length, 0);
+});
+
+test('T015-A7 历史多条完攀逐次更正：优先最近一把，读取不重写历史，旧汇总只读', async () => {
+  // 旧格式缓存：缺 climbType 的 V 级线路，跨两个场次共三条历史完攀（带备注）
+  const legacyState = store.createInitialState();
+  legacyState.sessions.push({
+    id: 'session-1',
+    seq: 1,
+    gymId: 'gym-chalkbox',
+    date: '2026-10-20',
+    createdAt: new Date().toISOString()
+  });
+  legacyState.sessions.push({
+    id: 'session-2',
+    seq: 2,
+    gymId: 'gym-chalkbox',
+    date: '2026-10-27',
+    createdAt: new Date().toISOString()
+  });
+  legacyState.nextSessionSeq = 3;
+  legacyState.activeSessionId = 'session-1';
+  legacyState.activeRouteId = ROUTE_BLUE;
+  [
+    { id: 'legacy-attempt-1', sessionId: 'session-1', note: '历史第 1 把' },
+    { id: 'legacy-attempt-2', sessionId: 'session-1', note: '历史第 2 把' },
+    { id: 'legacy-attempt-3', sessionId: 'session-2', note: '历史第 3 把' }
+  ].forEach((item, index) => {
+    legacyState.attempts.push({
+      id: item.id,
+      seq: index + 1,
+      sessionId: item.sessionId,
+      routeId: ROUTE_BLUE,
+      result: 'send',
+      note: item.note,
+      createdAt: new Date().toISOString()
+    });
+  });
+  legacyState.nextAttemptSeq = 4;
+  storage.set(STORE_KEY, JSON.stringify(legacyState));
+
+  const page = createPage();
+  assert.equal(page.data.loadError, '', '旧缓存仍可读');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeCorrectable, true);
+  assert.equal(page.data.routeCorrectionRows.length, 3, '三把历史完攀各占一行');
+  assert.equal(
+    page.data.routeCorrectionRows[0].attemptId,
+    'legacy-attempt-3',
+    '第一行是最近可识别的那一把'
+  );
+  assert.equal(page.data.routeCorrectionRows[0].label, '第 1 把');
+  assert.match(page.data.routeCorrectionRows[0].contextText, /2026-10-27/);
+  [
+    page.data.routeCorrectionRows[1],
+    page.data.routeCorrectionRows[2]
+  ].forEach(row => {
+    assert.equal(row.state, 'correctable', '每把都各自带一个控件');
+    assert.ok(row.context.attemptId, '每把都带自己的原把次 dataset');
+  });
+
+  const routesBefore = JSON.stringify(savedState().routes);
+  await tapCorrect(page);
+
+  let state = savedState();
+  assert.equal(state.attempts.length, 3, '把数不变');
+  assert.equal(state.attempts.find(item => item.id === 'legacy-attempt-3').result, 'fail');
+  assert.equal(state.attempts.find(item => item.id === 'legacy-attempt-1').result, 'send');
+  assert.equal(state.attempts.find(item => item.id === 'legacy-attempt-2').result, 'send');
+  assert.equal(
+    state.attempts.find(item => item.id === 'legacy-attempt-1').note,
+    '历史第 1 把',
+    '其他历史把次的备注不动'
+  );
+  assert.equal(state.sessions.length, 2, '不为纠错新建场次');
+  assert.equal(JSON.stringify(state.routes), routesBefore, '读取不补写类型、不迁移');
+  assert.equal(ledgerRows(), 0, '旧数据本就没有账本行，更正不凭空空建一行');
+  assert.equal(page.data.routeCompleted, true, '还有两把完攀');
+  assert.equal(page.data.routeSendCount, 2);
+  // 已改的那一行留在原位置变成只读结果，下一把仍是自己那一行，没有被补位
+  assert.equal(page.data.routeCorrectionRows.length, 3);
+  assert.equal(page.data.routeCorrectionRows[0].attemptId, 'legacy-attempt-3');
+  assert.equal(page.data.routeCorrectionRows[0].state, 'corrected');
+  assert.equal(
+    page.data.routeCorrectionRows[0].context,
+    null,
+    '只读结果行没有 dataset，点不出第二次写操作'
+  );
+  assert.equal(page.data.routeCorrectionRows[1].attemptId, 'legacy-attempt-2');
+  assert.equal(page.data.routeCorrectionRows[1].state, 'correctable');
+
+  // 另一把必须**显式再点它自己那一行**才会更正
+  await tapCorrectFor(page, 'legacy-attempt-2');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-2').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
+    'send',
+    '没点的最后一把仍然保留'
+  );
+  assert.equal(page.data.routeSendCount, 1);
+
+  await tapCorrectFor(page, 'legacy-attempt-1');
+  state = savedState();
+  assert.equal(state.attempts.filter(item => item.result === 'send').length, 0);
+  assert.equal(state.pendingCorrections.length, 0);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeCorrectable, false, '没有可点的控件后不再给更正入口');
+  assert.equal(page.data.routeStateText, '');
+  assert.equal(
+    page.data.routeCorrectionRows.filter(row => row.state === 'corrected').length,
+    3,
+    '三把都留在原位显示只读结果'
+  );
+  // 三条历史完攀都有明细，改完后可以正常再记
+  await tapResult(page, 'fail');
+  assert.equal(savedState().attempts.length, 4);
+
+  // 旧汇总样例仍只读：没有逐次尝试，也没有更正入口
+  const legacyDetail = createDetailPage(LEGACY_ROUTE);
+  assert.equal(legacyDetail.data.isLegacy, true);
+  assert.equal(legacyDetail.data.routeCorrectable, false);
+  assert.equal(legacyDetail.data.canRecordAgain, false);
+});
+
+test('T015-A7 更正只作用于这条抱石的已确认完攀：不碰未确认重试、绳攀与同色另一条', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  // 完攀还没确认：不提供更正，仍走原把次重试
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+  const pendingOpId = savedState().pendingSaves[0].opId;
+  assert.equal(page.data.routePendingSend, true);
+  assert.equal(page.data.routeCorrectable, false, '未确认的完攀不给更正入口');
+
+  const before = {
+    attempts: savedState().attempts.length,
+    pending: savedState().pendingSaves.length,
+    ledgerSend: ledgerState().records.filter(row => row.result === 'send').length
+  };
+  // 未确认时根本没有控件；即便按旧渲染构造一个空 dataset 也不挑「最新一把」
+  await page.correctSend({ currentTarget: { dataset: {} } });
+  assert.equal(savedState().attempts.length, before.attempts, '不新增把次');
+  assert.equal(savedState().pendingSaves.length, before.pending, '不消费原待确认');
+  assert.equal(savedState().pendingCorrections.length, 0, '未确认时不生成待更正');
+  assert.match(page.data.saveNotice, /没有可改正的已确认完攀/);
+
+  // 确认后才可更正；同色同级另一条线路始终不受影响
+  await retryPending(page, pendingOpId);
+  assert.equal(page.data.routeCorrectable, true);
+  const balanceItem = page.data.routes.find(
+    route => route.id === ROUTE_BLUE_BALANCE
+  );
+  assert.equal(balanceItem.completionText, '');
+  assert.equal(balanceItem.isClosed, false);
+
+  await tapCorrect(page);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0
+  );
+  // 同色同级另一条仍能正常记一把
+  page.onRouteTap({ currentTarget: { dataset: { routeId: ROUTE_BLUE_BALANCE } } });
+  await tapResult(page, 'fail');
+  assert.equal(
+    savedState().attempts.filter(item => item.routeId === ROUTE_BLUE_BALANCE).length,
+    1
+  );
+
+  // 顶绳、先锋没有「首次完攀」概念：不给更正入口，完攀后仍可继续记
+  const ropePage = createPage();
+  tapStart(ropePage, 0, '2026-11-05');
+  const ropeId = createTypedRoute(ropePage, '顶绳更正检查线', '顶绳', '5.10a');
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.routeCompleted, false);
+  assert.equal(ropePage.data.routeCorrectable, false, '绳攀没有「改为未完成」更正');
+
+  const ropeBefore = savedState().attempts.filter(
+    item => item.routeId === ropeId
+  ).length;
+  await tapCorrect(ropePage);
+  assert.equal(
+    savedState().attempts.filter(item => item.routeId === ropeId).length,
+    ropeBefore,
+    '绳攀的完攀不被更正'
+  );
+  assert.equal(
+    savedState().attempts.filter(
+      item => item.routeId === ropeId && item.result === 'send'
+    ).length,
+    1,
+    '绳攀完攀仍原样保留'
+  );
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.attempts.length, 2, '绳攀完攀后仍可记录');
+});
+
+test('T015-A7 更正不跨用户、数据集与线路：跨线路/跨场次/别的归属与重置后的请求都拒绝', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  const opId = savedState().attempts[0].id;
+  const generation = savedState().generation;
+
+  const untouched = () => {
+    const attempt = savedState().attempts[0];
+    assert.equal(attempt.result, 'send', '试用数据里的原把次未被改动');
+    assert.equal(
+      ledgerState().records.filter(row => row.result === 'send').length,
+      1,
+      '账本里的完攀未被改动'
+    );
+    assert.equal(ledgerState().records.length, 1);
+  };
+
+  // 跨线路：把这条线的原把次报到同岩馆另一条抱石线
+  const crossRoute = server.submitCorrection({
+    opId,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE_BALANCE,
+    generation
+  });
+  assert.equal(crossRoute.ok, false);
+  assert.equal(crossRoute.opIdConflict, true);
+  untouched();
+
+  // 跨场次：把原把次报到另一个场次
+  const crossSession = server.submitCorrection({
+    opId,
+    sessionId: 'session-999',
+    routeId: ROUTE_BLUE,
+    generation
+  });
+  assert.equal(crossSession.ok, false);
+  assert.equal(crossSession.opIdConflict, true);
+  untouched();
+
+  // 跨用户：账本里同 opId 的记录属于别的虚构归属
+  storage.set(
+    LEDGER_KEY,
+    JSON.stringify({
+      version: server.LEDGER_VERSION,
+      records: [
+        {
+          opId,
+          sessionId: 'session-1',
+          routeId: ROUTE_BLUE,
+          result: 'send',
+          note: '',
+          receivedAt: new Date().toISOString(),
+          ownerId: 'trial-owner-other',
+          datasetId: 'trial-dataset-other',
+          generation
+        }
+      ],
+      loseNextReceipt: false
+    })
+  );
+  const foreignOwner = server.submitCorrection({
+    opId,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    generation
+  });
+  assert.equal(foreignOwner.ok, false);
+  assert.equal(foreignOwner.opIdConflict, true);
+  assert.equal(
+    ledgerState().records[0].result,
+    'send',
+    '别的归属的账本记录未被改动'
+  );
+  assert.equal(ledgerState().records[0].correctedAt, undefined);
+
+  // 缺少原把次归属字段的请求直接拒绝
+  assert.match(server.submitCorrection({ opId }).error, /场次归属/);
+
+  // 重置到新数据集后：旧编号空间的更正一律拒绝，也不动新数据
+  assert.equal(
+    page.applyTrialReset(trialProfile.nextTrialDatasetId(page.state.datasetId)),
+    true
+  );
+  assert.equal(savedState().attempts.length, 0, '重置清空场次与尝试');
+  const stale = server.submitCorrection({
+    opId,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    generation
+  });
+  assert.equal(stale.ok, false);
+  assert.equal(stale.stale, true);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0,
+    '旧请求不写新账本'
+  );
+
+  // 迟到的更正回执也不能把旧快照写进新数据
+  const writesBefore = wxLog.setKeys.length;
+  page.finishCorrection(
+    opId,
+    {
+      ok: true,
+      duplicate: false,
+      correctedLedger: true,
+      record: { opId, result: 'fail' }
+    },
+    { attemptId: opId, sessionId: 'session-1', routeId: ROUTE_BLUE, generation }
+  );
+  assert.equal(savedState().attempts.length, 0, '迟到回调不写新数据');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(wxLog.setKeys.length, writesBefore, '不写回任何旧快照');
+});
+
+test('T015-A7 更正目标以试用数据为准：未确认的完攀不能被更正，只能先重试原把次', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+
+  // 保存端账本已入账，但客户端还没确认：这时不允许把这一把改成未完成，
+  // 否则会用旧快照在本地复活一条完攀。
+  const pending = savedState().pendingSaves[0];
+  const tooEarly = server.submitCorrection({
+    opId: pending.opId,
+    sessionId: pending.sessionId,
+    routeId: ROUTE_BLUE,
+    generation: savedState().generation
+  });
+  assert.equal(tooEarly.ok, false);
+  assert.equal(tooEarly.correctionMissing, true);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    1,
+    '账本里的完攀保留'
+  );
+
+  // 先重试原把次确认，再更正：两边都只剩未完成
+  await retryPending(page, pending.opId);
+  assert.equal(page.data.routeCompleted, true);
+  await tapCorrect(page);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0
+  );
+  assert.equal(page.data.routeCompleted, false);
+});
+
+test('T015-A7 详情页更正跨天历史完攀：不为纠错新建今天场次，返回今日页后立刻一致', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  await tapResult(page, 'send');
+  const sendOpId = savedState().attempts[2].id;
+
+  // 同日之外新开一场并保持这条线路被选中：完攀标记是线路级的，跨场仍显示
+  page.openSessionForm();
+  page.startSession();
+  const otherSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.attempts.length, 0, '这一场还没有把次');
+  assert.equal(page.data.routeCompleted, true, '跨天历史完攀仍是线路级状态');
+  assert.equal(page.data.routeCorrectable, true);
+  assert.equal(page.data.routeCorrectionRows.length, 1, '这条线只有一把可更正');
+  assert.match(page.data.routeCorrectionRows[0].contextText, /2026-11-05/);
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.canRecordAgain, false);
+  assert.equal(detail.data.routeCorrectable, true);
+  assert.equal(detail.data.routeCorrectionRows[0].label, '第 3 把');
+  assert.match(detail.data.routeCorrectionRows[0].contextText, /2026-11-05/);
+  // 控件渲染在那一把记录自己那一行上
+  const detailRow = renderedCorrectionControls(detail)[0];
+  assert.equal(detailRow.attemptId, sendOpId);
+  assert.equal(detailRow.state, 'correctable');
+  assert.equal(detail.data.routeCorrectionPending, false);
+
+  const sessionsBefore = savedState().sessions.length;
+  wxLog.setKeys = [];
+  await tapCorrect(detail);
+
+  // 不为纠错新建/切换场次，只改原把次
+  assert.equal(savedState().sessions.length, sessionsBefore);
+  assert.equal(savedState().activeSessionId, otherSessionId, '当前场次不被更正改动');
+  assert.equal(savedState().attempts.length, 3);
+  assert.equal(
+    savedState().attempts.find(item => item.id === sendOpId).result,
+    'fail'
+  );
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.deepEqual(
+    Array.from(new Set(wxLog.setKeys)).sort(),
+    [LEDGER_KEY, STORE_KEY].sort()
+  );
+
+  // 详情立刻一致：统计、逐把结果与入口同时更新
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeStateText, '');
+  assert.equal(detail.data.sendCount, 0);
+  assert.equal(detail.data.routeCorrectable, false);
+  assert.equal(detail.data.canRecordAgain, true, '更正后详情恢复「今天再爬」');
+  assert.equal(detail.data.groups[0].attempts[2].resultText, '未完成');
+
+  // 今日页返回后立刻一致
+  page.onShow();
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeStateText, '');
+  assert.equal(page.data.routeCorrectable, false);
+  const listItem = page.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(listItem.completionText, '');
+
+  // 更正后可以正常再记并再次完攀，仍然不新建场次
+  detail.recordAgain();
+  assert.equal(savedState().sessions.length, sessionsBefore, '沿用已有场次');
+  assert.equal(savedState().activeSessionId, otherSessionId);
+  assert.equal(savedState().activeRouteId, ROUTE_BLUE);
+  assert.equal(
+    wxLog.navigations[wxLog.navigations.length - 1].type,
+    'navigateBack'
+  );
+
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(savedState().attempts.length, 4);
+  assert.equal(savedState().sessions.length, sessionsBefore);
+});
+
+test('T015-A7 详情页更正丢回执：保留待更正与重试入口，重试后两边只剩未完成', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+
+  const detail = createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCorrectable, true);
+
+  // 就绪「下一次丢失回执」：账本已改成未完成，详情没收到确认
+  page.toggleReceiptLossArm();
+  await tapCorrect(detail);
+
+  assert.equal(savedState().attempts[0].result, 'send', '本地仍显示已完攀');
+  assert.equal(savedState().attempts.length, 1, '不新增把次');
+  assert.equal(savedState().pendingCorrections.length, 1, '待更正保留');
+  assert.equal(detail.data.routeCorrectionPending, true);
+  assert.equal(detail.data.routeCorrectable, true, '失败后仍可重试');
+  assert.match(detail.data.routeCorrectionStatusText, /未确认/);
+  assert.match(detail.data.recordNotice, /回执丢失/);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0,
+    '账本已改成未完成'
+  );
+
+  // 重试沿用同一把：保存端幂等，本地原位改正
+  await tapCorrect(detail);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(detail.data.routeCompleted, false);
+  assert.equal(detail.data.routeCorrectionPending, false);
+  assert.equal(detail.data.canRecordAgain, true);
+  assert.equal(ledgerState().records.length, 1, '重试不新增账本行');
+  assert.equal(ledgerState().records.filter(row => row.result === 'send').length, 0);
+  // 今日页返回后共用同一份判定，不依赖任何页面内的临时标记
+  assert.equal(store.routeCompletion(savedState(), ROUTE_BLUE).completed, false);
+  page.onShow();
+  assert.equal(page.data.routeCompleted, false, '今日页共用同一份判定');
+  assert.equal(page.data.routeCorrectable, false);
+});
+
+test('T015-A7 更正入口把渲染当时的原把次带进 dataset；参数缺失或过时不挑最新一把', async () => {
+  // WXML：每个控件把**这一把**的原把次与线路/场次/世代/数据集/归属一起传进 dataset。
+  // data-attempt-id → dataset.attemptId（其余同上），correctSend 只按这份上下文改正。
+  const todayWxml = read(PAGE_WXML);
+  const todayCard = todayWxml.slice(
+    todayWxml.indexOf('id="route-correction"'),
+    todayWxml.indexOf('wx:if="{{selectedRoute && !noteEditor}}"')
+  );
+  [
+    'data-attempt-id="{{item.context.attemptId}}"',
+    'data-route-id="{{item.context.routeId}}"',
+    'data-session-id="{{item.context.sessionId}}"',
+    'data-generation="{{item.context.generation}}"',
+    'data-dataset-id="{{item.context.datasetId}}"',
+    'data-owner-id="{{item.context.ownerId}}"'
+  ].forEach(attr => {
+    assert.ok(todayCard.includes(attr), '今日页更正控件带上 ' + attr);
+  });
+  assert.ok(todayCard.includes('bindtap="correctSend"'));
+
+  const detailWxml = read(DETAIL_WXML);
+  const detailButton = detailWxml.slice(
+    detailWxml.indexOf('id="detail-correct-{{attempt.id}}"'),
+    detailWxml.indexOf('</button>', detailWxml.indexOf('id="detail-correct-{{attempt.id}}"'))
+  );
+  [
+    'data-attempt-id="{{attempt.correctionContext.attemptId}}"',
+    'data-route-id="{{attempt.correctionContext.routeId}}"',
+    'data-session-id="{{attempt.correctionContext.sessionId}}"',
+    'data-generation="{{attempt.correctionContext.generation}}"',
+    'data-dataset-id="{{attempt.correctionContext.datasetId}}"',
+    'data-owner-id="{{attempt.correctionContext.ownerId}}"'
+  ].forEach(attr => {
+    assert.ok(detailButton.includes(attr), '详情页更正控件带上 ' + attr);
+  });
+  assert.ok(detailButton.includes('bindtap="correctSend"'));
+
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  const attemptId = savedState().attempts[0].id;
+
+  // 渲染当时写下的就是这一把的完整上下文（外部探针可按这几个字段构造事件）
+  assert.deepEqual(page.data.routeCorrectionRows[0].context, {
+    attemptId,
+    routeId: ROUTE_BLUE,
+    sessionId: savedState().activeSessionId,
+    generation: savedState().generation,
+    datasetId: savedState().datasetId,
+    ownerId: trialProfile.TRIAL_OWNER_ID
+  });
+
+  // 缺参数：不回落到「最新一把」，也不改动任何数据
+  await page.correctSend();
+  assert.equal(savedState().attempts[0].result, 'send', '无事件时不挑最新一把');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.match(page.data.saveNotice, /没有可改正的已确认完攀/);
+  await page.correctSend({ currentTarget: { dataset: {} } });
+  assert.equal(savedState().attempts[0].result, 'send', '空 dataset 同样不改动');
+
+  // 过时的编号空间（重置/切换前的渲染）同样不改动
+  const rendered = correctEvent(page);
+  await page.correctSend({
+    currentTarget: {
+      dataset: Object.assign({}, rendered.currentTarget.dataset, {
+        generation: 'gen-before-reset'
+      })
+    }
+  });
+  assert.equal(savedState().attempts[0].result, 'send', '旧世代不改动');
+  assert.match(page.data.saveNotice, /未做更正/);
+
+  // 跨线路的旧渲染（把这一把报到同色另一条线）：冲突，不改动
+  await page.correctSend({
+    currentTarget: {
+      dataset: Object.assign({}, rendered.currentTarget.dataset, {
+        routeId: ROUTE_BLUE_BALANCE
+      })
+    }
+  });
+  assert.equal(savedState().attempts[0].result, 'send', '跨线路不改动');
+  assert.match(page.data.saveNotice, /不属于当前线路/);
+
+  // 真实点按仍能改正这一把，且只写试用数据与账本
+  wxLog.setKeys = [];
+  await page.correctSend(rendered);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(savedState().attempts.length, 1);
+  assert.deepEqual(
+    Array.from(new Set(wxLog.setKeys)).sort(),
+    [LEDGER_KEY, STORE_KEY].sort()
+  );
+});
+
+test('T015-A7 旧页面的旧按钮只更正渲染当时的把次，不改后来的新完攀', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0, '2026-11-05');
+  tapRoute(pageA, ROUTE_BLUE);
+  await tapResult(pageA, 'send');
+  const firstId = savedState().attempts[0].id;
+
+  // 页面 B 在这一把仍是完攀时渲染，并留下渲染当时的事件
+  const pageB = createPage();
+  assert.equal(pageB.data.routeCorrectable, true);
+  assert.equal(pageB.data.routeCorrectionRows[0].attemptId, firstId);
+  const staleEvent = correctEvent(pageB);
+
+  // 页面 A 先改正第一把，再记一条新的完攀
+  await tapCorrect(pageA);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  await tapResult(pageA, 'send');
+  const secondId = savedState().attempts[1].id;
+  assert.notEqual(secondId, firstId);
+  assert.equal(savedState().attempts[1].result, 'send');
+
+  // 旧页面 B 用旧事件再点：不能把新完攀改成未完成
+  await pageB.correctSend(staleEvent);
+  assert.equal(
+    savedState().attempts.find(item => item.id === secondId).result,
+    'send',
+    '旧按钮不改后来的新完攀'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === firstId).result,
+    'fail'
+  );
+  assert.equal(savedState().attempts.length, 2, '不新增把次');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.match(pageB.data.saveNotice, /已经是未完成|未改动/);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    1,
+    '账本里只留后来的那一条完攀'
+  );
+});
+
+test('T015-A7 两条历史完攀各占一行：改一把后另一把留在自己那行，旧事件重放不牵动它', async () => {
+  const legacyState = store.createInitialState();
+  legacyState.sessions.push({
+    id: 'session-1',
+    seq: 1,
+    gymId: 'gym-chalkbox',
+    date: '2026-10-20',
+    createdAt: new Date().toISOString()
+  });
+  legacyState.nextSessionSeq = 2;
+  legacyState.activeSessionId = 'session-1';
+  legacyState.activeRouteId = ROUTE_BLUE;
+  ['legacy-attempt-1', 'legacy-attempt-2'].forEach((id, index) => {
+    legacyState.attempts.push({
+      id,
+      seq: index + 1,
+      sessionId: 'session-1',
+      routeId: ROUTE_BLUE,
+      result: 'send',
+      note: '',
+      createdAt: new Date().toISOString()
+    });
+  });
+  legacyState.nextAttemptSeq = 3;
+  storage.set(STORE_KEY, JSON.stringify(legacyState));
+
+  const page = createPage();
+  assert.equal(page.data.routeCorrectionRows.length, 2, '两把各占一行');
+  assert.equal(
+    page.data.routeCorrectionRows[0].attemptId,
+    'legacy-attempt-2',
+    '第一行是最近可识别的那一把'
+  );
+  assert.equal(page.data.routeCorrectionRows[1].attemptId, 'legacy-attempt-1');
+  const staleEvent = correctEvent(page);
+
+  await tapCorrect(page);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-2').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
+    'send'
+  );
+  // 已改的那一行留在原位变成只读结果；另一把仍是自己那行、自己的控件
+  assert.equal(page.data.routeCorrectionRows[0].attemptId, 'legacy-attempt-2');
+  assert.equal(page.data.routeCorrectionRows[0].state, 'corrected');
+  assert.equal(page.data.routeCorrectionRows[1].attemptId, 'legacy-attempt-1');
+  assert.equal(page.data.routeCorrectionRows[1].state, 'correctable');
+  // 原坐标已不可点：第二击取不到控件，也就没有写操作
+  assert.equal(correctEventAt(page, 0), null, '同一位置不再是可点控件');
+
+  // 再投递同一条旧事件：另一把保持完攀，编号空间也不受影响
+  await page.correctSend(staleEvent);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
+    'send',
+    '另一把不被同一条旧事件牵动'
+  );
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(ledgerRows(), 0, '旧数据本就没有账本行，更正不凭空空建一行');
+
+  // 要改另一把，必须显式点它自己那一行
+  await tapCorrectFor(page, 'legacy-attempt-1');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
+    'fail'
+  );
+  assert.equal(store.routeCompletion(savedState(), ROUTE_BLUE).completed, false);
+  assert.equal(ledgerRows(), 0);
+});
+
+test('T015-A7 早于账本的本地完攀：更正后重放原完攀不重新入账，新把与再完攀都正常', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  const source = savedState().attempts[0];
+  const generation = savedState().generation;
+
+  // 模拟早于账本的早期本地数据：真实 ID 与场次都在，账本里却没有这一把
+  const ledger = ledgerState();
+  ledger.records = [];
+  storage.set(LEDGER_KEY, JSON.stringify(ledger));
+
+  await tapCorrect(page);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(ledgerRows(), 0, '本地把次照样更正，但不凭空补建账本行');
+
+  // 原 opId 的原请求迟到：不得在账本里重新长出完攀
+  const replay = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', source.id, { generation })
+  );
+  assert.equal(replay.ok, true);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.alreadyCorrected, true, '按已改正的本地结果结清');
+  assert.equal(ledgerRows(), 0, '迟到原请求不重新入账');
+  assert.equal(store.routeCompletion(savedState(), ROUTE_BLUE).closed, false);
+
+  // 迟到的原请求也不锁死这条线路：正常新把与再次完攀都能记
+  await tapResult(page, 'fail');
+  assert.equal(savedState().attempts.length, 2);
+  await tapResult(page, 'send');
+  assert.equal(savedState().attempts.length, 3);
+  assert.equal(savedState().attempts[2].result, 'send');
+  assert.equal(store.routeCompletion(savedState(), ROUTE_BLUE).completed, true);
+  assert.equal(ledgerRows(), 2, '新把按新 opId 正常入账');
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    1,
+    '再次完攀只入账一次'
+  );
+
+  // 同 opId 换到别的线路仍是操作 ID 冲突，不会误当确认
+  const copied = server.submitOperation(
+    submitContext(ROUTE_BLUE_BALANCE, 'send', source.id, { generation })
+  );
+  assert.equal(copied.ok, false);
+  assert.equal(copied.opIdConflict, true);
+  assert.equal(ledgerRows(), 2);
+});
+
+// ---- T015 / A7 返工回归：控件逐把绑定，同一个位置不会自动接上下一把 ----
+
+// QA 复现的旧数据：同一条抱石线两笔既有完攀（11-08 与 11-05），跨两个场次，
+// 账本里没有对应行（旧数据早于账本）。账号笔数与备注也照原样保留。
+function seedTwoLegacySends() {
+  const state = store.createInitialState();
+  state.sessions.push({
+    id: 'session-1',
+    seq: 1,
+    gymId: 'gym-chalkbox',
+    date: '2026-11-05',
+    createdAt: '2026-11-09T06:51:45.211Z'
+  });
+  state.sessions.push({
+    id: 'session-2',
+    seq: 2,
+    gymId: 'gym-chalkbox',
+    date: '2026-11-08',
+    createdAt: '2026-11-09T06:51:45.216Z'
+  });
+  state.nextSessionSeq = 3;
+  state.activeSessionId = 'session-1';
+  state.activeRouteId = ROUTE_BLUE_BALANCE;
+  state.attempts.push({
+    id: 'attempt-5',
+    seq: 5,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE_BALANCE,
+    result: 'send',
+    note: 'QA 早期本地完攀 4',
+    createdAt: '2026-11-05T07:34:05.000Z'
+  });
+  state.attempts.push({
+    id: 'attempt-6',
+    seq: 6,
+    sessionId: 'session-2',
+    routeId: ROUTE_BLUE_BALANCE,
+    result: 'send',
+    note: 'QA 早期本地完攀 5',
+    createdAt: '2026-11-08T07:18:25.000Z'
+  });
+  state.nextAttemptSeq = 7;
+  storage.set(STORE_KEY, JSON.stringify(state));
+  return state;
+}
+
+test('T015-A7 返工：详情页两笔旧完攀，第一击改 6；同坐标第二击取不到控件，5 保持完攀', async () => {
+  seedTwoLegacySends();
+  const detail = createDetailPage(ROUTE_BLUE_BALANCE);
+
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.routeCorrectable, true);
+  // 每把一行：两行都有各自的控件与 dataset（控件渲染在那一把记录自己那一行）
+  let controls = renderedCorrectionControls(detail);
+  assert.equal(controls.length, 2, '两把各占一行');
+  assert.equal(controls[0].attemptId, 'attempt-6', '第一行是最近的一把');
+  assert.equal(controls[1].attemptId, 'attempt-5');
+  assert.ok(controls[0].context && controls[1].context, '每把都带自己的原把次');
+
+  const sessionsBefore = savedState().sessions.length;
+  const attemptsBefore = savedState().attempts.length;
+
+  // 第一击：用第一个绑定控件的真实 dataset（渲染当时的那一把）
+  await detail.correctSend(correctEventAt(detail, 0));
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-6').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send',
+    '没点的那一笔保持完攀'
+  );
+  assert.equal(savedState().pendingCorrections.length, 0);
+
+  // 重新渲染后从「同一位置」取实际可用控件：已是只读结果，没有可点控件
+  controls = renderedCorrectionControls(detail);
+  assert.equal(controls.length, 2, '改过的那行不塌陷，两行都还在');
+  assert.equal(controls[0].attemptId, 'attempt-6', '位置稳定：原位置仍是刚改的那一把');
+  assert.equal(controls[0].state, 'corrected', '原位置变成只读结果');
+  assert.equal(controls[0].context, null, '只读结果行没有 dataset');
+  assert.equal(controls[1].attemptId, 'attempt-5', '下一把没有被补到上一把的位置');
+  assert.equal(controls[1].state, 'correctable');
+  assert.equal(correctEventAt(detail, 0), null, '同坐标第二击取不到控件');
+  // 还有一把完攀：线路状态徽标不变（detail-route-state 仍在），
+  // 所以控件上方的布局不变化，第二击的坐标语义与第一击一致。
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.routeStateText, '已完攀');
+
+  // Windows 真实双击的第二击：落在原坐标 → 没有控件，不构成写操作
+  await tapCorrect(detail, 0);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send',
+    '第二击不会落到 5'
+  );
+  assert.equal(
+    savedState().attempts.filter(item => item.result === 'fail').length,
+    1,
+    '一次连续点击只改所示的那一笔'
+  );
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不新建场次');
+
+  // 刷新 / onShow 也不把刚改过的下一把重置到同一位置
+  detail.onShow();
+  assert.equal(
+    renderedCorrectionControls(detail)[0].attemptId,
+    'attempt-6',
+    'onShow 后原位置仍是刚改的那一把'
+  );
+  assert.equal(correctEventAt(detail, 0), null);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send'
+  );
+
+  // 下一把要显式再点它自己那一行
+  await tapCorrectFor(detail, 'attempt-5');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'fail'
+  );
+  assert.equal(detail.data.routeCorrectable, false, '没有可点控件后不再给入口');
+  assert.equal(detail.data.canRecordAgain, true, '两笔都改完后恢复「今天再爬」');
+  assert.equal(detail.data.routeCorrectionRows.length, 2);
+  assert.equal(
+    detail.data.routeCorrectionRows.filter(row => row.state === 'corrected').length,
+    2,
+    '两把都留在原位显示只读结果'
+  );
+});
+
+test('T015-A7 返工：今日页两笔旧完攀，第一击改 6；同坐标第二击不新增把次也不重开场次', async () => {
+  seedTwoLegacySends();
+  const page = createPage();
+
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE_BALANCE);
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeCorrectable, true);
+
+  let controls = renderedCorrectionControls(page);
+  assert.equal(controls.length, 2, '两把各占一行');
+  assert.equal(controls[0].attemptId, 'attempt-6');
+  assert.equal(controls[1].attemptId, 'attempt-5');
+
+  const attemptsBefore = savedState().attempts.length;
+  const sessionsBefore = savedState().sessions.length;
+
+  // 第一击：第一个绑定控件的真实 dataset
+  await tapCorrect(page, 0);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-6').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send',
+    '没点的那一笔保持完攀'
+  );
+
+  // 重新渲染后同一位置已是只读结果，下一把仍是自己那一行
+  controls = renderedCorrectionControls(page);
+  assert.equal(controls[0].attemptId, 'attempt-6');
+  assert.equal(controls[0].state, 'corrected');
+  assert.equal(controls[1].attemptId, 'attempt-5');
+  assert.equal(controls[1].state, 'correctable');
+  assert.equal(correctEventAt(page, 0), null, '同坐标第二击取不到控件');
+  // 还有一把完攀：线路状态徽标与把数文案都不变，控件上方布局不动
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeStateText, '已完攀');
+
+  // 真实第二击：原坐标已不可点 → 既不新增把次，也不重开场次
+  await tapCorrect(page, 0);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send'
+  );
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不重开场次');
+  assert.equal(savedState().activeSessionId, 'session-1', '当前场次不被牵动');
+  assert.equal(savedState().pendingCorrections.length, 0);
+
+  // 刷新（onShow）后仍不把下一把接到同一位置
+  page.onShow();
+  assert.equal(renderedCorrectionControls(page)[0].attemptId, 'attempt-6');
+  assert.equal(correctEventAt(page, 0), null);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send'
+  );
+
+  // 下一把必须显式点它自己那一行
+  await tapCorrectFor(page, 'attempt-5');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'fail'
+  );
+  assert.equal(page.data.routeCorrectable, false, '没有可点控件后不再给更正入口');
+  assert.equal(page.data.routeCorrectionRows.length, 2, '改完两把后卡片仍在（位置稳定）');
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false);
+  // 继续记录的入口清楚：底部的「未完成/完攀」结果按钮回来了
+  assert.ok(read(PAGE_WXML).includes('id="record-send"'));
+  assert.ok(read(PAGE_WXML).includes('id="record-fail"'));
+});
+
+test('T015-A7 返工：仅一笔完攀时快速连点只改一次，不新增把次、不重开场次', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+
+  const attemptsBefore = savedState().attempts.length;
+  const sessionsBefore = savedState().sessions.length;
+  assert.equal(page.data.routeCorrectionRows.length, 1, '只有一笔可更正');
+
+  // 快速双点：第一击用真实 dataset；第二击发生在重新渲染之后，同坐标已无控件
+  const first = correctEventAt(page, 0);
+  assert.ok(first, '第一击有可点控件');
+  await page.correctSend(first);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(correctEventAt(page, 0), null, '重新渲染后同坐标没有控件');
+  await tapCorrect(page, 0);
+
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不重开场次');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0,
+    '账本里没有残留完攀'
+  );
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeCorrectable, false);
+  // 继续记录的入口清楚
+  assert.equal(page.data.routeClosed, false);
+  assert.equal(page.data.resultLocked, false);
 });
