@@ -8,10 +8,16 @@
  *   不会遮住训练入口，也不会改动入口上的场次与线路；
  * - 旧云读取用请求序号（token）判别迟到返回：旧请求的回执只丢弃，不覆盖更新的状态；
  * - 旧「添加记录」表单与记录列表入口保持可达，不向旧表单或 climbing_records 双写。
+ *
+ * T027：首页加上「下次想爬」概况（只读）。清单按岩馆分组，带累计把数与最近一条非空
+ * 备注；点开某一条回到它的长期线路详情按原线路 ID 继续记。首页本身不写清单、不建场次。
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
 const store = require('../../utils/training-store');
+const wishlist = require('../../utils/training-wishlist');
+
+const ROUTE_URL = '/pages/training-route/training-route';
 
 Page({
   data: {
@@ -25,25 +31,34 @@ Page({
     trainingReady: false,   // 本机档案可读（首次进入为 true，空档案也算可读）
     archiveError: '',       // 档案损坏/版本不支持/读取失败时的可见报错
     hasActiveSession: false,
-    activeSession: null     // { id, gymName, dateText, label, routeName, attemptCountText }
+    activeSession: null,     // { id, gymName, dateText, label, routeName, attemptCountText }
+
+    // 下次想爬（T027）：按岩馆分组的清单概况，只读；点开回原线详情续记
+    wishlistGroups: [],
+    wishlistCountText: '',
+    hasWishlist: false,
+    wishlistError: ''
   },
 
   onLoad() {
     // 每次重新进入页面都换新的请求序号：旧请求的回执一律丢弃。
     this._cloudToken = 0;
     this.refreshTrainingEntry();
+    this.refreshWishlist();
     this.loadRecentRecords();
   },
 
-  // 每次显示页面时刷新本机入口与旧云记录
+  // 每次显示页面时刷新本机入口、想爬清单与旧云记录
   onShow() {
     this.refreshTrainingEntry();
+    this.refreshWishlist();
     this.loadRecentRecords();
   },
 
   // 下拉刷新
   onPullDownRefresh() {
     this.refreshTrainingEntry();
+    this.refreshWishlist();
     this.loadRecentRecords().then(() => {
       if (typeof wx.stopPullDownRefresh === 'function') wx.stopPullDownRefresh();
     });
@@ -135,6 +150,77 @@ Page({
         cloudState: 'error',
         cloudError: '旧记录暂不可读（' + code + '）；本机训练不受影响。'
       });
+    });
+  },
+
+  /**
+   * 本机「下次想爬」清单概况（只读）：按岩馆分组，带累计把数与最近一条非空备注。
+   *
+   * 只读清单与本机档案，不写盘、不建场次；清单损坏、版本不支持或档案读取失败时
+   * 显示可见错误、不显示条目，原清单保持原样（清缓存也不会动它）。
+   */
+  refreshWishlist() {
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      this.setData({
+        wishlistGroups: [],
+        wishlistCountText: '',
+        hasWishlist: false,
+        wishlistError: loaded.error
+      });
+      return;
+    }
+
+    const listed = wishlist.listWishlist(loaded.archive);
+    if (!listed.ok) {
+      this.setData({
+        wishlistGroups: [],
+        wishlistCountText: '',
+        hasWishlist: false,
+        wishlistError: listed.error
+      });
+      return;
+    }
+
+    const groups = listed.groups.map(group => ({
+      gymId: group.gymId,
+      gymName: group.gymName,
+      countText: group.countText,
+      items: group.items.map(entry => ({
+        routeId: entry.routeId,
+        name: entry.name,
+        climbType: entry.climbType,
+        grade: entry.grade,
+        colorName: entry.colorName,
+        colorHex: entry.colorHex,
+        status: entry.status,
+        statusText: entry.statusText,
+        attemptCountText: entry.attemptCountText,
+        latestNote: entry.latestNote,
+        hasNote: entry.hasNote
+      }))
+    }));
+
+    this.setData({
+      wishlistGroups: groups,
+      hasWishlist: listed.items.length > 0,
+      wishlistCountText: listed.items.length
+        ? listed.items.length + ' 条 · ' + groups.length + ' 家岩馆'
+        : '',
+      wishlistError: ''
+    });
+  },
+
+  /**
+   * 点开清单里的一条线：回到它的长期线路详情（同一个原线路 ID）。
+   * 那里可以看照片、把次与历史，并用「当天再记」回到原线续记；
+   * 加入、撤下与拆线归档也在详情页里。首页本身不改任何本机数据。
+   */
+  openWishlistRoute(e) {
+    const routeId = e && e.currentTarget && e.currentTarget.dataset.routeId;
+    if (!routeId) return;
+    wx.navigateTo({
+      url: ROUTE_URL + '?routeId=' + routeId
     });
   },
 

@@ -296,3 +296,21 @@
 .training-actions button.btn-training-secondary { flex:none; width:auto; min-height:44px; padding:0 20rpx; }
 .quick-actions { margin:6rpx 0 0; border:0; }
 .quick-actions button.btn-add { width:auto; min-height:44px; margin:0; justify-content:flex-start; }
+
+/* 下次想爬（T027）：按岩馆分组的清单概况，只读；点开回原线详情续记 */
+.wishlist-empty { padding: 48rpx 0; }
+.wishlist-gym { background:#fffcf3; border-radius:8rpx; padding:22rpx 24rpx; margin-bottom:16rpx; }
+.wishlist-gym-head { display:flex; align-items:baseline; justify-content:space-between; gap:16rpx; border-bottom:1px solid #dfe0d2; padding-bottom:12rpx; }
+.wishlist-gym-name { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:30rpx; color:#173d32; }
+.wishlist-gym-count { flex:none; font-size:24rpx; color:#606d61; }
+.wishlist-line { display:flex; align-items:flex-start; padding:18rpx 0; border-bottom:1px solid #f2efe2; }
+.wishlist-line:last-child { border-bottom:0; padding-bottom:4rpx; }
+.wishlist-line-info { flex:1; min-width:0; }
+.wishlist-line-head { display:flex; align-items:center; flex-wrap:wrap; gap:8rpx 12rpx; }
+.wishlist-line-name { font-size:29rpx; font-weight:700; color:#173d32; word-break:break-all; }
+.wishlist-line-state { flex:none; font-size:22rpx; padding:4rpx 12rpx; border-radius:6rpx; background:#e4ebdf; color:#355e50; }
+.wishlist-line-state-completed { background:#dfebd9; color:#204b34; }
+.wishlist-line-state-archived { background:#ede6d7; color:#674b39; }
+.wishlist-line-meta { display:block; margin-top:6rpx; font-size:24rpx; color:#606d61; }
+.wishlist-line-note { display:block; margin-top:6rpx; font-size:24rpx; color:#526157; border-left:4rpx solid #d2784f; padding-left:14rpx; line-height:1.5; word-break:break-all; }
+.wishlist-entry .route-swatch { width:24rpx; height:24rpx; border-radius:6rpx; border:2rpx solid #e0e0e0; margin:6rpx 16rpx 0 0; flex:none; }

@@ -382,6 +382,150 @@
 
       </view>
 
+      <!--
+        下次想爬（T027）：本馆收藏过的长期线路按想爬 / 已完成 / 已归档排在这里，
+        带照片或无图状态、累计把数与最近一条非空备注；点「续记」就是在原线的同一个
+        线路 ID 上继续记，点「回看」回到线路详情看照片、把次与历史。
+        加入、撤下与拆线归档只改清单这一份独立记录，不动线路、照片与把次。
+      -->
+      <view id="wishlist-section" class="section wishlist-section">
+        <text class="section-title">下次想爬 · {{activeSession.gymName}}</text>
+
+        <view wx:if="{{wishlistError}}" id="wishlist-error" class="wishlist-error-card">
+          <text class="wishlist-error-text">{{wishlistError}}</text>
+          <text class="wishlist-error-hint">原清单保持原样；本场记录与照片不受影响。</text>
+        </view>
+
+        <block wx:else>
+          <!-- 当前线路的加入 / 撤下 / 拆线归档入口 -->
+          <view wx:if="{{selectedWishlist}}" id="selected-wishlist" class="wishlist-card">
+            <view class="wishlist-head">
+              <text class="wishlist-title">{{selectedRoute.name}}</text>
+              <text
+                wx:if="{{selectedWishlist.statusText}}"
+                id="selected-wishlist-state"
+                class="wishlist-state wishlist-state-{{selectedWishlist.status}}"
+              >{{selectedWishlist.statusText}}</text>
+            </view>
+            <text id="selected-wishlist-text" class="wishlist-state-text">{{selectedWishlist.stateText}}</text>
+            <text wx:if="{{selectedWishlist.error}}" id="selected-wishlist-error" class="wishlist-error">{{selectedWishlist.error}}</text>
+            <text wx:else class="wishlist-hint">{{selectedWishlist.hintText}}</text>
+            <view wx:if="{{!selectedWishlist.error}}" class="wishlist-actions">
+              <button
+                wx:if="{{selectedWishlist.canAdd}}"
+                id="wishlist-add-selected"
+                class="secondary-button wishlist-action"
+                bindtap="addSelectedToWishlist"
+              >{{selectedWishlist.inList ? '重新加入下次想爬' : '加入下次想爬'}}</button>
+              <button
+                wx:if="{{selectedWishlist.canArchive}}"
+                id="wishlist-archive-selected"
+                class="text-button wishlist-archive"
+                bindtap="archiveSelectedWishlist"
+              >拆线归档</button>
+              <button
+                wx:if="{{selectedWishlist.canRemove}}"
+                id="wishlist-remove-selected"
+                class="text-button wishlist-remove"
+                bindtap="removeSelectedFromWishlist"
+              >撤下收藏</button>
+            </view>
+          </view>
+
+          <view wx:if="{{!hasWishlist}}" id="wishlist-empty" class="empty-attempts">
+            <text>本馆还没有想爬的线。从上一条线路加入清单后，下次进馆就能直接找到原线。</text>
+          </view>
+          <block wx:else>
+            <text id="wishlist-count" class="wishlist-count">{{wishlistCountText}}</text>
+
+            <!-- 想爬：点开就是在同一条长期线路 ID 上继续记 -->
+            <view wx:if="{{wishlistWanted.length > 0}}" class="wishlist-group">
+              <text class="wishlist-group-title">想爬</text>
+              <view
+                wx:for="{{wishlistWanted}}"
+                wx:key="routeId"
+                id="wishlist-row-{{item.routeId}}"
+                class="wishlist-row"
+                data-route-id="{{item.routeId}}"
+                bindtap="continueWishlistRoute"
+              >
+                <image wx:if="{{item.hasPhoto}}" class="wishlist-thumb" src="{{item.thumbnailPath}}" mode="aspectFill" />
+                <view wx:else class="wishlist-thumb wishlist-thumb-empty">
+                  <text>{{item.photoStatusText}}</text>
+                </view>
+                <view class="wishlist-row-info">
+                  <view class="wishlist-row-head">
+                    <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+                    <text class="wishlist-name">{{item.name}}</text>
+                    <text class="wishlist-grade">{{item.grade}}</text>
+                  </view>
+                  <text class="wishlist-meta">{{item.climbType}}{{item.colorName ? ' · ' + item.colorName : ''}} · 累计 {{item.attemptCountText}}</text>
+                  <text wx:if="{{item.hasNote}}" class="wishlist-note">最近备注：{{item.latestNote}}</text>
+                  <text wx:else class="wishlist-note wishlist-note-empty">还没有备注</text>
+                </view>
+                <text class="wishlist-open">续记 ›</text>
+              </view>
+            </view>
+
+            <!-- 已完成：关注的抱石首次完攀；改成未完成后会回到想爬 -->
+            <view wx:if="{{wishlistCompleted.length > 0}}" class="wishlist-group">
+              <text class="wishlist-group-title">已完成</text>
+              <view
+                wx:for="{{wishlistCompleted}}"
+                wx:key="routeId"
+                id="wishlist-done-{{item.routeId}}"
+                class="wishlist-row wishlist-row-done"
+                data-route-id="{{item.routeId}}"
+                bindtap="openWishlistRoute"
+              >
+                <image wx:if="{{item.hasPhoto}}" class="wishlist-thumb" src="{{item.thumbnailPath}}" mode="aspectFill" />
+                <view wx:else class="wishlist-thumb wishlist-thumb-empty">
+                  <text>{{item.photoStatusText}}</text>
+                </view>
+                <view class="wishlist-row-info">
+                  <view class="wishlist-row-head">
+                    <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+                    <text class="wishlist-name">{{item.name}}</text>
+                    <text class="wishlist-grade">{{item.grade}}</text>
+                  </view>
+                  <text class="wishlist-meta">{{item.climbType}}{{item.colorName ? ' · ' + item.colorName : ''}} · 累计 {{item.attemptCountText}}</text>
+                  <text class="wishlist-note">已完攀；把那一把改成未完成后回到想爬</text>
+                </view>
+                <text class="wishlist-open">回看 ›</text>
+              </view>
+            </view>
+
+            <!-- 已归档：岩馆拆线；照片、把次与历史都保留 -->
+            <view wx:if="{{wishlistArchived.length > 0}}" class="wishlist-group">
+              <text class="wishlist-group-title">已归档（岩馆拆线）</text>
+              <view
+                wx:for="{{wishlistArchived}}"
+                wx:key="routeId"
+                id="wishlist-archived-{{item.routeId}}"
+                class="wishlist-row wishlist-row-archived"
+                data-route-id="{{item.routeId}}"
+                bindtap="openWishlistRoute"
+              >
+                <image wx:if="{{item.hasPhoto}}" class="wishlist-thumb" src="{{item.thumbnailPath}}" mode="aspectFill" />
+                <view wx:else class="wishlist-thumb wishlist-thumb-empty">
+                  <text>{{item.photoStatusText}}</text>
+                </view>
+                <view class="wishlist-row-info">
+                  <view class="wishlist-row-head">
+                    <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+                    <text class="wishlist-name">{{item.name}}</text>
+                    <text class="wishlist-grade">{{item.grade}}</text>
+                  </view>
+                  <text class="wishlist-meta">{{item.climbType}}{{item.colorName ? ' · ' + item.colorName : ''}} · 累计 {{item.attemptCountText}}</text>
+                  <text class="wishlist-note">已从活跃清单归档；照片、把次与历史都保留</text>
+                </view>
+                <text class="wishlist-open">回看 ›</text>
+              </view>
+            </view>
+          </block>
+        </block>
+      </view>
+
       <!-- 选原线或新建线路 -->
       <view class="section">
         <text class="section-title">{{selectedRoute ? '换线路' : '选线路'}}</text>
