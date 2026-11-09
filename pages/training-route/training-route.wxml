@@ -1,7 +1,8 @@
 <!--
-  正式长期线路详情页（T018）
-  按长期线路 ID 回看跨日、跨场次的逐把结果与备注；打开只读，只有「当天再记」与
-  按把「改为未完成」会在本机档案上写，且都由用户明确点按触发。
+  正式长期线路详情页（T018 回看 / T019 主照片）
+  按长期线路 ID 回看跨日、跨场次的逐把结果与备注；打开只读，只有「当天再记」、按把
+  「改为未完成」与照片的确认保存/移除会在本机写（照片只动本机文件与照片索引），
+  且都由用户明确点按触发。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，保留原数据 -->
@@ -28,6 +29,16 @@
       <text class="notice-hint">点击收起</text>
     </view>
 
+    <view
+      wx:if="{{photoNotice}}"
+      id="photo-notice"
+      class="notice"
+      bindtap="dismissPhotoNotice"
+    >
+      <text class="notice-text">{{photoNotice}}</text>
+      <text class="notice-hint">点击收起</text>
+    </view>
+
     <!-- 这条线路不在本机档案里：不猜、不建 -->
     <view wx:if="{{notFound}}" id="not-found" class="card empty-card">
       <text class="empty-title">找不到这条线路</text>
@@ -50,6 +61,156 @@
           >{{routeStateText}}</text>
         </view>
         <text id="route-summary" class="route-summary">{{summaryText}} · {{sendCount}} 次完攀</text>
+      </view>
+
+      <!--
+        线路主照片（T019）：保存必须由用户确认；取消预览不改动已保存照片，
+        取消更换后仍显示原来的主图。照片只在本机保存一份。
+      -->
+      <view wx:if="{{routePhoto}}" id="route-photo-card" class="card photo-card">
+        <view class="photo-head">
+          <text class="photo-title">线路照片</text>
+          <text class="photo-note">只保存在本机</text>
+        </view>
+
+        <block wx:if="{{routePhoto.status === 'saved'}}">
+          <image
+            id="route-photo-main"
+            class="photo-main"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+            data-route-id="{{route.id}}"
+            bindtap="previewRoutePhoto"
+          />
+          <text id="route-photo-status" class="photo-status">{{routePhoto.statusText}}</text>
+          <text wx:if="{{routePhoto.bytesText}}" class="photo-meta">{{routePhoto.bytesText}}</text>
+          <text class="photo-hint">点击照片打开完整主图，可双指缩放。</text>
+          <view class="photo-actions">
+            <button
+              id="route-photo-preview"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="previewRoutePhoto"
+            >看大图</button>
+            <button
+              id="route-photo-remove"
+              class="text-button photo-remove"
+              data-route-id="{{route.id}}"
+              bindtap="removeRoutePhoto"
+            >移除</button>
+          </view>
+          <button
+            wx:if="{{!routePhoto.thumbnailAvailable}}"
+            id="route-photo-rebuild-thumb"
+            class="secondary-button photo-action"
+            data-route-id="{{route.id}}"
+            bindtap="rebuildRoutePhoto"
+          >重建缩略图</button>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'preview'}}">
+          <image
+            id="route-photo-preview-image"
+            class="photo-preview"
+            src="{{routePhoto.previewPath}}"
+            mode="aspectFit"
+          />
+          <text id="route-photo-preview-status" class="photo-status">{{routePhoto.statusText}}</text>
+          <view class="photo-actions">
+            <button
+              id="route-photo-cancel"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="cancelRoutePhoto"
+            >取消</button>
+            <button
+              id="route-photo-confirm"
+              class="primary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="confirmRoutePhoto"
+            >确认保存</button>
+          </view>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'saving'}}">
+          <image
+            wx:if="{{routePhoto.mainPath}}"
+            class="photo-thumb"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+          />
+          <text id="route-photo-saving" class="photo-status photo-status-busy">{{routePhoto.statusText}}</text>
+          <text class="photo-hint">照片文件和关联都写入后才提示成功。</text>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'failed'}}">
+          <image
+            wx:if="{{routePhoto.mainPath}}"
+            class="photo-thumb"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+            data-route-id="{{route.id}}"
+            bindtap="previewRoutePhoto"
+          />
+          <text id="route-photo-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+          <text class="photo-error-detail">{{routePhoto.errorText}}</text>
+          <view class="photo-actions">
+            <button
+              id="route-photo-retry"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="retryRoutePhoto"
+            >{{routePhoto.retryText}}</button>
+            <button
+              id="route-photo-dismiss"
+              class="text-button photo-remove"
+              data-route-id="{{route.id}}"
+              bindtap="dismissRoutePhotoFailure"
+            >收起</button>
+          </view>
+          <button
+            wx:if="{{routePhoto.manageSpaceVisible}}"
+            id="route-photo-space-manage"
+            class="secondary-button photo-action"
+            bindtap="goToClearCache"
+          >去「我的」清除可重建缓存</button>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'missing'}}">
+          <text id="route-photo-missing" class="photo-status photo-status-error">本机照片不可用，可重新添加</text>
+          <text class="photo-hint">照片文件可能已被系统清理；重新添加会替换原关联，历史尝试与备注不变。</text>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'error'}}">
+          <text id="route-photo-read-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+          <button
+            id="route-photo-reload"
+            class="secondary-button photo-action"
+            data-route-id="{{route.id}}"
+            bindtap="reloadRoutePhoto"
+          >重试读取</button>
+        </block>
+
+        <block wx:else>
+          <text id="route-photo-loading" class="photo-status">{{routePhoto.statusText}}</text>
+        </block>
+
+        <view wx:if="{{routePhoto.sourceVisible}}" class="photo-source-row">
+          <button
+            id="route-photo-camera"
+            class="secondary-button photo-source"
+            data-source="camera"
+            data-route-id="{{route.id}}"
+            bindtap="chooseRoutePhoto"
+          >{{routePhoto.cameraText}}</button>
+          <button
+            id="route-photo-album"
+            class="secondary-button photo-source"
+            data-source="album"
+            data-route-id="{{route.id}}"
+            bindtap="chooseRoutePhoto"
+          >{{routePhoto.albumText}}</button>
+        </view>
       </view>
 
       <!-- 回看：按本地日期与场次分组，同一天多场各自保留原归属 -->

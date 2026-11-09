@@ -1,23 +1,31 @@
 /**
- * 正式长期线路详情页（T018）
+ * 正式长期线路详情页（T018 回看 / T019 主照片）
  *
  * 从正式记录 tab 的「本机训练历史」按长期线路 ID 进入，回看这条线跨日、跨场次的
  * 逐把结果与备注：按本地日期和场次分组，场次新的在前，同一天多场各自保留原归属。
  *
+ * T019 在本页加上线路主照片：展示、预览确认、更换与移除都由 utils/training-photo-
+ * controller.js 驱动，照片文件落在本机档案目录、索引落在正式照片索引键；照片操作
+ * 不写旧云记录，也不改场次、把次与备注。
+ *
  * 本页只读本机档案（utils/training-store.js），与旧云记录完全分开：
  * - 打开历史本身不建场次、不改当前选择、不写任何数据；损坏或版本不支持时可见报错
  *   并保留原数据；
- * - 「当天再记」是唯一写入口，且必须由用户明确点按：当日该岩馆恰好一场就直接复用，
- *   还没有场次才新建一场，同日多场先让用户显式选一场（原归属不动）；抱石已完攀时
- *   不新增把次，只提示按把更正；
+ * - 「当天再记」是唯一的档案写入口，且必须由用户明确点按：当日该岩馆恰好一场就直接
+ *   复用，还没有场次才新建一场，同日多场先让用户显式选一场（原归属不动）；抱石已
+ *   完攀时不新增把次，只提示按把更正；
  * - 「改为未完成」按渲染那一行带下来的原把次 ID 与归属逐个更正：只翻那一把的
  *   result，把数、ID、序号、场次、时间与备注都不变；改好的那一把留在原位置变成
  *   只读回读，同一坐标不会自动接上另一把。
  */
 const store = require('../../utils/training-store.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
+const {
+  createTrainingPhotoController
+} = require('../../utils/training-photo-controller.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
+const PROFILE_URL = '/pages/profile/profile';
 
 function pad2(value) {
   return value < 10 ? '0' + value : String(value);
@@ -49,6 +57,10 @@ Page({
     route: null,
     notFound: false,
 
+    // 线路主照片（T019）：展示状态由控制器推导，页面只渲染
+    routePhoto: null,
+    photoNotice: '',
+
     groups: [],
     hasAttempts: false,
     attemptCount: 0,
@@ -77,7 +89,9 @@ Page({
     // _correctedRows 刚改好的那一把（原位只读回读）；_correctionFailures 失败可重试标记。
     this._correctedRows = {};
     this._correctionFailures = {};
+    this._photoUi = null;
     this.loadPage();
+    this.loadRoutePhoto();
   },
 
   onShow() {
@@ -85,6 +99,125 @@ Page({
     // 从场内页返回或另一页面实例刚改了同一档案时重新读取，保持回看与本机一致。
     // 打开历史只读，不写盘、不建场次。
     this.loadPage({ keepPicker: true });
+    this.loadRoutePhoto();
+  },
+
+  /**
+   * 照片控制器只在本页创建一次；档案 ID 由控制器从本机档案读取。
+   * 打开详情本身不写照片，只有用户点按拍照/相册/确认/移除才动文件与索引。
+   * 这里只做初始化，不读取照片，避免和 loadRoutePhoto 相互递归。
+   */
+  initPhotoUi() {
+    if (!this._photoUi) {
+      this._photoUi = createTrainingPhotoController(this, {
+        onChange: () => this.applyPhotoView(),
+        onNotice: text => this.setData({ photoNotice: text })
+      });
+    }
+    return Promise.resolve(this._photoUi.init());
+  },
+
+  loadRoutePhoto() {
+    if (!this._routeId) {
+      this.setData({ routePhoto: null });
+      return Promise.resolve();
+    }
+    // 先过一遍 initPhotoUi：档案 ID 变化（重置本机档案）后照片服务要跟上。
+    return Promise.resolve(this.initPhotoUi()).then(() => {
+      if (!this._photoUi) return;
+      return this._photoUi
+        .load([this._routeId])
+        .then(() => this.applyPhotoView());
+    });
+  },
+
+  /**
+   * 只更新当前线路的照片展示；线路或档案变化时按最新档案重算。
+   */
+  applyPhotoView() {
+    if (!this._photoUi || !this.data.route) return;
+    this.setData({ routePhoto: this._photoUi.view(this.data.route.id) });
+  },
+
+  photoRouteId(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    return dataset.routeId || this._routeId || '';
+  },
+
+  dismissPhotoNotice() {
+    this.setData({ photoNotice: '' });
+  },
+
+  chooseRoutePhoto(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const source = dataset.source;
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId || (source !== 'camera' && source !== 'album')) {
+      return Promise.resolve();
+    }
+    return this._photoUi.choose(routeId, source);
+  },
+
+  confirmRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.confirm(routeId);
+  },
+
+  cancelRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.cancelPreview(routeId);
+    // 取消预览后留下的只是临时路径，不进入索引；旧照片（若有）继续显示。
+    this.applyPhotoView();
+  },
+
+  retryRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.retry(routeId);
+  },
+
+  dismissRoutePhotoFailure(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.dismiss(routeId);
+    this.applyPhotoView();
+  },
+
+  removeRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.remove(routeId);
+  },
+
+  previewRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.preview(routeId);
+  },
+
+  reloadRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.load([routeId]);
+  },
+
+  /**
+   * 缩略图是可重建缓存：清缓存或被系统清理后，用持久主图重建一次。
+   * 只补缓存，主图、关联与档案数据都不变。
+   */
+  rebuildRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve(null);
+    return this._photoUi.rebuildThumbs();
+  },
+
+  /**
+   * 空间不足时页面上给出的出口：可重建缓存的清理入口在「我的」。
+   */
+  goToClearCache() {
+    wx.switchTab({ url: PROFILE_URL });
   },
 
   /**
@@ -102,6 +235,8 @@ Page({
       notice: '',
       route: null,
       notFound: false,
+      routePhoto: null,
+      photoNotice: '',
       groups: [],
       hasAttempts: false,
       attemptCount: 0,
@@ -132,7 +267,7 @@ Page({
     if (this.data.loadError) return;
 
     if (!this._routeId) {
-      this.setData({ notFound: true, route: null, canRecordAgain: false });
+      this.setData({ notFound: true, route: null, canRecordAgain: false, routePhoto: null });
       return;
     }
 
@@ -141,6 +276,7 @@ Page({
       this.setData({
         notFound: true,
         route: null,
+        routePhoto: null,
         groups: [],
         hasAttempts: false,
         attemptCount: 0,
@@ -208,6 +344,10 @@ Page({
         gymName: store.gymName(this.archive, route.gymId)
       },
       notFound: false,
+      // 照片展示与逐把回看各自独立：照片由控制器按 routeId 推导，不改逐把数据。
+      routePhoto: this._photoUi
+        ? this._photoUi.view(route.id)
+        : this.data.routePhoto,
       groups: history.groups.map(group => ({
         sessionId: group.sessionId,
         dateText: group.date,

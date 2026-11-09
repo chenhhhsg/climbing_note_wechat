@@ -9,6 +9,8 @@
  * 存储键（正式本机命名空间）：
  *   climbingNote.training.v1.archive   本机档案（岩馆/场次/线路/关联/把次）——受保护
  *   climbingNote.training.v1.photos    线路主照片索引（T019 使用）——受保护
+ *   climbingNote.training.v1.photoCoordination.* 照片并发协调数据（T019 使用）——受保护，
+ *                                      由照片服务自己的 recover() 回收，不在清缓存范围内
  *   climbingNote.training.v1.cache.*   可重建的派生缓存——普通清缓存可清
  *   climbingNote.training.v1.thumbs.*  可重建的缩略图元数据——普通清缓存可清
  * 除明确列出的可重建前缀外，命名空间内一律按受保护处理；命名空间外的键不属于本层，

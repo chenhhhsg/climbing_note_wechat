@@ -517,3 +517,128 @@
   color: #666666;
   margin-bottom: 8rpx;
 }
+
+/* ---- 线路主照片（T019）：详情展示完整主图，保存必须由用户确认 ---- */
+.photo-card {
+  border: 2rpx dashed #b0bec5;
+}
+
+.photo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.photo-title {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.photo-note {
+  font-size: 22rpx;
+  color: #999999;
+}
+
+.photo-main,
+.photo-preview,
+.photo-thumb {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 16rpx;
+  background-color: #f5f5f5;
+  border-radius: 12rpx;
+}
+
+.photo-thumb {
+  height: 300rpx;
+}
+
+.photo-status {
+  display: block;
+  margin-top: 14rpx;
+  font-size: 26rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.photo-status-busy {
+  color: #b26a00;
+}
+
+.photo-status-error {
+  color: #c62828;
+}
+
+.photo-meta {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 22rpx;
+  color: #999999;
+}
+
+.photo-error-detail {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 23rpx;
+  color: #b71c1c;
+  line-height: 1.45;
+}
+
+.photo-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #999999;
+  line-height: 1.5;
+}
+
+.photo-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.photo-action {
+  flex: 1;
+  min-height: 80rpx;
+  line-height: 80rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-action + .photo-action {
+  margin-left: 14rpx;
+}
+
+.photo-remove {
+  flex: none;
+  margin: 14rpx 0 0 18rpx;
+  color: #c62828;
+}
+
+.photo-source-row {
+  display: flex;
+  margin-top: 10rpx;
+}
+
+.photo-source {
+  flex: 1;
+  min-height: 84rpx;
+  line-height: 84rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-source + .photo-source {
+  margin-left: 14rpx;
+}
+
+.quick-route-photo {
+  margin-top: 20rpx;
+}
+
+.quick-photo-preview {
+  margin-top: 8rpx;
+}

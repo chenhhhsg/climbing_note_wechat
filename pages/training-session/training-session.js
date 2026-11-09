@@ -1,5 +1,5 @@
 /**
- * 正式场内记录页（T017）
+ * 正式场内记录页（T017 记把 / T019 主照片）
  *
  * 从首页「开始训练」或「继续本场」进入，走通一次真实到馆记录：
  * 填自己的岩馆开始场次（同日可主动另开）→ 选原线或新建抱石/顶绳/先锋线路 →
@@ -15,10 +15,17 @@
  *   ID（opId），只提交一次；
  * - 抱石确认完攀后收起新增结果入口，只保留按把「改为未完成」；顶绳、先锋可继续记。
  *
+ * T019 在本页加上线路主照片：新建线路时可在表单里先选一张照片（可选），线路创建
+ * 成功后进入预览确认；当前线路也能在照片卡片里更换或移除。照片只动本机文件与正式
+ * 照片索引，不写档案里的场次/把次/备注，也不回滚已创建的线路。
+ *
  * 页面自己只保存「展示用的当前状态」与本实例的临时信息（未落盘操作、已更正的只读
  * 回读行、快速双击窗口），不承担数据权威。
  */
 const store = require('../../utils/training-store.js');
+const {
+  createTrainingPhotoController
+} = require('../../utils/training-photo-controller.js');
 const {
   CLIMB_TYPES,
   DEFAULT_CLIMB_TYPE,
@@ -31,6 +38,8 @@ const {
   gradeText,
   resolveGradeForType
 } = require('../../utils/training-rules.js');
+
+const PROFILE_URL = '/pages/profile/profile';
 
 // 线路颜色：只用于本页展示与新建线路的可选属性，不是必填项。
 const ROUTE_COLORS = [
@@ -161,23 +170,32 @@ Page({
     newRouteGradeIndex: -1,
     newRouteGrade: '',
     newRouteGradeText: '',
-    newRouteError: ''
+    newRouteError: '',
+
+    // 线路主照片（T019）：新建表单里先选的一张，与当前线路的已保存照片
+    newRoutePhoto: null,
+    routePhoto: null,
+    photoNotice: ''
   },
 
   onLoad(query) {
     // 本实例的临时状态，全部不落盘：
     // _failedOps  本实例发起但未落盘的把次（按线路分组），重试沿用同一 opId；
     // _lastTap    快速双击窗口；
-    // _correctedRows / _correctionFailures  按把更正的只读回读与失败重试标记。
+    // _correctedRows / _correctionFailures  按把更正的只读回读与失败重试标记；
+    // _photoUi / _newRoutePhotoPath  照片控制器与新建表单里已选的临时照片路径。
     this._failedOps = {};
     this._lastTap = {};
     this._correctedRows = {};
     this._correctionFailures = {};
     this._formDirty = false;
     this._newRouteDirty = false;
+    this._photoUi = null;
+    this._newRoutePhotoPath = '';
     // 首页「开始训练」带 ?start=1：直接展开场次表单。
     this._formOpen = Boolean(query && (query.start === '1' || query.start === 1));
     this.loadPage();
+    this.loadPhotos();
   },
 
   onShow() {
@@ -185,6 +203,7 @@ Page({
     // 备注编辑中不重读页面，避免冲掉正在输入的内容；其余情况按最新档案刷新。
     if (this.data.noteEditor) {
       this.refreshView();
+      this.loadPhotos();
       return;
     }
     // 正在填写的场次表单与新建线路表单都不重读重算，避免把输入冲掉。
@@ -192,6 +211,50 @@ Page({
       (this._formDirty && this._formOpen) ||
       (this._newRouteDirty && this.data.newRouteVisible);
     this.loadPage({ keepForm });
+    this.loadPhotos();
+  },
+
+  /**
+   * 照片控制器只在本页创建一次；档案 ID 由控制器从本机档案读取。
+   * 打开场内页本身不写照片，只有用户点按拍照/相册/确认/移除才动文件与索引。
+   * 这里只做初始化，不读取照片，避免和 loadPhotos 相互递归。
+   */
+  initPhotoUi() {
+    if (!this._photoUi) {
+      this._photoUi = createTrainingPhotoController(this, {
+        onChange: () => this.applyPhotoView(),
+        onNotice: text => this.setData({ photoNotice: text })
+      });
+    }
+    return Promise.resolve(this._photoUi.init());
+  },
+
+  /**
+   * 只读取当前选中线路的照片；没有选中线路时清空页面上的照片展示
+   * （不删除任何文件或索引）。
+   *
+   * 每次先过一遍 initPhotoUi：本机档案是在「开始场次」之后才存在的，
+   * 刚建好档案的这一次刷新必须让照片服务跟上当前档案 ID。
+   */
+  loadPhotos() {
+    return Promise.resolve(this.initPhotoUi()).then(() => {
+      if (!this._photoUi) return;
+      const routeId = this.data.selectedRoute && this.data.selectedRoute.id;
+      if (!routeId) {
+        this._photoUi.clear();
+        this.applyPhotoView();
+        return;
+      }
+      return this._photoUi.load([routeId]).then(() => this.applyPhotoView());
+    });
+  },
+
+  applyPhotoView() {
+    if (!this._photoUi) return;
+    const routeId = this.data.selectedRoute && this.data.selectedRoute.id;
+    this.setData({
+      routePhoto: routeId ? this._photoUi.view(routeId) : null
+    });
   },
 
   /**
@@ -211,14 +274,20 @@ Page({
 
     const gymName = active ? store.gymName(loaded.archive, active.gymId) : '';
     const date = store.todayLocalDate();
-    if (!keepForm) this._newRouteDirty = false;
+    if (!keepForm) {
+      this._newRouteDirty = false;
+      // 表单被关掉/重开时，已选的临时照片不再属于当前表单。
+      this._newRoutePhotoPath = '';
+    }
 
     this.setData({
       ready: true,
       loadError: loaded.error || '',
       storageError: '',
       notice: '',
+      photoNotice: '',
       noteEditor: null,
+      routePhoto: null,
       sessionFormVisible: formVisible,
       sessionFormTitle: active ? '开始新场次（同日另开）' : '开始训练',
       gymName: keepForm ? this.data.gymName : gymName,
@@ -234,9 +303,11 @@ Page({
       newRouteGradeIndex: keepForm ? this.data.newRouteGradeIndex : form.newRouteGradeIndex,
       newRouteGrade: keepForm ? this.data.newRouteGrade : form.newRouteGrade,
       newRouteGradeText: keepForm ? this.data.newRouteGradeText : form.newRouteGradeText,
-      newRouteError: keepForm ? this.data.newRouteError : ''
+      newRouteError: keepForm ? this.data.newRouteError : '',
+      newRoutePhoto: keepForm ? this.data.newRoutePhoto : null
     });
     this.refreshView();
+    this.loadPhotos();
   },
 
   retryLoad() {
@@ -416,7 +487,11 @@ Page({
         : '',
       correctionRows,
       correctionStatusText,
-      gymRoutes
+      gymRoutes,
+      // 照片展示与逐把记录各自独立：照片由控制器按 routeId 推导，不改档案数据。
+      routePhoto: selectedRoute && this._photoUi
+        ? this._photoUi.view(selectedRoute.id)
+        : null
     });
   },
 
@@ -510,6 +585,8 @@ Page({
     this._lastTap = {};
     this.setData({ storageError: '', notice: '', noteEditor: null });
     this.refreshView();
+    // 换场次后当前线路可能不同：按新选中线路读取照片。
+    this.loadPhotos();
   },
 
   // ---------------------------------------------------------------- 线路
@@ -530,6 +607,8 @@ Page({
     this._lastTap = {};
     this.setData({ storageError: '', notice: '', noteEditor: null });
     this.refreshView();
+    // 换线路后按新选中线路读取照片（同一线路的照片不重复请求）。
+    this.loadPhotos();
   },
 
   /**
@@ -566,18 +645,22 @@ Page({
     this._lastTap = {};
     this.setData({ storageError: '', notice: '', noteEditor: null });
     this.refreshView();
+    this.loadPhotos();
   },
 
   toggleNewRouteForm() {
     const visible = !this.data.newRouteVisible;
     const form = defaultNewRouteForm();
     this._newRouteDirty = false;
+    // 收起或重开表单都会丢掉上一次未提交的临时照片选择。
+    this._newRoutePhotoPath = '';
     this.setData(
       visible
         ? {
             newRouteVisible: true,
             newRouteName: '',
             newRouteError: '',
+            newRoutePhoto: null,
             newRouteColorIndex: 0,
             newRouteColorName: ROUTE_COLORS[0].name,
             newRouteTypeIndex: form.newRouteTypeIndex,
@@ -587,7 +670,7 @@ Page({
             newRouteGrade: form.newRouteGrade,
             newRouteGradeText: form.newRouteGradeText
           }
-        : { newRouteVisible: false, newRouteName: '', newRouteError: '' }
+        : { newRouteVisible: false, newRouteName: '', newRouteError: '', newRoutePhoto: null }
     );
   },
 
@@ -708,12 +791,16 @@ Page({
 
     this.archive = outcome.archive;
     const form = defaultNewRouteForm();
+    // 新建表单里已选的照片（临时路径）在这里交给照片控制器：创建成功后才保存。
+    const pendingPhotoPath = this._newRoutePhotoPath;
     this._newRouteDirty = false;
+    this._newRoutePhotoPath = '';
     this._lastTap = {};
     this.setData({
       newRouteVisible: false,
       newRouteName: '',
       newRouteError: '',
+      newRoutePhoto: null,
       storageError: '',
       notice: '',
       noteEditor: null,
@@ -725,6 +812,156 @@ Page({
       newRouteGradeText: form.newRouteGradeText
     });
     this.refreshView();
+
+    // 线路已创建并选中；照片保存失败只影响照片，不回滚线路，也不阻止记把次。
+    if (pendingPhotoPath && outcome.route) {
+      return Promise.resolve(this.initPhotoUi())
+        .then(() => {
+          if (!this._photoUi) return null;
+          this._photoUi.beginPreview(outcome.route.id, pendingPhotoPath);
+          return this._photoUi.confirm(outcome.route.id);
+        })
+        .then(() => this.loadPhotos());
+    }
+    return this.loadPhotos();
+  },
+
+  // ---------------------------------------------------------------- 线路照片
+
+  dismissPhotoNotice() {
+    this.setData({ photoNotice: '' });
+  },
+
+  /**
+   * 新建线路表单里先选一张照片（可选）：
+   * 只记住选择器给的临时路径用于本机预览，创建成功后才会写进档案目录；
+   * 选择器是异步原生调用，期间换档/重置时丢弃这次选择。
+   */
+  chooseNewRoutePhoto(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const source = dataset.source;
+    if (!this._photoUi || (source !== 'camera' && source !== 'album')) {
+      return Promise.resolve();
+    }
+    const context = this._photoUi.captureContext();
+    return this._photoUi.pickFile(source).then(outcome => {
+      if (!outcome.ok) {
+        if (!outcome.cancelled) {
+          const label = source === 'camera' ? '拍照' : '相册';
+          this.setData({
+            newRouteError: outcome.permissionDenied
+              ? '未获得' + label + '权限，可跳过照片或稍后添加'
+              : '选择照片失败：' + outcome.error
+          });
+        }
+        return outcome;
+      }
+      if (!this._photoUi.isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          cancelled: false,
+          error: '本机档案已更换，已放弃这次选择'
+        };
+      }
+      this._newRoutePhotoPath = outcome.path;
+      this._newRouteDirty = true;
+      this.setData({
+        newRoutePhoto: {
+          path: outcome.path,
+          statusText: '已选择照片，创建线路后保存到本机'
+        },
+        newRouteError: ''
+      });
+      return outcome;
+    });
+  },
+
+  /**
+   * 取消照片：临时路径直接丢弃，不产生任何文件或索引记录；
+   * 想重选可立刻再点拍照/相册。
+   */
+  cancelNewRoutePhoto() {
+    this._newRoutePhotoPath = '';
+    this.setData({ newRoutePhoto: null, newRouteError: '' });
+  },
+
+  photoRouteId(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    if (dataset.routeId) return dataset.routeId;
+    return this.data.selectedRoute ? this.data.selectedRoute.id : '';
+  },
+
+  chooseRoutePhoto(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const source = dataset.source;
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId || (source !== 'camera' && source !== 'album')) {
+      return Promise.resolve();
+    }
+    return this._photoUi.choose(routeId, source);
+  },
+
+  confirmRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.confirm(routeId);
+  },
+
+  cancelRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.cancelPreview(routeId);
+    // 取消预览不改动已保存照片：原来有主图就继续显示原主图。
+    this.applyPhotoView();
+  },
+
+  retryRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.retry(routeId);
+  },
+
+  dismissRoutePhotoFailure(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.dismiss(routeId);
+    this.applyPhotoView();
+  },
+
+  removeRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.remove(routeId);
+  },
+
+  previewRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.preview(routeId);
+  },
+
+  reloadRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.load([routeId]);
+  },
+
+  /**
+   * 缩略图是可重建缓存：清缓存或被系统清理后，用持久主图重建一次。
+   * 只补缓存，主图、关联与档案数据都不变。
+   */
+  rebuildRoutePhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve(null);
+    return this._photoUi.rebuildThumbs();
+  },
+
+  /**
+   * 空间不足时页面上给出的出口：可重建缓存的清理入口在「我的」。
+   */
+  goToClearCache() {
+    wx.switchTab({ url: PROFILE_URL });
   },
 
   // ---------------------------------------------------------------- 逐把

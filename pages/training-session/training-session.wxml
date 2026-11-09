@@ -29,6 +29,16 @@
       <text class="notice-hint">点击收起</text>
     </view>
 
+    <view
+      wx:if="{{photoNotice}}"
+      id="photo-notice"
+      class="notice"
+      bindtap="dismissPhotoNotice"
+    >
+      <text class="notice-text">{{photoNotice}}</text>
+      <text class="notice-hint">点击收起</text>
+    </view>
+
     <!-- 开始场次：填自己的岩馆，日期默认本地今天 -->
     <view wx:if="{{sessionFormVisible}}" id="session-form" class="card session-form">
       <text class="card-title">{{sessionFormTitle}}</text>
@@ -100,6 +110,155 @@
               id="selected-route-state"
               class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
             >{{routeStateText}}</text>
+          </view>
+        </view>
+
+        <!--
+          当前线路主照片（T019）：保存必须由用户确认；取消预览不改动已保存照片，
+          取消更换后仍显示原来的主图。同色线路与其他档案的照片各自独立。
+        -->
+        <view wx:if="{{routePhoto}}" id="route-photo-card" class="photo-card">
+          <view class="photo-head">
+            <text class="photo-title">线路照片</text>
+            <text class="photo-note">只保存在本机</text>
+          </view>
+
+          <block wx:if="{{routePhoto.status === 'saved'}}">
+            <image
+              id="route-photo-thumb"
+              class="photo-thumb"
+              src="{{routePhoto.thumbnailPath}}"
+              mode="aspectFit"
+              data-route-id="{{selectedRoute.id}}"
+              bindtap="previewRoutePhoto"
+            />
+            <text id="route-photo-status" class="photo-status">{{routePhoto.statusText}}</text>
+            <text wx:if="{{routePhoto.bytesText}}" class="photo-meta">{{routePhoto.bytesText}}</text>
+            <view class="photo-actions">
+              <button
+                id="route-photo-preview"
+                class="secondary-button photo-action"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="previewRoutePhoto"
+              >看大图</button>
+              <button
+                id="route-photo-remove"
+                class="text-button photo-remove"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="removeRoutePhoto"
+              >移除</button>
+            </view>
+            <button
+              wx:if="{{!routePhoto.thumbnailAvailable}}"
+              id="route-photo-rebuild-thumb"
+              class="secondary-button photo-action"
+              data-route-id="{{selectedRoute.id}}"
+              bindtap="rebuildRoutePhoto"
+            >重建缩略图</button>
+          </block>
+
+          <block wx:elif="{{routePhoto.status === 'preview'}}">
+            <image
+              id="route-photo-preview-image"
+              class="photo-preview"
+              src="{{routePhoto.previewPath}}"
+              mode="aspectFit"
+            />
+            <text id="route-photo-preview-status" class="photo-status">{{routePhoto.statusText}}</text>
+            <view class="photo-actions">
+              <button
+                id="route-photo-cancel"
+                class="secondary-button photo-action"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="cancelRoutePhoto"
+              >取消</button>
+              <button
+                id="route-photo-confirm"
+                class="primary-button photo-action"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="confirmRoutePhoto"
+              >确认保存</button>
+            </view>
+          </block>
+
+          <block wx:elif="{{routePhoto.status === 'saving'}}">
+            <image
+              wx:if="{{routePhoto.mainPath}}"
+              class="photo-thumb"
+              src="{{routePhoto.mainPath}}"
+              mode="aspectFit"
+            />
+            <text id="route-photo-saving" class="photo-status photo-status-busy">{{routePhoto.statusText}}</text>
+            <text class="photo-hint">照片文件和关联都写入后才提示成功。</text>
+          </block>
+
+          <block wx:elif="{{routePhoto.status === 'failed'}}">
+            <image
+              wx:if="{{routePhoto.mainPath}}"
+              class="photo-thumb"
+              src="{{routePhoto.mainPath}}"
+              mode="aspectFit"
+              data-route-id="{{selectedRoute.id}}"
+              bindtap="previewRoutePhoto"
+            />
+            <text id="route-photo-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+            <text class="photo-error-detail">{{routePhoto.errorText}}</text>
+            <view class="photo-actions">
+              <button
+                id="route-photo-retry"
+                class="secondary-button photo-action"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="retryRoutePhoto"
+              >{{routePhoto.retryText}}</button>
+              <button
+                id="route-photo-dismiss"
+                class="text-button photo-remove"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="dismissRoutePhotoFailure"
+              >收起</button>
+            </view>
+            <button
+              wx:if="{{routePhoto.manageSpaceVisible}}"
+              id="route-photo-space-manage"
+              class="secondary-button photo-action"
+              bindtap="goToClearCache"
+            >去「我的」清除可重建缓存</button>
+          </block>
+
+          <block wx:elif="{{routePhoto.status === 'missing'}}">
+            <text id="route-photo-missing" class="photo-status photo-status-error">本机照片不可用，可重新添加</text>
+            <text class="photo-hint">照片文件可能已被系统清理；重新添加会替换原关联，本场把次与备注不变。</text>
+          </block>
+
+          <block wx:elif="{{routePhoto.status === 'error'}}">
+            <text id="route-photo-read-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+            <button
+              id="route-photo-reload"
+              class="secondary-button photo-action"
+              data-route-id="{{selectedRoute.id}}"
+              bindtap="reloadRoutePhoto"
+            >重试读取</button>
+          </block>
+
+          <block wx:else>
+            <text id="route-photo-loading" class="photo-status">{{routePhoto.statusText}}</text>
+          </block>
+
+          <view wx:if="{{routePhoto.sourceVisible}}" class="photo-source-row">
+            <button
+              id="route-photo-camera"
+              class="secondary-button photo-source"
+              data-source="camera"
+              data-route-id="{{selectedRoute.id}}"
+              bindtap="chooseRoutePhoto"
+            >{{routePhoto.cameraText}}</button>
+            <button
+              id="route-photo-album"
+              class="secondary-button photo-source"
+              data-source="album"
+              data-route-id="{{selectedRoute.id}}"
+              bindtap="chooseRoutePhoto"
+            >{{routePhoto.albumText}}</button>
           </view>
         </view>
 
@@ -278,6 +437,40 @@
             maxlength="40"
             bindinput="onNewRouteNameInput"
           />
+
+          <!-- 新建线路可选一张照片，紧邻名称；跳过也能创建，照片失败不回滚线路 -->
+          <view class="quick-route-photo">
+            <text class="field-label">线路照片（可选）</text>
+            <view wx:if="{{newRoutePhoto}}" class="quick-photo-preview">
+              <image
+                id="new-route-photo-preview"
+                class="photo-preview"
+                src="{{newRoutePhoto.path}}"
+                mode="aspectFit"
+              />
+              <text class="photo-status">{{newRoutePhoto.statusText}}</text>
+              <button
+                id="new-route-photo-cancel"
+                class="text-button photo-remove"
+                bindtap="cancelNewRoutePhoto"
+              >取消照片</button>
+            </view>
+            <view wx:else class="photo-source-row">
+              <button
+                id="new-route-photo-camera"
+                class="secondary-button photo-source"
+                data-source="camera"
+                bindtap="chooseNewRoutePhoto"
+              >拍照</button>
+              <button
+                id="new-route-photo-album"
+                class="secondary-button photo-source"
+                data-source="album"
+                bindtap="chooseNewRoutePhoto"
+              >从相册选择</button>
+            </view>
+            <text class="photo-hint">不添加照片也能创建线路；创建后照片保存到本机。</text>
+          </view>
 
           <!-- 攀岩类型在左、等级在右；等级选项随类型重算，失效时显示「请选择等级」 -->
           <view class="quick-route-row">
