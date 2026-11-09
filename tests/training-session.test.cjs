@@ -372,7 +372,10 @@ test('R1 空档从首页开始训练，填岩馆建场次与线路，返回首�
 });
 
 test('R1 同日第二场只能由显式「开始新场次」产生，且可复用原线', () => {
-  const seeded = seedTraining({ gymName: '岩馆 A' });
+  // 本用例比较的是「同一天」的两场：第一场必须落在真实本地今天，
+  // 页面开新场次用的也是本地今天；写死固定日期会在跨天后变成两天。
+  const todayDate = store.todayLocalDate();
+  const seeded = seedTraining({ gymName: '岩馆 A', date: todayDate });
   const page = openSessionPage({});
   const firstSessionId = page.data.activeSession.id;
   assert.equal(seeded.session.id, firstSessionId);

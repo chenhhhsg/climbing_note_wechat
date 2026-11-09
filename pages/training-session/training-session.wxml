@@ -103,14 +103,49 @@
         <view class="selected-route">
           <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
           <view class="selected-route-info">
+            <text class="selected-route-grade">{{selectedRoute.grade}}</text>
             <text class="selected-route-name">{{selectedRoute.name}}</text>
-            <text class="selected-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · 本场 {{routeCountText}}</text>
+            <text class="selected-route-meta">{{selectedRoute.climbType}} · 本场 {{routeCountText}}</text>
             <text
               wx:if="{{routeStateText}}"
               id="selected-route-state"
               class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
             >{{routeStateText}}</text>
           </view>
+        </view>
+
+        <!-- 结果按钮：抱石完攀后收起；有未保存的把次时先重试那一把 -->
+        <view class="result-footer">
+          <block wx:if="{{routeCompleted}}">
+            <view id="route-completed-panel" class="route-completed-panel">
+              <text class="route-completed-title">已完攀</text>
+              <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次与备注都保留在本机。</text>
+              <text class="route-completed-hint">点错了完攀？在上方「点错了完攀？」里点那一把自己那行改成未完成。</text>
+            </view>
+          </block>
+          <block wx:elif="{{routeClosed}}">
+            <view id="route-pending-panel" class="route-pending-panel">
+              <text class="route-pending-title">完攀待确认</text>
+              <text class="route-pending-hint">这一把的完攀还没保存：先在「待保存」行点「重试保存」。</text>
+            </view>
+          </block>
+          <block wx:else>
+            <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
+            <button
+              id="record-fail"
+              class="result-button result-fail"
+              data-result="fail"
+              disabled="{{resultLocked}}"
+              bindtap="recordAttempt"
+            >未完成</button>
+            <button
+              id="record-send"
+              class="result-button result-send"
+              data-result="send"
+              disabled="{{resultLocked}}"
+              bindtap="recordAttempt"
+            >完攀</button>
+          </block>
         </view>
 
         <!--
@@ -344,39 +379,7 @@
           </view>
         </view>
 
-        <!-- 结果按钮：抱石完攀后收起；有未保存的把次时先重试那一把 -->
-        <view class="result-footer">
-          <block wx:if="{{routeCompleted}}">
-            <view id="route-completed-panel" class="route-completed-panel">
-              <text class="route-completed-title">已完攀</text>
-              <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次与备注都保留在本机。</text>
-              <text class="route-completed-hint">点错了完攀？在上方「点错了完攀？」里点那一把自己那行改成未完成。</text>
-            </view>
-          </block>
-          <block wx:elif="{{routeClosed}}">
-            <view id="route-pending-panel" class="route-pending-panel">
-              <text class="route-pending-title">完攀待确认</text>
-              <text class="route-pending-hint">这一把的完攀还没保存：先在「待保存」行点「重试保存」。</text>
-            </view>
-          </block>
-          <block wx:else>
-            <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
-            <button
-              id="record-fail"
-              class="result-button result-fail"
-              data-result="fail"
-              disabled="{{resultLocked}}"
-              bindtap="recordAttempt"
-            >未完成</button>
-            <button
-              id="record-send"
-              class="result-button result-send"
-              data-result="send"
-              disabled="{{resultLocked}}"
-              bindtap="recordAttempt"
-            >完攀</button>
-          </block>
-        </view>
+
       </view>
 
       <!-- 选原线或新建线路 -->

@@ -26,7 +26,7 @@
   <view class="menu-section">
     <view class="menu-item" bindtap="goToFitnessTest">
       <view class="menu-left">
-        <text class="menu-icon">🧗</text>
+        <view class="field-menu-mark"></view>
         <text class="menu-text">体能自测</text>
       </view>
       <text class="menu-arrow">></text>
@@ -34,7 +34,7 @@
 
     <view class="menu-item" bindtap="feedback">
       <view class="menu-left">
-        <text class="menu-icon">💬</text>
+        <view class="field-menu-mark"></view>
         <text class="menu-text">意见反馈</text>
       </view>
       <text class="menu-arrow">></text>
@@ -42,7 +42,7 @@
 
     <view class="menu-item" bindtap="clearCache">
       <view class="menu-left">
-        <text class="menu-icon">🗑️</text>
+        <view class="field-menu-mark"></view>
         <text class="menu-text">清除缓存</text>
       </view>
       <text class="menu-arrow">></text>
@@ -50,7 +50,7 @@
 
     <view class="menu-item" bindtap="goToAbout">
       <view class="menu-left">
-        <text class="menu-icon">ℹ️</text>
+        <view class="field-menu-mark"></view>
         <text class="menu-text">关于攀笔</text>
       </view>
       <text class="menu-arrow">></text>

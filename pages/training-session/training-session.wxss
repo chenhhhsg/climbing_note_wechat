@@ -1,6 +1,6 @@
 /**
  * 场内记录页样式（T017）
- * 与首页保持同一套配色（#2c3e50），按钮按拇指可及的高度排版。
+ * 与首页保持同一套配色（#173d32），按钮按拇指可及的高度排版。
  */
 
 .page {
@@ -9,7 +9,7 @@
 }
 
 .card {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 30rpx;
   margin-bottom: 24rpx;
@@ -19,7 +19,7 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 16rpx;
 }
 
@@ -31,34 +31,34 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 16rpx;
 }
 
 /* 错误与提示 */
 .error-card {
-  background-color: #ffebee;
+  background-color: #f7e6db;
 }
 
 .error-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #c62828;
+  color: #943a23;
   margin-bottom: 12rpx;
 }
 
 .error-text {
   display: block;
   font-size: 26rpx;
-  color: #b71c1c;
+  color: #813323;
   margin-bottom: 10rpx;
 }
 
 .error-hint {
   display: block;
   font-size: 24rpx;
-  color: #8d6e63;
+  color: #745241;
   margin-bottom: 16rpx;
 }
 
@@ -70,13 +70,13 @@
 }
 
 .storage-error {
-  background-color: #ffebee;
-  color: #c62828;
+  background-color: #f7e6db;
+  color: #943a23;
 }
 
 .notice {
-  background-color: #fff8e1;
-  color: #8d6e63;
+  background-color: #f3edda;
+  color: #745241;
 }
 
 .storage-error-text,
@@ -96,7 +96,7 @@
 .field-error {
   display: block;
   font-size: 24rpx;
-  color: #f44336;
+  color: #9c3d22;
   margin-bottom: 12rpx;
 }
 
@@ -108,22 +108,22 @@
 .field-label {
   display: block;
   font-size: 26rpx;
-  color: #666666;
+  color: #526157;
   margin-bottom: 10rpx;
 }
 
 .text-input,
 .picker-value {
-  background-color: #f5f5f5;
+  background-color: #f7f4ea;
   border-radius: 12rpx;
   padding: 20rpx;
   font-size: 28rpx;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .primary-button {
-  background-color: #2c3e50;
-  color: #ffffff;
+  background-color: #173d32;
+  color: #fffcf3;
   border-radius: 12rpx;
   font-size: 30rpx;
   padding: 22rpx;
@@ -137,9 +137,9 @@
 }
 
 .secondary-button {
-  background-color: #ffffff;
-  color: #2c3e50;
-  border: 2rpx solid #2c3e50;
+  background-color: #fffcf3;
+  color: #173d32;
+  border: 2rpx solid #173d32;
   border-radius: 12rpx;
   font-size: 28rpx;
   padding: 18rpx;
@@ -147,7 +147,7 @@
 
 .text-button {
   background-color: transparent;
-  color: #2c3e50;
+  color: #173d32;
   font-size: 26rpx;
   padding: 8rpx 0;
 }
@@ -174,7 +174,7 @@
 .session-meta {
   display: block;
   font-size: 26rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 8rpx;
 }
 
@@ -190,15 +190,15 @@
 .chip {
   padding: 10rpx 24rpx;
   border-radius: 999rpx;
-  background-color: #f5f5f5;
-  color: #666666;
+  background-color: #f7f4ea;
+  color: #526157;
   font-size: 26rpx;
   margin: 0 12rpx 12rpx 0;
 }
 
 .chip-active {
-  background-color: #2c3e50;
-  color: #ffffff;
+  background-color: #173d32;
+  color: #fffcf3;
 }
 
 /* 线路 */
@@ -213,7 +213,7 @@
 .selected-route {
   display: flex;
   align-items: center;
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 26rpx;
   margin-bottom: 20rpx;
@@ -229,14 +229,14 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .selected-route-meta,
 .route-meta {
   display: block;
   font-size: 26rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 6rpx;
 }
 
@@ -247,12 +247,12 @@
 }
 
 .route-state-done {
-  background-color: #e8f5e9;
-  color: #4caf50;
+  background-color: #e2ebda;
+  color: #2f6248;
 }
 
 .route-state-pending {
-  background-color: #fff8e1;
+  background-color: #f3edda;
   color: #f9a825;
 }
 
@@ -261,14 +261,14 @@
 }
 
 .route-item {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 16rpx;
 }
 
 .route-selected {
-  border: 2rpx solid #2c3e50;
+  border: 2rpx solid #173d32;
 }
 
 .route-main {
@@ -278,12 +278,12 @@
 
 .route-check {
   font-size: 24rpx;
-  color: #2c3e50;
+  color: #173d32;
   margin-left: 12rpx;
 }
 
 .gym-route-block {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
@@ -291,19 +291,19 @@
 
 .gym-route-item {
   padding: 18rpx 0;
-  border-bottom: 2rpx solid #f5f5f5;
+  border-bottom: 2rpx solid #f7f4ea;
 }
 
 .gym-route-name {
   display: block;
   font-size: 28rpx;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .gym-route-meta {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 6rpx;
 }
 
@@ -326,19 +326,19 @@
 /* 逐把记录 */
 .empty-attempts {
   font-size: 26rpx;
-  color: #999999;
+  color: #606d61;
   padding: 24rpx 0;
 }
 
 .attempt-item {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 16rpx;
 }
 
 .pending-attempt {
-  background-color: #fff8e1;
+  background-color: #f3edda;
 }
 
 .attempt-main {
@@ -349,25 +349,25 @@
 .attempt-label {
   font-size: 28rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-right: 20rpx;
 }
 
 .attempt-result {
   font-size: 28rpx;
-  color: #2c3e50;
+  color: #173d32;
   margin-right: 20rpx;
 }
 
 .attempt-time {
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .attempt-note {
   display: block;
   font-size: 26rpx;
-  color: #666666;
+  color: #526157;
   margin-top: 12rpx;
 }
 
@@ -384,7 +384,7 @@
 
 .pending-status {
   font-size: 24rpx;
-  color: #b26a00;
+  color: #804b27;
 }
 
 .note-editor {
@@ -394,14 +394,14 @@
 .note-context {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-bottom: 12rpx;
 }
 
 .note-input {
   width: 100%;
   min-height: 140rpx;
-  background-color: #f5f5f5;
+  background-color: #f7f4ea;
   border-radius: 12rpx;
   padding: 20rpx;
   font-size: 28rpx;
@@ -410,7 +410,7 @@
 
 /* 按把更正 */
 .route-correction {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
@@ -420,40 +420,40 @@
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 10rpx;
 }
 
 .route-correction-hint {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-bottom: 12rpx;
 }
 
 .route-correction-status {
   display: block;
   font-size: 24rpx;
-  color: #b26a00;
+  color: #804b27;
   margin-bottom: 12rpx;
 }
 
 .route-correction-row {
-  border-top: 2rpx solid #f5f5f5;
+  border-top: 2rpx solid #f7f4ea;
   padding: 16rpx 0;
 }
 
 .route-correction-target {
   display: block;
   font-size: 24rpx;
-  color: #666666;
+  color: #526157;
   margin-bottom: 10rpx;
 }
 
 .route-corrected-text {
   display: block;
   font-size: 26rpx;
-  color: #4caf50;
+  color: #2f6248;
 }
 
 /* 结果按钮 */
@@ -464,7 +464,7 @@
 .result-lock-hint {
   display: block;
   font-size: 24rpx;
-  color: #b26a00;
+  color: #804b27;
   margin-bottom: 12rpx;
 }
 
@@ -475,7 +475,7 @@
   padding: 32rpx;
   margin-bottom: 16rpx;
   border: none;
-  color: #ffffff;
+  color: #fffcf3;
 }
 
 .result-button::after {
@@ -483,11 +483,11 @@
 }
 
 .result-fail {
-  background-color: #e03131;
+  background-color: #8a442e;
 }
 
 .result-send {
-  background-color: #2f9e44;
+  background-color: #173d32;
 }
 
 .result-button[disabled] {
@@ -496,7 +496,7 @@
 
 .route-completed-panel,
 .route-pending-panel {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 26rpx;
 }
@@ -506,7 +506,7 @@
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 10rpx;
 }
 
@@ -514,7 +514,7 @@
 .route-pending-hint {
   display: block;
   font-size: 26rpx;
-  color: #666666;
+  color: #526157;
   margin-bottom: 8rpx;
 }
 
@@ -532,12 +532,12 @@
 .photo-title {
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .photo-note {
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .photo-main,
@@ -547,7 +547,7 @@
   width: 100%;
   height: 420rpx;
   margin-top: 16rpx;
-  background-color: #f5f5f5;
+  background-color: #f7f4ea;
   border-radius: 12rpx;
 }
 
@@ -560,29 +560,29 @@
   margin-top: 14rpx;
   font-size: 26rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .photo-status-busy {
-  color: #b26a00;
+  color: #804b27;
 }
 
 .photo-status-error {
-  color: #c62828;
+  color: #943a23;
 }
 
 .photo-meta {
   display: block;
   margin-top: 4rpx;
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .photo-error-detail {
   display: block;
   margin-top: 6rpx;
   font-size: 23rpx;
-  color: #b71c1c;
+  color: #813323;
   line-height: 1.45;
 }
 
@@ -590,7 +590,7 @@
   display: block;
   margin-top: 8rpx;
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
   line-height: 1.5;
 }
 
@@ -615,7 +615,7 @@
 .photo-remove {
   flex: none;
   margin: 14rpx 0 0 18rpx;
-  color: #c62828;
+  color: #943a23;
 }
 
 .photo-source-row {
@@ -642,3 +642,43 @@
 .quick-photo-preview {
   margin-top: 8rpx;
 }
+
+/* 岩馆手册 */
+.page { padding:20rpx 32rpx 55rpx; }
+.section-title,.card-title,.photo-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; line-height:1.35; font-weight:700; }
+.section-title { font-size:39rpx; border-bottom:2rpx solid #173d32; padding:0 0 14rpx; }
+.card,.photo-card,.attempt-item,.history-group,.selected-route { border-radius:8rpx; box-shadow:none; }
+.primary-button,.secondary-button,.text-button { min-height:88rpx; box-sizing:border-box; display:flex; align-items:center; justify-content:center; line-height:1.4; }
+.primary-button,.secondary-button { border-radius:8rpx; }
+.attempt-item { background:transparent; border-bottom:1px solid #cbd0bf; margin:0; padding:20rpx 0; }
+.attempt-label,.history-date { font-weight:700; color:#173d32; }
+.attempt-time,.session-meta,.history-date,.route-summary { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; }
+.attempt-note { border-left:4rpx solid #d2784f; padding:3rpx 0 3rpx 16rpx; margin:12rpx 0; line-height:1.6; }
+.photo-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
+.photo-title { font-size:32rpx; color:#173d32; }
+.photo-thumb,.photo-main { background:#e3e5d7; border-radius:4rpx; }
+.route-title-info,.selected-route-info,.session-heading { min-width:0; }
+.route-name,.selected-route-name,.training-gym,.card-title { word-break:break-all; }
+.route-completed-panel,.route-pending-panel { border-left:8rpx solid #315d40; background:#e7eddf; border-radius:4rpx; }
+.route-pending-panel { border-left-color:#b7683d; background:#f3ead7; }
+
+.session-card { background:transparent; padding:0 0 18rpx; }
+.session-top { column-gap:12rpx; align-items:flex-start; }
+.session-meta { font-size:24rpx; line-height:1.5; }
+.session-heading .card-title { font-size:34rpx; margin-bottom:4rpx; }
+.session-new { margin:0; padding:0 4rpx; font-size:24rpx; min-height:88rpx; }
+.selected-route { position:relative; display:flex; align-items:stretch; padding:0; margin:0 0 12rpx; overflow:hidden; background:#173d32; color:#fffcf3; }
+.selected-route .route-swatch { width:9rpx; height:auto; flex:none; border:0; border-radius:0; margin:0; }
+.selected-route-info { display:flex; flex-direction:column; align-items:flex-start; padding:22rpx 26rpx 24rpx; }
+.selected-route-grade,.route-grade-display { font:italic 700 92rpx/.98 Georgia,"Times New Roman",serif; letter-spacing:-4rpx; }
+.selected-route-grade { color:#ff986c; }
+.selected-route-name { margin:10rpx 0 5rpx; color:#fffcf3; font-size:36rpx; font-family:"Songti SC","SimSun",serif; }
+.selected-route-meta { color:#dbe7d6; font-size:25rpx; line-height:1.5; }
+.selected-route .route-state { margin-top:8rpx; }
+.result-footer { display:flex; gap:12rpx; flex-wrap:wrap; margin:12rpx 0 24rpx; }
+.result-footer .result-button { width:auto; flex:1; min-height:96rpx; padding:20rpx 10rpx; margin:0; border-radius:8rpx; font-size:32rpx; font-weight:700; line-height:1.4; }
+.result-fail { color:#214637; background:#ebeadd; }
+.result-send { color:#1b3128; background:#ff793f; }
+.result-footer .route-completed-panel,.result-footer .route-pending-panel,.result-lock-hint { width:100%; box-sizing:border-box; }
+.field,.picker-value,.text-input { line-height:1.5; }
+.text-input { min-height:88rpx; }

@@ -3,24 +3,23 @@
   训练入口只依赖本机档案，先于旧云请求渲染；旧记录区失败或延迟都不遮住它。
 -->
 <view class="container">
-  <!-- 头部欢迎区域 -->
-  <view class="header">
-    <view class="welcome-text">攀岩记录</view>
-    <view class="subtitle">记录每一次攀登</view>
+  <view class="field-cover">
+    <image class="field-cover-image" src="/images/field-cover.jpg" mode="aspectFill" aria-hidden="true" />
+    <view class="field-cover-title"><text>岩馆</text><text>手册</text></view>
   </view>
-
   <!-- 训练入口：开始训练 / 继续本场 -->
   <view id="training-entry" class="training-entry">
+    <view class="field-section-head"><view class="field-mark"></view><text class="field-section-name">本次训练</text></view>
     <view wx:if="{{hasActiveSession}}" class="training-current">
       <view class="training-current-head">
         <text class="training-gym">{{activeSession.gymName}}</text>
         <text class="training-date">{{activeSession.dateText}} · {{activeSession.label}}</text>
       </view>
-      <text class="training-route">
-        当前线路：{{activeSession.routeName || '还没选线路'}} · 本场 {{activeSession.attemptCountText}}
-      </text>
-      <button id="continue-training" class="btn-training" bindtap="continueTraining">继续本场</button>
-      <button id="start-training" class="btn-training-secondary" bindtap="startTraining">另开一场</button>
+      <text class="training-route">当前线路 · {{activeSession.routeName || '还没选线路'}} · 本场 {{activeSession.attemptCountText}}</text>
+      <view class="training-actions">
+        <button id="continue-training" class="btn-training" bindtap="continueTraining">继续本场</button>
+        <button id="start-training" class="btn-training-secondary" bindtap="startTraining">另开一场</button>
+      </view>
     </view>
 
     <view wx:else class="training-empty">
@@ -31,20 +30,11 @@
     <text wx:if="{{archiveError}}" id="archive-error" class="training-error">{{archiveError}}</text>
   </view>
 
-  <!-- 快捷操作区域：旧「添加记录」表单入口保持可达 -->
-  <view class="quick-actions">
-    <button id="add-legacy-record" class="btn-add" bindtap="goToAddRecord">
-      <text class="btn-icon">+</text>
-      <text class="btn-text">添加记录</text>
-    </button>
-  </view>
-
   <!-- 旧记录区域（云端旧汇总，只读回看；与本机训练分开） -->
   <view class="section">
     <view class="section-header">
       <text class="section-title">旧记录</text>
-      <text class="section-more" style="flex: 1; margin-left: 16rpx; font-size: 24rpx;">云端旧汇总 · 只读回看</text>
-      <text class="section-more" bindtap="goToList">旧记录全部 ></text>
+      <text class="section-more" bindtap="goToList">查看全部 ›</text>
     </view>
 
     <!-- 旧云读取失败：只影响本区，训练入口照常可用 -->
@@ -59,9 +49,9 @@
 
     <!-- 无数据状态 -->
     <view wx:elif="{{isEmpty}}" class="empty-state">
-      <text class="empty-icon">🧗</text>
+
       <text class="empty-text">还没有旧记录</text>
-      <text class="empty-hint">旧云端汇总为空；本机训练不受影响</text>
+      <text class="empty-hint">早期的云端记录会出现在这里。</text>
     </view>
 
     <!-- 记录列表 -->
@@ -85,6 +75,12 @@
           {{item.status}}
         </view>
       </view>
+    </view>
+    <view class="quick-actions">
+      <button id="add-legacy-record" class="btn-add" bindtap="goToAddRecord">
+        <text class="btn-icon">+</text>
+        <text class="btn-text">添加旧记录</text>
+      </button>
     </view>
   </view>
 </view>

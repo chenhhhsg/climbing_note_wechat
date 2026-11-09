@@ -1,6 +1,6 @@
 /**
  * 长期线路详情页样式（T018）
- * 与首页、场内页同一套配色（#2c3e50），回看信息为主、操作按钮在下方。
+ * 与首页、场内页同一套配色（#173d32），回看信息为主、操作按钮在下方。
  */
 
 .page {
@@ -9,7 +9,7 @@
 }
 
 .card {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 30rpx;
   margin-bottom: 24rpx;
@@ -19,7 +19,7 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 16rpx;
 }
 
@@ -31,27 +31,27 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 16rpx;
 }
 
 /* 错误与提示 */
 .error-card {
-  background-color: #ffebee;
+  background-color: #f7e6db;
 }
 
 .error-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #c62828;
+  color: #943a23;
   margin-bottom: 12rpx;
 }
 
 .error-text {
   display: block;
   font-size: 26rpx;
-  color: #b71c1c;
+  color: #813323;
   margin-bottom: 10rpx;
 }
 
@@ -63,14 +63,14 @@
 }
 
 .storage-error {
-  background-color: #fff3e0;
+  background-color: #f6ead5;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 20rpx;
 }
 
 .notice {
-  background-color: #e3f2fd;
+  background-color: #e4ebdf;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 20rpx;
@@ -80,20 +80,20 @@
 .notice-text {
   display: block;
   font-size: 26rpx;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .storage-error-hint,
 .notice-hint {
   display: block;
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 8rpx;
 }
 
 .primary-button {
-  background-color: #2c3e50;
-  color: #ffffff;
+  background-color: #173d32;
+  color: #fffcf3;
   border-radius: 12rpx;
   font-size: 30rpx;
 }
@@ -105,16 +105,16 @@
 }
 
 .secondary-button {
-  background-color: #ffffff;
-  color: #2c3e50;
-  border: 2rpx solid #2c3e50;
+  background-color: #fffcf3;
+  color: #173d32;
+  border: 2rpx solid #173d32;
   border-radius: 12rpx;
   font-size: 30rpx;
 }
 
 .text-button {
   background-color: transparent;
-  color: #2c3e50;
+  color: #173d32;
   font-size: 28rpx;
   text-decoration: underline;
   margin-top: 12rpx;
@@ -122,7 +122,7 @@
 
 /* 线路头部 */
 .route-header {
-  background-color: #ffffff;
+  background-color: #fffcf3;
 }
 
 .route-title-row {
@@ -145,20 +145,20 @@
   display: block;
   font-size: 34rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .route-meta {
   display: block;
   font-size: 26rpx;
-  color: #666666;
+  color: #526157;
   margin-top: 6rpx;
 }
 
 .route-gym {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 4rpx;
 }
 
@@ -170,25 +170,25 @@
 }
 
 .route-state-done {
-  background-color: #e8f5e9;
-  color: #2e7d32;
+  background-color: #e2ebda;
+  color: #2b5942;
 }
 
 .route-state-pending {
-  background-color: #fff3e0;
-  color: #b26a00;
+  background-color: #f6ead5;
+  color: #804b27;
 }
 
 .route-summary {
   display: block;
   font-size: 26rpx;
-  color: #2c3e50;
+  color: #173d32;
   margin-top: 16rpx;
 }
 
 /* 跨日分组回看 */
 .history-group {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
@@ -203,29 +203,29 @@
 .history-date {
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-right: 16rpx;
 }
 
 .history-session {
   flex: 1;
   font-size: 24rpx;
-  color: #666666;
+  color: #526157;
 }
 
 .history-count {
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .empty-attempts {
   font-size: 26rpx;
-  color: #999999;
+  color: #606d61;
   padding: 24rpx 0;
 }
 
 .attempt-item {
-  background-color: #f8f9fa;
+  background-color: #f2f0e6;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 12rpx;
@@ -239,7 +239,7 @@
 .attempt-label {
   font-size: 28rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-right: 20rpx;
 }
 
@@ -249,28 +249,28 @@
 }
 
 .result-send {
-  color: #2e7d32;
+  color: #2b5942;
 }
 
 .result-fail {
-  color: #c62828;
+  color: #943a23;
 }
 
 .attempt-time {
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .attempt-note {
   display: block;
   font-size: 26rpx;
-  color: #666666;
+  color: #526157;
   margin-top: 12rpx;
 }
 
 /* 按把更正 */
 .route-correction {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
@@ -280,20 +280,20 @@
   display: block;
   font-size: 28rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .route-correction-hint {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 8rpx;
 }
 
 .route-correction-status {
   display: block;
   font-size: 24rpx;
-  color: #b26a00;
+  color: #804b27;
   margin-top: 8rpx;
 }
 
@@ -304,7 +304,7 @@
 .route-correction-target {
   display: block;
   font-size: 24rpx;
-  color: #666666;
+  color: #526157;
   margin-bottom: 8rpx;
 }
 
@@ -320,7 +320,7 @@
 
 .route-corrected-text {
   font-size: 24rpx;
-  color: #2e7d32;
+  color: #2b5942;
 }
 
 /* 当天再记 */
@@ -331,12 +331,12 @@
 .record-again-hint {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-top: 12rpx;
 }
 
 .route-completed-panel {
-  background-color: #e8f5e9;
+  background-color: #e2ebda;
   border-radius: 16rpx;
   padding: 24rpx;
 }
@@ -345,7 +345,7 @@
   display: block;
   font-size: 28rpx;
   font-weight: bold;
-  color: #2e7d32;
+  color: #2b5942;
   margin-bottom: 8rpx;
 }
 
@@ -360,35 +360,35 @@
 .session-picker-meta {
   display: block;
   font-size: 24rpx;
-  color: #999999;
+  color: #606d61;
   margin-bottom: 12rpx;
 }
 
 .session-option {
-  background-color: #f5f5f5;
+  background-color: #f7f4ea;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 12rpx;
   font-size: 28rpx;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .empty-card {
-  background-color: #ffffff;
+  background-color: #fffcf3;
 }
 
 .empty-title {
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 12rpx;
 }
 
 .empty-hint {
   display: block;
   font-size: 26rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 /* ---- 线路主照片（T019）：详情展示完整主图，保存必须由用户确认 ---- */
@@ -405,12 +405,12 @@
 .photo-title {
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .photo-note {
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .photo-main,
@@ -420,7 +420,7 @@
   width: 100%;
   height: 420rpx;
   margin-top: 16rpx;
-  background-color: #f5f5f5;
+  background-color: #f7f4ea;
   border-radius: 12rpx;
 }
 
@@ -433,29 +433,29 @@
   margin-top: 14rpx;
   font-size: 26rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 .photo-status-busy {
-  color: #b26a00;
+  color: #804b27;
 }
 
 .photo-status-error {
-  color: #c62828;
+  color: #943a23;
 }
 
 .photo-meta {
   display: block;
   margin-top: 4rpx;
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
 }
 
 .photo-error-detail {
   display: block;
   margin-top: 6rpx;
   font-size: 23rpx;
-  color: #b71c1c;
+  color: #813323;
   line-height: 1.45;
 }
 
@@ -463,7 +463,7 @@
   display: block;
   margin-top: 8rpx;
   font-size: 22rpx;
-  color: #999999;
+  color: #606d61;
   line-height: 1.5;
 }
 
@@ -488,7 +488,7 @@
 .photo-remove {
   flex: none;
   margin: 14rpx 0 0 18rpx;
-  color: #c62828;
+  color: #943a23;
 }
 
 .photo-source-row {
@@ -507,3 +507,34 @@
 .photo-source + .photo-source {
   margin-left: 14rpx;
 }
+
+/* 岩馆手册 */
+.page { padding:20rpx 32rpx 55rpx; }
+.section-title,.card-title,.photo-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; line-height:1.35; font-weight:700; }
+.section-title { font-size:39rpx; border-bottom:2rpx solid #173d32; padding:0 0 14rpx; }
+.card,.photo-card,.attempt-item,.history-group,.selected-route { border-radius:8rpx; box-shadow:none; }
+.primary-button,.secondary-button,.text-button { min-height:88rpx; box-sizing:border-box; display:flex; align-items:center; justify-content:center; line-height:1.4; }
+.primary-button,.secondary-button { border-radius:8rpx; }
+.attempt-item { background:transparent; border-bottom:1px solid #cbd0bf; margin:0; padding:20rpx 0; }
+.attempt-label,.history-date { font-weight:700; color:#173d32; }
+.attempt-time,.session-meta,.history-date,.route-summary { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; }
+.attempt-note { border-left:4rpx solid #d2784f; padding:3rpx 0 3rpx 16rpx; margin:12rpx 0; line-height:1.6; }
+.photo-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
+.photo-title { font-size:32rpx; color:#173d32; }
+.photo-thumb,.photo-main { background:#e3e5d7; border-radius:4rpx; }
+.route-title-info,.selected-route-info,.session-heading { min-width:0; }
+.route-name,.selected-route-name,.training-gym,.card-title { word-break:break-all; }
+.route-completed-panel,.route-pending-panel { border-left:8rpx solid #315d40; background:#e7eddf; border-radius:4rpx; }
+.route-pending-panel { border-left-color:#b7683d; background:#f3ead7; }
+
+.route-header { position:relative; overflow:hidden; background:#173d32; color:#fffcf3; padding:29rpx 30rpx 20rpx; }
+.route-title-row { align-items:flex-start; flex-wrap:wrap; gap:8rpx 16rpx; }
+.route-title-row .route-swatch { position:absolute; width:9rpx; height:100%; left:0; top:0; margin:0; border:0; border-radius:0; }
+.route-grade-display { display:block; color:#ff986c; font:italic 700 100rpx/1 Georgia,"Times New Roman",serif; letter-spacing:-4rpx; }
+.route-name { margin:12rpx 0 4rpx; color:#fff8e8; font:700 43rpx/1.3 "Songti SC","SimSun",serif; }
+.route-meta,.route-gym { color:#e1e9dc; line-height:1.55; }
+.route-summary { display:block; color:#f0eddd; border-top:1px solid #668173; margin:20rpx 0 0; padding-top:14rpx; line-height:1.5; }
+.history-group { background:transparent; padding:12rpx 0 24rpx; }
+.history-group-head { flex-wrap:wrap; gap:6rpx 12rpx; }
+.result-send { background:#dfebd9; color:#204b34; }
+.result-fail { background:#ede6d7; color:#674b39; }
