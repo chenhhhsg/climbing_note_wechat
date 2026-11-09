@@ -74,6 +74,9 @@ const store = require(STORE_JS);
 const STORE_KEY = store.STORE_KEY;
 const server = require(SERVER_JS);
 const LEDGER_KEY = server.LEDGER_KEY;
+// T014：抱石首次完攀的共用规则与试用身份，与页面、账本实际使用的一致。
+const routeRules = require(path.join(DEV_PROJECT, 'utils', 'route-rules.js'));
+const trialProfile = require(path.join(DEV_PROJECT, 'utils', 'trial-profile.js'));
 
 // 捕获原生 Page(...) 定义
 let pageDefinition = null;
@@ -192,6 +195,24 @@ function ledgerState() {
 
 function localToday() {
   return store.todayLocalDate();
+}
+
+// 直接调用模拟保存入口时，带上与今日页实际提交一致的归属与类型上下文。
+function submitContext(routeId, result, opId, extra) {
+  const saved = savedState();
+  return Object.assign(
+    {
+      opId,
+      sessionId: saved ? saved.activeSessionId : 'session-1',
+      routeId,
+      result,
+      note: '',
+      climbType: '抱石',
+      ownerId: trialProfile.TRIAL_OWNER_ID,
+      datasetId: trialProfile.TRIAL_DATASET_ID
+    },
+    extra || {}
+  );
 }
 
 // ---- G01 ----
@@ -936,8 +957,9 @@ test('G13 同色同级与同名线路按稳定 ID 独立统计', async () => {
   await tapResult(page, 'fail');
 
   tapRoute(page, ROUTE_BLUE_BALANCE);
-  await tapResult(page, 'send');
+  // 抱石首次完攀后不再新增，先记未完成再完攀（仍是两把、一把完攀）。
   await tapResult(page, 'fail');
+  await tapResult(page, 'send');
 
   const blue = createDetailPage(ROUTE_BLUE);
   assert.equal(blue.data.route.grade, 'V3');
@@ -955,7 +977,7 @@ test('G13 同色同级与同名线路按稳定 ID 独立统计', async () => {
   assert.equal(balance.data.sendCount, 1);
   assert.deepEqual(
     balance.data.groups[0].attempts.map(attempt => attempt.resultText),
-    ['完攀', '未完成']
+    ['未完成', '完攀']
   );
 
   // 同名、同色、同级的快速新建线路也各自独立
@@ -1229,6 +1251,8 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   tapStart(page, 0);
   const firstSessionId = page.data.activeSession.id;
   tapRoute(page, ROUTE_BLUE);
+  // 抱石首次完攀后不再新增：两把未完成放在先，唯一一把完攀放在第 2 场最后。
+  await tapResult(page, 'fail');
   await tapResult(page, 'fail');
 
   page.openSessionForm();
@@ -1242,7 +1266,6 @@ test('G18 同日两场从详情「今天再爬」先显式选场，取消或选�
   tapSession(page, firstSessionId);
   assert.equal(page.data.activeSession.id, firstSessionId);
   tapRoute(page, ROUTE_BLUE);
-  await tapResult(page, 'fail');
 
   const writesBefore = wxLog.setKeys.length;
   const navBefore = wxLog.navigations.length;
@@ -1759,9 +1782,24 @@ test('G24 页面提供演练与重试入口，故障注入不进入正式页面'
 });
 // ---- G25 ----
 test('G25 模拟保存端按操作 ID 幂等，写账本失败不消耗回执丢失注入', async () => {
+  // 抱石首次完攀后不再新增把次，所以这里用虚构的顶绳线做夹具：
+  // 绳攀可以重复完攀，本用例验证的是操作 ID 幂等与回执注入本身。
+  const ROPE_ROUTE = 'route-fixture-rope-510a';
+  const ropeState = store.createInitialState();
+  ropeState.routes.push({
+    id: ROPE_ROUTE,
+    gymId: 'gym-chalkbox',
+    name: '虚构顶绳线',
+    colorName: '黄色',
+    colorHex: '#d9a21b',
+    grade: '5.10a',
+    climbType: '顶绳'
+  });
+  storage.set(STORE_KEY, JSON.stringify(ropeState));
+
   const base = {
     sessionId: 'session-1',
-    routeId: ROUTE_BLUE,
+    routeId: ROPE_ROUTE,
     result: 'fail',
     note: ''
   };
@@ -1814,13 +1852,21 @@ test('G25 模拟保存端按操作 ID 幂等，写账本失败不消耗回执丢
   assert.equal(ledgerState().records.length, 4);
   assert.equal(ledgerState().loseNextReceipt, false);
 
-  // 账本与客户端键完全分开
-  assert.equal(storage.has(STORE_KEY), false);
+  // 账本与客户端键完全分开：保存端只往账本键写，不动试用数据键
+  assert.ok(
+    wxLog.setKeys.length > 0 && wxLog.setKeys.every(key => key === LEDGER_KEY),
+    '保存端只写账本键'
+  );
+  assert.equal(
+    savedState().routes.find(route => route.id === ROPE_ROUTE).climbType,
+    '顶绳',
+    '保存端不改写试用数据里的线路'
+  );
 
   const invalid = server.submitOperation({
     opId: '',
     sessionId: 'session-1',
-    routeId: ROUTE_BLUE,
+    routeId: ROPE_ROUTE,
     result: 'fail'
   });
   assert.equal(invalid.ok, false);
@@ -2474,4 +2520,847 @@ test('G36 缺类型的旧 V 级线路按抱石读取，原把次与备注一致�
     normalized.routes.every(route => route.climbType === undefined),
     '兼容读取不写入类型'
   );
+});
+
+// ---- T014 / A1 ----
+test('T014-A1 抱石首次完攀后跨场次、跨页面与直接保存入口都不能新增', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-01');
+  const firstSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+
+  // 完攀前可连续记未完成，第二把补备注（同一抱石线允许多次未完成）
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  tapNote(page, page.data.attempts[1].id);
+  typeNote(page, '第二把换左脚');
+  page.saveNote();
+  assert.equal(page.data.attempts.length, 2);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false);
+
+  // 首次完攀确认：本线随即关闭
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(page.data.attempts[2].resultText, '完攀');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(page.data.routeSendCount, 1);
+  assert.equal(page.data.routeStateText, '已完攀');
+
+  const attemptsBefore = savedState().attempts.length;
+  const ledgerRows = ledgerState().records.length;
+  assert.equal(attemptsBefore, 3);
+  assert.equal(ledgerRows, 3);
+
+  // 跨场次：另开同日第二场，完攀与未完成都不得新增待确认或把次
+  page.openSessionForm();
+  page.onDateChange({ detail: { value: '2026-11-01' } });
+  page.startSession();
+  const secondSessionId = page.data.activeSession.id;
+  assert.notEqual(secondSessionId, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.attempts.length, 0, '第二场只显示自己的尝试');
+  assert.equal(page.data.routeClosed, true, '跨场次仍按已完攀关闭入口');
+
+  await tapResult(page, 'send');
+  await tapResult(page, 'fail');
+  assert.equal(page.data.pendingAttempts.length, 0, '不得新增待确认项');
+  assert.match(page.data.saveNotice, /已完攀/);
+  assert.equal(savedState().attempts.length, attemptsBefore);
+  assert.equal(ledgerState().records.length, ledgerRows);
+
+  // 连点：同一页快速点两次也不会新增
+  await Promise.all([tapResult(page, 'send'), tapResult(page, 'fail')]);
+  assert.equal(savedState().attempts.length, attemptsBefore);
+  assert.equal(ledgerState().records.length, ledgerRows);
+
+  // 跨页面：重新进入的实例同样按已完攀拒绝
+  const reentered = createPage();
+  assert.equal(reentered.data.selectedRoute.id, ROUTE_BLUE);
+  assert.equal(reentered.data.routeCompleted, true);
+  await tapResult(reentered, 'send');
+  assert.equal(reentered.data.pendingAttempts.length, 0);
+  assert.equal(savedState().attempts.length, attemptsBefore);
+  assert.equal(ledgerState().records.length, ledgerRows);
+
+  // 直接调用实际模拟保存入口：不同操作 ID 也不增加账本行
+  const directSend = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'attempt-direct-1')
+  );
+  assert.equal(directSend.ok, false);
+  assert.equal(directSend.alreadySent, true);
+  assert.equal(ledgerState().records.length, ledgerRows, '直接完攀不得新增账本行');
+  const directFail = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'fail', 'attempt-direct-2')
+  );
+  assert.equal(directFail.ok, false);
+  assert.equal(directFail.alreadySent, true);
+  assert.equal(ledgerState().records.length, ledgerRows, '直接未完成也不得新增账本行');
+
+  // 原线路三把的 ID、备注与所属场次逐项核对
+  const blueAttempts = savedState()
+    .attempts.filter(item => item.routeId === ROUTE_BLUE)
+    .sort((left, right) => left.seq - right.seq);
+  assert.deepEqual(
+    blueAttempts.map(item => item.result),
+    ['fail', 'fail', 'send']
+  );
+  assert.equal(blueAttempts[1].note, '第二把换左脚');
+  assert.ok(
+    blueAttempts.every(item => item.sessionId === firstSessionId),
+    '三把都归属第一场'
+  );
+  assert.equal(new Set(blueAttempts.map(item => item.id)).size, 3);
+
+  // 另一条同色同级抱石线仍能独立记录
+  tapRoute(page, ROUTE_BLUE_BALANCE);
+  assert.equal(page.data.routeClosed, false);
+  await tapResult(page, 'fail');
+  assert.equal(page.data.attempts.length, 1);
+  await tapResult(page, 'send');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(
+    savedState().attempts.filter(
+      item => item.routeId === ROUTE_BLUE_BALANCE
+    ).length,
+    2
+  );
+  assert.equal(
+    savedState().attempts.filter(item => item.routeId === ROUTE_BLUE).length,
+    3,
+    '原线路不因另一条线新增而改变'
+  );
+});
+
+// ---- T014 / A2 ----
+test('T014-A2 完攀待确认（丢回执）时跨场次与并发重试都只新增一次完攀', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-01');
+  const firstSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+
+  page.toggleReceiptLossArm();
+  await tapResult(page, 'send');
+  const opId = page.data.pendingAttempts[0].opId;
+  assert.ok(opId);
+  assert.equal(page.data.attempts.length, 1, '完攀确认前不计入已保存');
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, true, '完攀待确认也关闭新增入口');
+  assert.equal(page.data.routeStateText, '完攀待确认');
+  assert.equal(ledgerState().records.length, 2);
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1
+  );
+  assert.equal(savedState().pendingSaves.length, 1);
+
+  // 另一个场次尝试另起操作：不新增第二个待确认，也不新增把次
+  page.openSessionForm();
+  page.onDateChange({ detail: { value: '2026-11-01' } });
+  page.startSession();
+  const secondSessionId = page.data.activeSession.id;
+  assert.notEqual(secondSessionId, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  await tapResult(page, 'fail');
+  assert.equal(page.data.pendingAttempts.length, 0, '不得新增第二个待确认');
+  assert.equal(savedState().pendingSaves.length, 1, '原待确认保留');
+  assert.equal(savedState().pendingSaves[0].opId, opId);
+  assert.equal(savedState().attempts.length, 1, '不得新增把次');
+  assert.equal(ledgerState().records.length, 2, '不得新增账本行');
+  assert.match(page.data.saveNotice, /待确认/);
+
+  // 另一个页面实例同样拒绝
+  const other = createPage();
+  await tapResult(other, 'send');
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(ledgerState().records.length, 2);
+
+  // 直接调用保存入口：不同操作 ID 也不行
+  const direct = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'attempt-direct-3')
+  );
+  assert.equal(direct.ok, false);
+  assert.equal(direct.alreadySent, true);
+  assert.equal(ledgerState().records.length, 2);
+
+  // 两个页面并发重试原操作 ID：只确认一次
+  const pageA = createPage();
+  const pageB = createPage();
+  pageA._saveDelayMs = 20;
+  pageB._saveDelayMs = 20;
+  await Promise.all([
+    pageA.retryPendingAttempt({ currentTarget: { dataset: { opId } } }),
+    pageB.retryPendingAttempt({ currentTarget: { dataset: { opId } } })
+  ]);
+  assert.equal(
+    ledgerState().records.filter(item => item.opId === opId).length,
+    1,
+    '同一操作 ID 只入账一次'
+  );
+  assert.equal(
+    savedState().attempts.filter(item => item.id === opId).length,
+    1,
+    '本地只保留一条完攀尝试'
+  );
+  assert.equal(savedState().pendingSaves.length, 0, '原待确认可清除');
+  assert.equal(ledgerState().records.length, 2, '重试复用同一操作，不重复入账');
+
+  // 确认后按已完攀处理：页面与直接入口都不能再新增
+  const after = createPage();
+  assert.equal(after.data.routeCompleted, true);
+  await tapResult(after, 'send');
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(ledgerState().records.length, 2);
+  const afterDirect = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'attempt-direct-4')
+  );
+  assert.equal(afterDirect.ok, false);
+  assert.equal(afterDirect.alreadySent, true);
+  assert.equal(ledgerState().records.length, 2);
+
+  // 取回的完攀与原把次归属正确
+  const confirmed = savedState().attempts.find(item => item.id === opId);
+  assert.ok(confirmed);
+  assert.equal(confirmed.result, 'send');
+  assert.equal(confirmed.sessionId, firstSessionId);
+  assert.equal(confirmed.routeId, ROUTE_BLUE);
+});
+
+test('T014-A2 落账前写失败：待确认保留，跨场次与直接入口都不新增，重试后只入账一次', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-01');
+  const firstSessionId = page.data.activeSession.id;
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+  assert.equal(ledgerState().records.length, 2);
+
+  // 落账前写失败：账本没有变化，客户端仍保留原待确认
+  wxLog.failKeys.add(LEDGER_KEY);
+  await tapResult(page, 'send');
+  const opId = page.data.pendingAttempts[0].opId;
+  assert.ok(opId);
+  assert.match(page.data.saveNotice, /账本写入失败/);
+  assert.equal(page.data.attempts.length, 2, '未确认的完攀不计入已保存');
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(ledgerState().records.length, 2, '落账失败时不入账');
+
+  // 跨场次另起操作
+  page.openSessionForm();
+  page.onDateChange({ detail: { value: '2026-11-01' } });
+  page.startSession();
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(savedState().pendingSaves.length, 1);
+
+  // 直接入口在落账仍失败时也不新增
+  const direct = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'attempt-direct-5')
+  );
+  assert.equal(direct.ok, false);
+  assert.equal(ledgerState().records.length, 2);
+
+  // 恢复写入后重试原操作：只新增一次完攀
+  wxLog.failKeys.delete(LEDGER_KEY);
+  tapSession(page, firstSessionId);
+  tapRoute(page, ROUTE_BLUE);
+  assert.equal(page.data.pendingAttempts.length, 1);
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(page.data.attempts[2].id, opId);
+  assert.equal(page.data.attempts[2].resultText, '完攀');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(ledgerState().records.length, 3);
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1
+  );
+  assert.equal(savedState().pendingSaves.length, 0);
+});
+
+test('T014-A2 已落账但本地确认写失败：保留待确认，重试取回同一个完攀且不重复入账', async () => {
+  const page = createPage();
+  page._saveDelayMs = 30;
+  tapStart(page, 0, '2026-11-01');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  await tapResult(page, 'fail');
+
+  const saving = page.recordAttempt({
+    currentTarget: { dataset: { result: 'send' } }
+  });
+  const opId = page.data.pendingAttempts[0].opId;
+  // 待确认已落盘后，只让客户端状态写入失败；模拟账本已入账。
+  wxLog.failKeys.add(STORE_KEY);
+  await saving;
+
+  assert.match(page.data.storageError, /本地保存失败/);
+  assert.match(page.data.saveNotice, /保存端已确认，但本地写入失败/);
+  assert.equal(page.data.attempts.length, 2, '本地未确认不得显示为已保存');
+  assert.equal(page.data.pendingAttempts.length, 1);
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(ledgerState().records.length, 3);
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1
+  );
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(savedState().attempts.length, 2);
+
+  // 本地未确认期间：另一个页面与直接入口都不重复入账
+  const other = createPage();
+  await tapResult(other, 'send');
+  assert.equal(ledgerState().records.length, 3);
+  const direct = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'attempt-direct-6')
+  );
+  assert.equal(direct.ok, false);
+  assert.equal(direct.alreadySent, true);
+  assert.equal(ledgerState().records.length, 3);
+
+  // 恢复本地写入后重试：取回同一个完攀，账本不重复
+  wxLog.failKeys.delete(STORE_KEY);
+  await retryPending(page, opId);
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(page.data.attempts[2].id, opId);
+  assert.equal(page.data.attempts[2].resultText, '完攀');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(ledgerState().records.length, 3, '重复确认不再入账');
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(savedState().attempts.length, 3);
+});
+
+test('T014-A2 落账前写失败时另起的重复完攀待确认会被撤销，原把次仍可恢复', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-01');
+  tapRoute(page, ROUTE_BLUE);
+
+  // 原把次：落账前写失败，账本里还没有这一把，只剩本地待确认。
+  wxLog.failKeys.add(LEDGER_KEY);
+  await tapResult(page, 'send');
+  const opId = page.data.pendingAttempts[0].opId;
+  assert.ok(opId);
+  assert.equal(ledgerState(), null, '落账失败时不写账本');
+  assert.equal(savedState().pendingSaves.length, 1);
+
+  // 另一个页面实例/旧客户端又留下一条同线路的完攀待确认（并发时可能各自先落盘）。
+  const concurrent = savedState();
+  concurrent.pendingSaves.push({
+    opId: 'attempt-duplicate-9',
+    seq: concurrent.nextAttemptSeq,
+    sessionId: concurrent.activeSessionId,
+    routeId: ROUTE_BLUE,
+    result: 'send',
+    note: '',
+    createdAt: new Date().toISOString()
+  });
+  concurrent.nextAttemptSeq += 1;
+  storage.set(STORE_KEY, JSON.stringify(concurrent));
+  const attemptsBefore = savedState().attempts.length;
+
+  // 派发这条重复待确认：保存端判为「完攀还在待确认」，本地撤销它，不落账、不新增把次。
+  const other = createPage();
+  await other.dispatchPending('attempt-duplicate-9');
+  assert.match(other.data.saveNotice, /待确认/);
+  assert.equal(ledgerState(), null, '重复待确认不入账');
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().pendingSaves.length, 1, '不永久滞留冲突待确认');
+  assert.equal(savedState().pendingSaves[0].opId, opId);
+
+  // 原把次仍可恢复：恢复账本写入后重试，只新增一次完攀。
+  wxLog.failKeys.delete(LEDGER_KEY);
+  await retryPending(page, opId);
+  assert.equal(page.data.pendingAttempts.length, 0);
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].id, opId);
+  assert.equal(page.data.attempts[0].resultText, '完攀');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(ledgerState().records.length, 1);
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1
+  );
+  assert.equal(savedState().pendingSaves.length, 0);
+});
+
+// ---- T014 / A3 ----
+test('T014-A3 同色同级、独立用户上下文与独立数据集都不误锁', async () => {
+  // 归属判定：用户、数据集、线路 ID 任一不同都不算同一条已完攀线路
+  const base = {
+    ownerId: trialProfile.TRIAL_OWNER_ID,
+    datasetId: trialProfile.TRIAL_DATASET_ID,
+    routeId: ROUTE_BLUE
+  };
+  assert.equal(store.isSameSendOwner(base, Object.assign({}, base)), true);
+  assert.equal(
+    store.isSameSendOwner(base, Object.assign({}, base, { ownerId: 'trial-user-local-b' })),
+    false
+  );
+  assert.equal(
+    store.isSameSendOwner(
+      base,
+      Object.assign({}, base, { datasetId: 'trial-dataset-local-9' })
+    ),
+    false
+  );
+  assert.equal(
+    store.isSameSendOwner(
+      base,
+      Object.assign({}, base, { routeId: ROUTE_BLUE_BALANCE })
+    ),
+    false
+  );
+
+  // 账本：归属只认当前试用用户与当前数据集，别的归属的完攀记录不牵连这条线
+  const foreignSend = (opId, extra) =>
+    Object.assign(
+      {
+        opId,
+        sessionId: 'session-1',
+        routeId: ROUTE_BLUE,
+        result: 'send',
+        note: '',
+        receivedAt: new Date().toISOString(),
+        climbType: '抱石',
+        ownerId: trialProfile.TRIAL_OWNER_ID,
+        datasetId: trialProfile.TRIAL_DATASET_ID
+      },
+      extra
+    );
+  storage.set(
+    LEDGER_KEY,
+    JSON.stringify({
+      version: 1,
+      records: [
+        foreignSend('op-other-owner', { ownerId: 'trial-user-local-b' }),
+        foreignSend('op-other-dataset', { datasetId: 'trial-dataset-local-9' })
+      ],
+      loseNextReceipt: false
+    })
+  );
+
+  // 同一条线路 ID，别的用户上下文或别的数据集不算这条线已完攀：可以正常入账
+  const allowed = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'op-current-1')
+  );
+  assert.equal(allowed.ok, true, '其他归属的旧记录不锁住当前上下文');
+  assert.equal(ledgerState().records.length, 3);
+
+  // 同一归属：不同操作 ID 的完攀与未完成都不再入账
+  const dupSend = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'op-current-2')
+  );
+  assert.equal(dupSend.ok, false);
+  assert.equal(dupSend.alreadySent, true);
+  const dupFail = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'fail', 'op-current-3')
+  );
+  assert.equal(dupFail.ok, false);
+  assert.equal(dupFail.alreadySent, true);
+  assert.equal(ledgerState().records.length, 3);
+
+  // 省略上下文（项目支持的旧请求形状）与伪造类型、伪造归属都不能绕过判定
+  const legacyShape = server.submitOperation({
+    opId: 'op-current-4',
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE,
+    result: 'fail',
+    note: ''
+  });
+  assert.equal(legacyShape.ok, false);
+  assert.equal(legacyShape.alreadySent, true, '遗漏上下文不能绕过完攀判定');
+  const forged = server.submitOperation(
+    Object.assign(submitContext(ROUTE_BLUE, 'send', 'op-current-5'), {
+      climbType: '先锋',
+      ownerId: 'trial-user-local-z',
+      datasetId: 'trial-dataset-local-8'
+    })
+  );
+  assert.equal(forged.ok, false);
+  assert.equal(forged.alreadySent, true, '伪造类型与归属不能绕过完攀判定');
+  assert.equal(ledgerState().records.length, 3);
+
+  // 被复制的操作 ID 换到另一条线路：只能拒绝，不能拿别人的记录当确认
+  const copied = server.submitOperation(
+    submitContext(ROUTE_BLUE_BALANCE, 'send', 'op-current-1')
+  );
+  assert.equal(copied.ok, false);
+  assert.equal(copied.opIdConflict, true);
+  assert.equal(copied.duplicate, undefined, '不得返回错误确认');
+  assert.equal(ledgerState().records.length, 3);
+
+  // 另一条同色同级线路仍有自己的独立完攀
+  const balance = server.submitOperation(
+    submitContext(ROUTE_BLUE_BALANCE, 'send', 'op-current-6')
+  );
+  assert.equal(balance.ok, true, '另一条同色同级线路独立完攀');
+  assert.equal(ledgerState().records.length, 4);
+
+  // 别的归属用过同一个操作 ID：同样只能拒绝，不能拿它当这一把的确认
+  const copiedForeign = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'send', 'op-other-dataset')
+  );
+  assert.equal(copiedForeign.ok, false);
+  assert.equal(copiedForeign.opIdConflict, true);
+  assert.equal(copiedForeign.duplicate, undefined);
+  assert.equal(ledgerState().records.length, 4);
+
+  // 重置后复用编号的独立数据集：账本清空，不被旧完攀锁住
+  resetHarness();
+  const page = createPage();
+  tapStart(page, 0);
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '重置前线路' } });
+  page.createQuickRoute();
+  assert.equal(page.data.selectedRoute.id, 'route-local-1');
+  await tapResult(page, 'send');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(ledgerState().records.length, 1);
+
+  const reset = await page.resetTrialData();
+  assert.equal(reset, true);
+  assert.equal(ledgerState().records.length, 0, '重置清空模拟账本');
+
+  tapStart(page, 0);
+  page.toggleQuickRoute();
+  page.onQuickRouteNameInput({ detail: { value: '重置后复用编号' } });
+  page.createQuickRoute();
+  assert.equal(
+    page.data.selectedRoute.id,
+    'route-local-1',
+    '重置后编号从头开始，可能复用旧编号'
+  );
+  await tapResult(page, 'send');
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(
+    ledgerState().records.filter(item => item.result === 'send').length,
+    1
+  );
+});
+
+// ---- T014 / A4 ----
+test('T014-A4 旧 V 级线路多条历史完攀原样只读、旧账本可读，绳攀完攀后可再记', async () => {
+  // 旧格式缓存：没有 climbType 的 V 级线路，历史已有三条完攀
+  const legacyState = store.createInitialState();
+  legacyState.sessions.push({
+    id: 'session-1',
+    seq: 1,
+    gymId: 'gym-chalkbox',
+    date: '2026-11-01',
+    createdAt: new Date().toISOString()
+  });
+  legacyState.nextSessionSeq = 2;
+  legacyState.activeSessionId = 'session-1';
+  legacyState.activeRouteId = ROUTE_BLUE;
+  [1, 2, 3].forEach(index => {
+    legacyState.attempts.push({
+      id: 'attempt-' + index,
+      seq: index,
+      sessionId: 'session-1',
+      routeId: ROUTE_BLUE,
+      result: 'send',
+      note: '历史第 ' + index + ' 把',
+      createdAt: new Date().toISOString()
+    });
+  });
+  legacyState.nextAttemptSeq = 4;
+  storage.set(STORE_KEY, JSON.stringify(legacyState));
+
+  const page = createPage();
+  assert.equal(page.data.loadError, '', '旧缓存仍可读');
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeClosed, true);
+  assert.equal(page.data.routeSendCount, 3, '历史多条完攀按原数目展示');
+  assert.ok(
+    savedState().routes.every(route => route.climbType === undefined),
+    '读取不补写类型，也不迁移'
+  );
+
+  // 共用状态判定可直接由页面之外复用
+  const completion = store.routeCompletion(savedState(), ROUTE_BLUE);
+  assert.equal(completion.known, true);
+  assert.equal(completion.isBoulder, true);
+  assert.equal(completion.sendCount, 3);
+  assert.equal(completion.completed, true);
+  assert.equal(completion.closed, true);
+  assert.equal(completion.canRecord, false);
+
+  // 之后无法新增（完攀或未完成）
+  await tapResult(page, 'send');
+  await tapResult(page, 'fail');
+  assert.equal(savedState().attempts.length, 3);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(ledgerState(), null, '被拒绝的提交不得写账本');
+
+  // 旧账本（没有类型 / 归属字段）仍可读，不判定损坏，也不丢操作 ID 幂等
+  storage.set(
+    LEDGER_KEY,
+    JSON.stringify({
+      version: 1,
+      records: [
+        {
+          opId: 'old-op-1',
+          sessionId: 'session-1',
+          routeId: ROUTE_BLUE,
+          result: 'send',
+          note: '',
+          receivedAt: new Date().toISOString()
+        }
+      ],
+      loseNextReceipt: false
+    })
+  );
+  const loadedLedger = server.loadLedger();
+  assert.equal(loadedLedger.error, '', '旧账本可兼容读取');
+  assert.equal(loadedLedger.ledger.records.length, 1);
+
+  // 类型不从记录里读：缺类型的旧 V 级线路按试用数据里的权威线路判成抱石，
+  // 所以这条旧账本记录照样挡住同一线路的新操作，同 op 重放则仍取回原记录。
+  const legacyBlocked = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'fail', 'old-op-2')
+  );
+  assert.equal(legacyBlocked.ok, false);
+  assert.equal(legacyBlocked.alreadySent, true);
+  const legacyReplay = server.submitOperation(
+    submitContext(ROUTE_BLUE, 'fail', 'old-op-1')
+  );
+  assert.equal(legacyReplay.ok, true);
+  assert.equal(legacyReplay.duplicate, true, '旧账本的同一操作 ID 仍幂等');
+  assert.equal(ledgerState().records.length, 1);
+
+  // 绳攀：完攀后可再记，同一操作 ID 仍幂等
+  resetHarness();
+  const ropePage = createPage();
+  tapStart(ropePage, 0);
+  ropePage.toggleQuickRoute();
+  ropePage.onQuickRouteNameInput({ detail: { value: '顶绳线' } });
+  ropePage.onQuickRouteTypeChange({
+    detail: { value: ropePage.data.quickRouteTypes.indexOf('顶绳') }
+  });
+  ropePage.onQuickRouteGradeChange({
+    detail: { value: ropePage.data.quickRouteGrades.indexOf('5.10a') }
+  });
+  ropePage.createQuickRoute();
+  const ropeId = ropePage.data.selectedRoute.id;
+  assert.equal(ropePage.data.selectedRoute.climbType, '顶绳');
+
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.routeCompleted, false, '顶绳不因完攀关闭入口');
+  assert.equal(ropePage.data.routeClosed, false);
+  assert.equal(ropePage.data.routeRepeatable, true);
+  assert.equal(ropePage.data.routeSendCount, 1);
+  const firstRopeSendId = ropePage.data.attempts[0].id;
+
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.attempts.length, 2, '顶绳完攀后可再记');
+  assert.equal(
+    ledgerState().records.filter(item => item.routeId === ropeId).length,
+    2
+  );
+
+  const dup = server.submitOperation({
+    opId: firstRopeSendId,
+    sessionId: ropePage.data.activeSession.id,
+    routeId: ropeId,
+    result: 'send',
+    note: '',
+    climbType: '顶绳',
+    ownerId: trialProfile.TRIAL_OWNER_ID,
+    datasetId: trialProfile.TRIAL_DATASET_ID
+  });
+  assert.equal(dup.ok, true);
+  assert.equal(dup.duplicate, true, '相同操作 ID 保持幂等重试');
+  assert.equal(
+    ledgerState().records.filter(item => item.routeId === ropeId).length,
+    2
+  );
+
+  // 先锋同理：完攀后可再记，不误锁
+  ropePage.toggleQuickRoute();
+  ropePage.onQuickRouteNameInput({ detail: { value: '先锋线' } });
+  ropePage.onQuickRouteTypeChange({
+    detail: { value: ropePage.data.quickRouteTypes.indexOf('先锋') }
+  });
+  ropePage.onQuickRouteGradeChange({
+    detail: { value: ropePage.data.quickRouteGrades.indexOf('5.11b') }
+  });
+  ropePage.createQuickRoute();
+  assert.equal(ropePage.data.selectedRoute.climbType, '先锋');
+  await tapResult(ropePage, 'send');
+  await tapResult(ropePage, 'send');
+  assert.equal(ropePage.data.attempts.length, 2);
+  assert.equal(ropePage.data.routeClosed, false);
+  assert.equal(ropePage.data.routeSendCount, 2);
+});
+
+// ---- T014 / A5 ----
+test('T014-A5 直接保存入口按权威线路与当前上下文判定：旧签名、谎称类型与复制 opId 都不能入账', async () => {
+  // 与试用探针同一套内存数据：真实线路 route-chalkbox-blue-dyn 是缺 climbType 的旧 V 级线路。
+  const seedProbe = extra => {
+    const state = store.createInitialState();
+    const route = state.routes.find(item => item.id === ROUTE_BLUE);
+    state.sessions.push({
+      id: 'session-probe',
+      seq: 1,
+      gymId: route.gymId,
+      date: '2026-11-09',
+      createdAt: '2026-11-09T08:00:00Z'
+    });
+    state.nextSessionSeq = 2;
+    state.activeSessionId = 'session-probe';
+    state.activeRouteId = route.id;
+    Object.assign(state, extra || {});
+    storage.set(STORE_KEY, JSON.stringify(state));
+    return state;
+  };
+
+  const state = seedProbe();
+  const route = state.routes.find(item => item.id === ROUTE_BLUE);
+  assert.equal(route.climbType, undefined, '夹具是缺类型的旧 V 级线路');
+  assert.equal(
+    routeRules.isBoulderRoute(route),
+    true,
+    '缺类型的旧 V 级线路按权威线路判成抱石'
+  );
+
+  const common = {
+    sessionId: 'session-probe',
+    routeId: ROUTE_BLUE,
+    result: 'send',
+    note: ''
+  };
+
+  // 1) 先正常完攀一次入账
+  const first = server.submitOperation({ ...common, opId: 'attempt-probe-1' });
+  assert.equal(first.ok, true);
+  assert.equal(ledgerState().records.length, 1);
+  // 账本里的归属与类型取权威上下文，不照抄请求里可省略、可伪造的声明
+  assert.equal(ledgerState().records[0].climbType, '抱石');
+  assert.equal(ledgerState().records[0].ownerId, trialProfile.TRIAL_OWNER_ID);
+  assert.equal(ledgerState().records[0].datasetId, state.datasetId);
+
+  // 2) 旧签名（只有 sessionId/routeId/result/note/opId）不能借省略上下文再入账一份
+  const legacy = server.submitOperation({ ...common, opId: 'attempt-probe-2' });
+  assert.equal(legacy.ok, false);
+  assert.equal(legacy.alreadySent, true);
+
+  // 3) 谎称先锋的当前请求同样被拒：类型只看权威线路
+  const mislabeled = server.submitOperation({
+    ...common,
+    result: 'fail',
+    climbType: '先锋',
+    opId: 'attempt-probe-3'
+  });
+  assert.equal(mislabeled.ok, false);
+  assert.equal(mislabeled.alreadySent, true);
+  assert.equal(ledgerState().records.length, 1, '账本仍是 1 行');
+  assert.equal(savedState().attempts.length, 0, '被拒的请求不进试用数据');
+
+  // 4) 同一原 op 重放（已入账、本地还没确认）取回原记录，不新增行
+  const replay = server.submitOperation({ ...common, opId: 'attempt-probe-1' });
+  assert.equal(replay.ok, true);
+  assert.equal(replay.duplicate, true);
+  assert.equal(replay.record.opId, 'attempt-probe-1');
+  assert.equal(replay.record.result, 'send');
+  assert.equal(ledgerState().records.length, 1);
+
+  // 5) 复制 opId 到另一条线路：不能把别条线的记录当成这一把的确认
+  const copied = server.submitOperation({
+    ...common,
+    routeId: ROUTE_BLUE_BALANCE,
+    opId: 'attempt-probe-1'
+  });
+  assert.equal(copied.ok, false);
+  assert.equal(copied.opIdConflict, true);
+  assert.equal(ledgerState().records.length, 1);
+
+  // 6) 已入账但本地确认写失败：本地仍有原待确认，原 op 重放取回同一结果，
+  //    别的操作 ID 仍被拒（原把次可恢复）
+  const unconfirmed = seedProbe({
+    nextAttemptSeq: 2,
+    pendingSaves: [
+      {
+        opId: 'attempt-probe-1',
+        seq: 1,
+        sessionId: 'session-probe',
+        routeId: ROUTE_BLUE,
+        result: 'send',
+        note: '',
+        createdAt: '2026-11-09T08:01:00Z'
+      }
+    ]
+  });
+  assert.ok(unconfirmed.pendingSaves.length === 1);
+  const replayUnconfirmed = server.submitOperation({
+    ...common,
+    opId: 'attempt-probe-1'
+  });
+  assert.equal(replayUnconfirmed.ok, true);
+  assert.equal(replayUnconfirmed.duplicate, true);
+  const otherOp = server.submitOperation({ ...common, opId: 'attempt-probe-4' });
+  assert.equal(otherOp.ok, false);
+  assert.equal(otherOp.alreadySent, true);
+  assert.equal(ledgerState().records.length, 1);
+
+  // 7) 只有待确认、账本还没落账（落账前写失败）：新操作 ID 被拒并指向原把次，
+  //    原把次自己仍能落账
+  resetHarness();
+  seedProbe({
+    nextAttemptSeq: 2,
+    pendingSaves: [
+      {
+        opId: 'attempt-pending-1',
+        seq: 1,
+        sessionId: 'session-probe',
+        routeId: ROUTE_BLUE,
+        result: 'send',
+        note: '',
+        createdAt: '2026-11-09T08:02:00Z'
+      }
+    ]
+  });
+  const blockedByPending = server.submitOperation({
+    ...common,
+    opId: 'attempt-pending-2'
+  });
+  assert.equal(blockedByPending.ok, false);
+  assert.equal(blockedByPending.pendingSend, true);
+  assert.equal(ledgerState(), null, '被拒的提交不得写账本');
+  const ownRetry = server.submitOperation({ ...common, opId: 'attempt-pending-1' });
+  assert.equal(ownRetry.ok, true, '原把次仍可落账');
+  assert.equal(ownRetry.duplicate, false);
+  assert.equal(ledgerState().records.length, 1);
+
+  // 8) 试用数据里已确认完攀、账本为空：直接入口同样拒绝新操作
+  resetHarness();
+  seedProbe({
+    nextAttemptSeq: 2,
+    attempts: [
+      {
+        id: 'attempt-confirmed-1',
+        seq: 1,
+        sessionId: 'session-probe',
+        routeId: ROUTE_BLUE,
+        result: 'send',
+        note: '权威数据里已确认',
+        createdAt: '2026-11-09T08:03:00Z'
+      }
+    ]
+  });
+  const blockedByConfirmed = server.submitOperation({
+    ...common,
+    opId: 'attempt-confirmed-2'
+  });
+  assert.equal(blockedByConfirmed.ok, false);
+  assert.equal(blockedByConfirmed.alreadySent, true);
+  assert.equal(ledgerState(), null, '被拒的提交不得写账本');
 });

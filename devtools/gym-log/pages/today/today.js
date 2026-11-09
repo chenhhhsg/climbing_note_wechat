@@ -7,6 +7,10 @@
  * 每次点结果先落一条待确认操作，再交给本地模拟保存端按操作 ID 幂等入账；
  * 保存中、回执丢失和重试都保留原条目，不会重复生成尝试。
  *
+ * 抱石线路按「首次完攀」记录：一旦这条抱石线已完攀（确认或待确认），
+ * 跨场次、跨页面、不同操作 ID 都不能再新增把次或待确认项；顶绳和先锋可重复完攀。
+ * 判定复用 store.routeCompletion 与 route-rules 的同一份规则。
+ *
  * 场次、线路、尝试、待确认操作和当前选择都写入专用本地缓存键，
  * 重新进入页面时可以读回同一场次、线路、备注和待重试操作。
  */
@@ -21,7 +25,8 @@ const {
   isDateString,
   createInitialState,
   loadState,
-  saveState
+  saveState,
+  routeCompletion
 } = require('../../utils/store.js');
 const {
   CLIMB_TYPES,
@@ -124,6 +129,13 @@ Page({
     // 本场本线路还有待确认时，结果按钮锁定，避免把一次攀爬记成两个待确认。
     resultLocked: false,
     resultLockHint: '',
+    // 当前线路的完攀状态（复用 store.routeCompletion）：
+    // 抱石首次完攀后 routeClosed 为真，全部新增入口关闭；T015 据此显示「已完攀」。
+    routeCompleted: false,
+    routeClosed: false,
+    routeRepeatable: true,
+    routeSendCount: 0,
+    routeStateText: '',
     saveNotice: '',
 
     // 弱网演练：只影响下一次保存，且只存在于本试用工程。
@@ -458,6 +470,11 @@ Page({
     // 同一场次同一线路尚有保存中/回执丢失的操作时，不允许再派发新的一把。
     const resultLocked = pendingAttempts.length > 0;
 
+    // 当前线路的完攀状态：抱石首次完攀（含待确认）后关闭全部新增入口。
+    const completion = selectedRoute
+      ? routeCompletion(state, selectedRoute.id)
+      : null;
+
     // 照片展示是叠加在尝试视图上的独立状态，不改变线路与尝试本身。
     this._baseRoutes = routes;
     this._baseSelectedRoute = selectedRoute;
@@ -479,6 +496,16 @@ Page({
       resultLockHint: resultLocked
         ? '上一把还没确认：先在待确认行点「重试保存」，确认后再记下一把'
         : '',
+      routeCompleted: Boolean(completion && completion.completed),
+      routeClosed: Boolean(completion && completion.closed),
+      routeRepeatable: !completion || completion.repeatable,
+      routeSendCount: completion ? completion.sendCount : 0,
+      routeStateText:
+        completion && completion.completed
+          ? '已完攀'
+          : completion && completion.hasPendingSend
+            ? '完攀待确认'
+            : '',
       routePhoto: selectedRoute ? this.photoView(selectedRoute.id) : null,
       noteEditor
     });
@@ -1009,6 +1036,20 @@ Page({
       return Promise.resolve();
     }
 
+    // 抱石首次完攀后关闭全部新增入口：跨场次、跨页面、不同操作 ID 都不再新增把次。
+    // 已确认完攀与仍在待确认的完攀都算封闭；顶绳和先锋可重复，不受此限。
+    const completion = routeCompletion(current, route.id);
+    if (completion.closed) {
+      this.state = current;
+      this.setData({
+        saveNotice: completion.completed
+          ? '这条抱石线路已完攀，只能回看，不能再记新的把次。'
+          : '这条抱石线路的完攀还在待确认：请先在原把次上重试保存；确认后只能回看。'
+      });
+      this.refreshView();
+      return Promise.resolve();
+    }
+
     const blocking = current.pendingSaves.find(
       op => op.sessionId === session.id && op.routeId === route.id
     );
@@ -1079,6 +1120,8 @@ Page({
       const deliver = () => {
         let outcome;
         try {
+          // 只提交这一把操作本身：线路类型与归属由保存端按试用数据里的权威线路
+          // 和当前上下文判定，页面不自带（可省略、可伪造的）声明。
           outcome = trialSaveServer.submitOperation({
             opId: opSnapshot.opId,
             sessionId: opSnapshot.sessionId,
@@ -1124,6 +1167,7 @@ Page({
   /**
    * 回执到达时先读最新持久状态，再只核销/合并这一个 opId：
    * - 成功：移除该待确认（若还在），补一条同 ID 尝试（若还没有）；
+   * - 这条线路已完攀或完攀还在待确认：撤销本条重复的待确认（见 settleConflictingPending）；
    * - 失败：不改动缓存，只保留该待确认并提示重试；
    * - 已被其他实例核销：只同步显示，不重复写入。
    * 新场次、备注、其他尝试和其他序号都不由本回调覆盖。
@@ -1140,6 +1184,26 @@ Page({
     const latest = loaded.state;
     const pending = latest.pendingSaves.find(item => item.opId === opId) || null;
     const confirmed = latest.attempts.find(item => item.id === opId) || null;
+
+    // 保存端已有该抱石线路的完攀：不同操作 ID 也不能重复入账。
+    // 这条待确认不再保留，按最新状态刷新并说明该线路已完攀。
+    if (outcome && outcome.alreadySent) {
+      return this.settleConflictingPending(
+        latest,
+        opId,
+        '这条抱石线路已完攀（保存端已有记录），本条待确认已撤销，只能回看。'
+      );
+    }
+
+    // 同一个抱石线路的完攀还在别处待确认：这条重复的待确认同样不留，
+    // 让用户回到原把次重试，不把一次攀爬记成两条待确认。
+    if (outcome && outcome.pendingSend) {
+      return this.settleConflictingPending(
+        latest,
+        opId,
+        '这条抱石线路的完攀仍在待确认：请先在原把次上重试保存，本条待确认已撤销。'
+      );
+    }
 
     if (outcome && outcome.ok) {
       // 另一个页面实例已经按同一操作 ID 核销：旧回执只同步显示。
@@ -1224,6 +1288,32 @@ Page({
     // 旧失败回执到达前，另一个实例已经确认成功：按成功状态显示，不报失败。
     delete this._pendingFailures[opId];
     this.setData({ saveNotice: '' });
+  },
+
+  /**
+   * 保存端判定这条待确认与这条线路的完攀冲突（已完攀，或完攀还在别处待确认）：
+   * 只撤销本条待确认，其他场次、备注、尝试和序号都不动。
+   * 撤销本身写失败时保留该待确认并提示再试，不静默丢掉本地记录。
+   */
+  settleConflictingPending(latest, opId, notice) {
+    const settled = clone(latest);
+    settled.pendingSaves = settled.pendingSaves.filter(
+      item => item.opId !== opId
+    );
+    delete this._pendingFailures[opId];
+
+    const cleaned = saveState(settled);
+    if (!cleaned.ok) {
+      this.state = latest;
+      this.setData({
+        storageError: cleaned.error,
+        saveNotice: notice + '本地撤销尚未写入，可再次重试保存。'
+      });
+      return;
+    }
+
+    this.state = settled;
+    this.setData({ storageError: '', saveNotice: notice });
   },
 
   /**

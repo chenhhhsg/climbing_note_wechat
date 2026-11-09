@@ -4,6 +4,7 @@
  * 只读写专用缓存键，不读取正式工程的记录，也不访问云环境。
  * 岩馆与线路来自虚构样例；用户新建的线路、场次和尝试都保存在本机。
  * 所有 ID 一经创建就固定下来，用于区分同色同级的线路和跨天回看。
+ * 抱石首次完攀的共用判定见 routeCompletion；顶绳和先锋可重复完攀。
  */
 const { TRIAL_DATASET_ID, isTrialDatasetId } = require('./trial-profile.js');
 const routeRules = require('./route-rules.js');
@@ -325,6 +326,65 @@ function saveState(state) {
   }
 }
 
+/**
+ * 一条线路的完攀状态，供今日页与详情页共用（T015 直接复用）。
+ *
+ * 归属按「当前试用用户 + 当前数据集 + 长期线路 ID」判断：这里的状态本身就是当前
+ * 数据集的快照；用户与数据集标识同时写入模拟账本，两侧执行同一份规则。
+ * - 抱石（含缺 climbType 的旧 V 级线路）首次完攀后不再新增任何把次；
+ * - 历史已有多条完攀时 sendCount 保持原数目，closed 仍为真；
+ * - 顶绳和先锋可以重复完攀，不因此关闭入口。
+ * 只读计算，不写缓存、不迁移旧数据、不生成逐把明细。
+ */
+function routeCompletion(state, routeId) {
+  const unknown = {
+    known: false,
+    routeId: routeId || '',
+    isBoulder: false,
+    repeatable: true,
+    sendCount: 0,
+    pendingSendCount: 0,
+    hasSend: false,
+    hasPendingSend: false,
+    completed: false,
+    closed: false,
+    canRecord: true
+  };
+
+  const route =
+    state && Array.isArray(state.routes)
+      ? state.routes.find(item => item.id === routeId)
+      : null;
+  if (!route) return unknown;
+
+  const isBoulder = routeRules.isBoulderRoute(route);
+  const attempts = (state.attempts || []).filter(
+    item => item.routeId === route.id
+  );
+  const sends = attempts.filter(item => item.result === 'send');
+  const pendingSends = (state.pendingSaves || []).filter(
+    item => item.routeId === route.id && item.result === 'send'
+  );
+  const hasSend = sends.length > 0;
+  const hasPendingSend = pendingSends.length > 0;
+  // 抱石首次完攀：已确认或仍在待确认都关闭全部新增入口；顶绳、先锋可重复。
+  const closed = isBoulder && (hasSend || hasPendingSend);
+
+  return {
+    known: true,
+    routeId: route.id,
+    isBoulder,
+    repeatable: !isBoulder,
+    sendCount: sends.length,
+    pendingSendCount: pendingSends.length,
+    hasSend,
+    hasPendingSend,
+    completed: isBoulder && hasSend,
+    closed,
+    canRecord: !closed
+  };
+}
+
 module.exports = {
   STORE_KEY,
   STATE_VERSION,
@@ -344,5 +404,8 @@ module.exports = {
   createInitialState,
   normalizeState,
   loadState,
-  saveState
+  saveState,
+  routeCompletion,
+  isBoulderRoute: routeRules.isBoulderRoute,
+  isSameSendOwner: routeRules.isSameSendOwner
 };
