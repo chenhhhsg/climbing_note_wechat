@@ -39,11 +39,12 @@
     </button>
   </view>
 
-  <!-- 最近记录区域（旧云记录，与本机训练分开） -->
+  <!-- 旧记录区域（云端旧汇总，只读回看；与本机训练分开） -->
   <view class="section">
     <view class="section-header">
-      <text class="section-title">最近记录</text>
-      <text class="section-more" bindtap="goToList">查看全部 ></text>
+      <text class="section-title">旧记录</text>
+      <text class="section-more" style="flex: 1; margin-left: 16rpx; font-size: 24rpx;">云端旧汇总 · 只读回看</text>
+      <text class="section-more" bindtap="goToList">旧记录全部 ></text>
     </view>
 
     <!-- 旧云读取失败：只影响本区，训练入口照常可用 -->
@@ -59,8 +60,8 @@
     <!-- 无数据状态 -->
     <view wx:elif="{{isEmpty}}" class="empty-state">
       <text class="empty-icon">🧗</text>
-      <text class="empty-text">还没有攀岩记录</text>
-      <text class="empty-hint">点击上方按钮开始记录吧</text>
+      <text class="empty-text">还没有旧记录</text>
+      <text class="empty-hint">旧云端汇总为空；本机训练不受影响</text>
     </view>
 
     <!-- 记录列表 -->

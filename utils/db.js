@@ -7,10 +7,24 @@
  * 的其他模块照常加载，本机档案照常读写；只有真正发起旧云请求时才在这里拿到
  * 可判别的失败（错误码 `CLOUD_UNAVAILABLE`）。对外的调用契约与错误语义不变：
  * 每个方法都返回 Promise，失败以 reject 呈现，不改为同步抛出。
+ *
+ * T018：旧记录回看只读。这里只加两个纯函数，都不发起请求、不写任何数据：
+ * - describeCloudError：把旧云读取失败分成「云环境不可用 / 没有权限 / 记录不存在 /
+ *   读取失败」四类，页面据此显示有区别的状态，而不是笼统一句「加载失败」；
+ * - legacyRecordView：按原字段（`date`、`location`、`climbType`、`grade`、`status`、
+ *   `attempts`、`notes`、`images`）给出只读视图。已知 `climbing_sessions.routes[]`
+ *   旧形状只保留原记录与原有明细的存在事实，不拆成逐把、不按同色同级猜线路、
+ *   不计入本机统计，也不向旧库写回。
  */
 
 const COLLECTION = 'climbing_records';
 const CLOUD_UNAVAILABLE = 'CLOUD_UNAVAILABLE';
+// 旧云失败的四个可区分类别（describeCloudError 的返回值）。
+const CLOUD_KINDS = ['unavailable', 'denied', 'not-found', 'failed'];
+// CloudBase 文档化的错误码：-502003 数据库权限不足；-502004 文档不存在。
+// 未列出的错误码不猜类别，落到 failed，由页面给出通用重试入口。
+const DENIED_ERR_CODES = [-502003];
+const NOT_FOUND_ERR_CODES = [-502004];
 
 let cachedDb = null;
 let cachedCollection = null;
@@ -22,6 +36,165 @@ function cloudUnavailable(message) {
   const error = new Error(message || '云开发不可用，旧云记录暂不可读');
   error.code = CLOUD_UNAVAILABLE;
   return error;
+}
+
+function errorText(error) {
+  if (!error) return '未知错误';
+  if (typeof error === 'string') return error;
+  return error.errMsg || error.message || String(error);
+}
+
+function errorCodeOf(error) {
+  if (!error || typeof error !== 'object') return NaN;
+  if (error.errCode !== undefined && error.errCode !== null) return Number(error.errCode);
+  if (typeof error.code !== 'number') return NaN;
+  return error.code;
+}
+
+/**
+ * 旧云读取失败的类别：只做只读判别，不重试、不改写、不换集合。
+ * 返回 'unavailable' | 'denied' | 'not-found' | 'failed'。
+ */
+function classifyCloudError(error) {
+  if (error && error.code === CLOUD_UNAVAILABLE) return 'unavailable';
+
+  const errCode = errorCodeOf(error);
+  if (Number.isFinite(errCode) && DENIED_ERR_CODES.indexOf(errCode) !== -1) return 'denied';
+  if (Number.isFinite(errCode) && NOT_FOUND_ERR_CODES.indexOf(errCode) !== -1) return 'not-found';
+
+  // errCode 也可能是文本码（例如 DATABASE_PERMISSION_DENIED），一并参与判别。
+  const rawCode = error && typeof error.errCode === 'string' ? error.errCode : '';
+  const text = errorText(error) + ' ' + rawCode;
+  if (/permission|denied|unauthorized|无权限|权限不足|未授权/i.test(text)) return 'denied';
+  if (/not exist|does not exist|不存在/i.test(text)) return 'not-found';
+  return 'failed';
+}
+
+// 四类状态各自给页面用的标题与说明；都写明本机训练不受影响、不写回旧库。
+const CLOUD_ERROR_VIEW = {
+  unavailable: {
+    title: '云环境不可用',
+    hint: '旧记录暂不可读；本机训练历史、线路详情与继续训练不受影响。'
+  },
+  denied: {
+    title: '没有访问旧记录的权限',
+    hint: '旧记录暂不可读；本机训练历史、线路详情与继续训练不受影响。'
+  },
+  'not-found': {
+    title: '这条旧记录不存在',
+    hint: '旧记录可能已被删除或不属于当前账号；本机训练历史不受影响。'
+  },
+  failed: {
+    title: '读取旧记录失败',
+    hint: '请检查网络后重试；本机训练历史、线路详情与继续训练不受影响。'
+  }
+};
+
+/**
+ * 页面用的旧云读取失败视图：{ kind, title, hint, message }。
+ * message 只供日志与测试，页面显示 title / hint。
+ */
+function describeCloudError(error) {
+  const kind = classifyCloudError(error);
+  const view = CLOUD_ERROR_VIEW[kind] || CLOUD_ERROR_VIEW.failed;
+  return { kind: kind, title: view.title, hint: view.hint, message: errorText(error) };
+}
+
+function hasText(value) {
+  return typeof value === 'string' && value.length > 0;
+}
+
+/**
+ * 旧记录的次数：只接受非负整数（也接受等值的数字字符串），其余一律返回 null。
+ * 不猜、不补、不把「尝试 5 次」拆成逐把，也不按同色同级归并。
+ */
+function legacyAttemptCount(value) {
+  if (Number.isInteger(value) && value >= 0) return value;
+  if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim());
+  return null;
+}
+
+const LEGACY_SUMMARY_HINT = '旧汇总按原记录只读显示：不拆分逐次尝试、不计入本机训练统计、不向旧库写回。';
+const LEGACY_DETAIL_HINT = '这条旧记录自带明细结构：按原结构只读保留，不拆成逐把、不计入本机训练统计。';
+
+/**
+ * 旧记录的只读视图（T018）：只取原字段，缺失就是缺失，不伪造。
+ *
+ * 返回 { present, recordId, date, location, climbType, grade, status, attempts,
+ *        attemptsText, notes, images, summaryText, hasEmbeddedRoutes,
+ *        embeddedRouteCount, readOnlyHint }。
+ * - present:false 表示这次真的没有旧记录（空库、记录不存在或字段不可识别）；
+ * - routes[] 是已知的旧明细形状：只报数量并说明原样保留，不拆成逐把。
+ */
+function legacyRecordView(record) {
+  const empty = {
+    present: false,
+    recordId: '',
+    date: '',
+    location: '',
+    climbType: '',
+    grade: '',
+    status: '',
+    attempts: null,
+    attemptsText: '',
+    notes: '',
+    images: [],
+    summaryText: '',
+    hasEmbeddedRoutes: false,
+    embeddedRouteCount: 0,
+    readOnlyHint: LEGACY_SUMMARY_HINT
+  };
+  if (!record || typeof record !== 'object' || Array.isArray(record)) return empty;
+
+  const attempts = legacyAttemptCount(record.attempts);
+  const status = hasText(record.status) ? record.status : '';
+  const grade = hasText(record.grade) ? record.grade : '';
+  const climbType = hasText(record.climbType) ? record.climbType : '';
+  const images = Array.isArray(record.images)
+    ? record.images.filter(item => hasText(item))
+    : [];
+  const embeddedRoutes = Array.isArray(record.routes) ? record.routes : [];
+  const hasEmbeddedRoutes = embeddedRoutes.length > 0;
+
+  // 一个可识别的字段都没有（例如空对象）：这次没有可回看的旧记录，按空结果处理，
+  // 不伪造字段、不补 0，也不把空壳当成一条汇总。
+  const recognizable =
+    hasText(record._id) ||
+    hasText(record.date) ||
+    hasText(record.location) ||
+    hasText(record.climbType) ||
+    hasText(record.grade) ||
+    hasText(record.status) ||
+    hasText(record.notes) ||
+    attempts !== null ||
+    images.length > 0 ||
+    hasEmbeddedRoutes;
+  if (!recognizable) return empty;
+
+  const summaryParts = [];
+  if (grade) summaryParts.push(grade);
+  if (attempts !== null) summaryParts.push('尝试 ' + attempts + ' 次');
+  if (status) summaryParts.push(status);
+  const summaryText = summaryParts.length > 0 ? summaryParts.join(' · ') : '旧记录（原字段为空）';
+
+  return {
+    present: true,
+    recordId: hasText(record._id) ? record._id : '',
+    date: hasText(record.date) ? record.date : '',
+    location: hasText(record.location) ? record.location : '',
+    climbType: climbType,
+    grade: grade,
+    status: status,
+    attempts: attempts,
+    // 「尝试 5 次、完成」只显示一条历史汇总；没有次数就不显示次数，不补 0 也不拆把。
+    attemptsText: attempts === null ? '' : attempts + ' 次',
+    notes: hasText(record.notes) ? record.notes : '',
+    images: images.slice(),
+    summaryText: summaryText,
+    hasEmbeddedRoutes: hasEmbeddedRoutes,
+    embeddedRouteCount: embeddedRoutes.length,
+    readOnlyHint: hasEmbeddedRoutes ? LEGACY_DETAIL_HINT : LEGACY_SUMMARY_HINT
+  };
 }
 
 /**
@@ -172,5 +345,14 @@ module.exports = {
   deleteImage,
   // 便于页面与测试识别「云不可用」这一类可判别失败。
   CLOUD_UNAVAILABLE,
-  cloudUnavailable
+  cloudUnavailable,
+  // T018：旧记录只读回看用的纯函数（不发请求、不写数据）。
+  CLOUD_KINDS,
+  DENIED_ERR_CODES,
+  NOT_FOUND_ERR_CODES,
+  LEGACY_SUMMARY_HINT,
+  LEGACY_DETAIL_HINT,
+  classifyCloudError,
+  describeCloudError,
+  legacyRecordView
 };

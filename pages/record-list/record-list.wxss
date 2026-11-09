@@ -25,7 +25,14 @@
   font-size: 32rpx;
   color: #666666;
   display: block;
-  margin-bottom: 40rpx;
+  margin-bottom: 16rpx;
+}
+
+.empty-hint {
+  font-size: 24rpx;
+  color: #999999;
+  display: block;
+  margin-bottom: 30rpx;
 }
 
 .btn-add {
@@ -52,7 +59,14 @@
   font-size: 30rpx;
   color: #666666;
   display: block;
-  margin-bottom: 40rpx;
+  margin-bottom: 16rpx;
+}
+
+.error-hint {
+  font-size: 24rpx;
+  color: #999999;
+  display: block;
+  margin-bottom: 30rpx;
 }
 
 .btn-retry {
@@ -224,4 +238,117 @@
   font-size: 50rpx;
   color: #ffffff;
   font-weight: bold;
+}
+
+/* 分区标题（本机训练历史 / 旧记录） */
+.section-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 20rpx;
+}
+
+.section-title {
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.section-hint {
+  font-size: 24rpx;
+  color: #999999;
+}
+
+/* 本机训练历史（T018） */
+.local-history {
+  margin-bottom: 40rpx;
+}
+
+.local-empty {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 40rpx 30rpx;
+  text-align: center;
+}
+
+.local-empty-text {
+  display: block;
+  font-size: 30rpx;
+  color: #666666;
+  margin-bottom: 12rpx;
+}
+
+.local-empty-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #999999;
+}
+
+.local-route-card {
+  background-color: #ffffff;
+  border-radius: 16rpx;
+  padding: 26rpx;
+  margin-bottom: 16rpx;
+  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.05);
+}
+
+.local-route-main {
+  display: flex;
+  align-items: center;
+}
+
+.local-route-swatch {
+  width: 24rpx;
+  height: 24rpx;
+  border-radius: 50%;
+  margin-right: 16rpx;
+}
+
+.local-route-info {
+  flex: 1;
+}
+
+.local-route-name {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.local-route-meta {
+  display: block;
+  font-size: 24rpx;
+  color: #666666;
+  margin-top: 4rpx;
+}
+
+.local-route-gym {
+  display: block;
+  font-size: 24rpx;
+  color: #999999;
+  margin-top: 4rpx;
+}
+
+.local-route-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-top: 16rpx;
+  padding-top: 16rpx;
+  border-top: 1rpx solid #f0f0f0;
+}
+
+.local-route-last {
+  font-size: 24rpx;
+  color: #666666;
+}
+
+.local-route-count {
+  font-size: 24rpx;
+  color: #2c3e50;
+}
+
+/* 旧记录（云汇总，只读回看） */
+.legacy-section {
+  margin-bottom: 40rpx;
 }

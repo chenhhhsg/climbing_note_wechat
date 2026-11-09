@@ -28,6 +28,12 @@
  *
  * 抱石沿用 v0.3 语义：已确认完攀后不再新增把次，只能按原把次显式「改为未完成」——
  * 只翻那一把的 result，把数、ID、序号、场次与备注都不变；顶绳和先锋可重复完攀。
+ *
+ * T018 在本层加的是「回看」与「今天再记」两件事，都不新增数据模型：
+ *   routeHistory / routesWithHistory   跨日按本地日期与场次分组的只读回看；
+ *   resumeRouteToday / chooseRouteSession  用户明确点按「再记」时才改当前场次与线路
+ *   （同日多场先让用户显式选一场，原归属不动）。打开历史本身只读，不建场次、不改数据，
+ *   旧云记录与旧 climbing_sessions 汇总一律不进入本机统计。
  */
 const rules = require('./training-rules.js');
 
@@ -536,6 +542,44 @@ function routeCompletion(archive, routeId) {
 }
 
 /**
+ * 「改为未完成」的行体：原把次 ID、归属与说明（日期/场次/第几把）。
+ */
+function correctionRow(archive, attempt) {
+  const session = findById(archive.sessions, attempt.sessionId);
+  const ordered = (archive.attempts || [])
+    .filter(
+      item =>
+        item.sessionId === attempt.sessionId &&
+        item.routeId === attempt.routeId
+    )
+    .sort((left, right) => left.seq - right.seq);
+  const index = ordered.findIndex(item => item.id === attempt.id);
+  return {
+    attemptId: attempt.id,
+    routeId: attempt.routeId,
+    sessionId: attempt.sessionId,
+    seq: attempt.seq || 0,
+    label: '第 ' + (index + 1) + ' 把',
+    contextText: session
+      ? session.date + ' ' + sessionLabel(archive, session) + ' · ' + gymName(archive, session.gymId)
+      : ''
+  };
+}
+
+/**
+ * 这条抱石线里符合 accept 的把次，「序号大的在前、同序号后加入的在前」。
+ */
+function correctionEntries(archive, route, accept) {
+  return (archive.attempts || [])
+    .map((item, index) => ({ item, index }))
+    .filter(entry => entry.item.routeId === route.id && accept(entry.item))
+    .sort((left, right) => {
+      const seqDiff = (right.item.seq || 0) - (left.item.seq || 0);
+      return seqDiff !== 0 ? seqDiff : right.index - left.index;
+    });
+}
+
+/**
  * 「改为未完成」的逐个目标：这条抱石线所有仍可更正的已确认完攀，最近的在先。
  * 每条都带自己的原把次 ID 与原把次说明（日期/场次/第几把），页面为每一把单独渲染
  * 一个控件——控件与目标一一对应，连点原坐标也只会改到所示的那一把。
@@ -546,34 +590,390 @@ function routeCorrectionTargets(archive, routeId) {
   const route = findById(archive.routes, routeId);
   if (!route || !rules.isBoulderRoute(route)) return [];
 
-  return (archive.attempts || [])
-    .map((item, index) => ({ item, index }))
-    .filter(entry => entry.item.routeId === route.id && entry.item.result === 'send')
-    .sort((left, right) => {
-      const seqDiff = (right.item.seq || 0) - (left.item.seq || 0);
-      return seqDiff !== 0 ? seqDiff : right.index - left.index;
+  return correctionEntries(archive, route, item => item.result === 'send').map(entry =>
+    correctionRow(archive, entry.item)
+  );
+}
+
+/**
+ * 「改为未完成」的逐行展示（T018 跨日详情用）。
+ *
+ * 与 routeCorrectionTargets 同一份行体与顺序，但把本实例刚改好的那一把（correctedIds）
+ * 也留在原位置，标成只读回读行（state 'corrected'）。于是改完一把后下面的行不上移，
+ * 同一个坐标不会被另一把的控件接手——改另一把必须再点它自己那一行。
+ * 只读计算，不写档案。
+ */
+function routeCorrectionRows(archive, routeId, correctedIds) {
+  if (!archive || !hasText(routeId)) return [];
+  const route = findById(archive.routes, routeId);
+  if (!route || !rules.isBoulderRoute(route)) return [];
+
+  const corrected = new Set(Array.isArray(correctedIds) ? correctedIds : []);
+  return correctionEntries(
+    archive,
+    route,
+    item => item.result === 'send' || corrected.has(item.id)
+  ).map(entry =>
+    Object.assign(correctionRow(archive, entry.item), {
+      state: entry.item.result === 'send' ? 'ready' : 'corrected'
     })
+  );
+}
+
+/**
+ * 一条长期线路的跨日历史（T018，只读）。
+ *
+ * 按本地日期与场次分组：场次「日期新在前、同日序号大在前」，组内把次按序号从小到大
+ * 排列并标出「第 N 把」。只读计算：不改档案、不迁移旧数据、不新建场次、不生成逐把
+ * 明细，也不把别的线路或别的场次的把次并到一起。把次的归属场次已不存在时跳过，
+ * 不猜、不补一个新归属。
+ *
+ * 返回 { known, routeId, route, groups, dayCount, sessionCount, attemptCount,
+ *        sendCount, completion }；线路不存在时 known:false、groups 为空。
+ */
+function routeHistory(archive, routeId) {
+  const id = hasText(routeId) ? routeId : '';
+  const completion = routeCompletion(archive, id);
+  const route = archive ? findById(archive.routes, id) : null;
+  if (!route) {
+    return {
+      known: false,
+      routeId: id,
+      route: null,
+      groups: [],
+      dayCount: 0,
+      sessionCount: 0,
+      attemptCount: 0,
+      sendCount: 0,
+      completion
+    };
+  }
+
+  const bySession = new Map();
+  (archive.attempts || []).forEach(attempt => {
+    if (attempt.routeId !== route.id) return;
+    const session = findById(archive.sessions, attempt.sessionId);
+    if (!session) return;
+    if (!bySession.has(session.id)) bySession.set(session.id, { session, attempts: [] });
+    bySession.get(session.id).attempts.push(attempt);
+  });
+
+  const groups = [...bySession.values()]
+    .sort(
+      (left, right) =>
+        right.session.date.localeCompare(left.session.date) ||
+        right.session.seq - left.session.seq
+    )
     .map(entry => {
-      const session = findById(archive.sessions, entry.item.sessionId);
-      const ordered = (archive.attempts || [])
-        .filter(
-          item =>
-            item.sessionId === entry.item.sessionId &&
-            item.routeId === entry.item.routeId
-        )
-        .sort((left, right) => left.seq - right.seq);
-      const index = ordered.findIndex(item => item.id === entry.item.id);
+      const ordered = entry.attempts
+        .slice()
+        .sort((left, right) => (left.seq || 0) - (right.seq || 0));
       return {
-        attemptId: entry.item.id,
-        routeId: entry.item.routeId,
-        sessionId: entry.item.sessionId,
-        seq: entry.item.seq || 0,
-        label: '第 ' + (index + 1) + ' 把',
-        contextText: session
-          ? session.date + ' ' + sessionLabel(archive, session) + ' · ' + gymName(archive, session.gymId)
-          : ''
+        sessionId: entry.session.id,
+        date: entry.session.date,
+        seq: entry.session.seq,
+        sessionLabel: sessionLabel(archive, entry.session),
+        gymId: entry.session.gymId,
+        gymName: gymName(archive, entry.session.gymId),
+        countText: ordered.length + ' 把',
+        attempts: ordered.map((attempt, index) => ({
+          id: attempt.id,
+          seq: attempt.seq || 0,
+          label: '第 ' + (index + 1) + ' 把',
+          result: attempt.result,
+          resultText: attempt.result === 'send' ? '完攀' : '未完成',
+          note: attempt.note || '',
+          createdAt: attempt.createdAt
+        }))
       };
     });
+
+  const attemptCount = groups.reduce((sum, group) => sum + group.attempts.length, 0);
+  const sendCount = groups.reduce(
+    (sum, group) => sum + group.attempts.filter(item => item.result === 'send').length,
+    0
+  );
+
+  return {
+    known: true,
+    routeId: route.id,
+    route: clone(route),
+    groups,
+    dayCount: new Set(groups.map(group => group.date)).size,
+    sessionCount: groups.length,
+    attemptCount,
+    sendCount,
+    completion
+  };
+}
+
+/**
+ * 记录 tab 的本机训练历史（T018，只读）：有逐把记录的长期线路各一条，带最近一次训练
+ * 的本地日期/场次与本机「几天 / 几场 / 几把」统计，最近训练的在前。
+ *
+ * 只统计本机档案里的把次：旧云汇总、旧 climbing_sessions 数据与别的线路都不参与，
+ * 也不按名称、颜色或难度归并。线路或场次档案缺失时跳过，不猜。
+ */
+function routesWithHistory(archive) {
+  if (!archive) return [];
+
+  const stats = new Map();
+  (archive.attempts || []).forEach(attempt => {
+    const session = findById(archive.sessions, attempt.sessionId);
+    if (!session) return;
+    const entry = stats.get(attempt.routeId) || {
+      routeId: attempt.routeId,
+      attempts: [],
+      sessions: new Map(),
+      days: new Set()
+    };
+    entry.attempts.push(attempt);
+    entry.sessions.set(session.id, session);
+    entry.days.add(session.date);
+    stats.set(attempt.routeId, entry);
+  });
+
+  const rows = [];
+  stats.forEach(entry => {
+    const route = findById(archive.routes, entry.routeId);
+    if (!route) return;
+    const sessions = [...entry.sessions.values()].sort(
+      (left, right) => right.date.localeCompare(left.date) || right.seq - left.seq
+    );
+    const latest = sessions[0];
+    rows.push({
+      id: route.id,
+      seq: route.seq,
+      name: route.name,
+      climbType: route.climbType,
+      grade: route.grade,
+      colorName: route.colorName || '',
+      colorHex: route.colorHex || '',
+      gymName: gymName(archive, route.gymId),
+      lastDate: latest.date,
+      lastSessionLabel: sessionLabel(archive, latest),
+      dayCount: entry.days.size,
+      sessionCount: sessions.length,
+      attemptCount: entry.attempts.length,
+      sendCount: entry.attempts.filter(item => item.result === 'send').length
+    });
+  });
+
+  return rows.sort(
+    (left, right) =>
+      right.lastDate.localeCompare(left.lastDate) || (right.seq || 0) - (left.seq || 0)
+  );
+}
+
+/**
+ * 「再记」（T018）：把当前场次与线路指到这条长期线路所在岩馆的本地当日场次，
+ * 供长期线路详情页在用户明确点按时调用。
+ *
+ * 打开历史本身不调用它，也不建场次、不改当前选择。返回：
+ * - code 'ready'：当日恰好一场（复用）或当日还没有场次（新建一场）后已选中；
+ * - code 'choose-session'：同一岩馆当日有多场，返回 sessions 让用户明确选一场，
+ *   此时不写盘、不改当前选择，原归属保持不动；
+ * - code 'closed'：抱石已确认完攀（含待确认），不新增把次，只提示按把更正；
+ * - code 'missing' / 'bad-date' / 'unreadable' / 'write-failed'：不写盘。
+ *
+ * 只改当前场次与当前线路，必要时新建一场；不动任何已有把次、备注与场次归属。
+ */
+function resumeRouteToday(routeId, options) {
+  const data = options || {};
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return {
+      ok: false,
+      code: 'unreadable',
+      error: loaded.error,
+      archive: loaded.archive,
+      session: null,
+      sessions: [],
+      date: ''
+    };
+  }
+
+  const next = clone(loaded.archive);
+  const route = findById(next.routes, hasText(routeId) ? routeId : '');
+  if (!route) {
+    return {
+      ok: false,
+      code: 'missing',
+      error: '找不到这条线路，请返回历史重新打开',
+      archive: next,
+      session: null,
+      sessions: [],
+      date: ''
+    };
+  }
+
+  const date = hasText(data.date) ? data.date : todayLocalDate(data.now);
+  if (!isDateString(date)) {
+    return {
+      ok: false,
+      code: 'bad-date',
+      error: '训练日期无效，请使用本地日期（YYYY-MM-DD）',
+      archive: next,
+      session: null,
+      sessions: [],
+      date: ''
+    };
+  }
+
+  const completion = routeCompletion(next, route.id);
+  if (completion.closed) {
+    return {
+      ok: false,
+      code: 'closed',
+      error: completion.hasSend
+        ? '这条抱石线路已完攀，不能再新增把次；点错了可在原把次上「改为未完成」更正。'
+        : '这条抱石线路的完攀还在提交中，请稍候再记。',
+      archive: next,
+      session: null,
+      sessions: [],
+      date
+    };
+  }
+
+  const sameGymToday = next.sessions
+    .filter(item => item.date === date && item.gymId === route.gymId)
+    .sort((left, right) => left.seq - right.seq);
+
+  if (sameGymToday.length > 1) {
+    return {
+      ok: false,
+      code: 'choose-session',
+      error: '',
+      archive: next,
+      session: null,
+      sessions: sameGymToday.map(clone),
+      date
+    };
+  }
+
+  let session = sameGymToday[0] || null;
+  const reused = Boolean(session);
+  if (!session) {
+    const seq = next.nextSessionSeq;
+    session = {
+      id: 'session-' + seq,
+      seq: seq,
+      gymId: route.gymId,
+      date: date,
+      createdAt: timestamp(data.now)
+    };
+    next.sessions.push(session);
+    next.nextSessionSeq = seq + 1;
+  }
+  // 用户明确点的是「这条线当天再记」：把这条线与当日场次关联并选中（关联幂等），
+  // 场内页因此直接显示这条线而不是空选线路。重复关联不新增条目。
+  if (
+    !next.sessionRoutes.some(
+      link => link.sessionId === session.id && link.routeId === route.id
+    )
+  ) {
+    next.sessionRoutes.push({
+      sessionId: session.id,
+      routeId: route.id,
+      addedAt: timestamp(data.now)
+    });
+  }
+  next.activeSessionId = session.id;
+  next.activeRouteId = route.id;
+
+  const saved = saveArchive(next);
+  if (!saved.ok) {
+    return {
+      ok: false,
+      code: 'write-failed',
+      error: saved.error,
+      archive: loaded.archive,
+      session: null,
+      sessions: [],
+      date
+    };
+  }
+
+  return {
+    ok: true,
+    code: 'ready',
+    error: '',
+    archive: next,
+    session: clone(session),
+    sessions: [],
+    date,
+    reused
+  };
+}
+
+/**
+ * 同一岩馆当日多场时，用户明确选中一场（T018）：只改当前场次与线路。
+ * 场次必须属于这条线路的岩馆与指定本地日期（缺省今天），否则拒绝，不写盘。
+ */
+function chooseRouteSession(routeId, sessionId, options) {
+  const data = options || {};
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return {
+      ok: false,
+      code: 'unreadable',
+      error: loaded.error,
+      archive: loaded.archive,
+      session: null
+    };
+  }
+
+  const next = clone(loaded.archive);
+  const route = findById(next.routes, hasText(routeId) ? routeId : '');
+  if (!route) {
+    return {
+      ok: false,
+      code: 'missing',
+      error: '找不到这条线路，请返回历史重新打开',
+      archive: next,
+      session: null
+    };
+  }
+
+  const date = hasText(data.date) ? data.date : todayLocalDate(data.now);
+  const session = findById(next.sessions, hasText(sessionId) ? sessionId : '');
+  if (!session || session.gymId !== route.gymId || session.date !== date) {
+    return {
+      ok: false,
+      code: 'missing-session',
+      error: '这场训练不属于该岩馆当日，请重新选择',
+      archive: next,
+      session: null
+    };
+  }
+
+  next.activeSessionId = session.id;
+  next.activeRouteId = route.id;
+
+  // 与 resumeRouteToday 一致：明确选定的这条线在同场次里保留关联（幂等）。
+  if (
+    !next.sessionRoutes.some(
+      link => link.sessionId === session.id && link.routeId === route.id
+    )
+  ) {
+    next.sessionRoutes.push({
+      sessionId: session.id,
+      routeId: route.id,
+      addedAt: timestamp(data.now)
+    });
+  }
+
+  const saved = saveArchive(next);
+  if (!saved.ok) {
+    return {
+      ok: false,
+      code: 'write-failed',
+      error: saved.error,
+      archive: loaded.archive,
+      session: null
+    };
+  }
+  return { ok: true, code: 'ready', error: '', archive: next, session: clone(session) };
 }
 
 /**
@@ -1035,6 +1435,10 @@ module.exports = {
   routesForSession,
   attemptsFor,
   newOperationId,
+  routeHistory,
+  routesWithHistory,
+  resumeRouteToday,
+  chooseRouteSession,
   startSession,
   createRoute,
   linkRouteToSession,
@@ -1043,6 +1447,7 @@ module.exports = {
   saveAttempt,
   routeCompletion,
   routeCorrectionTargets,
+  routeCorrectionRows,
   setAttemptNote,
   correctAttempt,
   // 转出线路规则，页面与档案层共用同一份判定。

@@ -2,6 +2,7 @@
   "pages": [
     "pages/index/index",
     "pages/training-session/training-session",
+    "pages/training-route/training-route",
     "pages/add-record/add-record",
     "pages/record-list/record-list",
     "pages/record-detail/record-detail",

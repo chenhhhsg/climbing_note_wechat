@@ -1,104 +1,157 @@
 <!--
-  记录列表页面
+  记录列表页面（Tab）
+  上半部分：T018 本机训练历史（只读本机档案，按长期线路进 pages/training-route）。
+  下半部分：既有「旧记录」云列表（只读回看，保留原分页、失败重试与刷新竞争处理）。
 -->
 <view class="container">
-  <!-- 首次加载中 -->
-  <view wx:if="{{loading && records.length === 0}}" class="loading-state">
-    <text>加载中...</text>
-  </view>
-
-  <!-- 首次加载失败：给出可重试入口 -->
-  <view wx:elif="{{loadError && records.length === 0}}" class="error-state">
-    <text class="error-text">加载失败，请检查网络后重试</text>
-    <button class="btn-retry" bindtap="retryRefresh">重试</button>
-  </view>
-
-  <!-- 空状态 -->
-  <view wx:elif="{{isEmpty}}" class="empty-state">
-    <text class="empty-icon">🧗</text>
-    <text class="empty-text">还没有攀岩记录</text>
-    <button class="btn-add" bindtap="goToAddRecord">添加第一条记录</button>
-  </view>
-
-  <!-- 记录列表 -->
-  <view wx:else class="record-list">
-    <!-- 已有内容时刷新失败：保留旧记录，只做简短提示 -->
-    <view wx:if="{{refreshError}}" class="inline-error">
-      <text class="inline-error-text">刷新失败，正在显示上次的记录</text>
-      <text class="retry-link" bindtap="retryRefresh">重试刷新</text>
+  <!-- 本机训练历史 -->
+  <view class="local-history">
+    <view class="section-header">
+      <text class="section-title">本机训练历史</text>
+      <text class="section-hint">本地存档 · 逐把</text>
     </view>
 
-    <view
-      wx:for="{{records}}"
-      wx:key="_id"
-      class="record-card"
-      bindtap="goToDetail"
-      data-id="{{item._id}}"
-    >
-      <!-- 记录头部：日期和状态 -->
-      <view class="record-header">
-        <text class="record-date">{{item.dateText}}</text>
-        <text class="record-status {{item.status === '完成' ? 'status-success' : 'status-fail'}}">
-          {{item.status}}
-        </text>
-      </view>
+    <view wx:if="{{archiveError}}" id="archive-error" class="inline-error">
+      <text class="inline-error-text">{{archiveError}}</text>
+      <text class="retry-link" bindtap="retryRefresh">重试读取</text>
+    </view>
 
-      <!-- 记录内容 -->
-      <view class="record-content">
-        <view class="record-info">
-          <view class="info-item">
-            <text class="info-label">地点</text>
-            <text class="info-value">{{item.location || '-'}}</text>
-          </view>
-          <view class="info-item">
-            <text class="info-label">类型</text>
-            <text class="info-value">{{item.climbType}}</text>
-          </view>
-          <view class="info-item">
-            <text class="info-label">难度</text>
-            <text class="info-value grade">{{item.grade}}</text>
-          </view>
-          <view class="info-item">
-            <text class="info-label">尝试</text>
-            <text class="info-value">{{item.attempts}}次</text>
+    <view wx:elif="{{!hasLocalHistory}}" id="local-empty" class="local-empty">
+      <text class="local-empty-text">还没有本机训练记录</text>
+      <text class="local-empty-hint">回首页「开始训练」，按线路逐把记录后会出现在这里。</text>
+    </view>
+
+    <view wx:else class="local-route-list">
+      <view
+        wx:for="{{localRoutes}}"
+        wx:key="id"
+        id="local-route-{{item.id}}"
+        class="local-route-card"
+        bindtap="goToRouteDetail"
+        data-route-id="{{item.id}}"
+      >
+        <view class="local-route-main">
+          <view class="local-route-swatch" style="background: {{item.colorHex}};"></view>
+          <view class="local-route-info">
+            <text class="local-route-name">{{item.name}}</text>
+            <text class="local-route-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
+            <text class="local-route-gym">{{item.gymName}}</text>
           </view>
         </view>
-
-        <!-- 备注预览 -->
-        <view wx:if="{{item.notes}}" class="record-notes">
-          <text class="notes-text">{{item.notes}}</text>
-        </view>
-
-        <!-- 图片预览 -->
-        <view wx:if="{{item.images && item.images.length > 0}}" class="record-images">
-          <image
-            wx:for="{{item.images}}"
-            wx:for-item="img"
-            wx:key="*this"
-            src="{{img}}"
-            mode="aspectFill"
-            class="image-thumb"
-          />
+        <view class="local-route-stats">
+          <text class="local-route-last">最近：{{item.lastDateText}}</text>
+          <text class="local-route-count">{{item.countText}} · {{item.sendText}}</text>
         </view>
       </view>
     </view>
+  </view>
 
-    <!-- 加载更多提示 -->
-    <view wx:if="{{loadingMore}}" class="loading-more">
+  <!-- 旧记录（云汇总，只读回看；分页与失败重试保持原样） -->
+  <view class="legacy-section">
+    <view class="section-header">
+      <text class="section-title">旧记录</text>
+      <text class="section-hint">云端旧汇总 · 只读回看</text>
+    </view>
+
+    <!-- 首次加载中 -->
+    <view wx:if="{{loading && records.length === 0}}" class="loading-state">
       <text>加载中...</text>
     </view>
-    <!-- 翻页失败：重试继续请求刚才失败的页 -->
-    <view wx:elif="{{loadMoreError}}" class="inline-error load-more-error">
-      <text class="inline-error-text">加载更多失败</text>
-      <text class="retry-link" bindtap="retryLoadMore">重试加载更多</text>
+
+    <!-- 首次加载失败：区分云环境不可用、没有权限与一般读取失败，给出可重试入口 -->
+    <view wx:elif="{{loadError && records.length === 0}}" class="error-state">
+      <text class="error-text">{{cloudErrorTitle || '加载失败'}}</text>
+      <text class="error-hint">{{cloudErrorHint}}</text>
+      <button class="btn-retry" bindtap="retryRefresh">重试</button>
     </view>
-    <view wx:elif="{{!hasMore && records.length > 0}}" class="no-more">
-      <text>没有更多记录了</text>
+
+    <!-- 空库：旧记录为空与本机训练历史分开显示 -->
+    <view wx:elif="{{isEmpty}}" class="empty-state">
+      <text class="empty-text">还没有旧记录</text>
+      <text class="empty-hint">旧云端汇总为空；本机训练历史不受影响。</text>
+      <button class="btn-add" bindtap="goToAddRecord">添加旧记录</button>
+    </view>
+
+    <!-- 记录列表 -->
+    <view wx:else class="record-list">
+      <!-- 已有内容时刷新失败：保留旧记录，只做简短提示 -->
+      <view wx:if="{{refreshError}}" class="inline-error">
+        <text class="inline-error-text">{{cloudErrorTitle || '刷新失败'}}，正在显示上次的旧记录</text>
+        <text class="retry-link" bindtap="retryRefresh">重试刷新</text>
+      </view>
+
+      <view
+        wx:for="{{records}}"
+        wx:key="_id"
+        class="record-card"
+        bindtap="goToDetail"
+        data-id="{{item._id}}"
+      >
+        <!-- 记录头部：日期和状态 -->
+        <view class="record-header">
+          <text class="record-date">{{item.dateText}}</text>
+          <text class="record-status {{item.status === '完成' ? 'status-success' : 'status-fail'}}">
+            {{item.status}}
+          </text>
+        </view>
+
+        <!-- 记录内容 -->
+        <view class="record-content">
+          <view class="record-info">
+            <view class="info-item">
+              <text class="info-label">地点</text>
+              <text class="info-value">{{item.location || '-'}}</text>
+            </view>
+            <view class="info-item">
+              <text class="info-label">类型</text>
+              <text class="info-value">{{item.climbType}}</text>
+            </view>
+            <view class="info-item">
+              <text class="info-label">难度</text>
+              <text class="info-value grade">{{item.grade}}</text>
+            </view>
+            <view class="info-item">
+              <text class="info-label">尝试</text>
+              <text class="info-value">{{item.attempts}}次</text>
+            </view>
+          </view>
+
+          <!-- 备注预览 -->
+          <view wx:if="{{item.notes}}" class="record-notes">
+            <text class="notes-text">{{item.notes}}</text>
+          </view>
+
+          <!-- 图片预览 -->
+          <view wx:if="{{item.images && item.images.length > 0}}" class="record-images">
+            <image
+              wx:for="{{item.images}}"
+              wx:for-item="img"
+              wx:key="*this"
+              src="{{img}}"
+              mode="aspectFill"
+              class="image-thumb"
+            />
+          </view>
+        </view>
+      </view>
+
+      <!-- 加载更多提示 -->
+      <view wx:if="{{loadingMore}}" class="loading-more">
+        <text>加载中...</text>
+      </view>
+      <!-- 翻页失败：重试继续请求刚才失败的页 -->
+      <view wx:elif="{{loadMoreError}}" class="inline-error load-more-error">
+        <text class="inline-error-text">加载更多失败</text>
+        <text class="retry-link" bindtap="retryLoadMore">重试加载更多</text>
+      </view>
+      <view wx:elif="{{!hasMore && records.length > 0}}" class="no-more">
+        <text>没有更多旧记录了</text>
+      </view>
     </view>
   </view>
 </view>
 
-<!-- 悬浮添加按钮 -->
+<!-- 悬浮添加按钮（旧添加入口保持可达） -->
 <view class="fab" bindtap="goToAddRecord">
   <text class="fab-icon">+</text>
 </view>
