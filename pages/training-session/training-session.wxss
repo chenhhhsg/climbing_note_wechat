@@ -683,6 +683,34 @@
 .field,.picker-value,.text-input { line-height:1.5; }
 .text-input { min-height:88rpx; }
 
+/* 本次小结（T029）：按原 sessionId 只读回看本场；勾选只改「下次想爬」清单 */
+.session-summary .section-title { margin-bottom:20rpx; }
+.summary-error-card { background:#f7e6db; border-radius:12rpx; padding:20rpx 24rpx; }
+.summary-error-text { display:block; font-size:26rpx; color:#943a23; }
+.summary-error-hint { display:block; font-size:22rpx; color:#745241; margin-top:8rpx; }
+.summary-head { display:flex; align-items:baseline; justify-content:space-between; gap:16rpx; }
+.summary-count { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:34rpx; color:#173d32; }
+.summary-send { flex:none; font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size:26rpx; color:#ff793f; }
+.summary-other,.summary-pending,.summary-hint { display:block; margin-top:10rpx; font-size:24rpx; line-height:1.6; color:#526157; }
+.summary-pending { color:#9c5222; }
+.summary-row { background:#fffcf3; border:1px solid #d6d5c6; border-radius:8rpx; padding:20rpx; margin-top:12rpx; }
+.summary-row-main { display:flex; align-items:flex-start; }
+.summary-row .route-swatch { flex:none; margin-top:6rpx; }
+.summary-row-info { flex:1; min-width:0; }
+.summary-row-head { display:flex; align-items:center; flex-wrap:wrap; gap:10rpx; }
+.summary-name { font-size:30rpx; font-weight:700; color:#173d32; word-break:break-all; }
+.summary-grade { flex:none; font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size:26rpx; color:#ff793f; }
+.summary-state { flex:none; font-size:22rpx; padding:4rpx 12rpx; border-radius:8rpx; background:#e4ebdf; color:#355e50; }
+.summary-state-done { background:#dfebd9; color:#204b34; }
+.summary-state-sent { background:#f3e2d4; color:#8a4a24; }
+.summary-meta { display:block; font-size:24rpx; color:#606d61; margin-top:6rpx; }
+.summary-note { display:block; font-size:24rpx; color:#526157; margin-top:6rpx; border-left:4rpx solid #d2784f; padding-left:14rpx; line-height:1.5; word-break:break-all; }
+.summary-actions { display:flex; align-items:center; flex-wrap:wrap; gap:16rpx; margin-top:16rpx; }
+.summary-actions .summary-pick { flex:1; min-width:280rpx; margin:0; }
+.summary-pick-on { background:#e7eddf; color:#204b34; }
+.summary-pick-state { font-size:24rpx; color:#526157; }
+.summary-actions .summary-open { flex:none; margin:0; padding:0 8rpx; font-size:26rpx; color:#173d32; }
+
 /* 下次想爬（T027）：本馆清单；加入、撤下与拆线归档只改清单，不动线路、照片与把次 */
 .wishlist-section .section-title { margin-bottom: 20rpx; }
 .wishlist-error-card { background: #f7e6db; border-radius: 12rpx; padding: 20rpx 24rpx; }

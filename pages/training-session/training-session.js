@@ -24,11 +24,18 @@
  * （同一个线路 ID，不新建同名线路），直接续记。加入、撤下与拆线归档只改清单这一份
  * 独立记录（utils/training-wishlist.js），不动线路、照片、把次与备注。
  *
+ * T029 在本页加上「本次小结」：离馆时按**本场**回看这一场爬了哪些线、共几把、哪些
+ * 完攀（utils/training-session-summary.js），未完成的线可就地勾进本馆「下次想爬」，
+ * 走的就是 T027 的那一套增删接口。小结只读训练记录：只算已提交把次，待保存、旧云汇总
+ * 与自测成绩都不计入；打开、返回、重开本页都不会结束或新建场次，本页可以用
+ * ?sessionId= 只读回看当天另一场（回看本身不改当前场次）。
+ *
  * 页面自己只保存「展示用的当前状态」与本实例的临时信息（未落盘操作、已更正的只读
  * 回读行、快速双击窗口），不承担数据权威。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
+const { buildSessionSummary } = require('../../utils/training-session-summary.js');
 const {
   createTrainingPhotoController
 } = require('../../utils/training-photo-controller.js');
@@ -192,7 +199,26 @@ Page({
     wishlistCountText: '',
     hasWishlist: false,
     // 当前选中线路在清单里的状态（加入/撤下/归档入口）
-    selectedWishlist: null
+    selectedWishlist: null,
+
+    // 本次小结（T029）：按原 sessionId 回看本场已提交把次、去重线路与完攀线路。
+    // 勾选状态一律取清单的实际存储，写失败时显示的也是实际保存状态。
+    summaryRows: [],
+    summaryReady: false,
+    summaryError: '',
+    summarySessionId: '',
+    summaryGymId: '',
+    summaryGymName: '',
+    summaryDate: '',
+    summaryLabel: '',
+    summaryViewingOther: false,
+    summaryCountText: '',
+    summarySendText: '',
+    summaryPendingText: '',
+    summaryWishlistError: '',
+    summaryHintText: '',
+    summaryEmpty: true,
+    hasSummaryRows: false
   },
 
   onLoad(query) {
@@ -202,6 +228,7 @@ Page({
     // _correctedRows / _correctionFailures  按把更正的只读回读与失败重试标记；
     // _photoUi / _newRoutePhotoPath  照片控制器与新建表单里已选的临时照片路径；
     // _wishlistRows  本馆「下次想爬」的派生条目（不落盘，照片状态叠加在上面）。
+    // _summarySessionId  本页显式指定「要回看哪一场」的小结目标（只读，不写盘）。
     this._failedOps = {};
     this._lastTap = {};
     this._correctedRows = {};
@@ -211,6 +238,11 @@ Page({
     this._photoUi = null;
     this._newRoutePhotoPath = '';
     this._wishlistRows = [];
+    this._summaryRows = [];
+    // ?sessionId=xxx：只读回看这一天/这一家岩馆的另一场小结，不改当前场次；
+    // 用户在场内页自己切换场次或开始新场次时清掉它，小结回到当前场次。
+    this._summarySessionId =
+      (query && (query.sessionId || query.sessionid)) || '';
     // 首页「开始训练」带 ?start=1：直接展开场次表单。
     this._formOpen = Boolean(query && (query.start === '1' || query.start === 1));
     this.loadPage();
@@ -637,6 +669,100 @@ Page({
 
     // 本馆「下次想爬」清单：只读清单与档案派生，不写盘。
     this.refreshWishlist();
+    // 本次小结：同样只读，按原 sessionId 重算，不与上面共用任何缓存。
+    this.refreshSummary();
+  },
+
+  /**
+   * 本次小结（T029，只读）：按原 sessionId 从档案派生本场已提交把次、去重线路与
+   * 完攀线路，并把每行与「下次想爬」清单的勾选状态合成到展示。
+   *
+   * - 默认看当前场次；本页可用 ?sessionId= 指定回看另一场（例如当天另开的场次），
+   *   回看只读：不改当前场次、不结束也不新建场次、不写任何键；
+   * - 场次已不在档案里（例如本机档案被重置）时显示可见错误，不猜、不补；
+   * - 勾选状态一律来自清单的实际存储，写失败或清单损坏时显示实际状态并收回写入口。
+   */
+  refreshSummary() {
+    const activeId = (this.data.activeSession && this.data.activeSession.id) || '';
+    const requested = this._summarySessionId || activeId;
+    const summary = buildSessionSummary(this.archive, requested);
+
+    if (!summary.known) {
+      this._summaryRows = [];
+      this.setData({
+        summaryRows: [],
+        summaryReady: false,
+        summaryError: requested
+          ? '找不到这场训练，可能本机档案已重置；本场记录与照片不受影响'
+          : '',
+        summarySessionId: '',
+        summaryGymId: '',
+        summaryGymName: '',
+        summaryDate: '',
+        summaryLabel: '',
+        summaryViewingOther: false,
+        summaryCountText: '',
+        summarySendText: '',
+        summaryPendingText: '',
+        summaryWishlistError: '',
+        summaryHintText: '',
+        summaryEmpty: true,
+        hasSummaryRows: false
+      });
+      return;
+    }
+
+    // 一次读盘拿到这批线路的清单状态；清单读不出来时按实际错误显示并收回写入口。
+    const membership = wishlist.wishlistMembership(
+      this.archive,
+      summary.routes.map(row => row.routeId)
+    );
+    const rows = summary.routes.map(row => {
+      const entry = membership.ok ? membership.entries.get(row.routeId) || null : null;
+      const archived = Boolean(entry && entry.archived);
+      const checked = Boolean(entry) && !archived;
+      return Object.assign({}, row, {
+        // canPick 只表示「现在能不能点」：未完成 + 清单可读；pickable 是本场状态。
+        canPick: row.pickable && membership.ok,
+        checked,
+        inList: Boolean(entry),
+        wishlistStateText: !entry
+          ? ''
+          : archived
+            ? '已归档（岩馆拆线）'
+            : entry.completed
+              ? '已完成 · 在清单里'
+              : '已在下次想爬',
+        pickText: checked
+          ? '✓ 已加入下次想爬'
+          : archived
+            ? '重新加入下次想爬'
+            : '加入下次想爬'
+      });
+    });
+
+    this._summaryRows = rows;
+    this.setData({
+      summaryRows: rows,
+      summaryReady: true,
+      summaryError: '',
+      summarySessionId: summary.sessionId,
+      summaryGymId: summary.gymId,
+      summaryGymName: summary.gymName,
+      summaryDate: summary.date,
+      summaryLabel: summary.label,
+      // 回看另一场时明确写出来，避免用户以为当前场次被改了。
+      summaryViewingOther: Boolean(activeId) && summary.sessionId !== activeId,
+      summaryCountText: summary.summaryText,
+      summarySendText: summary.sendCountText,
+      summaryPendingText: summary.pendingCountText,
+      summaryWishlistError: membership.ok ? '' : membership.error,
+      summaryHintText: rows.some(row => row.pickable)
+        ? '没爬完的线可以直接勾上：下次进这家岩馆就能从「下次想爬」按原线路 ID 续记。'
+        : '',
+      summaryEmpty: summary.isEmpty,
+      hasSummaryRows: rows.length > 0
+    });
   },
 
   // ---------------------------------------------------------------- 场次
@@ -707,6 +833,8 @@ Page({
     this._formOpen = false;
     this._formDirty = false;
     this._lastTap = {};
+    // 开始新场次后小结回到新场次（清掉 ?sessionId= 的回看目标）。
+    this._summarySessionId = '';
     this.loadPage();
   },
 
@@ -727,6 +855,8 @@ Page({
     }
     this.archive = outcome.archive;
     this._lastTap = {};
+    // 用户自己切场次：小结跟着当前场次走，不再停留在 ?sessionId= 的回看目标上。
+    this._summarySessionId = '';
     this.setData({ storageError: '', notice: '', noteEditor: null });
     this.refreshView();
     // 换场次后当前线路可能不同：按新选中线路读取照片。
@@ -1063,6 +1193,86 @@ Page({
       '已归档；照片、把次与历史都保留，仍可按原线路 ID 回看。',
       '这条线路已经归档。'
     );
+  },
+
+  // ---------------------------------------------------------------- 本次小结
+
+  /**
+   * 小结里勾选 / 取消「下次想爬」（T029）：只走 T027 的清单接口，只改清单里的这一条，
+   * 线路、照片、把次、备注、场次与其他收藏一律不动；同一线路最多一条，重复点击幂等。
+   *
+   * 写失败不报已保存：提示未保存并立刻重读清单，勾选框显示的是实际保存状态，可以原地
+   * 再点一次重试；内容冲突、线路已不存在等拒绝也按数据层给的原因原样显示。
+   */
+  toggleSummaryPick(event) {
+    if (this.data.loadError) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const routeId = dataset.routeId;
+    if (!routeId) return;
+
+    const row = (this.data.summaryRows || []).find(item => item.routeId === routeId);
+    if (!row) return;
+    // 已完攀的线不在小结里勾选（按 T027 语义归到「已完成」），点它不产生任何写入。
+    if (!row.pickable) return;
+    // 清单读不出来（损坏、版本不支持、读取失败）：说明原因并收回写入口，不落盘。
+    if (!row.canPick) {
+      this.setData({
+        notice: this.data.summaryWishlistError || '下次想爬清单当前不可用，稍后可再试。'
+      });
+      return;
+    }
+
+    const outcome = row.checked
+      ? wishlist.removeWishlist(routeId)
+      : wishlist.addWishlist(routeId);
+
+    if (!outcome.ok) {
+      const writeFailed = outcome.code === 'write-failed';
+      this.setData({
+        storageError: writeFailed ? outcome.error : '',
+        notice: writeFailed ? '勾选未保存，可再点一次重试。' : outcome.error
+      });
+      this.refreshView();
+      this.loadPhotos();
+      return;
+    }
+
+    this.setData({ storageError: '', notice: this.summaryPickNotice(outcome) });
+    this.refreshView();
+    this.loadPhotos();
+  },
+
+  /**
+   * 勾选结果文案：按数据层实际落盘的结果说明这条线现在的状态（含幂等与「本来就没有」）。
+   */
+  summaryPickNotice(outcome) {
+    switch (outcome.code) {
+      case 'added':
+        return '已加入下次想爬；下次进这家岩馆就能从清单里按原线路 ID 续记。';
+      case 'reactivated':
+        return '这条线已重新加入下次想爬；照片、把次与历史都保留。';
+      case 'duplicate':
+        return '这条线路已经在下次想爬清单里。';
+      case 'removed':
+        return '已撤下这条线的收藏；其他收藏、照片与把次都不变。';
+      case 'absent':
+        return '这条线路本来就不在下次想爬清单里。';
+      default:
+        return '';
+    }
+  },
+
+  /**
+   * 从小结回看原线：按长期线路 ID 打开线路详情，看原照片、卡点与跨日历史。
+   * 只读打开，不新建场次、不改当前线路，也不写任何键。
+   */
+  openSummaryRoute(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const routeId = dataset.routeId;
+    if (!routeId) return;
+    wx.navigateTo({
+      url: '/pages/training-route/training-route?routeId=' + routeId
+    });
   },
 
   // ---------------------------------------------------------------- 线路照片

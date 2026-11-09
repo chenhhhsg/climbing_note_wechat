@@ -375,6 +375,61 @@ function wishlistEntry(archive, routeId) {
 }
 
 /**
+ * 一批长期线路的清单状态（T029 小结勾选用，只读）：整批只读一次清单，
+ * 不必逐行读盘，也不写清单、不写档案、不改线路与把次。
+ *
+ * 返回 { ok, error, corrupt, present, entries }：entries 是以长期线路 ID 为键的 Map，
+ * 只包含清单里真实存在的那几条（不在清单里的线路不在 Map 里，不猜）；
+ * 每条的状态与 listWishlist 同源——已归档优先，其次是关注抱石的首次完攀
+ * （completed），其余为想爬。档案缺失时只报告「在清单里」，不猜完成状态。
+ * 清单损坏、版本不支持或读取失败时 ok:false、entries 为空，调用方据此显示
+ * 可见错误并收回写入口（写入口自己也会拒绝）。
+ */
+function wishlistMembership(archive, routeIds) {
+  const wanted = new Set((Array.isArray(routeIds) ? routeIds : []).filter(hasText));
+  const loaded = loadWishlist();
+  if (!loaded.ok) {
+    return {
+      ok: false,
+      error: loaded.error,
+      corrupt: loaded.corrupt,
+      present: loaded.present,
+      entries: new Map()
+    };
+  }
+
+  const entries = new Map();
+  loaded.state.items.forEach(item => {
+    if (!wanted.has(item.routeId)) return;
+    const archived = hasText(item.archivedAt);
+    const completion = archive ? store.routeCompletion(archive, item.routeId) : null;
+    const status = archived
+      ? STATUS_ARCHIVED
+      : completion && completion.completed
+        ? STATUS_COMPLETED
+        : STATUS_WANTED;
+    entries.set(item.routeId, {
+      routeId: item.routeId,
+      inList: true,
+      status,
+      statusText: STATUS_TEXT[status],
+      archived,
+      completed: status === STATUS_COMPLETED,
+      addedAt: item.addedAt,
+      archivedAt: item.archivedAt || ''
+    });
+  });
+
+  return {
+    ok: true,
+    error: '',
+    corrupt: false,
+    present: loaded.present,
+    entries
+  };
+}
+
+/**
  * 条目在页面上的可操作状态：加入、撤下与拆线归档三个入口的显示条件只有这一份判定，
  * 线路详情页与场内页共用，因此两个页面不会出现互相矛盾的按钮。
  * entry 为 null（还没收藏）时给出「加入」入口；已归档只给「重新加入」与「撤下」。
@@ -600,6 +655,7 @@ module.exports = {
   routeAttemptStats,
   listWishlist,
   wishlistEntry,
+  wishlistMembership,
   wishlistActionView,
   addWishlist,
   removeWishlist,
