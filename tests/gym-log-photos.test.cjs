@@ -72,12 +72,20 @@ const wxLog = {
   failAfter: null,
   setShouldThrow: false,
   mediaCalls: [],
+  imageCalls: [],
+  // 选择器调用形状（参数个数、回调是否在选项对象里）；两个接口各自独立记录，
+  // 不共享成功/失败槽位，避免一个 mock 的副作用掩盖另一个的结果。
+  pickerCalls: [],
+  pickerViolations: [],
+  chooseBehavior: 'success',
+  chooseImageBehavior: 'success',
+  chooseMediaPayload: null,
+  chooseImagePayload: null,
   modalCalls: [],
   toasts: [],
   previews: [],
   actionSheets: [],
   navigations: [],
-  chooseBehavior: 'success',
   modalConfirm: true,
   actionSheetIndex: 0,
   sourceWidth: 2400,
@@ -118,12 +126,18 @@ function resetWxLog() {
   wxLog.failAfter = null;
   wxLog.setShouldThrow = false;
   wxLog.mediaCalls = [];
+  wxLog.imageCalls = [];
+  wxLog.pickerCalls = [];
+  wxLog.pickerViolations = [];
+  wxLog.chooseBehavior = 'success';
+  wxLog.chooseImageBehavior = 'success';
+  wxLog.chooseMediaPayload = null;
+  wxLog.chooseImagePayload = null;
   wxLog.modalCalls = [];
   wxLog.toasts = [];
   wxLog.previews = [];
   wxLog.actionSheets = [];
   wxLog.navigations = [];
-  wxLog.chooseBehavior = 'success';
   wxLog.modalConfirm = true;
   wxLog.actionSheetIndex = 0;
 }
@@ -145,6 +159,82 @@ function createGate() {
     release = resolve;
   });
   return { promise, release };
+}
+
+// ---- 选择器契约替身 ----
+// wx.chooseMedia / wx.chooseImage 官方签名只有一个选项对象，success/fail 放在对象里。
+// 这里严格拒绝第 2 个及以后的参数，并立即抛错：未修复的源码会以可见错误结束，
+// 而不是静静等不到回调把用例挂住。
+
+function recordPickerCall(api, args) {
+  const options = args[0];
+  const record = {
+    api,
+    argCount: args.length,
+    extraArgTypes: Array.prototype.slice.call(args, 1).map(value => typeof value),
+    optionsIsObject: Boolean(options) && typeof options === 'object',
+    hasSuccess: Boolean(options && typeof options.success === 'function'),
+    hasFail: Boolean(options && typeof options.fail === 'function')
+  };
+  wxLog.pickerCalls.push(record);
+
+  if (record.argCount !== 1 || !record.optionsIsObject) {
+    wxLog.pickerViolations.push(record);
+    throw new Error(
+      api + ' 只接受一个官方选项对象；实际收到 ' + record.argCount +
+        ' 个参数，success/fail 必须放进同一个对象里'
+    );
+  }
+  if (!record.hasSuccess || !record.hasFail) {
+    wxLog.pickerViolations.push(record);
+    throw new Error(api + ' 的选项对象里应同时包含 success 与 fail 回调');
+  }
+  return record;
+}
+
+function pickerPayloadOf(api) {
+  return api === 'chooseMedia'
+    ? wxLog.chooseMediaPayload
+    : wxLog.chooseImagePayload;
+}
+
+function defaultPickerResult(api, filePath) {
+  if (api === 'chooseMedia') {
+    return { tempFiles: [{ tempFilePath: filePath }], type: 'image' };
+  }
+  return {
+    tempFilePaths: [filePath],
+    tempFiles: [{ path: filePath, size: wxLog.sourceBytes }]
+  };
+}
+
+/** 只按被测接口的配置结算回调，另一个接口的配置不参与。 */
+function settlePicker(api, options) {
+  const behavior =
+    api === 'chooseMedia' ? wxLog.chooseBehavior : wxLog.chooseImageBehavior;
+  if (behavior === 'cancel') {
+    options.fail({ errMsg: api + ':fail cancel' });
+    return;
+  }
+  if (behavior === 'deny') {
+    options.fail({ errMsg: api + ':fail auth deny' });
+    return;
+  }
+  if (behavior === 'error') {
+    options.fail({ errMsg: api + ':fail mock system error' });
+    return;
+  }
+  const payload = pickerPayloadOf(api);
+  if (payload) {
+    options.success(payload);
+    return;
+  }
+  const filePath = addSourceImage(
+    wxLog.sourceWidth,
+    wxLog.sourceHeight,
+    wxLog.sourceBytes
+  );
+  options.success(defaultPickerResult(api, filePath));
 }
 
 const fileSystem = {
@@ -301,32 +391,23 @@ global.wx = {
       finish();
     }
   },
-  chooseMedia(options, success, fail) {
-    const done = success || options.success;
-    const failed = fail || options.fail;
+  chooseMedia(options) {
+    recordPickerCall('chooseMedia', arguments);
     wxLog.mediaCalls.push({
       count: options.count,
       mediaType: options.mediaType,
       sourceType: options.sourceType
     });
-    if (wxLog.chooseBehavior === 'cancel') {
-      failed({ errMsg: 'chooseMedia:fail cancel' });
-      return;
-    }
-    if (wxLog.chooseBehavior === 'deny') {
-      failed({ errMsg: 'chooseMedia:fail auth deny' });
-      return;
-    }
-    if (wxLog.chooseBehavior === 'error') {
-      failed({ errMsg: 'chooseMedia:fail mock system error' });
-      return;
-    }
-    const filePath = addSourceImage(
-      wxLog.sourceWidth,
-      wxLog.sourceHeight,
-      wxLog.sourceBytes
-    );
-    done({ tempFiles: [{ tempFilePath: filePath }], type: 'image' });
+    settlePicker('chooseMedia', options);
+  },
+  chooseImage(options) {
+    recordPickerCall('chooseImage', arguments);
+    wxLog.imageCalls.push({
+      count: options.count,
+      sizeType: options.sizeType,
+      sourceType: options.sourceType
+    });
+    settlePicker('chooseImage', options);
   },
   showModal(options) {
     wxLog.modalCalls.push({
@@ -1058,8 +1139,9 @@ test('PU05 选片期间重置：迟到结果不进入新数据集（当前线路
 
   const realChooseMedia = global.wx.chooseMedia;
   let respond;
-  global.wx.chooseMedia = (options, success) => {
-    respond = success;
+  global.wx.chooseMedia = function deferredChooseMedia(options) {
+    recordPickerCall('chooseMedia', arguments);
+    respond = options.success;
   };
   try {
     const choosing = choose(page, ROUTE_BLUE, 'album');
@@ -1096,8 +1178,9 @@ test('PU05 快速新建选片期间重置：迟到结果不进入新建表单', 
 
   const realChooseMedia = global.wx.chooseMedia;
   let respond;
-  global.wx.chooseMedia = (options, success) => {
-    respond = success;
+  global.wx.chooseMedia = function deferredChooseMedia(options) {
+    recordPickerCall('chooseMedia', arguments);
+    respond = options.success;
   };
   try {
     const picking = page.chooseQuickRoutePhoto({
@@ -1205,8 +1288,9 @@ test('PU05 无照片时重置（数据集不变）也会让迟到选片失效', 
 
   const realChooseMedia = global.wx.chooseMedia;
   let respond;
-  global.wx.chooseMedia = (options, success) => {
-    respond = success;
+  global.wx.chooseMedia = function deferredChooseMedia(options) {
+    recordPickerCall('chooseMedia', arguments);
+    respond = options.success;
   };
   try {
     const choosing = choose(page, ROUTE_BLUE, 'album');
@@ -1409,4 +1493,347 @@ test('PU06 页面包含四处照片入口、确认/失败/缺图/移除文案且
   assert.equal(typeof detailDefinition.confirmDetailPhoto, 'function');
   assert.equal(THUMB_CACHE_KEY, 'climbingNote.gymLogTrial.photoThumbs.v1');
   assert.equal(localToday().length, 10);
+});
+
+// ---- 选择器契约（T012 返工）：单对象选项 + 两种官方返回形状 ----
+
+/**
+ * 同一批参数化用例：每条给一种真实的选择器返回形状。
+ * picker-contract 用例把每种形状都送进真实页面的快照流程：
+ * 预览并确认保存、取消后可立即重选、空路径与系统错误可见、更换时取消保留旧图。
+ */
+const PICKER_CASES = [
+  {
+    id: 'chooseMedia-tempFiles',
+    api: 'chooseMedia',
+    label: 'chooseMedia 只返回 tempFiles[].tempFilePath',
+    build(filePath) {
+      return { tempFiles: [{ tempFilePath: filePath }], type: 'image' };
+    }
+  },
+  {
+    id: 'chooseMedia-empty-tempFilePaths',
+    api: 'chooseMedia',
+    label: 'chooseMedia 同时返回 tempFiles[].tempFilePath 与空 tempFilePaths',
+    build(filePath) {
+      return {
+        tempFiles: [{ tempFilePath: filePath }],
+        tempFilePaths: []
+      };
+    }
+  },
+  {
+    id: 'chooseImage-tempFilePaths',
+    api: 'chooseImage',
+    label: 'chooseImage 只返回 tempFilePaths[]',
+    build(filePath) {
+      return { tempFilePaths: [filePath] };
+    }
+  },
+  {
+    id: 'chooseImage-tempFiles-path',
+    api: 'chooseImage',
+    label: 'chooseImage tempFilePaths 为空数组、只有 tempFiles[].path',
+    build(filePath) {
+      return {
+        tempFilePaths: [],
+        tempFiles: [{ path: filePath, size: 500000 }]
+      };
+    }
+  },
+  {
+    id: 'chooseImage-empty-tempFiles',
+    api: 'chooseImage',
+    label: 'chooseImage 同时返回 tempFilePaths[] 与空 tempFiles',
+    build(filePath) {
+      return { tempFilePaths: [filePath], tempFiles: [] };
+    }
+  }
+];
+
+// 两个字段同时出现且都是空数组：没有任何可用路径，必须报可见错误。
+const EMPTY_PICKER_RESULT = { tempFiles: [], tempFilePaths: [] };
+
+function setPickerPayload(item, payload) {
+  if (item.api === 'chooseMedia') {
+    wxLog.chooseMediaPayload = payload || null;
+    return;
+  }
+  wxLog.chooseImagePayload = payload || null;
+}
+
+function setPickerBehavior(item, behavior) {
+  if (item.api === 'chooseMedia') {
+    wxLog.chooseBehavior = behavior;
+    return;
+  }
+  wxLog.chooseImageBehavior = behavior;
+}
+
+/**
+ * 安装某条用例：只保留被测接口的返回形状。
+ * 走 chooseImage 时隐去 chooseMedia，真实覆盖回退分支；
+ * 走 chooseMedia 时保留 chooseImage，用于证明取消不会被回退选择器掩盖。
+ */
+function installPickerCase(item, config) {
+  const settings = config || {};
+  const mediaBackup = global.wx.chooseMedia;
+  const imageBackup = global.wx.chooseImage;
+  if (item.api === 'chooseImage') delete global.wx.chooseMedia;
+  wxLog.chooseBehavior = 'success';
+  wxLog.chooseImageBehavior = 'success';
+  wxLog.chooseMediaPayload = null;
+  wxLog.chooseImagePayload = null;
+  setPickerBehavior(item, settings.behavior || 'success');
+  setPickerPayload(item, settings.payload || null);
+  return function restorePicker() {
+    global.wx.chooseMedia = mediaBackup;
+    global.wx.chooseImage = imageBackup;
+    wxLog.chooseBehavior = 'success';
+    wxLog.chooseImageBehavior = 'success';
+    wxLog.chooseMediaPayload = null;
+    wxLog.chooseImagePayload = null;
+  };
+}
+
+/** 选择器只能被按官方形状调用；失败信息直接给出参数格式问题。 */
+function assertPickerContract(apiName, expectedCount) {
+  const count = typeof expectedCount === 'number' ? expectedCount : 1;
+  const calls = wxLog.pickerCalls.filter(call => call.api === apiName);
+  assert.equal(calls.length, count, apiName + ' 应被调用 ' + count + ' 次');
+  calls.forEach((call, index) => {
+    assert.equal(
+      call.argCount,
+      1,
+      apiName + ' 第 ' + (index + 1) + ' 次调用收到 ' + call.argCount +
+        ' 个参数（第 2 个起为 ' + JSON.stringify(call.extraArgTypes) +
+        '）：success/fail 必须放进同一个选项对象'
+    );
+    assert.equal(call.hasSuccess, true, apiName + ' 选项对象里应有 success');
+    assert.equal(call.hasFail, true, apiName + ' 选项对象里应有 fail');
+  });
+  assert.deepEqual(wxLog.pickerViolations, [], apiName + ' 不得收到多余参数');
+  return calls;
+}
+
+/** 选择器的官方选项字段仍按来源传对，两种接口各记各的。 */
+function assertPickerOptions(item, source) {
+  if (item.api === 'chooseMedia') {
+    assert.deepEqual(wxLog.mediaCalls, [
+      { count: 1, mediaType: ['image'], sourceType: [source] }
+    ]);
+    return;
+  }
+  assert.deepEqual(wxLog.imageCalls, [
+    { count: 1, sizeType: ['compressed'], sourceType: [source] }
+  ]);
+}
+
+for (const item of PICKER_CASES) {
+  test('picker-contract ' + item.label + '：可进入预览并确认保存', async () => {
+    const page = await createPage();
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    const filePath = addSourceImage(1200, 800, 400000);
+    const restore = installPickerCase(item, {
+      payload: item.build(filePath)
+    });
+    try {
+      const outcome = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api);
+      assertPickerOptions(item, 'album');
+      assert.equal(outcome.ok, true, '返回形状应能解析出照片路径');
+      assert.equal(outcome.path, filePath);
+      assert.equal(page.data.routePhoto.status, 'preview');
+      assert.equal(page.data.routePhoto.previewPath, filePath);
+      assert.match(page.data.routePhoto.statusText, /确认后保存到本机/);
+      assert.equal(storage.has(INDEX_KEY), false, '确认前不写照片索引');
+
+      await confirm(page, ROUTE_BLUE);
+      assert.equal(page.data.routePhoto.status, 'saved');
+      const mainPath = page.data.routePhoto.mainPath;
+      assert.equal(virtual.files.has(mainPath), true, '主图已落盘');
+      assert.equal(page.data.routePhoto.bytesText.indexOf('主图'), 0);
+      assert.deepEqual(wxLog.toasts, ['已保存到本机']);
+      assert.equal(photoIndex().photos.length, 1);
+      assert.equal(photoOfRoute(ROUTE_BLUE).storage.location, mainPath);
+    } finally {
+      restore();
+    }
+  });
+
+  test('picker-contract ' + item.label + '：取消后可立即重新选择', async () => {
+    const page = await createPage();
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    const restore = installPickerCase(item, { behavior: 'cancel' });
+    try {
+      const cancelled = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api);
+      assert.equal(cancelled.ok, false);
+      assert.equal(cancelled.cancelled, true, '取消被识别为取消而非系统错误');
+      assert.equal(page.data.routePhoto.status, 'none');
+      assert.equal(page.data.photoNotice, '', '取消不提示失败');
+      assert.equal(storage.has(INDEX_KEY), false);
+      if (item.api === 'chooseMedia') {
+        assert.equal(
+          wxLog.imageCalls.length,
+          0,
+          '取消不得回退到 chooseImage 掩盖取消'
+        );
+      }
+
+      // 取消后立即重选：没有残留的进行中操作或旧回调。
+      const filePath = addSourceImage(1200, 800, 400000);
+      setPickerBehavior(item, 'success');
+      setPickerPayload(item, item.build(filePath));
+      const again = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api, 2);
+      assert.equal(again.ok, true);
+      assert.equal(page.data.routePhoto.status, 'preview');
+      assert.equal(page.data.routePhoto.previewPath, filePath);
+      await confirm(page, ROUTE_BLUE);
+      assert.equal(page.data.routePhoto.status, 'saved');
+      assert.equal(photoIndex().photos.length, 1);
+    } finally {
+      restore();
+    }
+  });
+
+  test('picker-contract ' + item.label + '：空路径与系统错误都可见且可重试', async () => {
+    const page = await createPage();
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    const restore = installPickerCase(item, {
+      payload: EMPTY_PICKER_RESULT
+    });
+    try {
+      const empty = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api);
+      assert.equal(empty.ok, false, '两个字段都为空数组时不得算成功');
+      assert.equal(empty.cancelled, false, '空路径不是取消');
+      assert.equal(empty.error, '选择器没有返回照片路径');
+      assert.equal(page.data.routePhoto.status, 'none');
+      assert.match(page.data.photoNotice, /选择照片失败：选择器没有返回照片路径/);
+      assert.equal(storage.has(INDEX_KEY), false);
+
+      setPickerBehavior(item, 'error');
+      const failed = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api, 2);
+      assert.equal(failed.ok, false);
+      assert.equal(failed.cancelled, false);
+      assert.match(failed.error, /mock system error/);
+      assert.match(page.data.photoNotice, /选择照片失败：/);
+      assert.match(page.data.photoNotice, /mock system error/);
+      assert.equal(page.data.routePhoto.status, 'none');
+
+      // 出错后仍可立即重选并保存。
+      const filePath = addSourceImage(1200, 800, 400000);
+      setPickerBehavior(item, 'success');
+      setPickerPayload(item, item.build(filePath));
+      const again = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api, 3);
+      assert.equal(again.ok, true);
+      assert.equal(page.data.routePhoto.status, 'preview');
+      assert.equal(page.data.routePhoto.previewPath, filePath);
+    } finally {
+      restore();
+    }
+  });
+
+  test('picker-contract ' + item.label + '：更换时取消预览保留旧照片', async () => {
+    const page = await createPage();
+    await tapStart(page);
+    await tapRoute(page, ROUTE_BLUE);
+    const firstPath = addSourceImage(1200, 800, 400000);
+    const restore = installPickerCase(item, {
+      payload: item.build(firstPath)
+    });
+    try {
+      await savePhoto(page, ROUTE_BLUE, 'album');
+      assertPickerContract(item.api);
+      assert.equal(page.data.routePhoto.status, 'saved');
+      const oldPhoto = photoIndex().photos[0];
+      const oldMain = oldPhoto.storage.location;
+      const oldThumb = oldMain.replace('/main/', '/thumb/');
+
+      setPickerPayload(item, item.build(addSourceImage(1600, 1200, 420000)));
+      const picked = await choose(page, ROUTE_BLUE, 'album');
+
+      assertPickerContract(item.api, 2);
+      assert.equal(picked.ok, true);
+      assert.equal(page.data.routePhoto.status, 'preview');
+      assert.equal(page.data.routePhoto.hasPhoto, true);
+      assert.match(page.data.routePhoto.statusText, /确认后替换现有照片/);
+
+      page.cancelRoutePhoto({
+        currentTarget: { dataset: { routeId: ROUTE_BLUE } }
+      });
+
+      assert.equal(page.data.routePhoto.status, 'saved', '取消预览回到已保存');
+      assert.equal(page.data.routePhoto.photoId, oldPhoto.photoId);
+      assert.equal(page.data.routePhoto.mainPath, oldMain);
+      assert.equal(page.data.routePhoto.canPreview, true);
+      assert.equal(photoIndex().photos.length, 1);
+      assert.equal(photoIndex().photos[0].photoId, oldPhoto.photoId);
+      assert.equal(virtual.files.has(oldMain), true, '旧主图未被删除');
+      assert.equal(virtual.files.has(oldThumb), true, '旧缩略图未被删除');
+      page.previewRoutePhoto({
+        currentTarget: { dataset: { routeId: ROUTE_BLUE } }
+      });
+      assert.equal(wxLog.previews[wxLog.previews.length - 1].current, oldMain);
+    } finally {
+      restore();
+    }
+  });
+}
+
+test('picker-contract 快速新建在两种返回形状下都保留“创建并选中”流程', async () => {
+  const cases = [PICKER_CASES[0], PICKER_CASES[2]];
+  for (const item of cases) {
+    const page = await createPage();
+    await tapStart(page);
+    const filePath = addSourceImage(1200, 800, 400000);
+    const restore = installPickerCase(item, {
+      payload: item.build(filePath)
+    });
+    try {
+      page.toggleQuickRoute();
+      page.onQuickRouteNameInput({ detail: { value: '契约新建线' } });
+      const picked = await page.chooseQuickRoutePhoto({
+        currentTarget: { dataset: { source: 'album' } }
+      });
+
+      assertPickerContract(item.api);
+      assertPickerOptions(item, 'album');
+      assert.equal(picked.ok, true);
+      assert.equal(page.data.quickRoutePhoto.path, filePath);
+      assert.match(page.data.quickRoutePhoto.statusText, /创建线路后保存/);
+
+      await page.createQuickRoute();
+      const routeId = page.data.selectedRoute.id;
+      assert.equal(page.data.quickRouteVisible, false);
+      assert.equal(page.data.quickRoutePhoto, null);
+      assert.equal(page.data.selectedRoute.name, '契约新建线');
+      assert.equal(page.state.activeRouteId, routeId, '新建后仍选中该线路');
+      assert.equal(page.data.routePhoto.status, 'saved');
+      assert.equal(virtual.files.has(page.data.routePhoto.mainPath), true);
+      assert.equal(photoOfRoute(routeId).storage.location, page.data.routePhoto.mainPath);
+      assert.equal(
+        page.data.routes.some(route => route.id === routeId),
+        true,
+        '新建线路保留在列表中'
+      );
+    } finally {
+      restore();
+    }
+    page.onUnload();
+    resetHarness();
+  }
 });

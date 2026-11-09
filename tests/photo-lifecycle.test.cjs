@@ -378,24 +378,38 @@ global.wx = {
     });
     options.success({ tempFilePath: filePath });
   },
-  chooseMedia(options, success, fail) {
-    const done = success || options.success;
-    const failed = fail || options.fail;
+  chooseMedia(options) {
+    // 官方签名只有一个选项对象：success/fail 放在对象里。
+    // 收到第 2 个及以后的参数时立即抛错，避免未修复的源码静静等不到回调。
+    if (arguments.length !== 1) {
+      throw new Error(
+        'chooseMedia 只接受一个官方选项对象；实际收到 ' + arguments.length +
+          ' 个参数，success/fail 必须放进同一个对象里'
+      );
+    }
+    if (
+      !options ||
+      typeof options !== 'object' ||
+      typeof options.success !== 'function' ||
+      typeof options.fail !== 'function'
+    ) {
+      throw new Error('chooseMedia 的选项对象里应同时包含 success 与 fail');
+    }
     wxLog.mediaCalls.push({
       count: options.count,
       mediaType: options.mediaType,
       sourceType: options.sourceType
     });
     if (wxLog.chooseBehavior === 'cancel') {
-      failed({ errMsg: 'chooseMedia:fail cancel' });
+      options.fail({ errMsg: 'chooseMedia:fail cancel' });
       return;
     }
     if (wxLog.chooseBehavior === 'deny') {
-      failed({ errMsg: 'chooseMedia:fail auth deny' });
+      options.fail({ errMsg: 'chooseMedia:fail auth deny' });
       return;
     }
     if (wxLog.chooseBehavior === 'error') {
-      failed({ errMsg: 'chooseMedia:fail mock system error' });
+      options.fail({ errMsg: 'chooseMedia:fail mock system error' });
       return;
     }
     const filePath = addSourceImage(
@@ -403,7 +417,7 @@ global.wx = {
       wxLog.sourceHeight,
       wxLog.sourceBytes
     );
-    done({ tempFiles: [{ tempFilePath: filePath }], type: 'image' });
+    options.success({ tempFiles: [{ tempFilePath: filePath }], type: 'image' });
   },
   showModal(options) {
     wxLog.modalCalls.push({

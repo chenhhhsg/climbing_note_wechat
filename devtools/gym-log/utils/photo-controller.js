@@ -54,21 +54,65 @@ function hasText(value) {
 }
 
 /**
+ * 选择器返回形状解析：两种接口字段不同，且都可能在字段存在但为空时返回。
+ * - wx.chooseMedia：tempFiles[].tempFilePath
+ * - wx.chooseImage：tempFilePaths[] 或 tempFiles[].path
+ * 两个字段同时出现时各自取第一个非空值，不假设哪一个先有值，
+ * 也不把空数组当成可用路径。
+ */
+function firstTextIn(list) {
+  if (!Array.isArray(list)) return '';
+  for (let index = 0; index < list.length; index += 1) {
+    if (hasText(list[index])) return list[index];
+  }
+  return '';
+}
+
+function firstTempFileText(list, key) {
+  if (!Array.isArray(list)) return '';
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index];
+    if (item && hasText(item[key])) return item[key];
+  }
+  return '';
+}
+
+function pickPathFromMediaResult(result) {
+  if (!result) return '';
+  return (
+    firstTempFileText(result.tempFiles, 'tempFilePath') ||
+    firstTextIn(result.tempFilePaths)
+  );
+}
+
+function pickPathFromImageResult(result) {
+  if (!result) return '';
+  return (
+    firstTextIn(result.tempFilePaths) ||
+    firstTempFileText(result.tempFiles, 'path') ||
+    firstTempFileText(result.tempFiles, 'tempFilePath')
+  );
+}
+
+/**
  * 选择器返回值统一成 { ok, path } 或 { ok:false, cancelled, permissionDenied, error }。
  * 相册与拍照只通过 sourceType 区分，count 固定 1，避免一次选多张。
+ *
+ * wx.chooseMedia 与 wx.chooseImage 的官方签名都只接收一个选项对象，
+ * success/fail 必须放进这个对象；拆成第二、三个参数时微信不会回调，
+ * 页面会一直停在“选择中”，所以这里严格只传一个对象。
+ * 两个接口只按存在性选一次：取消或失败都不改投另一个选择器，避免掩盖取消。
  */
 function choosePhotoFile(source) {
   return new Promise(resolve => {
+    let picker = '';
     const onSuccess = result => {
-      const list =
-        (result && (result.tempFiles || result.tempFilePaths)) || [];
-      const first = list[0];
       const path =
-        typeof first === 'string'
-          ? first
-          : first && first.tempFilePath;
+        picker === 'image'
+          ? pickPathFromImageResult(result)
+          : pickPathFromMediaResult(result);
       if (!hasText(path)) {
-        resolve({ ok: false, error: '选择器没有返回照片路径' });
+        resolve({ ok: false, cancelled: false, error: '选择器没有返回照片路径' });
         return;
       }
       resolve({ ok: true, path });
@@ -85,36 +129,34 @@ function choosePhotoFile(source) {
 
     try {
       if (typeof wx === 'undefined') {
-        resolve({ ok: false, error: '当前环境不支持选择照片' });
+        resolve({
+          ok: false,
+          cancelled: false,
+          error: '当前环境不支持选择照片'
+        });
         return;
       }
+      const options = {
+        count: 1,
+        sourceType: [source],
+        success: onSuccess,
+        fail: onFail
+      };
       if (typeof wx.chooseMedia === 'function') {
-        wx.chooseMedia(
-          {
-            count: 1,
-            mediaType: ['image'],
-            sourceType: [source]
-          },
-          onSuccess,
-          onFail
-        );
+        picker = 'media';
+        options.mediaType = ['image'];
+        wx.chooseMedia(options);
         return;
       }
       if (typeof wx.chooseImage === 'function') {
-        wx.chooseImage(
-          {
-            count: 1,
-            sizeType: ['compressed'],
-            sourceType: [source]
-          },
-          onSuccess,
-          onFail
-        );
+        picker = 'image';
+        options.sizeType = ['compressed'];
+        wx.chooseImage(options);
         return;
       }
-      resolve({ ok: false, error: '当前环境不支持选择照片' });
+      resolve({ ok: false, cancelled: false, error: '当前环境不支持选择照片' });
     } catch (error) {
-      resolve({ ok: false, error: errorText(error) });
+      resolve({ ok: false, cancelled: false, error: errorText(error) });
     }
   });
 }
