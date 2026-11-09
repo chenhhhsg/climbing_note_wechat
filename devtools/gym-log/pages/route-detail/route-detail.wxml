@@ -152,6 +152,12 @@
               bindtap="dismissDetailPhotoFailure"
             >收起</button>
           </view>
+          <button
+            wx:if="{{routePhoto.manageSpaceVisible}}"
+            id="detail-photo-space-manage"
+            class="secondary-button photo-action"
+            bindtap="openSpaceManager"
+          >返回今日页管理照片空间</button>
         </block>
 
         <block wx:elif="{{routePhoto.status === 'missing'}}">

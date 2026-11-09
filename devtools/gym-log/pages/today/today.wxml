@@ -57,6 +57,56 @@
       <text class="photo-notice-hint">点击收起</text>
     </view>
 
+    <!-- 照片空间：实际受管文件计量、提醒线与可重建缓存管理 -->
+    <view wx:if="{{photoSpace}}" id="photo-space-card" class="card photo-space-card">
+      <view class="photo-space-head">
+        <text class="card-title">照片空间（本机试用）</text>
+        <text class="photo-space-usage">{{photoSpace.usageText}}</text>
+      </view>
+      <view class="photo-space-track">
+        <view
+          class="photo-space-fill {{photoSpace.over ? 'photo-space-fill-over' : (photoSpace.warn ? 'photo-space-fill-warn' : '')}}"
+          style="width: {{photoSpace.percent}}%;"
+        ></view>
+      </view>
+      <text wx:if="{{photoSpace.detailText}}" class="photo-space-detail">{{photoSpace.detailText}}</text>
+      <text wx:if="{{photoSpace.currentDatasetText}}" class="photo-space-detail">{{photoSpace.currentDatasetText}}</text>
+      <text wx:if="{{photoSpace.warningText}}" id="photo-space-warn" class="photo-space-warn">{{photoSpace.warningText}}</text>
+      <text wx:if="{{photoSpace.missingThumbText}}" class="photo-space-hint">{{photoSpace.missingThumbText}}</text>
+      <text wx:if="{{photoSpace.errorText}}" class="photo-space-error">{{photoSpace.errorText}}</text>
+
+      <view class="photo-space-actions">
+        <button
+          id="photo-space-manage"
+          class="secondary-button photo-space-action"
+          bindtap="togglePhotoSpaceManage"
+        >{{photoSpaceExpanded ? '收起管理' : '管理照片空间'}}</button>
+        <button
+          id="photo-space-clear-cache"
+          class="secondary-button photo-space-action"
+          bindtap="clearPhotoCache"
+        >清除可重建缓存</button>
+      </view>
+
+      <view wx:if="{{photoSpaceExpanded}}" id="photo-space-details" class="photo-space-details">
+        <text class="photo-space-hint">预算 {{photoSpace.budgetText}} · 提醒线 {{photoSpace.warnText}} · 更换余量 {{photoSpace.reserveText}}（应用自设上限，不是设备可用空间保证）</text>
+        <text class="photo-space-hint">普通清缓存只删除可重建缩略图；主图、照片索引、场次、尝试、备注和待确认操作均保留。</text>
+        <text wx:if="{{photoSpace.orphanText}}" class="photo-space-hint">{{photoSpace.orphanText}}</text>
+        <view class="photo-space-actions">
+          <button
+            id="photo-space-rebuild"
+            class="secondary-button photo-space-action"
+            bindtap="rebuildPhotoThumbs"
+          >重建缺失缩略图</button>
+          <button
+            id="photo-space-cleanup"
+            class="secondary-button photo-space-action"
+            bindtap="cleanupPhotoOrphans"
+          >清理无引用文件</button>
+        </view>
+      </view>
+    </view>
+
     <!-- 开始场次：日期默认今天，可选历史日期回放跨天 -->
     <view wx:if="{{sessionFormVisible}}" class="card session-form">
       <text class="card-title">{{sessionFormTitle}}</text>
@@ -228,6 +278,12 @@
                 bindtap="dismissRoutePhotoFailure"
               >收起</button>
             </view>
+            <button
+              wx:if="{{routePhoto.manageSpaceVisible}}"
+              id="photo-space-open"
+              class="secondary-button photo-action"
+              bindtap="openPhotoSpaceManager"
+            >{{routePhoto.manageSpaceText}}</button>
           </block>
 
           <block wx:elif="{{routePhoto.status === 'missing'}}">

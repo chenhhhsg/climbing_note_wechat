@@ -36,7 +36,15 @@ function formatBytes(bytes) {
 function bytesText(photo) {
   if (!photo || !photo.bytes) return '';
   const main = formatBytes(photo.bytes.main);
-  const thumb = formatBytes(photo.bytes.thumb);
+  // 缩略图按“当前可用”的字节显示：读取结果带 thumbnail 时以它为准
+  // （清缓存后为 0，重建后为真实文件大小），没有该字段才退回记录快照。
+  const thumbBytes =
+    photo.thumbnail && typeof photo.thumbnail === 'object'
+      ? photo.thumbnail.available
+        ? photo.thumbnail.bytes
+        : 0
+      : photo.bytes.thumb;
+  const thumb = formatBytes(thumbBytes);
   if (main && thumb) return '主图 ' + main + ' · 缩略图 ' + thumb;
   return main ? '主图 ' + main : '';
 }
@@ -46,21 +54,65 @@ function hasText(value) {
 }
 
 /**
+ * 选择器返回形状解析：两种接口字段不同，且都可能在字段存在但为空时返回。
+ * - wx.chooseMedia：tempFiles[].tempFilePath
+ * - wx.chooseImage：tempFilePaths[] 或 tempFiles[].path
+ * 两个字段同时出现时各自取第一个非空值，不假设哪一个先有值，
+ * 也不把空数组当成可用路径。
+ */
+function firstTextIn(list) {
+  if (!Array.isArray(list)) return '';
+  for (let index = 0; index < list.length; index += 1) {
+    if (hasText(list[index])) return list[index];
+  }
+  return '';
+}
+
+function firstTempFileText(list, key) {
+  if (!Array.isArray(list)) return '';
+  for (let index = 0; index < list.length; index += 1) {
+    const item = list[index];
+    if (item && hasText(item[key])) return item[key];
+  }
+  return '';
+}
+
+function pickPathFromMediaResult(result) {
+  if (!result) return '';
+  return (
+    firstTempFileText(result.tempFiles, 'tempFilePath') ||
+    firstTextIn(result.tempFilePaths)
+  );
+}
+
+function pickPathFromImageResult(result) {
+  if (!result) return '';
+  return (
+    firstTextIn(result.tempFilePaths) ||
+    firstTempFileText(result.tempFiles, 'path') ||
+    firstTempFileText(result.tempFiles, 'tempFilePath')
+  );
+}
+
+/**
  * 选择器返回值统一成 { ok, path } 或 { ok:false, cancelled, permissionDenied, error }。
  * 相册与拍照只通过 sourceType 区分，count 固定 1，避免一次选多张。
+ *
+ * wx.chooseMedia 与 wx.chooseImage 的官方签名都只接收一个选项对象，
+ * success/fail 必须放进这个对象；拆成第二、三个参数时微信不会回调，
+ * 页面会一直停在“选择中”，所以这里严格只传一个对象。
+ * 两个接口只按存在性选一次：取消或失败都不改投另一个选择器，避免掩盖取消。
  */
 function choosePhotoFile(source) {
   return new Promise(resolve => {
+    let picker = '';
     const onSuccess = result => {
-      const list =
-        (result && (result.tempFiles || result.tempFilePaths)) || [];
-      const first = list[0];
       const path =
-        typeof first === 'string'
-          ? first
-          : first && first.tempFilePath;
+        picker === 'image'
+          ? pickPathFromImageResult(result)
+          : pickPathFromMediaResult(result);
       if (!hasText(path)) {
-        resolve({ ok: false, error: '选择器没有返回照片路径' });
+        resolve({ ok: false, cancelled: false, error: '选择器没有返回照片路径' });
         return;
       }
       resolve({ ok: true, path });
@@ -77,36 +129,34 @@ function choosePhotoFile(source) {
 
     try {
       if (typeof wx === 'undefined') {
-        resolve({ ok: false, error: '当前环境不支持选择照片' });
+        resolve({
+          ok: false,
+          cancelled: false,
+          error: '当前环境不支持选择照片'
+        });
         return;
       }
+      const options = {
+        count: 1,
+        sourceType: [source],
+        success: onSuccess,
+        fail: onFail
+      };
       if (typeof wx.chooseMedia === 'function') {
-        wx.chooseMedia(
-          {
-            count: 1,
-            mediaType: ['image'],
-            sourceType: [source]
-          },
-          onSuccess,
-          onFail
-        );
+        picker = 'media';
+        options.mediaType = ['image'];
+        wx.chooseMedia(options);
         return;
       }
       if (typeof wx.chooseImage === 'function') {
-        wx.chooseImage(
-          {
-            count: 1,
-            sizeType: ['compressed'],
-            sourceType: [source]
-          },
-          onSuccess,
-          onFail
-        );
+        picker = 'image';
+        options.sizeType = ['compressed'];
+        wx.chooseImage(options);
         return;
       }
-      resolve({ ok: false, error: '当前环境不支持选择照片' });
+      resolve({ ok: false, cancelled: false, error: '当前环境不支持选择照片' });
     } catch (error) {
-      resolve({ ok: false, error: errorText(error) });
+      resolve({ ok: false, cancelled: false, error: errorText(error) });
     }
   });
 }
@@ -124,6 +174,58 @@ function askRemovePhoto() {
           '这条线路的主照片只在本机保存一份，移除后需要重新添加。现有场次、尝试和备注不会改变。',
         confirmText: '移除',
         cancelText: '保留',
+        success(result) {
+          resolve(Boolean(result && result.confirm));
+        },
+        fail() {
+          resolve(false);
+        }
+      });
+    } catch (error) {
+      resolve(false);
+    }
+  });
+}
+
+function askClearCache() {
+  return new Promise(resolve => {
+    if (typeof wx === 'undefined' || typeof wx.showModal !== 'function') {
+      resolve(false);
+      return;
+    }
+    try {
+      wx.showModal({
+        title: '清除可重建缓存？',
+        content:
+          '只删除可以重新生成的缩略图。线路主照片、照片索引、场次、尝试、备注和待确认操作都会保留；清完后可重建缩略图。',
+        confirmText: '清除缓存',
+        cancelText: '取消',
+        success(result) {
+          resolve(Boolean(result && result.confirm));
+        },
+        fail() {
+          resolve(false);
+        }
+      });
+    } catch (error) {
+      resolve(false);
+    }
+  });
+}
+
+function askCleanupOrphans() {
+  return new Promise(resolve => {
+    if (typeof wx === 'undefined' || typeof wx.showModal !== 'function') {
+      resolve(false);
+      return;
+    }
+    try {
+      wx.showModal({
+        title: '清理无引用文件？',
+        content:
+          '只删除照片索引和未完成操作都不再引用的本服务文件；仍被线路引用的主照片不会被删除。',
+        confirmText: '清理',
+        cancelText: '取消',
         success(result) {
           resolve(Boolean(result && result.confirm));
         },
@@ -209,7 +311,11 @@ function buildView(base, op) {
     cameraText: '拍照',
     albumText: '从相册选择',
     listActionText: '加照片',
-    busy: false
+    busy: false,
+    // 容量不足时页面显示原因与“管理照片空间”入口；仍保留重试。
+    spaceIssue: false,
+    manageSpaceVisible: false,
+    manageSpaceText: '管理照片空间'
   };
 
   const phase = op ? op.phase : source.status;
@@ -283,6 +389,8 @@ function buildView(base, op) {
   view.retryVisible = true;
   view.dismissVisible = true;
   view.busy = false;
+  view.spaceIssue = op.code === 'space-insufficient';
+  view.manageSpaceVisible = view.spaceIssue;
 
   if (op.kind === 'remove') {
     if (op.associationRemoved) {
@@ -304,16 +412,118 @@ function buildView(base, op) {
   view.sourceVisible = true;
   view.retryText = '重试保存';
   if (view.hasPhoto) {
-    view.statusText = '新照片保存失败，旧照片仍可用';
+    view.statusText = view.spaceIssue
+      ? '照片空间不足，新照片未保存，旧照片仍可用'
+      : '新照片保存失败，旧照片仍可用';
     view.canPreview = Boolean(view.mainPath);
     view.cameraText = '拍照更换';
     view.albumText = '从相册更换';
     view.listActionText = '重试保存';
   } else {
-    view.statusText = '照片保存失败';
+    view.statusText = view.spaceIssue ? '照片空间不足，未保存' : '照片保存失败';
     view.listActionText = '重试';
   }
   return view;
+}
+
+/**
+ * 照片空间卡片视图：占用、提醒线、预算与管理入口。
+ * 所有数字来自实际文件计量结果，不用单张照片估值。
+ */
+function buildSpaceView(result) {
+  if (!result) {
+    return {
+      status: 'loading',
+      usageText: '统计中…',
+      percent: 0,
+      warn: false,
+      over: false,
+      warningText: '',
+      detailText: '',
+      missingThumbText: '',
+      orphanText: '',
+      errorText: ''
+    };
+  }
+  if (!result.ok) {
+    return {
+      status: 'error',
+      usageText: '暂时无法统计',
+      percent: 0,
+      warn: false,
+      over: false,
+      warningText: '',
+      detailText: '',
+      missingThumbText: '',
+      orphanText: '',
+      errorText: result.error || '照片空间统计失败'
+    };
+  }
+
+  const policy = result.policy || {};
+  const warn = result.warn === true;
+  const over = result.overBudget === true;
+  let warningText = '';
+  if (over) {
+    warningText =
+      '照片占用已超过可保存预算 ' +
+      formatBytes(policy.budgetBytes) +
+      '；新增或更换会被阻止，已有照片、场次和尝试不受影响。可清除可重建缓存或移除照片后再试。';
+  } else if (warn) {
+    warningText =
+      '照片占用已达到提醒线 ' +
+      formatBytes(policy.warnBytes) +
+      '；请在需要时管理照片空间。';
+  }
+
+  const missingThumbText = result.missingThumbs && result.missingThumbs.length
+    ? '有 ' + result.missingThumbs.length + ' 张缩略图缺失，可从主图重建'
+    : '';
+  const orphanText = result.orphanBytes > 0
+    ? '无引用文件占用 ' + formatBytes(result.orphanBytes)
+    : '';
+
+  return {
+    status: 'ready',
+    usageText:
+      formatBytes(result.totalBytes) +
+      ' / ' +
+      formatBytes(policy.budgetBytes),
+    percent: result.percent || 0,
+    warn,
+    over,
+    warningText,
+    totalBytes: result.totalBytes || 0,
+    mainBytes: result.mainBytes || 0,
+    thumbBytes: result.thumbBytes || 0,
+    fileCount: result.fileCount || 0,
+    photoCount: result.photoCount || 0,
+    currentDatasetPhotoCount: result.currentDatasetPhotoCount || 0,
+    detailText:
+      result.photoCount +
+      ' 张照片 · 主图 ' +
+      formatBytes(result.mainBytes) +
+      (result.thumbBytes > 0
+        ? ' · 缩略图 ' + formatBytes(result.thumbBytes)
+        : '') +
+      ' · 文件 ' +
+      result.fileCount +
+      ' 个',
+    currentDatasetText:
+      '当前数据集 ' + result.currentDatasetPhotoCount + ' 张',
+    missingThumbText,
+    orphanText,
+    missingThumbCount:
+      (result.missingThumbs && result.missingThumbs.length) || 0,
+    orphanBytes: result.orphanBytes || 0,
+    budgetBytes: policy.budgetBytes || 0,
+    warnBytes: policy.warnBytes || 0,
+    reserveBytes: policy.reserveBytes || 0,
+    budgetText: formatBytes(policy.budgetBytes),
+    warnText: formatBytes(policy.warnBytes),
+    reserveText: formatBytes(policy.reserveBytes),
+    errorText: ''
+  };
 }
 
 function createPhotoController(page, options) {
@@ -324,6 +534,9 @@ function createPhotoController(page, options) {
   let service = null;
   let currentDatasetId = '';
   let ready = null;
+  // 数据集切换或清空页面状态时递增；旧回调据此失效，不把旧照片写进新数据集视图。
+  let generation = 0;
+  let spaceState = null;
   const views = {};
   const ops = {};
   const seqs = {};
@@ -340,6 +553,8 @@ function createPhotoController(page, options) {
   }
 
   function clearState() {
+    generation += 1;
+    spaceState = null;
     Object.keys(views).forEach(key => delete views[key]);
     Object.keys(ops).forEach(key => delete ops[key]);
     Object.keys(seqs).forEach(key => delete seqs[key]);
@@ -417,6 +632,25 @@ function createPhotoController(page, options) {
     return buildView(views[routeId], ops[routeId]);
   }
 
+  /**
+   * 发起异步用户交互前固定上下文（服务实例 + 数据集 + 代次）。
+   * 原生选择器、来源 action sheet、确认弹窗和异步读取都可能晚于重置/切线/切页返回，
+   * 旧回调必须按发起时的上下文校验，不能把旧操作绑到新数据集上。
+   */
+  function captureContext() {
+    return {
+      service,
+      datasetId: currentDatasetId,
+      generation
+    };
+  }
+
+  function isContextCurrent(context) {
+    return Boolean(context) && context.service === service &&
+      context.datasetId === currentDatasetId &&
+      context.generation === generation;
+  }
+
   function hasStoredPhoto(routeId) {
     const base = views[routeId];
     return Boolean(
@@ -442,6 +676,9 @@ function createPhotoController(page, options) {
       return Promise.resolve({ ok: false, error: '照片正在保存' });
     }
 
+    // 选择器是异步的原生调用：在打开前就固定数据集/代次，
+    // 期间发生重置或切换后丢弃这次选择，不把旧结果当成新数据集的操作。
+    const context = captureContext();
     return choosePhotoFile(source).then(outcome => {
       if (!alive()) return outcome;
       if (!outcome.ok) {
@@ -456,20 +693,42 @@ function createPhotoController(page, options) {
         }
         return outcome;
       }
+      if (!isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          cancelled: false,
+          error: '试用数据或线路已变化，已放弃这次选择'
+        };
+      }
       ops[routeId] = {
         phase: 'preview',
         kind: hasStoredPhoto(routeId) ? 'replace' : 'add',
         opId: makeOpId(),
-        sourcePath: outcome.path
+        sourcePath: outcome.path,
+        datasetId: currentDatasetId,
+        generation
       };
       onChange();
       return outcome;
     });
   }
 
+  /**
+   * 旧数据集/已清空状态的迟到回调直接丢弃：
+   * 不回写视图、不提示“已保存”、不触发新的照片读取。
+   */
+  function isStaleOperation(routeId, op) {
+    if (!op) return true;
+    if (op.datasetId !== currentDatasetId) return true;
+    if (op.generation !== generation) return true;
+    return ops[routeId] !== op;
+  }
+
   function handleResult(routeId, op, result) {
     delete inflight[op.opId];
     if (!alive()) return result;
+    if (isStaleOperation(routeId, op)) return result;
     bumpSeq(routeId);
 
     if (result && result.ok) {
@@ -478,7 +737,7 @@ function createPhotoController(page, options) {
         views[routeId] = { status: 'none' };
         onChange();
         notify('照片已移除，可重新添加。', '已移除');
-        return result;
+        return refreshSpace().then(() => result);
       }
       views[routeId] = serviceView({
         ok: true,
@@ -492,20 +751,23 @@ function createPhotoController(page, options) {
       });
       onChange();
       notify('已保存到本机', '已保存到本机');
-      return loadOne(routeId).then(() => result, () => result);
+      return loadOne(routeId)
+        .then(() => refreshSpace())
+        .then(() => result, () => result);
     }
 
     if (op.kind === 'remove' && result && result.associationRemoved) {
       views[routeId] = { status: 'none' };
       op.phase = 'failed';
       op.associationRemoved = true;
+      op.code = (result && result.code) || '';
       op.error = result.error || '照片文件删除失败';
       onChange();
       notify(
         '照片已从线路移除，但本机文件未清理；可点「重试清理」。',
         ''
       );
-      return result;
+      return refreshSpace().then(() => result);
     }
 
     const code = result && result.code;
@@ -520,11 +782,14 @@ function createPhotoController(page, options) {
         ''
       );
       onChange();
-      return loadOne(routeId).then(() => result, () => result);
+      return loadOne(routeId)
+        .then(() => refreshSpace())
+        .then(() => result, () => result);
     }
 
     op.phase = 'failed';
     op.associationRemoved = false;
+    op.code = (result && result.code) || '';
     op.error =
       (result && result.error) || '照片操作失败，可重试';
     onChange();
@@ -534,12 +799,15 @@ function createPhotoController(page, options) {
         : '照片保存失败，可重试；已有的线路和尝试记录不受影响。',
       ''
     );
-    return loadOne(routeId).then(() => result, () => result);
+    return loadOne(routeId)
+      .then(() => refreshSpace())
+      .then(() => result, () => result);
   }
 
   function runOp(routeId, op) {
     op.phase = 'saving';
     op.error = '';
+    op.code = '';
     op.associationRemoved = false;
     if (alive()) onNotice('', { toast: '' });
     onChange();
@@ -583,7 +851,9 @@ function createPhotoController(page, options) {
       phase: 'preview',
       kind: hasStoredPhoto(routeId) ? 'replace' : 'add',
       opId: makeOpId(),
-      sourcePath
+      sourcePath,
+      datasetId: currentDatasetId,
+      generation
     };
     ops[routeId] = op;
     onChange();
@@ -623,13 +893,18 @@ function createPhotoController(page, options) {
       notify('照片正在处理，请稍后再移除', '');
       return Promise.resolve(null);
     }
+    // 确认弹窗期间可能发生重置：按发起时上下文校验，旧确认不作用于新数据集。
+    const context = captureContext();
     return askRemovePhoto().then(confirmed => {
       if (!confirmed || !alive()) return null;
+      if (!isContextCurrent(context)) return null;
       const op = {
         phase: 'saving',
         kind: 'remove',
         opId: makeOpId(),
-        sourcePath: ''
+        sourcePath: '',
+        datasetId: currentDatasetId,
+        generation
       };
       ops[routeId] = op;
       return runOp(routeId, op);
@@ -667,8 +942,194 @@ function createPhotoController(page, options) {
     );
   }
 
+  function refreshSpace() {
+    if (!service) {
+      spaceState = null;
+      return Promise.resolve(null);
+    }
+    return Promise.resolve(ready)
+      .then(() => service.getSpaceUsage())
+      .then(
+        result => {
+          spaceState = result;
+          if (alive()) onChange();
+          return result;
+        },
+        error => {
+          spaceState = {
+            ok: false,
+            error: '照片空间统计失败：' + errorText(error)
+          };
+          if (alive()) onChange();
+          return spaceState;
+        }
+      );
+  }
+
+  function spaceView() {
+    return buildSpaceView(spaceState);
+  }
+
+  function reloadKnownPhotos() {
+    return load(Object.keys(views));
+  }
+
+  /**
+   * 普通清缓存：只清可重建缩略图。保存中拒绝执行，避免误删正在写入的文件。
+   * 完成后重新读取已展示线路，主图仍可预览、列表回退到主图路径。
+   */
+  function clearCache() {
+    if (!service) {
+      return Promise.resolve({ ok: false, error: '照片服务未初始化' });
+    }
+    if (hasActiveOperation()) {
+      notify('照片正在保存或移除，请稍后再清除缓存', '');
+      return Promise.resolve({ ok: false, error: '照片操作进行中' });
+    }
+    const context = captureContext();
+    return askClearCache().then(confirmed => {
+      if (!confirmed || !alive()) {
+        return { ok: false, cancelled: true };
+      }
+      if (!isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          error: '试用数据已重置，已取消这次清除缓存'
+        };
+      }
+      return service.clearRebuildableCache().then(
+        result => {
+          const finish = reloadKnownPhotos().then(
+            () => refreshSpace()
+          );
+          return finish.then(() => {
+            if (result && result.ok) {
+              notify(
+                '已清除可重建缓存；主图、照片关联、场次和尝试均未改变。',
+                '已清除缓存'
+              );
+            } else {
+              notify(
+                (result && result.error) ||
+                  '清除缓存未完全成功，可重试或查看无引用文件。',
+                ''
+              );
+            }
+            return result;
+          });
+        },
+        error => {
+          const result = {
+            ok: false,
+            error: '清除缓存失败：' + errorText(error)
+          };
+          notify(result.error, '');
+          return result;
+        }
+      );
+    });
+  }
+
+  function rebuildThumbs() {
+    if (!service) {
+      return Promise.resolve({ ok: false, error: '照片服务未初始化' });
+    }
+    if (hasActiveOperation()) {
+      notify('照片正在保存或移除，请稍后再重建缩略图', '');
+      return Promise.resolve({ ok: false, error: '照片操作进行中' });
+    }
+    const context = captureContext();
+    return service.rebuildMissingThumbnails().then(
+      result => {
+        const finish = reloadKnownPhotos().then(() => refreshSpace());
+        return finish.then(() => {
+          // 重置/切换期间完成的旧重建只回报结果，不往新上下文提示。
+          if (!isContextCurrent(context)) return result;
+          if (result && result.ok) {
+            notify(
+              result.rebuiltCount > 0
+                ? '已从主图重建 ' + result.rebuiltCount + ' 张缩略图。'
+                : '所有缩略图都已存在，无需重建。',
+              ''
+            );
+          } else {
+            notify(
+              (result && result.error) ||
+                '部分缩略图未能重建；主图未受影响，可稍后重试。',
+              ''
+            );
+          }
+          return result;
+        });
+      },
+      error => {
+        const result = {
+          ok: false,
+          error: '重建缩略图失败：' + errorText(error)
+        };
+        notify(result.error, '');
+        return result;
+      }
+    );
+  }
+
+  function cleanupOrphans() {
+    if (!service) {
+      return Promise.resolve({ ok: false, error: '照片服务未初始化' });
+    }
+    if (hasActiveOperation()) {
+      notify('照片正在保存或移除，请稍后再清理无引用文件', '');
+      return Promise.resolve({ ok: false, error: '照片操作进行中' });
+    }
+    const context = captureContext();
+    return askCleanupOrphans().then(confirmed => {
+      if (!confirmed || !alive()) {
+        return { ok: false, cancelled: true };
+      }
+      if (!isContextCurrent(context)) {
+        return {
+          ok: false,
+          staleContext: true,
+          error: '试用数据已重置，已取消这次清理'
+        };
+      }
+      return service.cleanupOrphans().then(
+        result => {
+          const finish = reloadKnownPhotos().then(() => refreshSpace());
+          return finish.then(() => {
+            if (result && result.ok) {
+              notify(
+                result.deleted && result.deleted.length
+                  ? '已清理 ' + result.deleted.length + ' 个无引用文件。'
+                  : '没有发现可清理的无引用文件。',
+                ''
+              );
+            } else {
+              notify(
+                (result && result.error) ||
+                  '无引用文件未完全清理，可重试。',
+                ''
+              );
+            }
+            return result;
+          });
+        },
+        error => {
+          const result = {
+            ok: false,
+            error: '清理无引用文件失败：' + errorText(error)
+          };
+          notify(result.error, '');
+          return result;
+        }
+      );
+    });
+  }
+
   /**
    * 重置试用数据前清空页面上的照片展示；不删除照片文件或索引。
+   * generation 递增后，重置前发出的照片回调不会再写回页面。
    */
   function clear() {
     clearState();
@@ -681,6 +1142,8 @@ function createPhotoController(page, options) {
     view,
     hasStoredPhoto,
     hasActiveOperation,
+    captureContext,
+    isContextCurrent,
     choose,
     beginPreview,
     confirm,
@@ -690,6 +1153,11 @@ function createPhotoController(page, options) {
     remove,
     preview,
     countPhotos,
+    refreshSpace,
+    spaceView,
+    clearCache,
+    rebuildThumbs,
+    cleanupOrphans,
     clear,
     pickFile: choosePhotoFile,
     getService() {
@@ -703,5 +1171,6 @@ function createPhotoController(page, options) {
 
 module.exports = {
   createPhotoController,
-  buildView
+  buildView,
+  buildSpaceView
 };

@@ -232,6 +232,16 @@ Page({
     return this._photoUi.load([routeId]);
   },
 
+  /**
+   * 空间不足等需要管理照片时，回到今日页并直接展开照片空间管理区。
+   * 不在这里删除主图或索引。
+   */
+  openSpaceManager() {
+    if (typeof wx !== 'undefined' && typeof wx.reLaunch === 'function') {
+      wx.reLaunch({ url: TODAY_URL + '?manageSpace=1' });
+    }
+  },
+
   refreshView() {
     const state = this.state;
 
