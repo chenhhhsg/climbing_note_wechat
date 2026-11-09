@@ -576,7 +576,7 @@ test('G08 缓存损坏时显示可见错误，重置后可重新开始', async (
   page.retryLoad();
   assert.match(page.data.loadError, /格式损坏/);
 
-  page.resetTrialData();
+  await page.resetTrialData();
   assert.equal(page.data.loadError, '');
   assert.equal(page.data.storageError, '');
   assert.equal(page.data.sessionFormVisible, true);
