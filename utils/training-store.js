@@ -868,6 +868,70 @@ function saveAttempt(input) {
 }
 
 /**
+ * 补改某一把的备注（T017）。
+ *
+ * 输入：{ note, routeId?, sessionId? }，把次由第一个参数的稳定 ID 指定。
+ * 返回：{ ok, code, error, archive, attempt }
+ * code：saved / missing / conflict / unreadable / write-failed。
+ *
+ * 与「改为未完成」一样是原位改正：只改这一把的 note，把数、ID、序号、结果、
+ * 场次、时间与其他把次一律不动。传了 routeId/sessionId 时先核对归属，不属于
+ * 当前上下文的更正一律拒绝（conflict），避免同名或同色线路之间串备注。
+ * 每次都先读最新档案再改，因此两个页面的迟到操作不会互相覆盖。
+ */
+function setAttemptNote(attemptId, input) {
+  const data = input || {};
+  if (!hasText(attemptId)) {
+    return { ok: false, code: 'missing', error: '缺少要补备注的把次 ID', archive: null };
+  }
+
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return { ok: false, code: 'unreadable', error: loaded.error, archive: loaded.archive };
+  }
+  const current = loaded.archive;
+  const attempt = current.attempts.find(item => item.id === attemptId) || null;
+  if (!attempt) {
+    return { ok: false, code: 'missing', error: '找不到这一把，可能已被重置', archive: current };
+  }
+  if (hasText(data.routeId) && data.routeId !== attempt.routeId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前线路，未改备注', archive: current };
+  }
+  if (hasText(data.sessionId) && data.sessionId !== attempt.sessionId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前场次，未改备注', archive: current };
+  }
+
+  const note = typeof data.note === 'string' ? data.note.trim() : '';
+  // 备注没变（重复提交、连点同一条）：不写盘，直接复用现有记录。
+  if (note === attempt.note) {
+    return {
+      ok: true,
+      code: 'saved',
+      duplicate: true,
+      error: '',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+
+  const next = clone(current);
+  const target = next.attempts.find(item => item.id === attemptId);
+  target.note = note;
+  const saved = saveArchive(next);
+  if (!saved.ok) {
+    return { ok: false, code: 'write-failed', error: saved.error, archive: current };
+  }
+  return {
+    ok: true,
+    code: 'saved',
+    duplicate: false,
+    error: '',
+    archive: next,
+    attempt: clone(target)
+  };
+}
+
+/**
  * 「改为未完成」：把指定原把次从「完攀」原位改成「未完成」。
  *
  * 输入：{ attemptId, routeId?, sessionId?, generation? }
@@ -979,6 +1043,7 @@ module.exports = {
   saveAttempt,
   routeCompletion,
   routeCorrectionTargets,
+  setAttemptNote,
   correctAttempt,
   // 转出线路规则，页面与档案层共用同一份判定。
   CLIMB_TYPES: rules.CLIMB_TYPES,
