@@ -887,12 +887,13 @@ test('PL03 页面清缓存只删缩略图：主图、索引、场次、尝试、
   const page = await createPage();
   await tapStart(page);
   await tapRoute(page, ROUTE_BLUE);
-  await record(page, 'fail');
+  // 抱石首次完攀后该线不再新增，完攀留在 BLUE，待确认留在另一条仍可记录的 RED。
+  await record(page, 'send');
   await savePhoto(page, ROUTE_BLUE, 'album');
   const blueMain = page.data.routePhoto.mainPath;
 
   await tapRoute(page, ROUTE_RED);
-  await record(page, 'send');
+  await record(page, 'fail');
   await savePhoto(page, ROUTE_RED, 'album');
   const redMain = page.data.routePhoto.mainPath;
 

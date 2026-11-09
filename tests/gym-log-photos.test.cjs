@@ -607,7 +607,8 @@ test('PU01 不添加照片也能建线、记两把和备注；相册/拍照参�
   assert.equal(storage.has(INDEX_KEY), false, '无照片时不写照片索引');
 
   await record(page, 'fail');
-  await record(page, 'send');
+  // 抱石首次完攀后不再新增：唯一一把完攀留到最后，照片操作仍不应锁住记尝试。
+  await record(page, 'fail');
   page.openNoteEditor({
     currentTarget: { dataset: { attemptId: page.data.attempts[1].id } }
   });
@@ -660,7 +661,7 @@ test('PU01 不添加照片也能建线、记两把和备注；相册/拍照参�
   assert.equal(photoIndex().routes.length, 1);
 
   // 照片操作不锁住记尝试；已有照片不会生成第二张
-  await record(page, 'fail');
+  await record(page, 'send');
   assert.equal(page.data.attempts.length, 3);
   assert.equal(photoIndex().photos.length, 1);
 });
