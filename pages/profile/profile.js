@@ -8,6 +8,10 @@
  * - 再按 T016 的口径清本机命名空间里明确标记为可重建的键；
  * - 本机训练档案、线路主照片索引、仍被引用的原图、场次、把次与备注都保留，
  *   命名空间外的键（旧试用工程、旧云缓存）也一律不动。
+ *
+ * T020：本页新增「体能自测」入口（pages/fitness-test）。自测记录存在独立命名空间
+ * `climbingNote.fitness.v1.`，不是可重建缓存，因此上面的清缓存同样不会清掉它；
+ * 本页不读也不写自测记录，只做跳转。
  */
 const app = getApp();
 const trainingStore = require('../../utils/training-store.js');
@@ -60,6 +64,16 @@ Page({
       fail: (err) => {
         console.log('获取用户信息失败：', err);
       }
+    });
+  },
+
+  /**
+   * 跳转到 9c 攀岩体能自测页（T020）
+   * 只做跳转：不读、不写自测记录，也不动本机训练档案与照片。
+   */
+  goToFitnessTest() {
+    wx.navigateTo({
+      url: '/pages/fitness-test/fitness-test'
     });
   },
 

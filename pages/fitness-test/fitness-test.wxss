@@ -1,0 +1,365 @@
+/**
+ * 9c 攀岩体能自测页样式（沿用正式页面样式：白卡片 + 深色主按钮）
+ */
+
+.page {
+  padding: 20rpx;
+  padding-bottom: 60rpx;
+}
+
+.section-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-bottom: 16rpx;
+}
+
+/* 说明区 */
+.intro-card {
+  background-color: #ffffff;
+}
+
+.intro-text {
+  display: block;
+  font-size: 26rpx;
+  color: #555555;
+  line-height: 1.6;
+  margin-bottom: 12rpx;
+}
+
+/* 错误与提示 */
+.error-card {
+  border-left: 8rpx solid #f44336;
+}
+
+.error-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #f44336;
+  margin-bottom: 10rpx;
+}
+
+.error-text {
+  display: block;
+  font-size: 26rpx;
+  color: #333333;
+  margin-bottom: 10rpx;
+}
+
+.error-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #999999;
+  margin-bottom: 20rpx;
+}
+
+.storage-error,
+.notice {
+  background-color: #fff3e0;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  margin-bottom: 20rpx;
+}
+
+.storage-error-text,
+.notice-text {
+  display: block;
+  font-size: 26rpx;
+  color: #b26a00;
+}
+
+.storage-error-hint,
+.notice-hint {
+  display: block;
+  font-size: 22rpx;
+  color: #c08a3e;
+  margin-top: 6rpx;
+}
+
+.notice {
+  background-color: #e3f2fd;
+}
+
+.notice-text {
+  color: #1565c0;
+}
+
+.notice-hint {
+  color: #5c93c4;
+}
+
+/* 表单 */
+.form-card {
+  background-color: #ffffff;
+}
+
+.form-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #999999;
+  margin-bottom: 16rpx;
+}
+
+.form-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 18rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.form-label {
+  font-size: 28rpx;
+  color: #333333;
+}
+
+.form-input {
+  flex: 1;
+  margin-left: 20rpx;
+  text-align: right;
+  font-size: 28rpx;
+  color: #2c3e50;
+}
+
+.picker-value {
+  font-size: 28rpx;
+  color: #2c3e50;
+  padding: 6rpx 16rpx;
+  background-color: #f5f5f5;
+  border-radius: 8rpx;
+  min-width: 140rpx;
+  text-align: center;
+}
+
+.item-block {
+  padding: 20rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.item-title {
+  display: block;
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-bottom: 12rpx;
+}
+
+.item-block .picker-value {
+  display: inline-block;
+}
+
+.item-block .form-input {
+  display: block;
+  width: 100%;
+  margin: 12rpx 0 0 0;
+  text-align: left;
+  background-color: #f7f7f7;
+  border-radius: 8rpx;
+  padding: 16rpx;
+  box-sizing: border-box;
+}
+
+.item-hint {
+  display: block;
+  font-size: 22rpx;
+  color: #999999;
+  margin-top: 10rpx;
+}
+
+.form-error {
+  display: block;
+  font-size: 26rpx;
+  color: #f44336;
+  margin: 16rpx 0;
+}
+
+.save-button {
+  margin-top: 30rpx;
+}
+
+.secondary-button {
+  margin-top: 16rpx;
+  background-color: #ffffff;
+  color: #2c3e50;
+  border: 2rpx solid #2c3e50;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+  padding: 16rpx 30rpx;
+  text-align: center;
+}
+
+.secondary-button::after {
+  border: none;
+}
+
+.small-button {
+  display: inline-block;
+  margin: 0 12rpx 0 0;
+  padding: 10rpx 24rpx;
+  font-size: 24rpx;
+}
+
+.text-button {
+  background-color: transparent;
+  color: #2c3e50;
+  font-size: 26rpx;
+  margin-top: 16rpx;
+  padding: 10rpx 0;
+  text-align: center;
+}
+
+.text-button::after {
+  border: none;
+}
+
+/* 即时结果 */
+.result-row {
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.result-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.result-label {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.result-status {
+  font-size: 24rpx;
+  color: #2196f3;
+}
+
+.result-points {
+  font-size: 28rpx;
+  color: #2c3e50;
+}
+
+.result-raw {
+  display: block;
+  font-size: 24rpx;
+  color: #666666;
+  margin-top: 6rpx;
+}
+
+.result-level {
+  display: block;
+  font-size: 22rpx;
+  color: #999999;
+  margin-top: 4rpx;
+}
+
+.result-total {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-top: 20rpx;
+}
+
+.grade-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12rpx 0;
+}
+
+.grade-label {
+  font-size: 26rpx;
+  color: #666666;
+}
+
+.grade-value {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+/* 记录列表 */
+.record-row {
+  padding: 20rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.record-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.record-date {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #2c3e50;
+}
+
+.record-total {
+  font-size: 28rpx;
+  color: #2c3e50;
+}
+
+.record-grade {
+  display: block;
+  font-size: 24rpx;
+  color: #666666;
+  margin-top: 6rpx;
+}
+
+.record-items {
+  display: block;
+  font-size: 24rpx;
+  color: #999999;
+  margin-top: 6rpx;
+}
+
+.record-version {
+  display: block;
+  font-size: 22rpx;
+  color: #bbbbbb;
+  margin-top: 6rpx;
+}
+
+.record-actions {
+  margin-top: 14rpx;
+}
+
+/* 两次比较 */
+.compare-summary {
+  display: block;
+  font-size: 24rpx;
+  color: #666666;
+  margin-bottom: 8rpx;
+}
+
+.compare-row {
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #f0f0f0;
+}
+
+.compare-label {
+  display: block;
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #2c3e50;
+  margin-bottom: 6rpx;
+}
+
+.compare-value {
+  display: block;
+  font-size: 24rpx;
+  color: #555555;
+}
+
+.compare-delta {
+  display: block;
+  font-size: 24rpx;
+  color: #2196f3;
+  margin-top: 6rpx;
+}

@@ -24,6 +24,14 @@
 
   <!-- 功能菜单 -->
   <view class="menu-section">
+    <view class="menu-item" bindtap="goToFitnessTest">
+      <view class="menu-left">
+        <text class="menu-icon">🧗</text>
+        <text class="menu-text">体能自测</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
     <view class="menu-item" bindtap="feedback">
       <view class="menu-left">
         <text class="menu-icon">💬</text>
