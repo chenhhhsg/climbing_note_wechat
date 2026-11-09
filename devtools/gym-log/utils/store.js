@@ -410,8 +410,9 @@ function saveState(state) {
  * - 抱石（含缺 climbType 的旧 V 级线路）首次完攀后不再新增任何把次；
  * - 历史已有多条完攀时 sendCount 保持原数目，closed 仍为真；
  * - 顶绳和先锋可以重复完攀，不因此关闭入口；
- * - 误点完攀可原把改正：latestSendId 给出最近一把可识别的已确认完攀，
- *   canCorrect 表示现在可以发起「改为未完成」；已有待更正时不再重复发起。
+ * - 误点完攀可原把改正：latestSendId 给出最近一把可识别的已确认完攀（页面的逐个
+ *   目标与控件见 routeCorrectionTargets / correctionRows）；canCorrect 表示现在
+ *   可以发起「改为未完成」；已有待更正时不再重复发起。
  * 只读计算，不写缓存、不迁移旧数据、不生成逐把明细。
  */
 function routeCompletion(state, routeId) {
@@ -456,7 +457,8 @@ function routeCompletion(state, routeId) {
   // 抱石首次完攀：已确认或仍在待确认都关闭全部新增入口；顶绳、先锋可重复。
   const closed = isBoulder && (hasSend || hasPendingSend);
 
-  // 最近一把可识别的已确认完攀就是「改为未完成」的明确目标；多条历史完攀时逐次更正。
+  // 最近一把可识别的已确认完攀（只作概览提示）；用户实际要改哪一把由
+  // routeCorrectionTargets / correctionRows 逐把列出来，页面为每一把渲染独立控件。
   const target = routeRules.latestSendAttempt(attempts, route.id);
   const correcting = isBoulder && corrections.length > 0;
 
@@ -661,6 +663,149 @@ function correctionStatusNotice(status) {
     default:
       return '这条线路没有可改正的已确认完攀：只有抱石的已完攀把次能改成未完成。';
   }
+}
+
+/**
+ * 「改为未完成」的逐个目标（T015 返工）：这条抱石线所有仍可更正的已确认完攀。
+ *
+ * 每条都带自己的原把次 ID 与原把次说明（日期/场次/第几把），让页面为**每一把**
+ * 单独渲染一个控件——控件与目标一一对应。这样更正成功后展示的那一行只会变成
+ * 只读结果，不会在同一个位置自动接上下一把，双击/连点原坐标也就写不到另一把。
+ *
+ * 顺序与历史一致：最近的一把在前（序号倒序，序号相同时后追加的先）。只读挑选：
+ * 不写缓存、不生成明细、不迁移旧数据；非抱石线路（绳攀可重复完攀）返回空数组。
+ */
+function routeCorrectionTargets(state, routeId) {
+  if (!state || !hasText(routeId)) return [];
+  const route = (state.routes || []).find(item => item.id === routeId);
+  if (!route || !routeRules.isBoulderRoute(route)) return [];
+
+  return (state.attempts || [])
+    .map((item, index) => ({ item, index }))
+    .filter(
+      entry => entry.item.routeId === route.id && entry.item.result === 'send'
+    )
+    .sort((left, right) => {
+      const seqDiff = (right.item.seq || 0) - (left.item.seq || 0);
+      return seqDiff !== 0 ? seqDiff : right.index - left.index;
+    })
+    .map(entry => {
+      const target = sendTargetText(state, entry.item.id);
+      if (!target) return null;
+      return {
+        attemptId: target.attemptId,
+        routeId: target.routeId,
+        sessionId: target.sessionId,
+        label: target.label,
+        contextText: target.contextText,
+        seq: entry.item.seq || 0
+      };
+    })
+    .filter(target => Boolean(target));
+}
+
+/**
+ * 页面要渲染的「改为未完成」行（T015 返工）。
+ *
+ * = 仍可更正的目标（routeCorrectionTargets）+ 本页面实例刚改正过的把次（只回读）。
+ * 两者按原把次顺序合成同一份：更正成功的那一把**留在原来的位置**变成只读结果，
+ * 后面的那一把仍然是自己那行、自己的控件——同一位置绝不会自动接上下一把。
+ * 于是「一次连续点击只改所示的那一笔」，再点原坐标只会读到已改结果。
+ *
+ * options（都由页面按自己的实例状态传入，缺失即按空处理）：
+ * - corrected：{ attemptId: {label, contextText, seq, ...} } 本实例刚改正过的把次；
+ *   这些行虽然已不是「完攀」，仍留在原地，避免下面的行上移补到同一坐标。
+ * - savingId：正在保存的原把次 ID（只有这一行显示「保存中」）。
+ * - failures：{ attemptId: 失败提示 } 更正未确认、需要按同一把重试的行。
+ *
+ * 每行都带好 `context`（原把次 + 线路/场次/世代/数据集/归属），页面直接绑进
+ * `data-*` 即可；只读计算，不写缓存。
+ */
+function correctionRows(state, routeId, options) {
+  const data = options || {};
+  const corrected = data.corrected || {};
+  const failures = data.failures || {};
+  const savingId = hasText(data.savingId) ? data.savingId : '';
+  const generation = (state && state.generation) || '';
+  const datasetId = (state && state.datasetId) || '';
+
+  const build = (row, rowState, statusText) => ({
+    attemptId: row.attemptId,
+    routeId: row.routeId,
+    sessionId: row.sessionId,
+    label: row.label,
+    contextText: row.contextText,
+    seq: row.seq || 0,
+    state: rowState,
+    statusText: hasText(statusText) ? statusText : '',
+    // 另一行正在保存时不再并发派发（保存端也只允许一条在途），按钮一并置灰。
+    disabled: Boolean(savingId) && savingId !== row.attemptId,
+    // 只读回读行不带 dataset：它渲染出来的是结果文字，没有可点的按钮，
+    // 因而同一位置不会再有能落到另一把的写操作。
+    context:
+      rowState === 'corrected'
+        ? null
+        : {
+            attemptId: row.attemptId,
+            routeId: row.routeId,
+            sessionId: row.sessionId,
+            generation,
+            datasetId,
+            ownerId: TRIAL_OWNER_ID
+          }
+  });
+
+  const rows = [];
+  const seen = {};
+  routeCorrectionTargets(state, routeId).forEach(target => {
+    seen[target.attemptId] = true;
+    const failure = failures[target.attemptId] || '';
+    if (savingId === target.attemptId) {
+      rows.push(build(target, 'correcting', '更正保存中…'));
+    } else if (failure) {
+      rows.push(
+        build(target, 'retry', '更正未确认 · 点「重试改为未完成」按同一把重试')
+      );
+    } else {
+      rows.push(build(target, 'correctable', ''));
+    }
+  });
+
+  Object.keys(corrected).forEach(attemptId => {
+    // 还在目标里的说明这一把仍是完攀（例如另一次更正失败），按目标处理。
+    if (seen[attemptId]) return;
+    const row = corrected[attemptId];
+    if (!row || row.routeId !== routeId) return;
+    rows.push(build(row, 'corrected', row.statusText || '已改为未完成'));
+  });
+
+  // 合回原顺序：已改正的那一把留在它原来的位置，下一把不会补到它上面。
+  rows.sort((left, right) => (right.seq || 0) - (left.seq || 0));
+  return rows;
+}
+
+/**
+ * 刚改正成功那一把的「只读结果行」（T015 返工）。
+ *
+ * 更正成功后这一把已是「未完成」，不再是目标；但它在列表里的位置不能消失，
+ * 否则下面的行会上移、把同一坐标让给下一把的控件。页面把这一行记在实例里，
+ * 下次渲染仍在原位置显示只读结果（`correctionRows` 的 corrected 输入）。
+ * 只读计算：找不到原把次或原场次时返回 null，页面按无该行处理。
+ */
+function correctionReadbackRow(state, attemptId, statusText) {
+  if (!state || !hasText(attemptId)) return null;
+  const attempt = (state.attempts || []).find(item => item.id === attemptId);
+  const text = sendTargetText(state, attemptId);
+  if (!attempt || !text) return null;
+  return {
+    attemptId,
+    routeId: text.routeId,
+    sessionId: text.sessionId,
+    label: text.label,
+    contextText: text.contextText,
+    seq: attempt.seq || 0,
+    statusText: hasText(statusText) ? statusText : '已改为未完成'
+  };
 }
 
 /**
@@ -904,6 +1049,9 @@ module.exports = {
   routeCompletion,
   latestSendForCorrection,
   pendingCorrectionFor,
+  routeCorrectionTargets,
+  correctionRows,
+  correctionReadbackRow,
   sendTargetText,
   correctionDataset,
   correctionTargetFromDataset,

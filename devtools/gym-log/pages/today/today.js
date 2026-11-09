@@ -30,7 +30,10 @@ const {
   pendingCorrectionFor,
   // 「改为未完成」的共用逻辑（与详情页同一份）：
   // 目标校验、入队、请求格式与回执结清都在 utils/store.js。
-  sendTargetText,
+  // correctionRows 逐把列出可更正的原把次：每一把各有自己的控件，
+  // 更正成功后在原位置变成只读结果，不会在同一个按钮上自动接下一把。
+  correctionRows,
+  correctionReadbackRow,
   correctionDataset,
   correctionTargetFromDataset,
   correctionStatusNotice,
@@ -54,7 +57,7 @@ const {
   createPhotoController,
   buildView
 } = require('../../utils/photo-controller.js');
-const { nextTrialDatasetId, TRIAL_OWNER_ID } = require('../../utils/trial-profile.js');
+const { nextTrialDatasetId } = require('../../utils/trial-profile.js');
 
 const TRIAL_BADGE = '本地试用 · 虚构数据';
 const TRIAL_NOTE = '不连接云端，仅保存在本机';
@@ -172,17 +175,14 @@ Page({
     routeRepeatable: true,
     routeSendCount: 0,
     routeStateText: '',
-    // 误点完攀的更正入口（T015 返工）：已完攀时隐藏「完攀」，只留「改为未完成」。
-    // routeCorrectionLabel/ContextText 说明改正的是哪一把，避免改错原把次。
+    // 误点完攀的更正入口（T015 返工）：已完攀时隐藏「完攀」。
+    // 每一把仍可更正的原把次各占一行、各带自己的控件（写明日期/场次/第几把）；
+    // 更正成功的那一把留在原位置变成只读结果，同一位置不会自动接上下一把。
     routeCorrectable: false,
+    routeCorrectionRows: [],
     routeCorrectionPending: false,
     routeCorrectionSaving: false,
-    routeCorrectionLabel: '',
-    routeCorrectionContextText: '',
     routeCorrectionStatusText: '',
-    // 渲染这一把时带下来的更正上下文（attemptId 与原把次的线路/场次/世代/数据集/归属）：
-    // 点按只按这里的原把次改正，参数缺失或过时不会改成「最新一把」。
-    routeCorrectionContext: null,
     // 待确认的完攀（T015）：与已确认的「已完攀」分开展示；跨场时给出回原场次的入口。
     routePendingSend: false,
     pendingSendOtherSession: false,
@@ -229,6 +229,9 @@ Page({
     // 更正（改为未完成）与普通保存分开派发：同一原把次只派发一次。
     this._dispatchingCorrections = {};
     this._correctionFailures = {};
+    // 本实例刚改正成功的把次：留在原位显示只读结果，避免下面的行上移、
+    // 把同一坐标让给下一把的控件。onShow/刷新都不重置它。
+    this._correctedRows = {};
     this._saveDelayMs = DEFAULT_SAVE_DELAY_MS;
     this._unloaded = false;
     this._photoUi = null;
@@ -547,52 +550,30 @@ Page({
       ? routeCompletion(state, selectedRoute.id)
       : null;
 
-    // 误点完攀的更正入口（T015 返工）：已完攀时不再给「完攀」，只留「改为未完成」。
-    // 目标是最新一把可识别的已确认完攀；已有待更正时沿用同一条，不重复发起。
+    // 误点完攀的更正入口（T015 返工）：不再有「自动挑下一把」的单个按钮。
+    // 这条线每一把仍可更正的已确认完攀各占一行、各带自己的控件（写明日期/场次/第几把），
+    // 本实例刚改好的那一把留在原位置变成只读结果。于是同一个位置永远不会自动接上
+    // 下一把：双击/连点原坐标只会读到「已改为未完成」，不会写到另一把。
     const pendingCorrection = selectedRoute
       ? pendingCorrectionFor(state, selectedRoute.id)
       : null;
-    const correctionTarget = selectedRoute
-      ? sendTargetText(
-          state,
-          pendingCorrection
-            ? pendingCorrection.attemptId
-            : (completion && completion.latestSendId) || ''
-        )
-      : null;
-    const correctionSaving = Boolean(
-      pendingCorrection &&
-        (this._dispatchingCorrections[pendingCorrection.attemptId] ||
-          this.data.savingCorrectionId === pendingCorrection.attemptId)
+    const correctionRowList = selectedRoute
+      ? correctionRows(state, selectedRoute.id, {
+          corrected: this._correctedRows,
+          savingId: this.data.savingCorrectionId || '',
+          failures: this._correctionFailures
+        })
+      : [];
+    // 「还有能点的更正控件」才叫可更正；只剩只读回读时不再给更正入口。
+    const routeCorrectable = correctionRowList.some(
+      row => row.state !== 'corrected'
     );
-    const correctionFailure = pendingCorrection
-      ? this._correctionFailures[pendingCorrection.attemptId] || ''
-      : '';
-    // 已完攀的抱石线只要还有可更正的原把次（或已有待更正）就给更正入口。
-    const routeCorrectable = Boolean(
-      selectedRoute &&
-        completion &&
-        completion.completed &&
-        ((completion.canCorrect && correctionTarget) || pendingCorrection)
-    );
-    // 把「这一把是哪一个原把次」连同渲染当时的线路/场次/世代/数据集/归属一起渲染出去：
-    // 点按一律按这份上下文改正，页面刷新或换了编号空间后旧按钮不会再改到别的把次。
-    const routeCorrectionContext =
-      routeCorrectable && correctionTarget && selectedRoute
-        ? {
-            attemptId: correctionTarget.attemptId,
-            routeId: selectedRoute.id,
-            sessionId: correctionTarget.sessionId,
-            generation: state.generation || '',
-            datasetId: state.datasetId || '',
-            ownerId: TRIAL_OWNER_ID
-          }
-        : null;
     let routeCorrectionStatusText = '';
-    if (correctionSaving) {
+    if (correctionRowList.some(row => row.state === 'correcting')) {
       routeCorrectionStatusText = '更正保存中…';
-    } else if (correctionFailure) {
-      routeCorrectionStatusText = '更正未确认 · 点「改为未完成」按同一把重试';
+    } else if (correctionRowList.some(row => row.state === 'retry')) {
+      routeCorrectionStatusText =
+        '更正未确认 · 点「重试改为未完成」按同一把重试';
     }
 
     // 待确认的完攀（T015）：与已确认的「已完攀」分开。
@@ -665,14 +646,10 @@ Page({
             ? '完攀待确认'
             : '',
       routeCorrectable,
+      routeCorrectionRows: correctionRowList,
       routeCorrectionPending: Boolean(pendingCorrection),
-      routeCorrectionSaving: correctionSaving,
-      routeCorrectionLabel: correctionTarget ? correctionTarget.label : '',
-      routeCorrectionContextText: correctionTarget
-        ? correctionTarget.contextText
-        : '',
+      routeCorrectionSaving: Boolean(this.data.savingCorrectionId),
       routeCorrectionStatusText,
-      routeCorrectionContext,
       routePendingSend,
       pendingSendOtherSession,
       pendingSendHint,
@@ -1693,6 +1670,12 @@ Page({
     } else {
       delete this._correctionFailures[attemptId];
     }
+    // 改成功后把这一把记成「原位只读结果」：它在更正列表里的位置不消失，
+    // 下面的行不上移，同一坐标不会被下一把的控件接管。
+    if (decision.code === 'corrected' || decision.code === 'noop') {
+      const readback = correctionReadbackRow(decision.state, attemptId);
+      if (readback) this._correctedRows[attemptId] = readback;
+    }
     this.state = decision.state;
     this.setData({
       storageError: decision.storageError,
@@ -2113,6 +2096,8 @@ Page({
     this._editingAttemptId = '';
     this._pendingFailures = {};
     this._correctionFailures = {};
+    // 编号空间换新：刚改正的只读结果属于旧数据集，一并清掉。
+    this._correctedRows = {};
     this._quickPhotoSource = '';
     const resetForm = defaultFormSelection();
     if (this._photoUi) {

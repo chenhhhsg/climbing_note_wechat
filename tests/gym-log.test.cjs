@@ -164,27 +164,81 @@ async function tapResult(page, result) {
   await page.recordAttempt({ currentTarget: { dataset: { result } } });
 }
 
-// 「改为未完成」按钮的真实点按：按页面渲染当时带下来的 routeCorrectionContext 构造
-// 事件，与 WXML 里 data-* 传进 dataset 的字段一一对应（data-attempt-id → dataset.attemptId）。
-function correctEvent(page) {
-  const context = page.data.routeCorrectionContext || {};
+// 「改为未完成」按**真实渲染出来的控件**取：
+// 今日页取 routeCorrectionRows（每把一行），详情页取每把记录行上的
+// correctionState / correctionContext（控件就在这一把记录自己那一行）。
+// 顺序与列表一致：index 0 就是最上面那个控件。
+function renderedCorrectionControls(page) {
+  if (Array.isArray(page.data.groups)) {
+    const rows = [];
+    page.data.groups.forEach(group => {
+      (group.attempts || []).forEach(attempt => {
+        if (!attempt.correctionState) return;
+        rows.push({
+          attemptId: attempt.id,
+          state: attempt.correctionState,
+          disabled: Boolean(attempt.correctionDisabled),
+          context: attempt.correctionContext
+        });
+      });
+    });
+    return rows;
+  }
+  return (page.data.routeCorrectionRows || []).map(row => ({
+    attemptId: row.attemptId,
+    state: row.state,
+    disabled: Boolean(row.disabled),
+    context: row.context
+  }));
+}
+
+function correctControlFor(page, attemptId) {
+  return (
+    renderedCorrectionControls(page).find(row => row.attemptId === attemptId) ||
+    null
+  );
+}
+
+function datasetOf(context) {
   return {
-    currentTarget: {
-      dataset: {
-        attemptId: context.attemptId,
-        routeId: context.routeId,
-        sessionId: context.sessionId,
-        generation: context.generation,
-        datasetId: context.datasetId,
-        ownerId: context.ownerId
-      }
-    }
+    attemptId: context.attemptId,
+    routeId: context.routeId,
+    sessionId: context.sessionId,
+    generation: context.generation,
+    datasetId: context.datasetId,
+    ownerId: context.ownerId
   };
 }
 
-// 点渲染当时的「改为未完成」；要模拟旧页面时先取一次 correctEvent 再刷新后重放。
-async function tapCorrect(page) {
-  await page.correctSend(correctEvent(page));
+// 按 WXML 的 data-* → dataset 映射（data-attempt-id → dataset.attemptId）构造真实点按事件。
+// 该位置此刻已是只读结果（或没有控件）时返回 null：这次点击不构成任何写操作。
+function correctEventAt(page, index) {
+  const control = renderedCorrectionControls(page)[index];
+  if (!control || control.state === 'corrected' || !control.context) return null;
+  return { currentTarget: { dataset: datasetOf(control.context) } };
+}
+
+function correctEvent(page, index) {
+  return correctEventAt(page, index === undefined ? 0 : index);
+}
+
+// 点第 index 个真实渲染出来的控件（默认第一个）。
+// 位置已变成只读结果时不做任何事——正是要回归的「同坐标第二次点击」。
+async function tapCorrect(page, index) {
+  const event = correctEventAt(page, index === undefined ? 0 : index);
+  if (!event) return undefined;
+  return page.correctSend(event);
+}
+
+// 单独点某一把自己的控件：模拟用户为「另一把」重新做出的明确选择。
+async function tapCorrectFor(page, attemptId) {
+  const control = correctControlFor(page, attemptId);
+  if (!control || control.state === 'corrected' || !control.context) {
+    return undefined;
+  }
+  return page.correctSend({
+    currentTarget: { dataset: datasetOf(control.context) }
+  });
 }
 
 async function retryPending(page, opId) {
@@ -4195,9 +4249,11 @@ test('T015-A7 误点完攀可原把改正：只翻那一把的结果，模型与
   assert.equal(page.data.routeCompleted, true, '确认成功后仍显示「已完攀」');
   assert.equal(page.data.routeCorrectable, true, '已完攀时给出「改为未完成」入口');
   assert.equal(page.data.routeCorrectionPending, false);
-  assert.equal(page.data.routeCorrectionLabel, '第 3 把', '明确说清改正的是哪一把');
-  assert.match(page.data.routeCorrectionContextText, /2026-11-05/);
-  assert.match(page.data.routeCorrectionContextText, /第 1 场/);
+  assert.equal(page.data.routeCorrectionRows.length, 1, '每一把各占一行');
+  assert.equal(page.data.routeCorrectionRows[0].label, '第 3 把', '明确说清改正的是哪一把');
+  assert.match(page.data.routeCorrectionRows[0].contextText, /2026-11-05/);
+  assert.match(page.data.routeCorrectionRows[0].contextText, /第 1 场/);
+  assert.equal(page.data.routeCorrectionRows[0].state, 'correctable');
   // 已完攀的分支只留回看与更正：不再渲染「完攀」结果按钮
   const todayWxml = read(PAGE_WXML);
   const completedBlock = todayWxml.slice(
@@ -4207,9 +4263,22 @@ test('T015-A7 误点完攀可原把改正：只翻那一把的结果，模型与
   assert.ok(completedBlock.length > 0);
   assert.ok(!completedBlock.includes('data-result="send"'), '已完攀后不再出现「完攀」按钮');
   assert.ok(!completedBlock.includes('data-result="fail"'), '普通「未完成」也不在已完攀分支里');
-  assert.ok(completedBlock.includes('id="route-correct-send"'), '给出明确的「改为未完成」按钮');
-  assert.ok(completedBlock.includes('bindtap="correctSend"'));
-  assert.match(read(PAGE_WXSS), /\.route-correct-send/, '更正按钮样式');
+  // 更正控件逐把渲染在本场记录下方（不在结果条里），每把各自带 dataset
+  const correctionCard = todayWxml.slice(
+    todayWxml.indexOf('id="route-correction"'),
+    todayWxml.indexOf('wx:if="{{selectedRoute && !noteEditor}}"')
+  );
+  assert.ok(correctionCard.includes('wx:for="{{routeCorrectionRows}}"'), '每把一行');
+  assert.ok(
+    correctionCard.includes('id="route-correct-{{item.attemptId}}"'),
+    '每把各有一个「改为未完成」按钮'
+  );
+  assert.ok(correctionCard.includes('bindtap="correctSend"'));
+  assert.ok(
+    correctionCard.includes('data-attempt-id="{{item.context.attemptId}}"'),
+    '按钮把这一把自己的原把次带进 dataset'
+  );
+  assert.match(read(PAGE_WXSS), /\.route-correct-button/, '更正按钮样式');
 
   const before = {
     attempts: savedState().attempts.length,
@@ -4272,8 +4341,16 @@ test('T015-A7 误点完攀可原把改正：只翻那一把的结果，模型与
   assert.equal(detail.data.groups[0].attempts[2].resultText, '未完成');
   assert.equal(detail.data.groups[0].attempts[2].note, '完攀那把的备注');
   const detailWxml = read(DETAIL_WXML);
-  assert.ok(detailWxml.includes('id="detail-correct-send"'), '详情给出同一份更正入口');
+  assert.ok(
+    detailWxml.includes('id="detail-correct-{{attempt.id}}"'),
+    '详情页每把记录各有一个更正控件'
+  );
+  assert.ok(detailWxml.includes('id="detail-corrected-{{attempt.id}}"'), '改完变只读结果');
   assert.ok(detailWxml.includes('bindtap="correctSend"'));
+  assert.ok(
+    detailWxml.includes('class="attempt-correct-slot"'),
+    '控件与只读结果占同一固定高度格，改完不塌陷'
+  );
   assert.ok(
     detailWxml.includes('wx:if="{{!isLegacy && route && canRecordAgain}}"') &&
       detailWxml.includes('id="record-again"'),
@@ -4490,8 +4567,21 @@ test('T015-A7 历史多条完攀逐次更正：优先最近一把，读取不重
   assert.equal(page.data.loadError, '', '旧缓存仍可读');
   assert.equal(page.data.routeCompleted, true);
   assert.equal(page.data.routeCorrectable, true);
-  assert.equal(page.data.routeCorrectionLabel, '第 1 把', '优先最近可识别的那一把');
-  assert.match(page.data.routeCorrectionContextText, /2026-10-27/, '那是第二个场次的那一把');
+  assert.equal(page.data.routeCorrectionRows.length, 3, '三把历史完攀各占一行');
+  assert.equal(
+    page.data.routeCorrectionRows[0].attemptId,
+    'legacy-attempt-3',
+    '第一行是最近可识别的那一把'
+  );
+  assert.equal(page.data.routeCorrectionRows[0].label, '第 1 把');
+  assert.match(page.data.routeCorrectionRows[0].contextText, /2026-10-27/);
+  [
+    page.data.routeCorrectionRows[1],
+    page.data.routeCorrectionRows[2]
+  ].forEach(row => {
+    assert.equal(row.state, 'correctable', '每把都各自带一个控件');
+    assert.ok(row.context.attemptId, '每把都带自己的原把次 dataset');
+  });
 
   const routesBefore = JSON.stringify(savedState().routes);
   await tapCorrect(page);
@@ -4511,19 +4601,43 @@ test('T015-A7 历史多条完攀逐次更正：优先最近一把，读取不重
   assert.equal(ledgerRows(), 0, '旧数据本就没有账本行，更正不凭空空建一行');
   assert.equal(page.data.routeCompleted, true, '还有两把完攀');
   assert.equal(page.data.routeSendCount, 2);
-  assert.equal(page.data.routeCorrectionLabel, '第 2 把');
+  // 已改的那一行留在原位置变成只读结果，下一把仍是自己那一行，没有被补位
+  assert.equal(page.data.routeCorrectionRows.length, 3);
+  assert.equal(page.data.routeCorrectionRows[0].attemptId, 'legacy-attempt-3');
+  assert.equal(page.data.routeCorrectionRows[0].state, 'corrected');
+  assert.equal(
+    page.data.routeCorrectionRows[0].context,
+    null,
+    '只读结果行没有 dataset，点不出第二次写操作'
+  );
+  assert.equal(page.data.routeCorrectionRows[1].attemptId, 'legacy-attempt-2');
+  assert.equal(page.data.routeCorrectionRows[1].state, 'correctable');
 
-  await tapCorrect(page);
+  // 另一把必须**显式再点它自己那一行**才会更正
+  await tapCorrectFor(page, 'legacy-attempt-2');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-2').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
+    'send',
+    '没点的最后一把仍然保留'
+  );
   assert.equal(page.data.routeSendCount, 1);
-  assert.equal(page.data.routeCorrectionLabel, '第 1 把');
 
-  await tapCorrect(page);
+  await tapCorrectFor(page, 'legacy-attempt-1');
   state = savedState();
   assert.equal(state.attempts.filter(item => item.result === 'send').length, 0);
   assert.equal(state.pendingCorrections.length, 0);
   assert.equal(page.data.routeCompleted, false);
-  assert.equal(page.data.routeCorrectable, false);
+  assert.equal(page.data.routeCorrectable, false, '没有可点的控件后不再给更正入口');
   assert.equal(page.data.routeStateText, '');
+  assert.equal(
+    page.data.routeCorrectionRows.filter(row => row.state === 'corrected').length,
+    3,
+    '三把都留在原位显示只读结果'
+  );
   // 三条历史完攀都有明细，改完后可以正常再记
   await tapResult(page, 'fail');
   assert.equal(savedState().attempts.length, 4);
@@ -4553,7 +4667,8 @@ test('T015-A7 更正只作用于这条抱石的已确认完攀：不碰未确认
     pending: savedState().pendingSaves.length,
     ledgerSend: ledgerState().records.filter(row => row.result === 'send').length
   };
-  await tapCorrect(page);
+  // 未确认时根本没有控件；即便按旧渲染构造一个空 dataset 也不挑「最新一把」
+  await page.correctSend({ currentTarget: { dataset: {} } });
   assert.equal(savedState().attempts.length, before.attempts, '不新增把次');
   assert.equal(savedState().pendingSaves.length, before.pending, '不消费原待确认');
   assert.equal(savedState().pendingCorrections.length, 0, '未确认时不生成待更正');
@@ -4780,14 +4895,19 @@ test('T015-A7 详情页更正跨天历史完攀：不为纠错新建今天场次
   assert.equal(page.data.attempts.length, 0, '这一场还没有把次');
   assert.equal(page.data.routeCompleted, true, '跨天历史完攀仍是线路级状态');
   assert.equal(page.data.routeCorrectable, true);
-  assert.match(page.data.routeCorrectionContextText, /2026-11-05/);
+  assert.equal(page.data.routeCorrectionRows.length, 1, '这条线只有一把可更正');
+  assert.match(page.data.routeCorrectionRows[0].contextText, /2026-11-05/);
 
   const detail = createDetailPage(ROUTE_BLUE);
   assert.equal(detail.data.routeCompleted, true);
   assert.equal(detail.data.canRecordAgain, false);
   assert.equal(detail.data.routeCorrectable, true);
-  assert.equal(detail.data.routeCorrectionLabel, '第 3 把');
-  assert.match(detail.data.routeCorrectionContextText, /2026-11-05/);
+  assert.equal(detail.data.routeCorrectionRows[0].label, '第 3 把');
+  assert.match(detail.data.routeCorrectionRows[0].contextText, /2026-11-05/);
+  // 控件渲染在那一把记录自己那一行上
+  const detailRow = renderedCorrectionControls(detail)[0];
+  assert.equal(detailRow.attemptId, sendOpId);
+  assert.equal(detailRow.state, 'correctable');
   assert.equal(detail.data.routeCorrectionPending, false);
 
   const sessionsBefore = savedState().sessions.length;
@@ -4884,39 +5004,39 @@ test('T015-A7 详情页更正丢回执：保留待更正与重试入口，重试
 });
 
 test('T015-A7 更正入口把渲染当时的原把次带进 dataset；参数缺失或过时不挑最新一把', async () => {
-  // WXML：按钮把渲染当时的原把次与线路/场次/世代/数据集/归属一起传进 dataset。
+  // WXML：每个控件把**这一把**的原把次与线路/场次/世代/数据集/归属一起传进 dataset。
   // data-attempt-id → dataset.attemptId（其余同上），correctSend 只按这份上下文改正。
   const todayWxml = read(PAGE_WXML);
-  const todayButton = todayWxml.slice(
-    todayWxml.indexOf('id="route-correct-send"'),
-    todayWxml.indexOf('>改为未完成</button>')
+  const todayCard = todayWxml.slice(
+    todayWxml.indexOf('id="route-correction"'),
+    todayWxml.indexOf('wx:if="{{selectedRoute && !noteEditor}}"')
   );
   [
-    'data-attempt-id="{{routeCorrectionContext.attemptId}}"',
-    'data-route-id="{{routeCorrectionContext.routeId}}"',
-    'data-session-id="{{routeCorrectionContext.sessionId}}"',
-    'data-generation="{{routeCorrectionContext.generation}}"',
-    'data-dataset-id="{{routeCorrectionContext.datasetId}}"',
-    'data-owner-id="{{routeCorrectionContext.ownerId}}"'
+    'data-attempt-id="{{item.context.attemptId}}"',
+    'data-route-id="{{item.context.routeId}}"',
+    'data-session-id="{{item.context.sessionId}}"',
+    'data-generation="{{item.context.generation}}"',
+    'data-dataset-id="{{item.context.datasetId}}"',
+    'data-owner-id="{{item.context.ownerId}}"'
   ].forEach(attr => {
-    assert.ok(todayButton.includes(attr), '今日页更正按钮带上 ' + attr);
+    assert.ok(todayCard.includes(attr), '今日页更正控件带上 ' + attr);
   });
-  assert.ok(todayButton.includes('bindtap="correctSend"'));
+  assert.ok(todayCard.includes('bindtap="correctSend"'));
 
   const detailWxml = read(DETAIL_WXML);
   const detailButton = detailWxml.slice(
-    detailWxml.indexOf('id="detail-correct-send"'),
-    detailWxml.indexOf('>改为未完成</button>')
+    detailWxml.indexOf('id="detail-correct-{{attempt.id}}"'),
+    detailWxml.indexOf('</button>', detailWxml.indexOf('id="detail-correct-{{attempt.id}}"'))
   );
   [
-    'data-attempt-id="{{routeCorrectionContext.attemptId}}"',
-    'data-route-id="{{routeCorrectionContext.routeId}}"',
-    'data-session-id="{{routeCorrectionContext.sessionId}}"',
-    'data-generation="{{routeCorrectionContext.generation}}"',
-    'data-dataset-id="{{routeCorrectionContext.datasetId}}"',
-    'data-owner-id="{{routeCorrectionContext.ownerId}}"'
+    'data-attempt-id="{{attempt.correctionContext.attemptId}}"',
+    'data-route-id="{{attempt.correctionContext.routeId}}"',
+    'data-session-id="{{attempt.correctionContext.sessionId}}"',
+    'data-generation="{{attempt.correctionContext.generation}}"',
+    'data-dataset-id="{{attempt.correctionContext.datasetId}}"',
+    'data-owner-id="{{attempt.correctionContext.ownerId}}"'
   ].forEach(attr => {
-    assert.ok(detailButton.includes(attr), '详情页更正按钮带上 ' + attr);
+    assert.ok(detailButton.includes(attr), '详情页更正控件带上 ' + attr);
   });
   assert.ok(detailButton.includes('bindtap="correctSend"'));
 
@@ -4927,7 +5047,7 @@ test('T015-A7 更正入口把渲染当时的原把次带进 dataset；参数缺�
   const attemptId = savedState().attempts[0].id;
 
   // 渲染当时写下的就是这一把的完整上下文（外部探针可按这几个字段构造事件）
-  assert.deepEqual(page.data.routeCorrectionContext, {
+  assert.deepEqual(page.data.routeCorrectionRows[0].context, {
     attemptId,
     routeId: ROUTE_BLUE,
     sessionId: savedState().activeSessionId,
@@ -4988,7 +5108,7 @@ test('T015-A7 旧页面的旧按钮只更正渲染当时的把次，不改后来
   // 页面 B 在这一把仍是完攀时渲染，并留下渲染当时的事件
   const pageB = createPage();
   assert.equal(pageB.data.routeCorrectable, true);
-  assert.equal(pageB.data.routeCorrectionContext.attemptId, firstId);
+  assert.equal(pageB.data.routeCorrectionRows[0].attemptId, firstId);
   const staleEvent = correctEvent(pageB);
 
   // 页面 A 先改正第一把，再记一条新的完攀
@@ -5020,7 +5140,7 @@ test('T015-A7 旧页面的旧按钮只更正渲染当时的把次，不改后来
   );
 });
 
-test('T015-A7 两条历史完攀：显示当前可更正的一把，连续投递同一旧事件后另一把保持', async () => {
+test('T015-A7 两条历史完攀各占一行：改一把后另一把留在自己那行，旧事件重放不牵动它', async () => {
   const legacyState = store.createInitialState();
   legacyState.sessions.push({
     id: 'session-1',
@@ -5047,11 +5167,13 @@ test('T015-A7 两条历史完攀：显示当前可更正的一把，连续投递
   storage.set(STORE_KEY, JSON.stringify(legacyState));
 
   const page = createPage();
+  assert.equal(page.data.routeCorrectionRows.length, 2, '两把各占一行');
   assert.equal(
-    page.data.routeCorrectionContext.attemptId,
+    page.data.routeCorrectionRows[0].attemptId,
     'legacy-attempt-2',
-    '显示最近可识别的那一把'
+    '第一行是最近可识别的那一把'
   );
+  assert.equal(page.data.routeCorrectionRows[1].attemptId, 'legacy-attempt-1');
   const staleEvent = correctEvent(page);
 
   await tapCorrect(page);
@@ -5063,6 +5185,13 @@ test('T015-A7 两条历史完攀：显示当前可更正的一把，连续投递
     savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
     'send'
   );
+  // 已改的那一行留在原位变成只读结果；另一把仍是自己那行、自己的控件
+  assert.equal(page.data.routeCorrectionRows[0].attemptId, 'legacy-attempt-2');
+  assert.equal(page.data.routeCorrectionRows[0].state, 'corrected');
+  assert.equal(page.data.routeCorrectionRows[1].attemptId, 'legacy-attempt-1');
+  assert.equal(page.data.routeCorrectionRows[1].state, 'correctable');
+  // 原坐标已不可点：第二击取不到控件，也就没有写操作
+  assert.equal(correctEventAt(page, 0), null, '同一位置不再是可点控件');
 
   // 再投递同一条旧事件：另一把保持完攀，编号空间也不受影响
   await page.correctSend(staleEvent);
@@ -5075,9 +5204,8 @@ test('T015-A7 两条历史完攀：显示当前可更正的一把，连续投递
   assert.equal(savedState().pendingCorrections.length, 0);
   assert.equal(ledgerRows(), 0, '旧数据本就没有账本行，更正不凭空空建一行');
 
-  // 旧页面刷新后可以显式改正另一把
-  assert.equal(page.data.routeCorrectionContext.attemptId, 'legacy-attempt-1');
-  await tapCorrect(page);
+  // 要改另一把，必须显式点它自己那一行
+  await tapCorrectFor(page, 'legacy-attempt-1');
   assert.equal(
     savedState().attempts.find(item => item.id === 'legacy-attempt-1').result,
     'fail'
@@ -5136,4 +5264,244 @@ test('T015-A7 早于账本的本地完攀：更正后重放原完攀不重新入
   assert.equal(copied.ok, false);
   assert.equal(copied.opIdConflict, true);
   assert.equal(ledgerRows(), 2);
+});
+
+// ---- T015 / A7 返工回归：控件逐把绑定，同一个位置不会自动接上下一把 ----
+
+// QA 复现的旧数据：同一条抱石线两笔既有完攀（11-08 与 11-05），跨两个场次，
+// 账本里没有对应行（旧数据早于账本）。账号笔数与备注也照原样保留。
+function seedTwoLegacySends() {
+  const state = store.createInitialState();
+  state.sessions.push({
+    id: 'session-1',
+    seq: 1,
+    gymId: 'gym-chalkbox',
+    date: '2026-11-05',
+    createdAt: '2026-11-09T06:51:45.211Z'
+  });
+  state.sessions.push({
+    id: 'session-2',
+    seq: 2,
+    gymId: 'gym-chalkbox',
+    date: '2026-11-08',
+    createdAt: '2026-11-09T06:51:45.216Z'
+  });
+  state.nextSessionSeq = 3;
+  state.activeSessionId = 'session-1';
+  state.activeRouteId = ROUTE_BLUE_BALANCE;
+  state.attempts.push({
+    id: 'attempt-5',
+    seq: 5,
+    sessionId: 'session-1',
+    routeId: ROUTE_BLUE_BALANCE,
+    result: 'send',
+    note: 'QA 早期本地完攀 4',
+    createdAt: '2026-11-05T07:34:05.000Z'
+  });
+  state.attempts.push({
+    id: 'attempt-6',
+    seq: 6,
+    sessionId: 'session-2',
+    routeId: ROUTE_BLUE_BALANCE,
+    result: 'send',
+    note: 'QA 早期本地完攀 5',
+    createdAt: '2026-11-08T07:18:25.000Z'
+  });
+  state.nextAttemptSeq = 7;
+  storage.set(STORE_KEY, JSON.stringify(state));
+  return state;
+}
+
+test('T015-A7 返工：详情页两笔旧完攀，第一击改 6；同坐标第二击取不到控件，5 保持完攀', async () => {
+  seedTwoLegacySends();
+  const detail = createDetailPage(ROUTE_BLUE_BALANCE);
+
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.routeCorrectable, true);
+  // 每把一行：两行都有各自的控件与 dataset（控件渲染在那一把记录自己那一行）
+  let controls = renderedCorrectionControls(detail);
+  assert.equal(controls.length, 2, '两把各占一行');
+  assert.equal(controls[0].attemptId, 'attempt-6', '第一行是最近的一把');
+  assert.equal(controls[1].attemptId, 'attempt-5');
+  assert.ok(controls[0].context && controls[1].context, '每把都带自己的原把次');
+
+  const sessionsBefore = savedState().sessions.length;
+  const attemptsBefore = savedState().attempts.length;
+
+  // 第一击：用第一个绑定控件的真实 dataset（渲染当时的那一把）
+  await detail.correctSend(correctEventAt(detail, 0));
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-6').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send',
+    '没点的那一笔保持完攀'
+  );
+  assert.equal(savedState().pendingCorrections.length, 0);
+
+  // 重新渲染后从「同一位置」取实际可用控件：已是只读结果，没有可点控件
+  controls = renderedCorrectionControls(detail);
+  assert.equal(controls.length, 2, '改过的那行不塌陷，两行都还在');
+  assert.equal(controls[0].attemptId, 'attempt-6', '位置稳定：原位置仍是刚改的那一把');
+  assert.equal(controls[0].state, 'corrected', '原位置变成只读结果');
+  assert.equal(controls[0].context, null, '只读结果行没有 dataset');
+  assert.equal(controls[1].attemptId, 'attempt-5', '下一把没有被补到上一把的位置');
+  assert.equal(controls[1].state, 'correctable');
+  assert.equal(correctEventAt(detail, 0), null, '同坐标第二击取不到控件');
+  // 还有一把完攀：线路状态徽标不变（detail-route-state 仍在），
+  // 所以控件上方的布局不变化，第二击的坐标语义与第一击一致。
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.routeStateText, '已完攀');
+
+  // Windows 真实双击的第二击：落在原坐标 → 没有控件，不构成写操作
+  await tapCorrect(detail, 0);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send',
+    '第二击不会落到 5'
+  );
+  assert.equal(
+    savedState().attempts.filter(item => item.result === 'fail').length,
+    1,
+    '一次连续点击只改所示的那一笔'
+  );
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不新建场次');
+
+  // 刷新 / onShow 也不把刚改过的下一把重置到同一位置
+  detail.onShow();
+  assert.equal(
+    renderedCorrectionControls(detail)[0].attemptId,
+    'attempt-6',
+    'onShow 后原位置仍是刚改的那一把'
+  );
+  assert.equal(correctEventAt(detail, 0), null);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send'
+  );
+
+  // 下一把要显式再点它自己那一行
+  await tapCorrectFor(detail, 'attempt-5');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'fail'
+  );
+  assert.equal(detail.data.routeCorrectable, false, '没有可点控件后不再给入口');
+  assert.equal(detail.data.canRecordAgain, true, '两笔都改完后恢复「今天再爬」');
+  assert.equal(detail.data.routeCorrectionRows.length, 2);
+  assert.equal(
+    detail.data.routeCorrectionRows.filter(row => row.state === 'corrected').length,
+    2,
+    '两把都留在原位显示只读结果'
+  );
+});
+
+test('T015-A7 返工：今日页两笔旧完攀，第一击改 6；同坐标第二击不新增把次也不重开场次', async () => {
+  seedTwoLegacySends();
+  const page = createPage();
+
+  assert.equal(page.data.selectedRoute.id, ROUTE_BLUE_BALANCE);
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeCorrectable, true);
+
+  let controls = renderedCorrectionControls(page);
+  assert.equal(controls.length, 2, '两把各占一行');
+  assert.equal(controls[0].attemptId, 'attempt-6');
+  assert.equal(controls[1].attemptId, 'attempt-5');
+
+  const attemptsBefore = savedState().attempts.length;
+  const sessionsBefore = savedState().sessions.length;
+
+  // 第一击：第一个绑定控件的真实 dataset
+  await tapCorrect(page, 0);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-6').result,
+    'fail'
+  );
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send',
+    '没点的那一笔保持完攀'
+  );
+
+  // 重新渲染后同一位置已是只读结果，下一把仍是自己那一行
+  controls = renderedCorrectionControls(page);
+  assert.equal(controls[0].attemptId, 'attempt-6');
+  assert.equal(controls[0].state, 'corrected');
+  assert.equal(controls[1].attemptId, 'attempt-5');
+  assert.equal(controls[1].state, 'correctable');
+  assert.equal(correctEventAt(page, 0), null, '同坐标第二击取不到控件');
+  // 还有一把完攀：线路状态徽标与把数文案都不变，控件上方布局不动
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeStateText, '已完攀');
+
+  // 真实第二击：原坐标已不可点 → 既不新增把次，也不重开场次
+  await tapCorrect(page, 0);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send'
+  );
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不重开场次');
+  assert.equal(savedState().activeSessionId, 'session-1', '当前场次不被牵动');
+  assert.equal(savedState().pendingCorrections.length, 0);
+
+  // 刷新（onShow）后仍不把下一把接到同一位置
+  page.onShow();
+  assert.equal(renderedCorrectionControls(page)[0].attemptId, 'attempt-6');
+  assert.equal(correctEventAt(page, 0), null);
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'send'
+  );
+
+  // 下一把必须显式点它自己那一行
+  await tapCorrectFor(page, 'attempt-5');
+  assert.equal(
+    savedState().attempts.find(item => item.id === 'attempt-5').result,
+    'fail'
+  );
+  assert.equal(page.data.routeCorrectable, false, '没有可点控件后不再给更正入口');
+  assert.equal(page.data.routeCorrectionRows.length, 2, '改完两把后卡片仍在（位置稳定）');
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false);
+  // 继续记录的入口清楚：底部的「未完成/完攀」结果按钮回来了
+  assert.ok(read(PAGE_WXML).includes('id="record-send"'));
+  assert.ok(read(PAGE_WXML).includes('id="record-fail"'));
+});
+
+test('T015-A7 返工：仅一笔完攀时快速连点只改一次，不新增把次、不重开场次', async () => {
+  const page = createPage();
+  tapStart(page, 0, '2026-11-05');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'send');
+
+  const attemptsBefore = savedState().attempts.length;
+  const sessionsBefore = savedState().sessions.length;
+  assert.equal(page.data.routeCorrectionRows.length, 1, '只有一笔可更正');
+
+  // 快速双点：第一击用真实 dataset；第二击发生在重新渲染之后，同坐标已无控件
+  const first = correctEventAt(page, 0);
+  assert.ok(first, '第一击有可点控件');
+  await page.correctSend(first);
+  assert.equal(savedState().attempts[0].result, 'fail');
+  assert.equal(correctEventAt(page, 0), null, '重新渲染后同坐标没有控件');
+  await tapCorrect(page, 0);
+
+  assert.equal(savedState().attempts.length, attemptsBefore, '不新增把次');
+  assert.equal(savedState().sessions.length, sessionsBefore, '不重开场次');
+  assert.equal(savedState().pendingCorrections.length, 0);
+  assert.equal(
+    ledgerState().records.filter(row => row.result === 'send').length,
+    0,
+    '账本里没有残留完攀'
+  );
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeCorrectable, false);
+  // 继续记录的入口清楚
+  assert.equal(page.data.routeClosed, false);
+  assert.equal(page.data.resultLocked, false);
 });

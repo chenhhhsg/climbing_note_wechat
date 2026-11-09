@@ -20,14 +20,16 @@ const {
   pendingCorrectionFor,
   // 「改为未完成」的共用逻辑（与今日页同一份）：
   // 目标校验、入队、请求格式与回执结清都在 utils/store.js。
-  sendTargetText,
+  // routeCorrectionTargets/correctionRows 逐把列出可更正的原把次：
+  // 页面为每一把各渲染一个控件，更正成功后在原位置变成只读结果，不会自动接下一把。
+  correctionRows,
+  correctionReadbackRow,
   correctionDataset,
   correctionTargetFromDataset,
   correctionStatusNotice,
   enqueueCorrection,
   correctionRequest,
-  finishCorrectionJob,
-  TRIAL_OWNER_ID
+  finishCorrectionJob
 } = require('../../utils/store.js');
 const {
   createPhotoController,
@@ -157,16 +159,13 @@ Page({
     routeClosed: false,
     canRecordAgain: true,
     routeStateText: '',
-    // 误点完攀的更正入口（T015 返工）：已完攀时隐藏「完攀」，只留「改为未完成」。
+    // 误点完攀的更正入口（T015 返工）：已完攀时隐藏「完攀」，每一把原把次
+    // 各有一个「改为未完成」控件（见 routeCorrectionRows 与每行的 correction* 字段）。
     routeCorrectable: false,
+    routeCorrectionRows: [],
     routeCorrectionPending: false,
     routeCorrectionSaving: false,
-    routeCorrectionLabel: '',
-    routeCorrectionContextText: '',
     routeCorrectionStatusText: '',
-    // 渲染这一把时带下来的更正上下文（原把次与它的线路/场次/世代/数据集/归属）：
-    // 点按只按这里的原把次改正，参数缺失或过时不会改成「最新一把」。
-    routeCorrectionContext: null,
     // 待确认的完攀（T015）：与已确认的「已完攀」分开展示，并给出回原把次重试的入口。
     routePendingSend: false,
     pendingRetry: null,
@@ -188,6 +187,9 @@ Page({
     // 更正（改为未完成）与普通保存分开派发：同一原把次只派发一次。
     this._dispatchingCorrections = {};
     this._correctionFailures = {};
+    // 本实例刚改正成功的把次：留在原位显示只读结果，避免下面的行上移、
+    // 把同一坐标让给下一把的控件。刷新与 onShow 都不重置它。
+    this._correctedRows = {};
     this._saveDelayMs = 0;
     this.state = createInitialState();
     this.load();
@@ -241,12 +243,10 @@ Page({
       canRecordAgain: true,
       routeStateText: '',
       routeCorrectable: false,
+      routeCorrectionRows: [],
       routeCorrectionPending: false,
       routeCorrectionSaving: false,
-      routeCorrectionLabel: '',
-      routeCorrectionContextText: '',
       routeCorrectionStatusText: '',
-      routeCorrectionContext: null,
       routePendingSend: false,
       pendingRetry: null,
       pendingRetryHint: '',
@@ -422,12 +422,10 @@ Page({
         canRecordAgain: false,
         routeStateText: '',
         routeCorrectable: false,
+        routeCorrectionRows: [],
         routeCorrectionPending: false,
         routeCorrectionSaving: false,
-        routeCorrectionLabel: '',
-        routeCorrectionContextText: '',
         routeCorrectionStatusText: '',
-        routeCorrectionContext: null,
         routePendingSend: false,
         pendingRetry: null,
         pendingRetryHint: '',
@@ -447,12 +445,10 @@ Page({
         canRecordAgain: false,
         routeStateText: '',
         routeCorrectable: false,
+        routeCorrectionRows: [],
         routeCorrectionPending: false,
         routeCorrectionSaving: false,
-        routeCorrectionLabel: '',
-        routeCorrectionContextText: '',
         routeCorrectionStatusText: '',
-        routeCorrectionContext: null,
         routePendingSend: false,
         pendingRetry: null,
         pendingRetryHint: ''
@@ -472,6 +468,33 @@ Page({
           right.date.localeCompare(left.date) || right.seq - left.seq
       );
 
+    // 误点完攀的更正入口（T015 返工）：不再有「自动挑下一把」的单个按钮。
+    // 每一把仍可更正的已确认完攀都单独成行、各带自己的控件（写明日期/场次/第几把），
+    // 本实例刚改好的那一把留在原位置显示只读结果。于是同一个位置永远不会自动
+    // 接上下一把：双击/连点原坐标只会读到「已改为未完成」，不会写到另一把。
+    const pendingCorrection = pendingCorrectionFor(state, route.id);
+    const savingCorrectionId = this.data.savingCorrectionId || '';
+    const routeCorrectionRows = correctionRows(state, route.id, {
+      corrected: this._correctedRows,
+      savingId: savingCorrectionId,
+      failures: this._correctionFailures
+    });
+    const correctionRowById = {};
+    routeCorrectionRows.forEach(row => {
+      correctionRowById[row.attemptId] = row;
+    });
+    // 「还有能点的更正控件」才叫可更正；只剩只读回读时不再给入口。
+    const routeCorrectable = routeCorrectionRows.some(
+      row => row.state !== 'corrected'
+    );
+    let routeCorrectionStatusText = '';
+    if (routeCorrectionRows.some(row => row.state === 'correcting')) {
+      routeCorrectionStatusText = '更正保存中…';
+    } else if (routeCorrectionRows.some(row => row.state === 'retry')) {
+      routeCorrectionStatusText =
+        '更正未确认 · 点「重试改为未完成」按同一把重试';
+    }
+
     const groups = sessions.map(session => {
       const attempts = related
         .filter(attempt => attempt.sessionId === session.id)
@@ -482,14 +505,25 @@ Page({
         sessionLabel: sessionLabel(state, session),
         gymName: gymName(session.gymId),
         countText: attempts.length + ' 把',
-        attempts: attempts.map((attempt, index) => ({
-          id: attempt.id,
-          label: '第 ' + (index + 1) + ' 把',
-          resultText: attemptResultText(attempt.result),
-          timeText: timeText(attempt.createdAt),
-          note: attempt.note || '',
-          hasNote: Boolean(attempt.note)
-        }))
+        attempts: attempts.map((attempt, index) => {
+          const row = correctionRowById[attempt.id] || null;
+          // 每行都带固定高度的操作位：控件与只读结果占同一格，改完不塌陷，
+          // 下面的行不上移，也就不会把同一坐标让给下一把。
+          return {
+            id: attempt.id,
+            label: '第 ' + (index + 1) + ' 把',
+            resultText: attemptResultText(attempt.result),
+            timeText: timeText(attempt.createdAt),
+            note: attempt.note || '',
+            hasNote: Boolean(attempt.note),
+            correctionState: row ? row.state : '',
+            correctionStatusText: row ? row.statusText : '',
+            correctionDisabled: row ? row.disabled : false,
+            // 只读回读行不带 dataset：没有可点的按钮，也不参与任何写操作。
+            correctionContext:
+              row && row.state !== 'corrected' ? row.context : null
+          };
+        })
       };
     });
 
@@ -501,47 +535,6 @@ Page({
     // 只有因此被关闭入口的抱石线才算「完攀待确认」——顶绳、先锋可重复完攀。
     const pendingSend = completion.closed && !completion.completed;
     const pendingRetry = pendingSend ? pendingRetryInfo(state, route.id) : null;
-
-    // 误点完攀的更正入口（T015 返工）：已完攀时不再给「今天再爬」，
-    // 改为明确的「改为未完成」，并说出改正的是哪一天哪一场的第几把。
-    const pendingCorrection = pendingCorrectionFor(state, route.id);
-    const correctionTarget = sendTargetText(
-      state,
-      pendingCorrection
-        ? pendingCorrection.attemptId
-        : completion.latestSendId || ''
-    );
-    const correctionSaving = Boolean(
-      pendingCorrection &&
-        (this._dispatchingCorrections[pendingCorrection.attemptId] ||
-          this.data.savingCorrectionId === pendingCorrection.attemptId)
-    );
-    const correctionFailure = pendingCorrection
-      ? this._correctionFailures[pendingCorrection.attemptId] || ''
-      : '';
-    const routeCorrectable = Boolean(
-      completion.completed &&
-        ((completion.canCorrect && correctionTarget) || pendingCorrection)
-    );
-    let routeCorrectionStatusText = '';
-    if (correctionSaving) {
-      routeCorrectionStatusText = '更正保存中…';
-    } else if (correctionFailure) {
-      routeCorrectionStatusText = '更正未确认 · 点「改为未完成」按同一把重试';
-    }
-    // 把「这一把是哪一个原把次」连同渲染当时的线路/场次/世代/数据集/归属一起渲染出去：
-    // 点按一律按这份上下文改正，刷新或换了编号空间后旧按钮不会再改到别的把次。
-    const routeCorrectionContext =
-      routeCorrectable && correctionTarget
-        ? {
-            attemptId: correctionTarget.attemptId,
-            routeId: correctionTarget.routeId,
-            sessionId: correctionTarget.sessionId,
-            generation: state.generation || '',
-            datasetId: state.datasetId || '',
-            ownerId: TRIAL_OWNER_ID
-          }
-        : null;
 
     this.setData({
       route: {
@@ -572,14 +565,10 @@ Page({
           ? '完攀待确认'
           : '',
       routeCorrectable,
+      routeCorrectionRows,
       routeCorrectionPending: Boolean(pendingCorrection),
-      routeCorrectionSaving: correctionSaving,
-      routeCorrectionLabel: correctionTarget ? correctionTarget.label : '',
-      routeCorrectionContextText: correctionTarget
-        ? correctionTarget.contextText
-        : '',
+      routeCorrectionSaving: Boolean(savingCorrectionId),
       routeCorrectionStatusText,
-      routeCorrectionContext,
       routePendingSend: pendingSend,
       pendingRetry,
       pendingRetryHint: pendingRetry ? pendingRetry.hint : '',
@@ -979,6 +968,12 @@ Page({
       this._correctionFailures[attemptId] = decision.failure;
     } else {
       delete this._correctionFailures[attemptId];
+    }
+    // 改成功后把这一把记成「原位只读结果」：它在列表里的位置不消失，
+    // 下面的行不上移，同一坐标不会被下一把的控件接管。
+    if (decision.code === 'corrected' || decision.code === 'noop') {
+      const readback = correctionReadbackRow(decision.state, attemptId);
+      if (readback) this._correctedRows[attemptId] = readback;
     }
     this.state = decision.state;
     this.setData({

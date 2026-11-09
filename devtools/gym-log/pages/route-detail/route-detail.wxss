@@ -415,25 +415,10 @@
   text-align: center;
 }
 
-/* 误点完攀的更正：与「已完攀」同处一个页脚，写明改正的是哪一把 */
-.detail-correction {
-  width: 100%;
-  margin-top: 14rpx;
-  padding-top: 14rpx;
-  border-top: 1rpx dashed #bcd3b6;
-}
-
-.detail-correction-target {
-  display: block;
-  color: #2f4a7a;
-  font-size: 24rpx;
-  font-weight: 700;
-  text-align: center;
-}
-
+/* 误点完攀的更正：入口在每把记录自己那行，页脚只说清怎么改与当前状态 */
 .detail-correction-hint {
   display: block;
-  margin-top: 6rpx;
+  margin-top: 10rpx;
   color: #55564e;
   font-size: 22rpx;
   line-height: 32rpx;
@@ -449,9 +434,35 @@
   text-align: center;
 }
 
-.detail-correct-send {
-  width: 100%;
+/*
+  每把记录的更正操作位：控件与只读结果占同一格、同一高度。
+  改完这一格不塌陷，下面的行不上移——同一坐标因此不会被下一把的控件接管，
+  双击/连点原位置只会读到「已改为未完成」，不会写到另一把。
+*/
+.attempt-correct-slot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 72rpx;
   margin-top: 12rpx;
+}
+
+.attempt-correct-button {
+  height: 72rpx;
+  min-height: 72rpx;
+  line-height: 72rpx;
+  margin: 0;
+  padding: 0 28rpx;
+  border-radius: 14rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.attempt-corrected-text {
+  color: #3f6a3c;
+  font-size: 26rpx;
+  font-weight: 700;
+  line-height: 72rpx;
 }
 
 /* 抱石完攀待确认：与「已完攀」区分开，给出回原把次重试的入口 */

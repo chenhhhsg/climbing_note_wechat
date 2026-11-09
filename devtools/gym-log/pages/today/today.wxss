@@ -631,10 +631,10 @@
   width: 100%;
 }
 
-/* 误点完攀的更正：与「已完攀」同处一个位置，明确写出改正的是哪一把 */
+/* 误点完攀的更正：这条线每一把仍可更正的原把次各占一行，各带自己的控件 */
 .route-correction {
   width: 100%;
-  margin-top: 12rpx;
+  margin-top: 16rpx;
   padding: 18rpx 24rpx;
   background: #fffdf8;
   border: 2rpx solid #e3ded0;
@@ -673,9 +673,42 @@
   line-height: 34rpx;
 }
 
-.route-correct-send {
-  width: 100%;
-  margin-top: 12rpx;
+/* 一行 = 一把原把次；行与行之间用分隔线区分，点哪一行就只改哪一把 */
+.route-correction-row {
+  margin-top: 14rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx dashed #e3ded0;
+}
+
+/*
+  操作位：控件与只读结果占同一格、同一高度。
+  改完这一格不塌陷，下面的行不上移——同一坐标因此不会被下一把的控件接管，
+  双击/连点原位置只会读到「已改为未完成」，不会写到另一把。
+*/
+.route-correction-slot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  height: 72rpx;
+  margin-top: 10rpx;
+}
+
+.route-correct-button {
+  height: 72rpx;
+  min-height: 72rpx;
+  line-height: 72rpx;
+  margin: 0;
+  padding: 0 28rpx;
+  border-radius: 14rpx;
+  font-size: 26rpx;
+  font-weight: 600;
+}
+
+.route-corrected-text {
+  color: #3f6a3c;
+  font-size: 26rpx;
+  font-weight: 700;
+  line-height: 72rpx;
 }
 
 /* 抱石完攀待确认：与「已完攀」区分，给出回原场次的入口 */
