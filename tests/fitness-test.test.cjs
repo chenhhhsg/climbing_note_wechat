@@ -627,6 +627,100 @@ test('F07 v0.1 只有 tableVersion 的记录按原始 v0.1 规则回显两个版
   assert.equal(storage.get(FITNESS_KEY), JSON.stringify(unknownState));
 });
 
+test('F08 负重计分按原始负荷直接比较档位：正好达到、紧贴未达、略高，显示舍入不参与计分', () => {
+  // 具体回归：60 kg 加 5.99999 kg 的原始比例是 109.99998…%，只是第 1 档；
+  // 恰好 110%（60 kg 加 6 kg）才是第 2 档。
+  const justBelow = fitness.scoreLoad(60, 5.99999);
+  const exact = fitness.scoreLoad(60, 6);
+  assert.equal(justBelow.points, 1, '109.99998…% 只是第 1 档（100%）');
+  assert.equal(justBelow.reachedThreshold, 100);
+  assert.equal(exact.points, 2, '恰好 110% 是第 2 档');
+  assert.equal(exact.reachedThreshold, 110);
+  assert.equal(fitness.scoreLoad(60, 6.00001).points, 2);
+
+  // 原始负荷比较是精确的十进制判断：-1 未达到、0 正好达到、1 已超过。
+  assert.equal(fitness.compareLoadToThreshold(60, 5.99999, 110), -1);
+  assert.equal(fitness.compareLoadToThreshold(60, 6, 110), 0);
+  assert.equal(fitness.compareLoadToThreshold(60, 6.00001, 110), 1);
+
+  // 显示用的百分比仍按四位小数四舍五入：5.99999 kg 与 6 kg 都显示 110%，分数却不同，
+  // 说明计分不是拿舍入后的显示值当依据。
+  assert.equal(justBelow.percent, 110);
+  assert.equal(exact.percent, 110);
+  assert.equal(fitness.loadPercent(60, 5.99999), 110);
+
+  // 每个档位都验三种情况：十进制意义上正好达到、紧贴未达（差 0.00001 kg）、略高（多 0.00001 kg）。
+  // 体重取整数 60 kg 与非整数 68.3 kg：68.3 kg 的 110% 是 75.13 kg（额外负重 6.83 kg），
+  // 没有 60 kg 那种整数巧合，浮点表示误差不再被当成未达，也不会被余量吞掉。
+  [60, 68.3].forEach(weightKg => {
+    EXPECTED_LOAD_THRESHOLDS.forEach((threshold, index) => {
+      if (threshold === 100) return;
+      // 十进制精确的额外负重 = 体重 ×（档位 − 100）÷ 100（68.3 kg 一档 10% → 6.83 kg）。
+      const exactExtra = (Math.round(weightKg * 10) * (threshold - 100)) / 1000;
+      const where = weightKg + ' kg 的 ' + threshold + '%';
+      assert.equal(fitness.compareLoadToThreshold(weightKg, exactExtra, threshold), 0, where + ' 应正好达到');
+      assert.equal(fitness.scoreLoad(weightKg, exactExtra).points, index + 1, where + ' 应为第 ' + (index + 1) + ' 档');
+      assert.equal(fitness.scoreLoad(weightKg, exactExtra - 0.00001).points, index, where + ' 差 0.00001 kg 应仍是第 ' + index + ' 档');
+      assert.equal(fitness.scoreLoad(weightKg, exactExtra + 0.00001).points, index + 1, where + ' 多 0.00001 kg 应为第 ' + (index + 1) + ' 档');
+    });
+  });
+
+  // 小数位极端多、放大后超出安全整数范围时退回余量比较：14 位小数的 5.99999999999999 kg
+  // 与 6 kg 相差 1e-14 kg，仍远在 double 分辨率之上，结论仍是没有达到 110%。
+  // （再往下到 1e-15 kg 已是 double 表示误差自身的量级，不作为可判定的十进制差异。）
+  assert.equal(fitness.compareLoadToThreshold(60, 5.99999999999999, 110), -1);
+  assert.equal(fitness.scoreLoad(60, 5.99999999999999).points, 1);
+
+  // 封顶同样按原始负荷判断：正好 220% 不算超过，多 0.00001 kg 才算超过。
+  assert.equal(fitness.scoreLoad(60, 71.99999).points, 9);
+  assert.equal(fitness.scoreLoad(60, 71.99999).capped, false);
+  assert.equal(fitness.scoreLoad(60, 72).points, 10);
+  assert.equal(fitness.scoreLoad(60, 72).capped, false);
+  assert.equal(fitness.scoreLoad(60, 72.00001).capped, true);
+
+  // 两种负重项（指力、拉力）走同一比较口径，且原始输入与显示文案照旧保留。
+  const bothBelow = fitnessEvaluation(Object.assign({}, FIXTURE_A, { fingerExtraKg: '5.99999', pullExtraKg: '5.99999' }));
+  assert.equal(bothBelow.items[0].points, 1);
+  assert.equal(bothBelow.items[1].points, 1);
+  assert.equal(bothBelow.items[0].pointsText, '1 分');
+  assert.equal(bothBelow.items[0].rawText, '额外负重 5.99999 kg（总负荷 110%）');
+  assert.equal(bothBelow.items[1].rawText, '额外负重 5.99999 kg（总负荷 110%）');
+  assert.equal(bothBelow.total, 12, '1 + 1 + 核心 5 + 悬挂 5');
+
+  const bothExact = fitnessEvaluation(Object.assign({}, FIXTURE_A, { fingerExtraKg: '6', pullExtraKg: '6' }));
+  assert.equal(bothExact.items[0].points, 2);
+  assert.equal(bothExact.items[1].points, 2);
+  assert.equal(bothExact.total, 14, '2 + 2 + 核心 5 + 悬挂 5');
+
+  // 历史读取：旧记录只存原始输入，分项分数按同一口径重算，原始数值与两个版本字段照旧。
+  const legacy = fitness.normalizeState({
+    version: 1,
+    archiveId: 'fitness-archive-f08',
+    nextTestSeq: 2,
+    tests: [{
+      id: 'fit-f08-legacy',
+      seq: 1,
+      date: '2026-11-08',
+      weightKg: 60,
+      finger: { state: 'done', extraKg: 5.99999 },
+      pull: { state: 'done', extraKg: 6 },
+      core: { action: 'straight', seconds: 15 },
+      hang: { seconds: 150 },
+      points: { finger: 2, pull: 2, core: 5, hang: 5 },
+      total: 20,
+      tableVersion: '9c-v0.1',
+      createdAt: '2026-11-08T02:00:00.000Z'
+    }]
+  });
+  assert.equal(legacy.tests[0].finger.extraKg, 5.99999, '原始输入原样保留');
+  assert.equal(legacy.tests[0].pull.extraKg, 6, '原始输入原样保留');
+  assert.equal(legacy.tests[0].points.finger, 1, '分项按原始负荷算，不用显示舍入');
+  assert.equal(legacy.tests[0].points.pull, 2);
+  assert.equal(legacy.tests[0].total, 13);
+  assert.equal(legacy.tests[0].scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(legacy.tests[0].tableVersion, '9c-v0.1');
+});
+
 // ================================================================== 注册与入口
 
 test('P01 页面注册进 app.json、「我的」有入口，WXML 控件与处理器真实存在', () => {

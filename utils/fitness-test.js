@@ -6,6 +6,9 @@
  * - 计分只按方案原表：每项最多 10 分、取已达最高档、两档之间保留较低档、
  *   超出最高档封顶；四项直接相加，满分 40；总分查原对照表，不插值、
  *   不自行补齐对照表未列出的档位；
+ * - 负重项（指力/拉力）按原始负荷比较档位：直接比较「体重＋额外负重」与「体重×档位」，
+ *   不先把比例舍入到固定小数位。显示用的百分比四位小数只是展示，不参与计分，
+ *   所以显示相同的两次负荷可能落在不同档位（60 kg 加 5.99999 kg 显示 110%，实际只是第 1 档）；
  * - 输入单位固定 kg 与秒。体重必须是大于 0 的有限数（负数、非数、无穷一律拒收）；
  *   额外负重与时长必须是非负数；
  * - 空白表示「未测」；用户明确已测但未达到该项第一档记 0 分（已测未达）；
@@ -55,6 +58,12 @@ const STATE_WRITE_FAILED = '保存本机体能自测记录失败：';
 
 // 负重类（指力/拉力）的负荷档位：总负荷达到体重的这些百分比依次得 1 至 10 分。
 const LOAD_THRESHOLDS = [100, 110, 120, 130, 140, 150, 160, 180, 200, 220];
+// 比较原始负荷与档位时的浮点余量：Number.EPSILON（2^-52）是 double 的相对表示误差上限，
+// 一次加法加一次乘法后两侧各差几个 ulp，这里取 4 倍。
+// 它只在「小数位数极端多、没法用安全整数精确比较」时才用到，量级约 1e-15 相对值，
+// 比可输入的十进制差异小八个数量级以上（60 kg 加 5.99999 kg 与加 6 kg 差 1e-5 kg），
+// 只覆盖 double 自身分辨率（几个 ulp）以内的表示误差。
+const LOAD_COMPARE_SLACK = Number.EPSILON * 4;
 // 悬挂耐力的秒数档位：依次得 1 至 10 分（按阈值取整档）。
 const HANG_THRESHOLDS = [30, 60, 90, 120, 150, 180, 210, 240, 300, 360];
 
@@ -247,31 +256,80 @@ function readOptionalNonNegative(value) {
 // ------------------------------------------------------------------ 计分
 
 /**
- * 总负荷相对体重的比例（百分比）：（体重＋额外负重）÷ 体重 × 100。
- * 小数先归一到 4 位，避免 72/60×100 这类浮点误差把 120% 判成 119.999…%。
+ * 总负荷相对体重的比例（百分比）：（体重＋额外负重）÷ 体重 × 100，四位小数四舍五入。
+ * 只用于展示。计分不读这个值，而是按原始负荷直接比较档位阈值
+ * （compareLoadToThreshold），否则 109.99998% 会被舍入成 110% 而多算一档。
  */
 function loadPercent(weightKg, extraKg) {
   const percent = ((weightKg + extraKg) / weightKg) * 100;
   return Math.round(percent * 10000) / 10000;
 }
 
+/**
+ * 十进制数值 → { digits, scale }（值 = digits ÷ 10^scale）。
+ * 取 number 的最短十进制往返表示，也就是输入框里那个十进制数（如 '5.99999'），
+ * 拆成整数分子与小数位数，供计分做精确比较；显示不走这里。
+ */
+function decimalParts(value) {
+  const text = String(value);
+  const match = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(text);
+  if (!match) return null;
+  const fraction = match[3] || '';
+  const exponent = match[4] ? Number(match[4]) : 0;
+  let digits = Number(match[1] + match[2] + fraction);
+  let scale = fraction.length - exponent;
+  if (scale < 0) {
+    digits *= Math.pow(10, -scale);
+    scale = 0;
+  }
+  return Number.isFinite(digits) ? { digits, scale } : null;
+}
+
+/**
+ * 原始负荷（体重＋额外负重）与档位的比较：>0 已超过该档、0 正好达到（十进制意义上）、
+ * <0 未达到。计分只看原始负荷，不经过任何十进制舍入。
+ *
+ * 与「总负荷 ÷ 体重 ≥ 档位 ÷ 100」等价，但改写为「额外负重 × 100 与 体重 ×（档位 − 100）」
+ * 比较，两侧都是小整数乘积：先把两者放大到同一小数位做精确整数比较（输入的十进制位数在
+ * IEEE-754 安全整数范围内时结果是完全精确的，非整数体重也精确）；只有小数位数极端多、
+ * 放大后超出安全整数范围时，才退回按机器精度量级的余量比较——那时两侧差值已在 double
+ * 自身分辨率的几个 ulp 以内，凡是 double 能分辨的十进制差异仍然得到精确结论。
+ */
+function compareLoadToThreshold(weightKg, extraKg, threshold) {
+  const weight = decimalParts(weightKg);
+  const extra = decimalParts(extraKg);
+  if (weight && extra) {
+    const scale = Math.max(weight.scale, extra.scale);
+    const extra100 = extra.digits * 100 * Math.pow(10, scale - extra.scale);
+    const weightGap = weight.digits * (threshold - 100) * Math.pow(10, scale - weight.scale);
+    if (Number.isSafeInteger(extra100) && Number.isSafeInteger(weightGap)) {
+      return extra100 === weightGap ? 0 : extra100 > weightGap ? 1 : -1;
+    }
+  }
+  const extra100 = extraKg * 100;
+  const weightGap = weightKg * (threshold - 100);
+  const slack = LOAD_COMPARE_SLACK * Math.max(Math.abs(extra100), Math.abs(weightGap), 1);
+  if (Math.abs(extra100 - weightGap) <= slack) return 0;
+  return extra100 > weightGap ? 1 : -1;
+}
+
 /** 负重项：取已经达到的最高档，超出最高档封顶 10 分。 */
 function scoreLoad(weightKg, extraKg) {
-  const percent = loadPercent(weightKg, extraKg);
   let points = 0;
   let reached = 0;
   LOAD_THRESHOLDS.forEach((threshold, index) => {
-    if (percent >= threshold) {
+    if (compareLoadToThreshold(weightKg, extraKg, threshold) >= 0) {
       points = index + 1;
       reached = threshold;
     }
   });
+  const top = LOAD_THRESHOLDS[LOAD_THRESHOLDS.length - 1];
   return {
     points,
-    percent,
+    percent: loadPercent(weightKg, extraKg),
     reachedThreshold: reached,
-    // 超过最高档：分数封顶，档位按最高档显示。
-    capped: percent > LOAD_THRESHOLDS[LOAD_THRESHOLDS.length - 1]
+    // 超过最高档：分数封顶，档位按最高档显示（正好等于最高档不算超过）。
+    capped: compareLoadToThreshold(weightKg, extraKg, top) > 0
   };
 }
 
@@ -1067,6 +1125,7 @@ module.exports = {
   parsePositiveKg,
   readOptionalNonNegative,
   loadPercent,
+  compareLoadToThreshold,
   scoreLoad,
   scoreHang,
   scoreCore,
