@@ -30,6 +30,7 @@ const storage = new Map();
 const fault = {
   setFailAt: 0,
   setCount: 0,
+  loseResponseAt: 0,
   getFail: false,
   removeFail: false,
   infoFail: false
@@ -39,6 +40,7 @@ function resetStorage() {
   storage.clear();
   fault.setFailAt = 0;
   fault.setCount = 0;
+  fault.loseResponseAt = 0;
   fault.getFail = false;
   fault.removeFail = false;
   fault.infoFail = false;
@@ -47,6 +49,15 @@ function resetStorage() {
 function armSetFailAt(callNumber) {
   fault.setCount = 0;
   fault.setFailAt = callNumber;
+}
+
+/**
+ * 落盘已生效但回执丢失（弱网/超时）：调用方拿到失败，键里其实已经是新数据。
+ * 真实场景里这正是「留下已持久化的进行中操作」的来源，重试必须能补齐同一把。
+ */
+function armSetLoseResponseAt(callNumber) {
+  fault.setCount = 0;
+  fault.loseResponseAt = callNumber;
 }
 
 // 刻意不带 cloud：T016 要求正式入口在无云能力时也能加载与本机读写。
@@ -61,6 +72,10 @@ global.wx = {
       throw new Error('setStorageSync:fail injected at call ' + fault.setCount);
     }
     storage.set(key, value);
+    // 写成功之后才失败：数据已是新的，但调用方只看到失败。
+    if (fault.loseResponseAt && fault.setCount === fault.loseResponseAt) {
+      throw new Error('setStorageSync:fail after durable write injected at call ' + fault.setCount);
+    }
   },
   removeStorageSync(key) {
     if (fault.removeFail) throw new Error('removeStorageSync:fail injected');
@@ -318,6 +333,177 @@ test('R3 提交那一把落盘失败时保留进行中标记，重试复用同�
   assert.equal(reloaded.attempts[0].id, failed.opId);
   assert.equal(reloaded.attempts[0].seq, stagedSeq, '重试复用原序号，不跳号');
   assert.equal(reloaded.pendingSaves.length, 0);
+});
+
+test('R3 抱石完攀提交段失败留下待保存记录：同一操作重试补上唯一一次完攀', () => {
+  const { session, route } = beginTraining();
+  // 第二段写（提交完攀那把）失败：进行中标记已落盘、把次未落盘。重开后这条在途完攀
+  // 既是「抱石已完攀」的守卫来源，也是唯一能补齐这一把的操作——重试不能被它抢先拒绝。
+  armSetFailAt(2);
+  const failed = store.saveAttempt({
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '唯一完攀'
+  });
+  assert.equal(failed.ok, false);
+  const staged = store.loadState().archive;
+  assert.equal(staged.attempts.length, 0);
+  assert.equal(staged.pendingSaves.length, 1);
+  assert.equal(staged.pendingSaves[0].opId, failed.opId);
+  assert.equal(staged.pendingSaves[0].routeId, route.id);
+  assert.equal(staged.pendingSaves[0].note, '唯一完攀');
+  const stagedCompletion = store.routeCompletion(staged, route.id);
+  assert.equal(stagedCompletion.hasPendingSend, true);
+  assert.equal(stagedCompletion.closed, true);
+
+  // 别的操作不能借这条在途完攀新增，也不覆盖待保存记录。
+  const other = store.saveAttempt({
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '别的操作'
+  });
+  assert.equal(other.ok, false);
+  assert.equal(other.blocked, true);
+  const stillStaged = store.loadState().archive;
+  assert.equal(stillStaged.pendingSaves.length, 1);
+  assert.equal(stillStaged.pendingSaves[0].opId, failed.opId);
+  assert.equal(stillStaged.pendingSaves[0].note, '唯一完攀');
+
+  // 故障解除后按同一操作（同归属、同线路、同场次、同结果、同备注）重试。
+  armSetFailAt(0);
+  const retried = store.saveAttempt({
+    opId: failed.opId,
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '唯一完攀'
+  });
+  assert.equal(retried.ok, true, retried.error);
+  assert.equal(retried.attempt.id, failed.opId);
+  const after = store.loadState().archive;
+  assert.equal(after.attempts.length, 1, '重试后只应有一条尝试');
+  assert.equal(after.attempts[0].id, failed.opId);
+  assert.equal(after.attempts[0].sessionId, session.id);
+  assert.equal(after.attempts[0].routeId, route.id);
+  assert.equal(after.attempts[0].result, 'send', '重试后只应有一条完攀');
+  assert.equal(after.attempts[0].note, '唯一完攀');
+  assert.equal(after.pendingSaves.length, 0, '重试后不应残留待保存记录');
+  assert.equal(store.routeCompletion(after, route.id).completed, true);
+
+  // 再点一次同一操作仍然幂等。
+  const again = store.saveAttempt({
+    opId: failed.opId,
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '唯一完攀'
+  });
+  assert.equal(again.ok, true);
+  assert.equal(again.duplicate, true);
+  assert.equal(store.loadState().archive.attempts.length, 1);
+});
+
+test('R3 抱石第一段落盘后回执丢失：同一操作重试补上完攀，不虚报也不重复', () => {
+  const { session, route } = beginTraining();
+  // 第一段写已生效但回执丢失：调用方只看到失败，键里其实已有进行中标记。
+  armSetLoseResponseAt(1);
+  const failed = store.saveAttempt({
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '回执丢失这把'
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /保存本机训练档案失败/);
+  const persisted = store.loadState().archive;
+  assert.equal(persisted.attempts.length, 0, '回执丢失时不能报已保存');
+  assert.equal(persisted.pendingSaves.length, 1, '进行中标记其实已落盘');
+  assert.equal(persisted.pendingSaves[0].opId, failed.opId);
+
+  armSetLoseResponseAt(0);
+  const retried = store.saveAttempt({
+    opId: failed.opId,
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '回执丢失这把'
+  });
+  assert.equal(retried.ok, true, retried.error);
+  const after = store.loadState().archive;
+  assert.equal(after.attempts.length, 1);
+  assert.equal(after.attempts[0].id, failed.opId);
+  assert.equal(after.attempts[0].routeId, route.id);
+  assert.equal(after.attempts[0].result, 'send');
+  assert.equal(after.attempts[0].note, '回执丢失这把');
+  assert.equal(after.pendingSaves.length, 0);
+});
+
+test('R3 迟到页面不能借用在途操作的 opId 换线路/结果/备注/场次，原操作仍可恢复', () => {
+  const { session, route } = beginTraining();
+  const neighbor = store.createRoute({
+    sessionId: session.id,
+    name: '同色旁线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色'
+  });
+  assert.equal(neighbor.ok, true, neighbor.error);
+  assert.notEqual(neighbor.route.id, route.id);
+  const otherSession = store.startSession({ gymName: '我自己去的岩馆' });
+  assert.equal(otherSession.ok, true, otherSession.error);
+  assert.notEqual(otherSession.session.id, session.id);
+
+  armSetFailAt(2);
+  const original = {
+    opId: 'op-qa-identity',
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'fail',
+    note: '原意这一把'
+  };
+  const failed = store.saveAttempt(original);
+  assert.equal(failed.ok, false);
+  assert.equal(store.loadState().archive.pendingSaves.length, 1);
+
+  // 晚到页面拿着同一个 opId 换线路、换结果、换备注、换场次：一律按原记录拒绝。
+  const borrowed = [
+    Object.assign({}, original, { routeId: neighbor.route.id }),
+    Object.assign({}, original, { result: 'send' }),
+    Object.assign({}, original, { note: '换过的备注' }),
+    Object.assign({}, original, { sessionId: otherSession.session.id })
+  ];
+  borrowed.forEach(input => {
+    const refused = store.saveAttempt(input);
+    assert.equal(refused.ok, false, '借用在途 opId 换内容的提交必须被拒');
+    assert.equal(refused.attempt, undefined);
+  });
+
+  // 被拒的借用没有落下任何把次，也没有改动已持久化的进行中操作。
+  const mid = store.loadState().archive;
+  assert.equal(mid.attempts.length, 0);
+  assert.equal(mid.pendingSaves.length, 1);
+  assert.equal(mid.pendingSaves[0].opId, original.opId);
+  assert.equal(mid.pendingSaves[0].routeId, route.id);
+  assert.equal(mid.pendingSaves[0].sessionId, session.id);
+  assert.equal(mid.pendingSaves[0].result, 'fail');
+  assert.equal(mid.pendingSaves[0].note, '原意这一把');
+  assert.equal(mid.attempts.filter(item => item.routeId === neighbor.route.id).length, 0);
+  assert.equal(mid.attempts.filter(item => item.sessionId === otherSession.session.id).length, 0);
+
+  // 原操作按原样重试：恢复正常，唯一一把落在原线路原场次。
+  armSetFailAt(0);
+  const retried = store.saveAttempt(original);
+  assert.equal(retried.ok, true, retried.error);
+  const after = store.loadState().archive;
+  assert.equal(after.attempts.length, 1);
+  assert.equal(after.attempts[0].id, original.opId);
+  assert.equal(after.attempts[0].routeId, route.id);
+  assert.equal(after.attempts[0].sessionId, session.id);
+  assert.equal(after.attempts[0].result, 'fail');
+  assert.equal(after.attempts[0].note, '原意这一把');
+  assert.equal(after.pendingSaves.length, 0);
 });
 
 test('R3 同一操作重复提交幂等：只提交一次，不产生第二把', () => {

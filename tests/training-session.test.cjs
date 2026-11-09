@@ -29,17 +29,24 @@ const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 
 // ---- 微信本地存储替身：只在正式本机命名空间内读写，可按需注入故障 ----
 const storage = new Map();
-const fault = { setFailAt: 0, setCount: 0 };
+const fault = { setFailAt: 0, setCount: 0, loseResponseAt: 0 };
 
 function resetDevice() {
   storage.clear();
   fault.setFailAt = 0;
   fault.setCount = 0;
+  fault.loseResponseAt = 0;
 }
 
 function armSetFailAt(callNumber) {
   fault.setCount = 0;
   fault.setFailAt = callNumber;
+}
+
+// 落盘已生效但回执丢失（弱网/超时）：页面只看到失败，键里其实已是新数据。
+function armSetLoseResponseAt(callNumber) {
+  fault.setCount = 0;
+  fault.loseResponseAt = callNumber;
 }
 
 const wxLog = { navigations: [], switches: [], toasts: [] };
@@ -61,6 +68,10 @@ global.wx = {
       throw new Error('setStorageSync:fail injected at call ' + fault.setCount);
     }
     storage.set(key, value);
+    // 写成功之后才失败：数据已是新的，页面却只拿到失败。
+    if (fault.loseResponseAt && fault.setCount === fault.loseResponseAt) {
+      throw new Error('setStorageSync:fail after durable write injected at call ' + fault.setCount);
+    }
   },
   removeStorageSync(key) {
     storage.delete(key);
@@ -693,6 +704,104 @@ test('R5 提交段失败：保留待保存行，重试复用同一把与序号',
   assert.equal(archive.attempts[0].id, opId);
   assert.equal(archive.pendingSaves.length, 0);
   assert.equal(page.data.pendingRows.length, 0);
+});
+
+test('R5 抱石完攀提交段失败后重开场内页：待保存行按原 opId 重试补上唯一一次完攀', () => {
+  const { session, route } = seedTraining();
+  store.selectRoute(route.id);
+
+  // 第一段（进行中标记）成功、第二段（提交完攀）失败：档案里留下一条在途完攀。
+  armSetFailAt(2);
+  const failed = store.saveAttempt({
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '完攀这把'
+  });
+  assert.equal(failed.ok, false);
+  assert.equal(archiveOf().pendingSaves.length, 1);
+
+  // 别的操作（换 opId）不能借这条在途完攀新增。
+  const competitor = store.saveAttempt({
+    sessionId: session.id,
+    routeId: route.id,
+    result: 'send',
+    note: '别的操作'
+  });
+  assert.equal(competitor.ok, false);
+  assert.equal(competitor.blocked, true);
+  assert.equal(archiveOf().attempts.length, 0);
+
+  // 重开页面（等价于退出小程序后再进来）：待保存行来自档案本身。
+  const page = openSessionPage({});
+  assert.equal(page.data.pendingRows.length, 1);
+  assert.equal(page.data.pendingRows[0].opId, failed.opId);
+  assert.equal(page.data.resultLocked, true);
+  assert.equal(page.data.routeStateText, '完攀待确认');
+
+  armSetFailAt(0);
+  tick();
+  page.retryPendingAttempt(tapDataset({ opId: failed.opId }));
+
+  const archive = archiveOf();
+  assert.equal(archive.attempts.length, 1, '一条尝试');
+  assert.equal(archive.attempts[0].id, failed.opId);
+  assert.equal(archive.attempts[0].result, 'send', '一条完攀');
+  assert.equal(archive.attempts[0].note, '完攀这把');
+  assert.equal(archive.attempts[0].routeId, route.id);
+  assert.equal(archive.attempts[0].sessionId, session.id);
+  assert.equal(archive.pendingSaves.length, 0, '无残留待保存');
+  assert.equal(page.data.pendingRows.length, 0);
+  assert.equal(page.data.hasPending, false);
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].resultText, '完攀');
+  assert.equal(page.data.routeStateText, '已完攀');
+});
+
+test('R5 抱石第一段回执丢失：旧实例本地待保存行与重开页面都只补上同一把，不重复也不抢别人的 opId', () => {
+  const { session, route } = seedTraining();
+  const stale = openSessionPage({});
+  assert.equal(stale.data.activeSession.id, session.id);
+
+  // 第一段写已生效但回执丢失：页面只看到失败，档案里其实已有在途完攀。
+  armSetLoseResponseAt(1);
+  tick();
+  stale.recordAttempt(tapResult('send'));
+  assert.equal(archiveOf().attempts.length, 0, '回执丢失时不能算已保存');
+  assert.equal(archiveOf().pendingSaves.length, 1, '进行中标记其实已落盘');
+  assert.match(stale.data.storageError, /保存本机训练档案失败/);
+  assert.equal(stale.data.hasPending, true, '本实例的本地待保存行仍在');
+
+  // 重开页面：待保存行来自档案，opId 与旧实例本地那一行一致。
+  const reopened = openSessionPage({});
+  assert.equal(reopened.data.pendingRows.length, 1);
+  const opId = reopened.data.pendingRows[0].opId;
+  assert.equal(opId, stale.data.pendingRows[0].opId, '同一操作只有一个 opId');
+  assert.equal(archiveOf().pendingSaves[0].opId, opId);
+
+  armSetLoseResponseAt(0);
+  tick();
+  reopened.retryPendingAttempt(tapDataset({ opId }));
+  const archive = archiveOf();
+  assert.equal(archive.attempts.length, 1);
+  assert.equal(archive.attempts[0].id, opId);
+  assert.equal(archive.attempts[0].result, 'send');
+  assert.equal(archive.pendingSaves.length, 0);
+  assert.equal(reopened.data.pendingRows.length, 0);
+
+  // 旧实例随后按自己的本地待保存行重试同一 opId：幂等，不产生第二把。
+  tick();
+  stale.retryPendingAttempt(tapDataset({ opId }));
+  assert.equal(archiveOf().attempts.length, 1, '同一操作只提交一次');
+  assert.equal(stale.data.pendingRows.length, 0);
+  assert.equal(stale.data.storageError, '');
+
+  // 已完攀后同一实例再点「完攀」：走完攀守卫，不新增把次。
+  tick(1500);
+  stale.recordAttempt(tapResult('send'));
+  assert.equal(archiveOf().attempts.length, 1);
+  assert.match(stale.data.notice, /已完攀/);
 });
 
 test('R5 两个页面实例的迟到操作与重复提交不覆盖新数据，重开后逐项一致', () => {

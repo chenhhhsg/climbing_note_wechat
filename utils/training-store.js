@@ -23,7 +23,9 @@
  *
  * 落盘失败不报「已保存」：写操作分两段——先把这次操作记为「进行中」并落盘，再提交
  * 结果并清掉标记。任一段失败都返回 ok:false；已落盘的「进行中」标记让同一 opId 的
- * 重试复用原 ID，不产生第二把、也不覆盖后来的新数据。
+ * 重试复用原 ID，不产生第二把、也不覆盖后来的新数据。这条标记重开之后依然可恢复：
+ * 同一 opId 带原场次、原线路、原结果与原备注重试就能补齐那一把（含抱石首个完攀——
+ * 恢复自己的在途完攀不被它自己封锁），别的操作不能借用别人的 opId 绕过封锁或改写它。
  *
  * 读取只发生在档案键上：无键是正常的首次进入，返回空档案；键存在但损坏、或版本
  * 不被支持时返回可见错误且**保留原数据**（读写入口都不会覆盖它）。
@@ -485,8 +487,12 @@ function attemptsFor(archive, filter) {
  * 与 v0.3 语义一致：抱石（含缺 climbType 的旧 V 级线路）首次完攀后不再新增，
  * 顶绳和先锋可重复；误点完攀可按原把次「改为未完成」。
  * 只读计算，不写档案、不迁移旧数据、不生成逐把明细。
+ *
+ * options.ignorePendingOpId：把这一条「进行中」的完攀当作不属于封锁来源。只有
+ * saveAttempt 恢复同一次操作时用它——否则那条在途完攀会把唯一能补齐它的重试
+ * 自己也挡在门外。别的操作（换 opId、别的在途）一律照旧计入封锁。
  */
-function routeCompletion(archive, routeId) {
+function routeCompletion(archive, routeId, options) {
   const unknown = {
     known: false,
     routeId: routeId || '',
@@ -508,11 +514,16 @@ function routeCompletion(archive, routeId) {
   const route = archive && findById(archive.routes, routeId);
   if (!route) return unknown;
 
+  const data = options || {};
+  const ignorePendingOpId = hasText(data.ignorePendingOpId) ? data.ignorePendingOpId : '';
   const isBoulder = rules.isBoulderRoute(route);
   const attempts = (archive.attempts || []).filter(item => item.routeId === route.id);
   const sends = attempts.filter(item => item.result === 'send');
   const pendingSends = (archive.pendingSaves || []).filter(
-    item => item.routeId === route.id && item.result === 'send'
+    item =>
+      item.routeId === route.id &&
+      item.result === 'send' &&
+      item.opId !== ignorePendingOpId
   );
   const corrections = (archive.pendingCorrections || []).filter(
     item => item.routeId === route.id
@@ -1140,12 +1151,20 @@ function selectRoute(routeId) {
  * 保存一把结果与备注。
  *
  * 输入：{ opId?, sessionId?, routeId, result: 'fail'|'send', note?, now? }
- * 返回：{ ok, error, archive, attempt, opId, duplicate, blocked }
+ * 返回：{ ok, error, archive, attempt, opId, duplicate, blocked, conflict? }
  *
  * - 同一 opId 重复提交/迟到回调：复用已落盘的把次，只提交一次；
  * - 新一次真实尝试：页面换新 opId，得到新的把次 ID；
- * - 抱石已确认（或已在提交中）完攀：不再新增，blocked，需先「改为未完成」；
- * - 落盘失败：ok:false，不报已保存；先落盘的「进行中」标记让同 opId 重试复用同一把。
+ * - 抱石已确认（或别的操作已在提交中）完攀：不再新增，blocked，需先「改为未完成」；
+ * - 落盘失败：ok:false，不报已保存；先落盘的「进行中」标记让同 opId 重试复用同一把，
+ *   且这条已持久化的待保存操作**重开之后仍能由它自己的 opId 补齐**——第一段写就失败、
+ *   或第一段已落盘而回执丢失、或第二段提交失败，都留下同一条可恢复的记录；
+ * - 借用在途操作的 opId 换线路/场次/结果/备注：conflict，按原记录拒绝，不新建也不覆盖。
+ *
+ * 恢复只认「同一次操作」：opId 对应的待保存记录必须在场次、线路、结果与备注上逐项
+ * 与本次请求一致，否则视为别的操作借用，直接拒绝。同 opId 的重试把自己的那条在途
+ * 完攀排除出抱石封锁（否则它会把唯一能补齐它的重试挡在门外），别的在途操作与已确认
+ * 完攀照旧封锁。
  */
 function saveAttempt(input) {
   const data = input || {};
@@ -1190,8 +1209,32 @@ function saveAttempt(input) {
     return { ok: false, blocked: false, error: '找不到这条线路', archive: current, opId: opId };
   }
 
-  // 抱石首次完攀守卫：已确认或仍在提交中的完攀都关闭新增入口。
-  const completion = routeCompletion(current, route.id);
+  // 已落盘的「进行中」标记：这是同一次操作的重试，还是别的操作借了这个 opId？
+  const pendingExisting = current.pendingSaves.find(item => item.opId === opId) || null;
+
+  if (pendingExisting) {
+    // 晚到的页面不能借用在途操作的 opId：原归属（场次、线路）、结果与备注必须逐项
+    // 一致，不一致时按原记录拒绝——既不新建别的把次，也不覆盖已持久化的那一次操作。
+    const sameIntent =
+      pendingExisting.sessionId === session.id &&
+      pendingExisting.routeId === route.id &&
+      pendingExisting.result === result &&
+      pendingExisting.note === note;
+    if (!sameIntent) {
+      return {
+        ok: false,
+        blocked: false,
+        conflict: true,
+        error: '这个操作 ID 属于另一条待保存记录，不能按新内容提交；请在原「待保存」行重试',
+        archive: current,
+        opId: opId
+      };
+    }
+  }
+
+  // 抱石首次完攀守卫：已确认、或**别的操作**仍在提交中的完攀都关闭新增入口。
+  // 恢复自己那次在途操作时把自己的那条排除在外，否则这条待保存的完攀永远补不上。
+  const completion = routeCompletion(current, route.id, { ignorePendingOpId: opId });
   if (completion.closed) {
     return {
       ok: false,
@@ -1206,7 +1249,6 @@ function saveAttempt(input) {
   }
 
   // 重试用同一个 opId：复用「进行中」标记里的序号与时间，不重新分配 ID。
-  const pendingExisting = current.pendingSaves.find(item => item.opId === opId) || null;
   const seq = pendingExisting ? pendingExisting.seq : current.nextAttemptSeq;
   const createdAt = pendingExisting ? pendingExisting.createdAt : timestamp(data.now);
   const attempt = {
