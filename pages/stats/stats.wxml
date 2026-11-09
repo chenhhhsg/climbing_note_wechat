@@ -1,97 +1,147 @@
 <!--
-  统计页面
+  统计页面（T022）
+  本机读数只来自本机训练档案的已提交把次，先算先显示；旧云汇总单列在后、只读，
+  云失败或延迟都不遮挡也不覆盖上面的本机数字。
 -->
 <view class="container">
-  <!-- 加载中 -->
-  <view wx:if="{{loading}}" class="loading-state">
-    <text>加载中...</text>
+  <!-- 本机档案损坏/版本不支持/读取失败：显示读取失败并保留原字节，
+       与「真实空档」的空态明确区分，不用 0 冒充 -->
+  <view wx:if="{{archiveError}}" id="archive-error" class="archive-error">
+    <text class="archive-error-title">本机统计读取失败</text>
+    <text class="archive-error-text">{{archiveError}}</text>
+    <text class="archive-error-hint">本机档案保持原样，未被改动；可下拉刷新或重开后重试。</text>
   </view>
 
-  <view wx:else>
-    <!-- 核心数据卡片 -->
-    <view class="stats-grid">
-      <view class="stat-card">
-        <text class="stat-number">{{totalClimbs}}</text>
-        <text class="stat-label">总攀岩次数</text>
-      </view>
-      <view class="stat-card">
-        <text class="stat-number">{{monthClimbs}}</text>
-        <text class="stat-label">本月攀岩</text>
-      </view>
-      <view class="stat-card highlight">
-        <text class="stat-number">{{maxGrade}}</text>
-        <text class="stat-label">最高难度</text>
-      </view>
-      <view class="stat-card">
-        <text class="stat-number">{{completionRate}}%</text>
-        <text class="stat-label">完成率</text>
-      </view>
+  <block wx:else>
+    <!-- 加载中（本机档案是同步只读，几乎瞬时结束） -->
+    <view wx:if="{{loading}}" class="loading-state">
+      <text>加载中...</text>
     </view>
 
-    <!-- 完成状态分布 -->
-    <view class="section-card">
-      <view class="section-title">完成状态</view>
-      <view class="status-bars">
-        <view class="status-bar-item">
-          <view class="bar-header">
-            <text class="bar-label">完成</text>
-            <text class="bar-count">{{completedCount}}次</text>
-          </view>
-          <view class="bar-bg">
-            <view class="bar-fill bar-success" style="width: {{completionRate}}%"></view>
-          </view>
-        </view>
-        <view class="status-bar-item">
-          <view class="bar-header">
-            <text class="bar-label">未完成</text>
-            <text class="bar-count">{{failedCount}}次</text>
-          </view>
-          <view class="bar-bg">
-            <view class="bar-fill bar-fail" style="width: {{100 - completionRate}}%"></view>
-          </view>
-        </view>
+    <block wx:else>
+      <!-- 空档：明确空态 -->
+      <view wx:if="{{isEmpty}}" id="stats-empty" class="empty-state">
+        <text class="empty-text">还没有本机训练把次</text>
+        <text class="empty-hint">从首页开始一场训练，逐把记录后这里会汇总本机把数与完攀。</text>
       </view>
-    </view>
 
-    <!-- 攀岩类型分布 -->
-    <view wx:if="{{typeDistribution.length > 0}}" class="section-card">
-      <view class="section-title">攀岩类型</view>
-      <view class="type-list">
-        <view
-          wx:for="{{typeDistribution}}"
-          wx:key="name"
-          class="type-item"
-        >
-          <view class="type-info">
-            <text class="type-name">{{item.name}}</text>
-            <text class="type-count">{{item.count}}次</text>
+      <block wx:else>
+        <!-- 本机核心读数（只含已提交把次） -->
+        <view class="stats-grid">
+          <view class="stat-card">
+            <text class="stat-number">{{totalAttempts}}</text>
+            <text class="stat-label">本机把数</text>
           </view>
-          <view class="type-bar-bg">
-            <view class="type-bar-fill" style="width: {{item.percentage}}%"></view>
+          <view class="stat-card">
+            <text class="stat-number">{{monthAttempts}}</text>
+            <text class="stat-label">本月把数</text>
+          </view>
+          <view class="stat-card">
+            <text class="stat-number">{{sendCount}}</text>
+            <text class="stat-label">完攀</text>
+          </view>
+          <view class="stat-card highlight">
+            <text class="stat-number">{{completionRate}}%</text>
+            <text class="stat-label">完成率</text>
           </view>
         </view>
-      </view>
-    </view>
 
-    <!-- 常去地点 -->
-    <view wx:if="{{topLocations.length > 0}}" class="section-card">
-      <view class="section-title">常去地点</view>
-      <view class="location-list">
-        <view
-          wx:for="{{topLocations}}"
-          wx:key="name"
-          class="location-item"
-        >
-          <text class="location-rank">{{index + 1}}</text>
-          <text class="location-name">{{item.name}}</text>
-          <text class="location-count">{{item.count}}次</text>
+        <!-- 完成状态：与本机把数同一分母 -->
+        <view class="section-card">
+          <view class="section-title">完成状态 · 共 {{totalAttempts}} 把</view>
+          <view class="status-bars">
+            <view class="status-bar-item">
+              <view class="bar-header">
+                <text class="bar-label">完攀</text>
+                <text class="bar-count">{{sendCount}}把</text>
+              </view>
+              <view class="bar-bg">
+                <view class="bar-fill bar-success" style="width: {{completionRate}}%"></view>
+              </view>
+            </view>
+            <view class="status-bar-item">
+              <view class="bar-header">
+                <text class="bar-label">未完成</text>
+                <text class="bar-count">{{failCount}}把</text>
+              </view>
+              <view class="bar-bg">
+                <view class="bar-fill bar-fail" style="width: {{100 - completionRate}}%"></view>
+              </view>
+            </view>
+          </view>
+          <text class="month-note">本月按训练日期算：{{monthAttempts}} 把 · 完成率 {{monthCompletionRate}}%</text>
         </view>
-      </view>
-    </view>
 
-    <!-- 空状态 -->
-    <view wx:if="{{totalClimbs === 0}}" class="empty-tip">
-      <text>还没有攀岩记录，快去添加吧！</text>
+        <!-- 最高难度：V 级与 YDS 分开显示，不混成一条 -->
+        <view class="section-card">
+          <view class="section-title">最高难度</view>
+          <view wx:if="{{hasMaxGrade}}" class="grade-list">
+            <view wx:if="{{boulderMaxGrade}}" class="grade-row">
+              <text class="grade-kind">抱石 · V 级</text>
+              <text class="grade-value">{{boulderMaxGrade}}</text>
+            </view>
+            <view wx:if="{{ropeMaxGrade}}" class="grade-row">
+              <text class="grade-kind">顶绳 / 先锋 · YDS</text>
+              <text class="grade-value">{{ropeMaxGrade}}</text>
+            </view>
+          </view>
+          <text wx:else class="grade-empty">还没有可汇总的线路难度</text>
+        </view>
+
+        <!-- 线路类型：按长期线路关联 -->
+        <view wx:if="{{typeRows.length > 0}}" class="section-card">
+          <view class="section-title">线路类型</view>
+          <view class="type-list">
+            <view
+              wx:for="{{typeRows}}"
+              wx:key="name"
+              class="type-item"
+            >
+              <view class="type-info">
+                <text class="type-name">{{item.name}}</text>
+                <text class="type-count">{{item.count}}把</text>
+              </view>
+              <view class="type-bar-bg">
+                <view class="type-bar-fill" style="width: {{item.percentage}}%"></view>
+              </view>
+            </view>
+          </view>
+        </view>
+
+        <!-- 常去岩馆：按场次所属岩馆关联 -->
+        <view wx:if="{{gymRows.length > 0}}" class="section-card">
+          <view class="section-title">常去岩馆</view>
+          <view class="location-list">
+            <view
+              wx:for="{{gymRows}}"
+              wx:key="name"
+              class="location-item"
+            >
+              <text class="location-rank">{{index + 1}}</text>
+              <text class="location-name">{{item.name}}</text>
+              <text class="location-count">{{item.count}}把</text>
+            </view>
+          </view>
+        </view>
+      </block>
+    </block>
+  </block>
+
+  <!-- 旧云汇总：单列来源、只读；本机读数优先，云不可读也只影响本段 -->
+  <view class="section-card legacy-section">
+    <view class="section-title">旧云记录（只读）</view>
+    <view wx:if="{{legacyState === 'ok'}}" id="legacy-summary" class="legacy-line">
+      <text>旧云记录 {{legacyRecordCount}} 条</text>
     </view>
+    <view wx:elif="{{legacyState === 'empty'}}" class="legacy-line">
+      <text>旧云暂无记录</text>
+    </view>
+    <view wx:elif="{{legacyState === 'error'}}" id="legacy-error" class="legacy-error">
+      <text>{{legacyError}}</text>
+    </view>
+    <view wx:else class="legacy-line">
+      <text>读取旧云汇总…</text>
+    </view>
+    <text class="legacy-note">{{legacyHint}}</text>
   </view>
 </view>

@@ -201,12 +201,127 @@
   color: #526157;
 }
 
-/* 空状态提示 */
-.empty-tip {
-  text-align: center;
-  padding: 60rpx 0;
+/* 空状态：明确「还没有把次」，与读取失败区分 */
+.empty-state {
+  background-color: #edece0;
+  border-radius: 6rpx;
+  padding: 28rpx 24rpx;
+  text-align: left;
+}
+
+.empty-text {
+  display: block;
+  font-size: 30rpx;
+  color: #22372f;
+  margin-bottom: 10rpx;
+}
+
+.empty-hint {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.6;
   color: #606d61;
+}
+
+/* 本机档案读取失败：显式报错，不显示 0 */
+.archive-error {
+  background-color: #f7e6db;
+  border: 1px solid #d8b6a4;
+  border-radius: 6rpx;
+  padding: 24rpx;
+}
+
+.archive-error-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #9c3d22;
+  margin-bottom: 10rpx;
+}
+
+.archive-error-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #9c3d22;
+  margin-bottom: 10rpx;
+}
+
+.archive-error-hint {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
+}
+
+/* 本月说明：按把次所属训练日期计算 */
+.month-note {
+  display: block;
+  margin-top: 20rpx;
+  font-size: 24rpx;
+  color: #606d61;
+}
+
+/* 最高难度：V 级与 YDS 分开 */
+.grade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 16rpx;
+}
+
+.grade-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16rpx 0;
+  border-bottom: 1rpx solid #dcdccc;
+}
+
+.grade-row:last-child {
+  border-bottom: none;
+}
+
+.grade-kind {
   font-size: 28rpx;
+  color: #526157;
+}
+
+.grade-value {
+  font-size: 36rpx;
+  font-weight: bold;
+  color: #173d32;
+}
+
+.grade-empty {
+  font-size: 26rpx;
+  color: #606d61;
+}
+
+/* 旧云汇总：单列来源、只读 */
+.legacy-section {
+  margin-top: 30rpx;
+}
+
+.legacy-line {
+  font-size: 28rpx;
+  color: #22372f;
+}
+
+.legacy-error {
+  background-color: #edece0;
+  border-radius: 6rpx;
+  padding: 20rpx 24rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
+}
+
+.legacy-note {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #606d61;
 }
 
 /* 岩馆手册 */
