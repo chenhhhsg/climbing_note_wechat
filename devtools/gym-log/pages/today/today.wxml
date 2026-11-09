@@ -537,13 +537,14 @@
 
       <!-- 拇指可及的两个大按钮，底部留出安全区；
            本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把。
-           抱石首次完攀确认后，原按钮位置改成「已完攀」并只留回看入口；
+           抱石首次完攀确认后，原按钮位置改成「已完攀」并只留回看入口，
+           不再出现「完攀」；点错了可在同一位置「改为未完成」改正原把次。
            完攀还在待确认时显示待确认面板，绝不放能点却没用的结果按钮。 -->
       <view wx:if="{{selectedRoute && !noteEditor}}" class="result-footer">
         <block wx:if="{{routeCompleted}}">
           <view id="route-completed-panel" class="route-completed-panel">
             <text class="route-completed-title">已完攀</text>
-            <text class="route-completed-hint">这条抱石线路已完攀，只能回看；把次、备注与照片都保留在本机。</text>
+            <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次、备注与照片都保留在本机。</text>
           </view>
           <button
             id="route-completed-detail"
@@ -551,6 +552,38 @@
             data-route-id="{{selectedRoute.id}}"
             bindtap="openRouteDetail"
           >查看记录</button>
+          <!--
+            误点完攀的更正：明确写出要改的是哪一天哪一场的第几把，只留「改为未完成」。
+            按钮把渲染当时的原把次与线路/场次/世代/数据集/归属一起带进 dataset，
+            点按只改正这一把；页面刷新或编号空间换新后，旧按钮不会改到别的把次。
+            这里的更正只改原把次，和普通新增一把「未完成」是两件事。
+          -->
+          <view wx:if="{{routeCorrectable}}" id="route-correction" class="route-correction">
+            <text class="route-correction-title">点错了完攀？</text>
+            <text
+              wx:if="{{routeCorrectionLabel}}"
+              id="route-correction-target"
+              class="route-correction-target"
+            >改正原把次：{{routeCorrectionLabel}} · {{routeCorrectionContextText}}</text>
+            <text class="route-correction-hint">只把这一把改成未完成，把数与时间不变；之后可以再记并再次完攀。</text>
+            <text
+              wx:if="{{routeCorrectionStatusText}}"
+              id="route-correction-status"
+              class="route-correction-status"
+            >{{routeCorrectionStatusText}}</text>
+            <button
+              id="route-correct-send"
+              class="secondary-button route-correct-send"
+              disabled="{{routeCorrectionSaving}}"
+              data-attempt-id="{{routeCorrectionContext.attemptId}}"
+              data-route-id="{{routeCorrectionContext.routeId}}"
+              data-session-id="{{routeCorrectionContext.sessionId}}"
+              data-generation="{{routeCorrectionContext.generation}}"
+              data-dataset-id="{{routeCorrectionContext.datasetId}}"
+              data-owner-id="{{routeCorrectionContext.ownerId}}"
+              bindtap="correctSend"
+            >改为未完成</button>
+          </view>
         </block>
         <block wx:elif="{{routePendingSend}}">
           <view id="route-pending-panel" class="route-pending-panel">

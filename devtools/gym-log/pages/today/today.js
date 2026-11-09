@@ -26,7 +26,17 @@ const {
   createInitialState,
   loadState,
   saveState,
-  routeCompletion
+  routeCompletion,
+  pendingCorrectionFor,
+  // 「改为未完成」的共用逻辑（与详情页同一份）：
+  // 目标校验、入队、请求格式与回执结清都在 utils/store.js。
+  sendTargetText,
+  correctionDataset,
+  correctionTargetFromDataset,
+  correctionStatusNotice,
+  enqueueCorrection,
+  correctionRequest,
+  finishCorrectionJob
 } = require('../../utils/store.js');
 const {
   CLIMB_TYPES,
@@ -44,7 +54,7 @@ const {
   createPhotoController,
   buildView
 } = require('../../utils/photo-controller.js');
-const { nextTrialDatasetId } = require('../../utils/trial-profile.js');
+const { nextTrialDatasetId, TRIAL_OWNER_ID } = require('../../utils/trial-profile.js');
 
 const TRIAL_BADGE = '本地试用 · 虚构数据';
 const TRIAL_NOTE = '不连接云端，仅保存在本机';
@@ -74,7 +84,7 @@ function attemptResultText(result) {
 /**
  * 线路上的完攀标记文案（T015）：判定来自 store.routeCompletion，
  * 今日页、历史选线与详情页显示同一份结果。
- * - 已确认完攀：抱石线只能回看；
+ * - 已确认完攀：抱石线不再新增把次，只回看；误点时可原把「改为未完成」更正；
  * - 完攀还在待确认：只有因此被关闭入口的抱石线才显示，顶绳、先锋可重复完攀，
  *   保存中的那一把由待确认行本身表达，不升级成线路级标记。
  */
@@ -88,6 +98,17 @@ function completionText(completion) {
 function timeText(createdAt) {
   const date = new Date(createdAt);
   return Number.isNaN(date.getTime()) ? '--:--' : formatLocalTime(date);
+}
+
+/**
+ * 尝试结果签名：更正（改为未完成）只翻这一把的 result，把数不变，
+ * 所以 onShow 只比长度会漏掉别的页面实例刚完成的更正。用签名比对补上这一层，
+ * 让今日页与详情页的结果、统计与线路状态立刻一致。
+ */
+function attemptSignature(state) {
+  return (state.attempts || [])
+    .map(item => item.id + ':' + item.result)
+    .join('|');
 }
 
 /**
@@ -137,6 +158,7 @@ Page({
 
     // 已点结果、但模拟保存端尚未确认的操作；与已保存尝试分开显示和计数。
     savingOpId: '',
+    savingCorrectionId: '',
     pendingAttempts: [],
     hasPending: false,
     pendingCountText: '',
@@ -150,6 +172,17 @@ Page({
     routeRepeatable: true,
     routeSendCount: 0,
     routeStateText: '',
+    // 误点完攀的更正入口（T015 返工）：已完攀时隐藏「完攀」，只留「改为未完成」。
+    // routeCorrectionLabel/ContextText 说明改正的是哪一把，避免改错原把次。
+    routeCorrectable: false,
+    routeCorrectionPending: false,
+    routeCorrectionSaving: false,
+    routeCorrectionLabel: '',
+    routeCorrectionContextText: '',
+    routeCorrectionStatusText: '',
+    // 渲染这一把时带下来的更正上下文（attemptId 与原把次的线路/场次/世代/数据集/归属）：
+    // 点按只按这里的原把次改正，参数缺失或过时不会改成「最新一把」。
+    routeCorrectionContext: null,
     // 待确认的完攀（T015）：与已确认的「已完攀」分开展示；跨场时给出回原场次的入口。
     routePendingSend: false,
     pendingSendOtherSession: false,
@@ -193,6 +226,9 @@ Page({
     this._editingAttemptId = '';
     this._dispatching = {};
     this._pendingFailures = {};
+    // 更正（改为未完成）与普通保存分开派发：同一原把次只派发一次。
+    this._dispatchingCorrections = {};
+    this._correctionFailures = {};
     this._saveDelayMs = DEFAULT_SAVE_DELAY_MS;
     this._unloaded = false;
     this._photoUi = null;
@@ -236,7 +272,7 @@ Page({
   onShow() {
     if (!this.data.ready) return;
 
-    if (this.data.savingOpId) {
+    if (this.data.savingOpId || this.data.savingCorrectionId) {
       this.refreshFaultInjection();
       this.refreshPhotos();
       this.refreshPhotoSpace();
@@ -257,6 +293,9 @@ Page({
       next.sessions.length !== current.sessions.length ||
       next.attempts.length !== current.attempts.length ||
       next.pendingSaves.length !== current.pendingSaves.length ||
+      (next.pendingCorrections || []).length !==
+        (current.pendingCorrections || []).length ||
+      attemptSignature(next) !== attemptSignature(current) ||
       next.routes.length !== current.routes.length;
 
     if (changed) {
@@ -277,6 +316,7 @@ Page({
     this.state = loaded.state;
     this._editingAttemptId = '';
     this._pendingFailures = {};
+    this._correctionFailures = {};
     this._quickPhotoSource = '';
 
     const active = findSession(this.state, this.state.activeSessionId);
@@ -288,6 +328,12 @@ Page({
     const inFlightOpId =
       Object.keys(this._dispatching).find(opId =>
         this.state.pendingSaves.some(op => op.opId === opId)
+      ) || '';
+    const inFlightCorrectionId =
+      Object.keys(this._dispatchingCorrections).find(attemptId =>
+        (this.state.pendingCorrections || []).some(
+          item => item.attemptId === attemptId
+        )
       ) || '';
     const formDefaults = defaultFormSelection();
 
@@ -315,6 +361,7 @@ Page({
       quickRouteGrade: formDefaults.grade,
       quickRouteGradeText: formDefaults.gradeText,
       savingOpId: inFlightOpId,
+      savingCorrectionId: inFlightCorrectionId,
       saveNotice: '',
       photoNotice: '',
       quickRoutePhoto: null,
@@ -500,6 +547,54 @@ Page({
       ? routeCompletion(state, selectedRoute.id)
       : null;
 
+    // 误点完攀的更正入口（T015 返工）：已完攀时不再给「完攀」，只留「改为未完成」。
+    // 目标是最新一把可识别的已确认完攀；已有待更正时沿用同一条，不重复发起。
+    const pendingCorrection = selectedRoute
+      ? pendingCorrectionFor(state, selectedRoute.id)
+      : null;
+    const correctionTarget = selectedRoute
+      ? sendTargetText(
+          state,
+          pendingCorrection
+            ? pendingCorrection.attemptId
+            : (completion && completion.latestSendId) || ''
+        )
+      : null;
+    const correctionSaving = Boolean(
+      pendingCorrection &&
+        (this._dispatchingCorrections[pendingCorrection.attemptId] ||
+          this.data.savingCorrectionId === pendingCorrection.attemptId)
+    );
+    const correctionFailure = pendingCorrection
+      ? this._correctionFailures[pendingCorrection.attemptId] || ''
+      : '';
+    // 已完攀的抱石线只要还有可更正的原把次（或已有待更正）就给更正入口。
+    const routeCorrectable = Boolean(
+      selectedRoute &&
+        completion &&
+        completion.completed &&
+        ((completion.canCorrect && correctionTarget) || pendingCorrection)
+    );
+    // 把「这一把是哪一个原把次」连同渲染当时的线路/场次/世代/数据集/归属一起渲染出去：
+    // 点按一律按这份上下文改正，页面刷新或换了编号空间后旧按钮不会再改到别的把次。
+    const routeCorrectionContext =
+      routeCorrectable && correctionTarget && selectedRoute
+        ? {
+            attemptId: correctionTarget.attemptId,
+            routeId: selectedRoute.id,
+            sessionId: correctionTarget.sessionId,
+            generation: state.generation || '',
+            datasetId: state.datasetId || '',
+            ownerId: TRIAL_OWNER_ID
+          }
+        : null;
+    let routeCorrectionStatusText = '';
+    if (correctionSaving) {
+      routeCorrectionStatusText = '更正保存中…';
+    } else if (correctionFailure) {
+      routeCorrectionStatusText = '更正未确认 · 点「改为未完成」按同一把重试';
+    }
+
     // 待确认的完攀（T015）：与已确认的「已完攀」分开。
     // 只有因此被关闭入口的抱石线才算「完攀待确认」——顶绳、先锋可重复完攀，
     // 保存中的那一把由待确认行本身表达，不升级成线路级状态。
@@ -531,10 +626,10 @@ Page({
           sessionLabel(state, opSession) +
           ' · ' +
           gymName(opSession.gymId) +
-          ' 待确认：回到原场次，在待确认行点「重试保存」；确认后只能回看。';
+          ' 待确认：回到原场次，在待确认行点「重试保存」；确认后只能回看，或在该把次上「改为未完成」。';
       } else {
         pendingSendHint =
-          '这一把的完攀还在待确认：在下方待确认行点「重试保存」；确认后只能回看。';
+          '这一把的完攀还在待确认：在下方待确认行点「重试保存」；确认后只能回看，或在该把次上「改为未完成」。';
       }
     }
 
@@ -569,6 +664,15 @@ Page({
           : completion && completion.closed
             ? '完攀待确认'
             : '',
+      routeCorrectable,
+      routeCorrectionPending: Boolean(pendingCorrection),
+      routeCorrectionSaving: correctionSaving,
+      routeCorrectionLabel: correctionTarget ? correctionTarget.label : '',
+      routeCorrectionContextText: correctionTarget
+        ? correctionTarget.contextText
+        : '',
+      routeCorrectionStatusText,
+      routeCorrectionContext,
       routePendingSend,
       pendingSendOtherSession,
       pendingSendHint,
@@ -1130,8 +1234,8 @@ Page({
       this.state = current;
       this.setData({
         saveNotice: completion.completed
-          ? '这条抱石线路已完攀，只能回看，不能再记新的把次。'
-          : '这条抱石线路的完攀还在待确认：请先在原把次上重试保存；确认后只能回看。'
+          ? '这条抱石线路已完攀，不能再新增把次；点错了可在原把次上「改为未完成」更正，或回看记录。'
+          : '这条抱石线路的完攀还在待确认：请先在原把次上重试保存；确认后只能回看或改为未完成。'
       });
       this.refreshView();
       return Promise.resolve();
@@ -1304,7 +1408,7 @@ Page({
       return this.settleConflictingPending(
         latest,
         opId,
-        '这条抱石线路已完攀（保存端已有记录），本条待确认已撤销，只能回看。'
+        '这条抱石线路已完攀（保存端已有记录），本条待确认已撤销：只能回看，或在原把次上「改为未完成」。'
       );
     }
 
@@ -1341,6 +1445,8 @@ Page({
       next.pendingSaves = next.pendingSaves.filter(item => item.opId !== opId);
 
       // 保存端重复确认时，本地也只保留一条尝试。
+      // 已被「改为未完成」更正过的把次到不了这里：确认过的把次早已不在待确认里，
+      // 而保存端也拒绝更正试用数据里尚未确认的完攀，所以不会用旧快照复活旧完攀。
       if (!next.attempts.some(item => item.id === opId)) {
         next.attempts.push({
           id: opId,
@@ -1422,6 +1528,177 @@ Page({
 
     this.state = settled;
     this.setData({ storageError: '', saveNotice: notice });
+  },
+
+  /**
+   * 改为未完成（T015 返工）：只改正渲染这一把时展示的那个已确认完攀。
+   *
+   * - 目标来自按钮渲染当时带下来的上下文（原 attempt/op ID 与原把次的线路、场次、
+   *   世代、数据集、归属）：只针对这一把，不新建场次、不新增把次，原来的把数、时间、
+   *   序号、备注、照片与所属场次都不变；之后可以正常再记并再次完攀；
+   * - 参数缺失或已过时（页面刷新、切线路、重置/换数据集、原把次已被改过）时给出提示，
+   *   绝不默默拿「最新一把」来改正，也不会误重试另一个目标；
+   * - 与普通「未完成」区分：普通未完成是新增一把，这里只改正原把次；
+   * - 保存端与本地模型都要改：先落一条待更正，确认后才改本地那一把；任一步失败
+   *   都保留待更正，再点一次按同一把重试（保存端按原 opId 幂等）。
+   */
+  correctSend(event) {
+    if (this.data.loadError) return Promise.resolve();
+    if (this.data.savingCorrectionId) return Promise.resolve();
+
+    const loaded = loadState();
+    if (loaded.error) {
+      this.setData({ storageError: loaded.error });
+      return Promise.resolve();
+    }
+
+    const current = loaded.state;
+    const session = findSession(current, this.state.activeSessionId);
+    const route =
+      session &&
+      current.routes.find(
+        item => item.id === this.state.activeRouteId && item.gymId === session.gymId
+      );
+    if (!session || !route) {
+      this.state = current;
+      this.refreshView();
+      return Promise.resolve();
+    }
+
+    const target = correctionTargetFromDataset(
+      current,
+      correctionDataset(event),
+      route.id
+    );
+    if (target.status !== 'ok') {
+      this.state = current;
+      this.setData({ saveNotice: correctionStatusNotice(target.status) });
+      this.refreshView();
+      return Promise.resolve();
+    }
+
+    // 已有待更正：只有点的就是同一把时才沿用重试；已有另一把在正更中时不改目标。
+    const pending = pendingCorrectionFor(current, route.id);
+    if (pending) {
+      this.state = current;
+      if (pending.attemptId !== target.attempt.id) {
+        this.setData({ saveNotice: '已有另一把正在更正，请先完成它。' });
+        this.refreshView();
+        return Promise.resolve();
+      }
+      this.refreshView();
+      return this.dispatchCorrection(pending.attemptId);
+    }
+
+    // 只记下更正意图：当前场次、线路、把次、备注与照片都不动。
+    const next = enqueueCorrection(current, target.attempt);
+    if (!this.commit(next)) return Promise.resolve();
+
+    this.setData({ saveNotice: '' });
+    this.refreshView();
+    return this.dispatchCorrection(target.attempt.id);
+  },
+
+  /**
+   * 同一条待更正只派发一次；重复点击只复用同一条，不产生第二个请求。
+   * 回执可能晚于其他页面实例的写入，交付时只按原把次 ID 合并，不写派发时的旧快照。
+   */
+  dispatchCorrection(attemptId) {
+    if (!attemptId) return Promise.resolve();
+
+    const correction = (this.state.pendingCorrections || []).find(
+      item => item.attemptId === attemptId
+    );
+    if (!correction) {
+      // 别的实例可能已经结清这条待更正；重新读取后按最新状态显示。
+      const loaded = loadState();
+      if (!loaded.error && !this._unloaded) {
+        this.state = loaded.state;
+        this.refreshView();
+      }
+      return Promise.resolve();
+    }
+    if (this._dispatchingCorrections[attemptId]) return Promise.resolve();
+
+    const snapshot = clone(correction);
+
+    this._dispatchingCorrections[attemptId] = true;
+    this.setData({ savingCorrectionId: attemptId });
+    this.refreshView();
+
+    return new Promise(resolve => {
+      const deliver = () => {
+        let outcome;
+        try {
+          // 只报「要改正的原把次」：线路类型、归属与结果都由保存端按试用数据与
+          // 账本判定，页面不自带（可省略、可伪造的）声明；世代用于识别迟到的旧请求。
+          outcome = trialSaveServer.submitCorrection(correctionRequest(snapshot));
+        } catch (error) {
+          outcome = {
+            ok: false,
+            error:
+              '模拟保存端异常：' +
+              ((error && (error.message || error.errMsg)) || String(error))
+          };
+        }
+
+        // 已卸载的旧实例只让在途请求走完，不向缓存写回任何旧快照。
+        if (!this._unloaded) {
+          this.finishCorrection(attemptId, outcome, snapshot);
+        }
+
+        delete this._dispatchingCorrections[attemptId];
+        if (!this._unloaded) {
+          const remaining = Object.keys(this._dispatchingCorrections)[0] || '';
+          this.setData({ savingCorrectionId: remaining });
+          this.refreshView();
+          this.refreshFaultInjection();
+        }
+        resolve();
+      };
+
+      if (this._saveDelayMs > 0) {
+        setTimeout(deliver, this._saveDelayMs);
+      } else {
+        deliver();
+      }
+    });
+  },
+
+  /**
+   * 更正回执到达时只核销这一个原把次：具体的读最新状态、只翻那一把、失败保留待更正
+   * 都由 utils/store.js 的 finishCorrectionJob 共用一份（与详情页同一份），
+   * 这里只把结论落到今日页自己的提示字段上。
+   * - 成功：只把那一把原位改成未完成（ID、序号、场次、时间与备注都不变），再移除待更正；
+   * - 账本已改、本地写入失败：保留待更正并提示重试，不半途改数据；
+   * - 原把次已不是完攀（别的实例已改正或被重置）：只清掉待更正，不改写其他把次；
+   * - 重置/切换后的迟到回执、保存端拒绝的跨归属更正：只同步显示，不写回新数据；
+   * - 失败或丢回执：不改动缓存，保留待更正，可再点「改为未完成」按同一把重试。
+   */
+  finishCorrection(attemptId, outcome, correctionSnapshot) {
+    if (this._unloaded) return;
+
+    const decision = finishCorrectionJob(
+      attemptId,
+      outcome,
+      correctionSnapshot
+    );
+    if (!decision.state) {
+      this.setData({ storageError: decision.storageError });
+      return;
+    }
+
+    if (decision.failure) {
+      this._correctionFailures[attemptId] = decision.failure;
+    } else {
+      delete this._correctionFailures[attemptId];
+    }
+    this.state = decision.state;
+    this.setData({
+      storageError: decision.storageError,
+      saveNotice: decision.notice
+    });
+    this.refreshView();
   },
 
   /**
@@ -1712,7 +1989,7 @@ Page({
   },
 
   resetTrialData() {
-    if (this.data.savingOpId) {
+    if (this.data.savingOpId || this.data.savingCorrectionId) {
       this.setData({ storageError: '保存进行中，请稍后再重置本地试用数据' });
       return Promise.resolve(false);
     }
@@ -1835,6 +2112,7 @@ Page({
 
     this._editingAttemptId = '';
     this._pendingFailures = {};
+    this._correctionFailures = {};
     this._quickPhotoSource = '';
     const resetForm = defaultFormSelection();
     if (this._photoUi) {
@@ -1867,6 +2145,7 @@ Page({
       photoSpace: null,
       routePhoto: null,
       savingOpId: '',
+      savingCorrectionId: '',
       saveNotice: '',
       faultInjectionError: '',
       noteEditor: null

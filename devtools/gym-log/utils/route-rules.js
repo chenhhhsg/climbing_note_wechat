@@ -11,6 +11,7 @@
  *
  * 这里同时给出「抱石首次完攀」的共用判定：抱石（含缺类型的旧 V 级线路）一次完攀后
  * 不再新增，顶绳和先锋可重复；归属按「试用用户 + 数据集 + 长期线路 ID」比较。
+ * 误点完攀时按同一份规则挑出「最近一把可识别的已确认完攀」，供「改为未完成」原位改正。
  * 判定是纯函数，今日页、详情页与模拟保存账本用同一份规则。
  */
 const CLIMB_TYPES = ['抱石', '顶绳', '先锋'];
@@ -150,6 +151,32 @@ function isSameSendOwner(left, right) {
   );
 }
 
+/**
+ * 「改为未完成」的明确目标（T015 返工）：这条线最近一把可识别的已确认完攀。
+ *
+ * 只读挑选，不改动任何记录：
+ * - 只在同一线路内挑 result === 'send' 的把次，跨线路、跨场次不会串；
+ * - 多条历史完攀时取序号最大的一把（最近可识别的那一把），改完一把才轮到前一把，
+ *   因此旧汇总和多条历史完攀都能逐次更正，且读取不重写任何历史。
+ */
+function latestSendAttempt(attempts, routeId) {
+  if (!Array.isArray(attempts) || typeof routeId !== 'string' || routeId === '') {
+    return null;
+  }
+  let best = null;
+  let bestSeq = -1;
+  attempts.forEach(item => {
+    if (!item || item.routeId !== routeId || item.result !== 'send') return;
+    const seq = Number.isInteger(item.seq) ? item.seq : 0;
+    // 序号相同时后加入的更晚，取 >= 让「最近」的含义与追加顺序一致。
+    if (!best || seq >= bestSeq) {
+      best = item;
+      bestSeq = seq;
+    }
+  });
+  return best;
+}
+
 module.exports = {
   CLIMB_TYPES,
   BOULDER_GRADES,
@@ -167,5 +194,6 @@ module.exports = {
   isBoulderClimbType,
   isBoulderRoute,
   allowsRepeatSend,
-  isSameSendOwner
+  isSameSendOwner,
+  latestSendAttempt
 };

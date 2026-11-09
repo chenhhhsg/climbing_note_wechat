@@ -264,14 +264,45 @@
     <button id="record-again" class="record-again-button" bindtap="recordAgain">今天再爬</button>
     <text class="record-again-hint">今天该岩馆只有一场时直接沿用；多场先选归属；没有就新建一场</text>
   </view>
-  <!-- 已确认完攀：只回看，不显示「今天再爬」 -->
+  <!-- 已确认完攀：只回看，不显示「今天再爬」；点错了可在原把次上「改为未完成」更正 -->
   <view
     wx:elif="{{!isLegacy && route && routeCompleted}}"
     id="detail-completed-footer"
     class="record-again-footer detail-completed-footer"
   >
     <text id="detail-completed-state" class="detail-completed-title">已完攀</text>
-    <text class="detail-completed-hint">这条抱石线路已完攀，只能回看；逐把记录、备注与照片都保留在本机。</text>
+    <text class="detail-completed-hint">这条抱石线路已完攀，不再新增把次；逐把记录、备注与照片都保留在本机。</text>
+    <!--
+      误点完攀的更正：写明要改的是哪一天哪一场的第几把，只留「改为未完成」。
+      按钮把渲染当时的原把次与线路/场次/世代/数据集/归属一起带进 dataset，
+      点按只改正这一把；刷新或编号空间换新后，旧按钮不会改到别的把次。
+      这里只改正原把次，和普通新增一把「未完成」是两件事。
+    -->
+    <view wx:if="{{routeCorrectable}}" id="detail-correction" class="detail-correction">
+      <text
+        wx:if="{{routeCorrectionLabel}}"
+        id="detail-correction-target"
+        class="detail-correction-target"
+      >改正原把次：{{routeCorrectionLabel}} · {{routeCorrectionContextText}}</text>
+      <text class="detail-correction-hint">只把这一把改成未完成，把数与时间不变；之后可以再记并再次完攀。</text>
+      <text
+        wx:if="{{routeCorrectionStatusText}}"
+        id="detail-correction-status"
+        class="detail-correction-status"
+      >{{routeCorrectionStatusText}}</text>
+      <button
+        id="detail-correct-send"
+        class="secondary-button detail-correct-send"
+        disabled="{{routeCorrectionSaving}}"
+        data-attempt-id="{{routeCorrectionContext.attemptId}}"
+        data-route-id="{{routeCorrectionContext.routeId}}"
+        data-session-id="{{routeCorrectionContext.sessionId}}"
+        data-generation="{{routeCorrectionContext.generation}}"
+        data-dataset-id="{{routeCorrectionContext.datasetId}}"
+        data-owner-id="{{routeCorrectionContext.ownerId}}"
+        bindtap="correctSend"
+      >改为未完成</button>
+    </view>
   </view>
   <!--
     完攀待确认：明确展示「还在待确认」而不是「已完攀」，并给出回原把次重试的入口。

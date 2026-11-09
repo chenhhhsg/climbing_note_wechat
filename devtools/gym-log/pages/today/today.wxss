@@ -631,6 +631,53 @@
   width: 100%;
 }
 
+/* 误点完攀的更正：与「已完攀」同处一个位置，明确写出改正的是哪一把 */
+.route-correction {
+  width: 100%;
+  margin-top: 12rpx;
+  padding: 18rpx 24rpx;
+  background: #fffdf8;
+  border: 2rpx solid #e3ded0;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.route-correction-title {
+  display: block;
+  color: #23241f;
+  font-size: 28rpx;
+  font-weight: 700;
+}
+
+.route-correction-target {
+  display: block;
+  margin-top: 8rpx;
+  color: #2f4a7a;
+  font-size: 26rpx;
+  font-weight: 700;
+}
+
+.route-correction-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-correction-status {
+  display: block;
+  margin-top: 8rpx;
+  color: #8a6414;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-correct-send {
+  width: 100%;
+  margin-top: 12rpx;
+}
+
 /* 抱石完攀待确认：与「已完攀」区分，给出回原场次的入口 */
 .route-pending-panel {
   width: 100%;

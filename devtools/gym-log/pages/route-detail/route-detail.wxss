@@ -415,6 +415,45 @@
   text-align: center;
 }
 
+/* 误点完攀的更正：与「已完攀」同处一个页脚，写明改正的是哪一把 */
+.detail-correction {
+  width: 100%;
+  margin-top: 14rpx;
+  padding-top: 14rpx;
+  border-top: 1rpx dashed #bcd3b6;
+}
+
+.detail-correction-target {
+  display: block;
+  color: #2f4a7a;
+  font-size: 24rpx;
+  font-weight: 700;
+  text-align: center;
+}
+
+.detail-correction-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 22rpx;
+  line-height: 32rpx;
+  text-align: center;
+}
+
+.detail-correction-status {
+  display: block;
+  margin-top: 6rpx;
+  color: #8a6414;
+  font-size: 22rpx;
+  line-height: 32rpx;
+  text-align: center;
+}
+
+.detail-correct-send {
+  width: 100%;
+  margin-top: 12rpx;
+}
+
 /* 抱石完攀待确认：与「已完攀」区分开，给出回原把次重试的入口 */
 .detail-pending-footer {
   background: rgba(251, 241, 222, 0.98);
