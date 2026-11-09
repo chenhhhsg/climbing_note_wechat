@@ -10,7 +10,10 @@
  * - 本页不接云、不读旧记录、不写训练档案，也不上传原始数据与个人资料，断网可用；
  * - 保存＝新建一次录入（用本实例为该次录入生成的测试 ID，重试幂等，不重复）；
  *   已保存后再次保存＝原位修改那一条（只换输入与评分，不新增第二条）；
- *   「新建复测」开一次新的录入，另存一条；
+ * - 「新建复测」开一次新的录入，另存一条；
+ * - 每条记录分别保存评分规则版本与等级对照表版本，表单、即时结果、记录行与
+ *   两次比较都显示这两项；v0.1 旧记录只有一个合并的 tableVersion，按实际原始
+ *   v0.1 规则回显两个版本，读取不改动原数据；
  * - 落盘失败不报「已保存」：页面提示未保存，重试沿用同一个测试 ID；
  *   原记录保持不动，不丢原成绩。
  *
@@ -21,6 +24,11 @@ const fitness = require('../../utils/fitness-test.js');
 
 const LOAD_STATE_LABELS = fitness.LOAD_STATES.map(item => item.label);
 const CORE_ACTION_LABELS = fitness.CORE_ACTIONS.map(item => item.label);
+
+// 本页当前按这两份表计算并保存。表单、即时结果、已存记录行与比较都显示这两项，
+// 便于按 R7 逐条核对「评分规则版本」和「等级对照表版本」两个版本号。
+const CURRENT_VERSIONS_TEXT =
+  '评分规则 ' + fitness.SCORING_VERSION + ' · 对照表 ' + fitness.TABLE_VERSION;
 
 /** 空表单：日期默认本地当天，其余留空（留空＝未测）。 */
 function emptyForm(date) {
@@ -71,7 +79,8 @@ function emptyPreview() {
     measuredCountText: '还没有已测分项',
     totalText: '四项都测后才显示总分',
     gradeLines: [],
-    complete: false
+    complete: false,
+    versionText: '本次结果按 ' + CURRENT_VERSIONS_TEXT + ' 计算'
   };
 }
 
@@ -83,12 +92,13 @@ Page({
 
     // 说明区
     specVersionText: '9c 攀岩体能自测 v0.1',
-    tableVersionText: '对照表 ' + fitness.TABLE_VERSION,
+    versionsText: CURRENT_VERSIONS_TEXT,
 
     // 表单
     formVisible: true,
     formTitle: '录入一次自测',
     editingText: '',
+    editingVersionText: '',   // 「修改」时这条已存记录自己的两个版本号
     date: '',
     weightKg: '',
     loadStateLabels: LOAD_STATE_LABELS,
@@ -144,6 +154,7 @@ Page({
         loadError: loaded.error,
         formVisible: false,
         editingText: '',
+        editingVersionText: '',
         preview: emptyPreview(),
         records: [],
         recordCountText: '自测记录不可读',
@@ -161,7 +172,8 @@ Page({
         fingerDone: form.fingerStateIndex === 1,
         pullDone: form.pullStateIndex === 1,
         formTitle: '录入一次自测',
-        editingText: ''
+        editingText: '',
+        editingVersionText: ''
       })
     );
     this._draftId = fitness.newTestId();
@@ -269,7 +281,8 @@ Page({
         measuredCountText: '已测 ' + evaluated.measuredCount + ' / 4 项',
         totalText: evaluated.totalText,
         gradeLines: evaluated.gradeLines,
-        complete: evaluated.complete
+        complete: evaluated.complete,
+        versionText: '本次结果按 ' + CURRENT_VERSIONS_TEXT + ' 计算，保存后随这条记录一起存'
       }
     });
   },
@@ -297,6 +310,7 @@ Page({
     this._draftId = result.record.id;
     const created = result.code === 'created';
     const form = formFromRecord(result.record);
+    const savedRow = fitness.describeTest(result.record);
     this.setData(
       Object.assign({}, form, {
         fingerDone: form.fingerStateIndex === 1,
@@ -307,6 +321,8 @@ Page({
         editingText: created
           ? '已保存，可继续改正这次录入（不新增第二条）'
           : '已更新这次录入',
+        // 这条记录自己的两个版本号：保存后即可核对。
+        editingVersionText: '这条记录：' + savedRow.versionText,
         notice: created ? '已保存本次自测（只存本机）' : '已更新这次录入（只存本机）'
       })
     );
@@ -327,6 +343,7 @@ Page({
         pullDone: false,
         formTitle: '录入一次自测',
         editingText: '复测：保存后另存一条，不会改动已存记录',
+        editingVersionText: '',
         formError: '',
         storageError: '',
         notice: ''
@@ -345,12 +362,16 @@ Page({
     }
     this._draftId = record.id;
     const form = formFromRecord(record);
+    const row = fitness.describeTest(record);
     this.setData(
       Object.assign({}, form, {
         fingerDone: form.fingerStateIndex === 1,
         pullDone: form.pullStateIndex === 1,
         formTitle: '修改这次录入',
         editingText: '修改 ' + record.date + ' 的录入：保存只更新这一条，不新增',
+        // 读回已存记录时，这条记录原本的两个版本号也一并显示；旧记录另外说明来源。
+        editingVersionText: '这条记录：' + row.versionText +
+          (row.versionSourceText ? '（' + row.versionSourceText + '）' : ''),
         formError: '',
         storageError: '',
         notice: ''
@@ -368,7 +389,9 @@ Page({
       totalText: row.totalText,
       gradeText: row.gradeText,
       itemsText: itemsTextOf(row),
+      scoringVersionText: row.scoringVersionText,
       tableVersionText: row.tableVersionText,
+      versionSourceText: row.versionSourceText,
       selected: this.data.selectedIds.indexOf(row.id) !== -1
     }));
     this.setData({

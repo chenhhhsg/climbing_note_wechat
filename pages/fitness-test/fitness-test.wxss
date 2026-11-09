@@ -326,6 +326,11 @@
   margin-top: 6rpx;
 }
 
+/* 每条记录的两个版本号（评分规则 / 等级对照表）与来源说明 */
+.record-versions {
+  margin-top: 2rpx;
+}
+
 .record-actions {
   margin-top: 14rpx;
 }

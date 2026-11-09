@@ -12,7 +12,7 @@
     <text class="intro-text">器材：约 20 mm 指力板、可加负重的腰带或负重带、单杠、秒表或手机计时。</text>
     <text class="intro-text">动作标准：指力＝双手在约 20 mm 指力板边缘悬挂满 5 秒；拉力＝单杠完成 1 次标准引体向上；核心＝悬垂屈膝 L 举、直腿 L 举或前水平，填写得分最高的一项；悬挂耐力＝双手固定握单杠自重悬挂。</text>
     <text class="intro-text">算法：每项最多 10 分，取已经达到的最高档，两档之间保留较低档，超出最高档封顶；负重项用（当日体重＋额外负重）÷ 当日体重；四项直接相加，满分 40，总分查原表得到法式、YDS 与抱石跨项目对照。</text>
-    <text class="intro-text">空白表示未测；明确测过但没达到第一档记 0 分；额外负重 0 kg 表示自重完成。抱石对照只是跨项目参考标签，不代表实际完攀能力。本页保存 {{tableVersionText}}。</text>
+    <text id="intro-versions" class="intro-text">空白表示未测；明确测过但没达到第一档记 0 分；额外负重 0 kg 表示自重完成。抱石对照只是跨项目参考标签，不代表实际完攀能力。本页保存两个版本号：{{versionsText}}（评分规则版本＝分项档位与计分口径；等级对照表版本＝总分查法式 / YDS / 抱石对照的表）。</text>
     <text class="intro-text">来源：9c 测试由 Stian Christophersen 与 Martin Mobråten 设计，Magnus Midtbø 演示；总分对照表沿用原表与 IRCRA 线路列。</text>
   </view>
 
@@ -39,6 +39,7 @@
     <view wx:if="{{formVisible}}" id="form-card" class="card form-card">
       <text class="section-title">{{formTitle}}</text>
       <text wx:if="{{editingText}}" id="editing-text" class="form-hint">{{editingText}}</text>
+      <text wx:if="{{editingVersionText}}" id="editing-versions" class="form-hint">{{editingVersionText}}</text>
 
       <view class="form-row">
         <text class="form-label">测试日期</text>
@@ -146,6 +147,7 @@
         <text wx:if="{{item.levelText}}" class="result-level">{{item.levelText}}</text>
       </view>
       <text id="preview-total" class="result-total">{{preview.totalText}}</text>
+      <text id="preview-versions" class="form-hint">{{preview.versionText}}</text>
       <view wx:for="{{preview.gradeLines}}" wx:key="key" id="grade-{{item.key}}" class="grade-line">
         <text class="grade-label">{{item.label}}</text>
         <text class="grade-value">{{item.value}}</text>
@@ -165,7 +167,11 @@
         </view>
         <text class="record-grade">{{item.gradeText}}</text>
         <text class="record-items">{{item.itemsText}}</text>
-        <text class="record-version">{{item.tableVersionText}}</text>
+        <view id="record-versions-{{item.id}}" class="record-versions">
+          <text class="record-version">{{item.scoringVersionText}}</text>
+          <text class="record-version">{{item.tableVersionText}}</text>
+          <text wx:if="{{item.versionSourceText}}" class="record-version">{{item.versionSourceText}}</text>
+        </view>
         <view class="record-actions">
           <button class="secondary-button small-button" data-id="{{item.id}}" bindtap="editRecord">修改</button>
           <button class="secondary-button small-button" data-id="{{item.id}}" bindtap="toggleCompare">
@@ -186,7 +192,9 @@
     <view wx:if="{{comparison}}" id="comparison-card" class="card compare-card">
       <text class="section-title">两次自测比较</text>
       <text id="compare-left" class="compare-summary">{{comparison.summary.leftText}}</text>
+      <text id="compare-left-versions" class="compare-summary">{{comparison.summary.leftVersionText}}</text>
       <text id="compare-right" class="compare-summary">{{comparison.summary.rightText}}</text>
+      <text id="compare-right-versions" class="compare-summary">{{comparison.summary.rightVersionText}}</text>
       <view wx:for="{{comparison.rows}}" wx:key="key" id="compare-{{item.key}}" class="compare-row">
         <text class="compare-label">{{item.label}}</text>
         <text class="compare-value">前：{{item.left.rawText}} · {{item.left.pointsText}}（{{item.left.statusText}}）</text>
@@ -194,6 +202,7 @@
         <text class="compare-delta">{{item.deltaText}}</text>
       </view>
       <text id="compare-total-delta" class="compare-delta">{{comparison.summary.totalDeltaText}}</text>
+      <text wx:if="{{comparison.summary.versionNoticeText}}" id="compare-version-notice" class="compare-delta">{{comparison.summary.versionNoticeText}}</text>
     </view>
   </block>
 </view>

@@ -22,7 +22,13 @@
  * 存储键：
  *   climbingNote.fitness.v1.records   自测记录档案（档案 ID、下一次序号与每条记录：
  *                                     测试 ID、日期、体重、原始输入、分项评分、总分、
- *                                     对照表版本）——受保护，不属可重建缓存
+ *                                     评分规则版本、对照表版本）——受保护，不属可重建缓存
+ *
+ * 版本标识有两个，各自独立、随每条记录分别保存，便于重开与复测比较时核对：
+ * - SCORING_VERSION 评分规则版本：分项档位表与计分口径；
+ * - TABLE_VERSION   等级对照表版本：总分 → 法式 / YDS / 抱石跨项目对照的查表版本。
+ * 已保存的 v0.1 记录只有一个合并的 tableVersion（值就是 LEGACY_TABLE_VERSION），
+ * 读到它时按实际原始 v0.1 规则补齐评分规则版本，原数据保持不动。
  *
  * 一次「保存」＝先读最新记录、再写入目标条目：新建时带上页面为该次录入生成的
  * 测试 ID（opId），同一 ID 重复提交只落一条；修改时用已存条目的 ID 原位更正，
@@ -32,8 +38,14 @@
 const NAMESPACE = 'climbingNote.fitness.v1.';
 const STATE_KEY = NAMESPACE + 'records';
 const STATE_VERSION = 1;
-// 对照表版本：计分档位表与总分对照表共用同一个版本号，随每条记录一起保存。
+// 评分规则版本：分项档位表（指力/拉力的负荷百分比、悬挂秒数、核心动作档位）与计分口径的版本。
+const SCORING_VERSION = '9c-score-v0.1';
+// 等级对照表版本：总分 → 法式 / YDS / 抱石跨项目对照的查表版本。
+// 沿用 v0.1 记录里已经保存的值，已存的旧记录不改写。
 const TABLE_VERSION = '9c-v0.1';
+// v0.1 记录只存过这一个版本号（那时评分规则与对照表合并为一个「计分/对照表版本」）。
+// 读到它时按实际原始 v0.1 规则回显评分规则版本，不替它编别的历史版本。
+const LEGACY_TABLE_VERSION = '9c-v0.1';
 
 // 可见错误文案：损坏与「首次为空」要分开，页面据此提示并保留原数据。
 const STATE_BROKEN = '本机体能自测记录格式损坏，请重置自测记录后再试';
@@ -577,6 +589,31 @@ function normalizeStoredHang(raw) {
 }
 
 /**
+ * 一条已存记录 → 两个版本标识的取值，以及它们是从哪来的。
+ * - source 'stored'  记录自带独立的评分规则版本与对照表版本（当前版本保存的记录）；
+ * - source 'legacy'  只有 v0.1 的单一 tableVersion（值＝LEGACY_TABLE_VERSION）：
+ *                    那时评分规则与对照表合并成一个版本号，所以按实际原始 v0.1 规则
+ *                    把评分规则版本补成 SCORING_VERSION；对照表版本仍是原值，不改写；
+ * - source 'unknown' 认不出的对照表版本：只如实回显原值，不替它推断评分规则版本
+ *                    （不补编、不猜测历史版本）。
+ */
+function resolveVersions(entry) {
+  const storedScoring = hasText(entry.scoringVersion) ? entry.scoringVersion : '';
+  const storedTable = hasText(entry.tableVersion) ? entry.tableVersion : '';
+  if (storedScoring) {
+    return {
+      scoringVersion: storedScoring,
+      tableVersion: storedTable || TABLE_VERSION,
+      source: 'stored'
+    };
+  }
+  if (storedTable === LEGACY_TABLE_VERSION) {
+    return { scoringVersion: SCORING_VERSION, tableVersion: LEGACY_TABLE_VERSION, source: 'legacy' };
+  }
+  return { scoringVersion: '', tableVersion: storedTable, source: 'unknown' };
+}
+
+/**
  * 只接受当前版本、结构完整的记录；损坏或版本不支持时返回 null，
  * 由调用方报错并保留原数据（读写入口都不会覆盖它）。
  */
@@ -593,6 +630,7 @@ function normalizeState(raw) {
     if (!isDateString(entry.date)) return null;
     if (!hasText(entry.createdAt)) return null;
     if (!hasText(entry.tableVersion)) return null;
+    const versions = resolveVersions(entry);
     const weightKg = parsePositiveKg(entry.weightKg);
     if (weightKg === null) return null;
 
@@ -619,7 +657,10 @@ function normalizeState(raw) {
       hang: { seconds: hang.seconds },
       points: { finger: finger.points, pull: pull.points, core: core.points, hang: hang.points },
       total,
-      tableVersion: entry.tableVersion,
+      // 两个版本标识分别带回，并记住它们是从哪来的（当前记录 / v0.1 旧记录 / 认不出）。
+      scoringVersion: versions.scoringVersion,
+      tableVersion: versions.tableVersion,
+      versionSource: versions.source,
       createdAt: entry.createdAt,
       updatedAt: hasText(entry.updatedAt) ? entry.updatedAt : ''
     });
@@ -765,7 +806,10 @@ function saveTest(form, options) {
       hang: hangItem.points
     },
     total: evaluated.total,
+    // 评分规则版本与对照表版本各自独立保存：这次录入是按这两份表算的。
+    scoringVersion: SCORING_VERSION,
     tableVersion: TABLE_VERSION,
+    versionSource: 'stored',
     createdAt: existing ? existing.createdAt : createdAt,
     updatedAt: existing ? createdAt : ''
   };
@@ -801,6 +845,22 @@ function normalizeStateValue(value) {
 function dateTextOf(date) {
   if (!isDateString(date)) return date || '';
   return date;
+}
+
+/**
+ * 这条记录的两个版本号是从哪来的：当前记录不额外解释；
+ * v0.1 旧记录说明原值只有一个合并版本号，评分规则按原始 v0.1 回显；
+ * 认不出的对照表版本如实说明评分规则版本未记录（不猜）。
+ */
+function versionSourceTextOf(record) {
+  if (record.versionSource === 'legacy') {
+    return 'v0.1 旧记录：原只存一个版本号 ' + LEGACY_TABLE_VERSION +
+      '（评分规则与对照表合并），评分规则按原始 v0.1 回显';
+  }
+  if (record.versionSource === 'unknown') {
+    return '这条记录的对照表版本 ' + record.tableVersion + ' 无法识别，评分规则版本未记录';
+  }
+  return '';
 }
 
 /**
@@ -868,6 +928,9 @@ function describeTest(record) {
 
   const total = record.total === undefined ? null : record.total;
   const lines = total === null ? [] : gradeLines(total);
+  // 两个版本号分别回显：评分规则版本缺记录时如实写「未记录」，不拿当前值冒充。
+  const scoringVersion = hasText(record.scoringVersion) ? record.scoringVersion : '';
+  const tableVersion = hasText(record.tableVersion) ? record.tableVersion : TABLE_VERSION;
   return {
     id: record.id,
     seq: record.seq,
@@ -880,7 +943,13 @@ function describeTest(record) {
     totalText: total === null ? '四项未测齐，无总分' : total === 0 ? '尚未达到原表起评档' : total + ' / 40',
     gradeLines: lines,
     gradeText: lines.length ? lines[0].value + ' · ' + lines[1].value + ' · ' + lines[2].value : '—',
-    tableVersionText: '对照表 ' + (record.tableVersion || TABLE_VERSION),
+    scoringVersion,
+    tableVersion,
+    versionSource: record.versionSource || '',
+    scoringVersionText: '评分规则 ' + (scoringVersion || '未记录'),
+    tableVersionText: '对照表 ' + tableVersion,
+    versionText: '评分规则 ' + (scoringVersion || '未记录') + ' · 对照表 ' + tableVersion,
+    versionSourceText: versionSourceTextOf(record),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt || ''
   };
@@ -941,6 +1010,18 @@ function compareTests(state, idA, idB) {
     totalDeltaText = '两次都测齐四项才能比总分';
   }
 
+  // 两次的两个版本号并排可核对；版本不同就说明这两次的分项/总分不能直接比。
+  const scoringSame = leftRow.scoringVersion === rightRow.scoringVersion;
+  const tableSame = leftRow.tableVersion === rightRow.tableVersion;
+  let versionNoticeText = '';
+  if (!scoringSame && !tableSame) {
+    versionNoticeText = '两次的评分规则版本与对照表版本都不同，分项得分与总分不可直接比较';
+  } else if (!scoringSame) {
+    versionNoticeText = '两次的评分规则版本不同，分项得分不可直接比较';
+  } else if (!tableSame) {
+    versionNoticeText = '两次的对照表版本不同，总分对照不可直接比较';
+  }
+
   return {
     ok: true,
     error: '',
@@ -950,6 +1031,11 @@ function compareTests(state, idA, idB) {
     summary: {
       leftText: leftRow.dateText + ' · ' + leftRow.totalText + ' · ' + leftRow.gradeText + ' · ' + leftRow.weightText,
       rightText: rightRow.dateText + ' · ' + rightRow.totalText + ' · ' + rightRow.gradeText + ' · ' + rightRow.weightText,
+      leftVersionText: leftRow.versionText,
+      rightVersionText: rightRow.versionText,
+      leftVersions: { scoringVersion: leftRow.scoringVersion, tableVersion: leftRow.tableVersion },
+      rightVersions: { scoringVersion: rightRow.scoringVersion, tableVersion: rightRow.tableVersion },
+      versionNoticeText,
       totalDeltaText
     }
   };
@@ -959,7 +1045,9 @@ module.exports = {
   NAMESPACE,
   STATE_KEY,
   STATE_VERSION,
+  SCORING_VERSION,
   TABLE_VERSION,
+  LEGACY_TABLE_VERSION,
   STATE_BROKEN,
   STATE_UNSUPPORTED,
   LOAD_THRESHOLDS,
@@ -987,6 +1075,7 @@ module.exports = {
   gradeLines,
   evaluateForm,
   createEmptyState,
+  resolveVersions,
   normalizeState,
   loadState,
   saveState,

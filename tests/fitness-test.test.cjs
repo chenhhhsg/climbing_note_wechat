@@ -229,6 +229,48 @@ function recordsRaw() {
   return raw ? JSON.parse(raw) : null;
 }
 
+/**
+ * 一条已保存 v0.1 记录的原样：只有单一 tableVersion（'9c-v0.1'），没有独立的
+ * scoringVersion。分项与总分都按 v0.1 表算出（60 kg、指力/拉力各额外 24 kg、
+ * 直腿 L 举 15 秒、悬挂 150 秒 → 5/5/5/5，总分 20）。
+ */
+function legacyRawState() {
+  return {
+    version: 1,
+    archiveId: 'fitness-archive-v0.1-legacy',
+    nextTestSeq: 2,
+    tests: [
+      {
+        id: 'fit-legacy-1',
+        seq: 1,
+        date: '2026-11-08',
+        archiveId: 'fitness-archive-v0.1-legacy',
+        weightKg: 60,
+        finger: { state: 'done', extraKg: 24 },
+        pull: { state: 'done', extraKg: 24 },
+        core: { action: 'straight', seconds: 15 },
+        hang: { seconds: 150 },
+        points: { finger: 5, pull: 5, core: 5, hang: 5 },
+        total: 20,
+        tableVersion: '9c-v0.1',
+        createdAt: '2026-11-08T02:00:00.000Z'
+      }
+    ]
+  };
+}
+
+/** 一条带独立版本字段的已存记录（模拟后续版本写入，用来验证版本不同的比较提示）。 */
+function futureVersionRawState(scoringVersion, tableVersion) {
+  const state = legacyRawState();
+  state.archiveId = 'fitness-archive-future';
+  state.tests[0].id = 'fit-future-1';
+  state.tests[0].archiveId = 'fitness-archive-future';
+  state.tests[0].date = '2026-11-07';
+  if (scoringVersion) state.tests[0].scoringVersion = scoringVersion;
+  if (tableVersion) state.tests[0].tableVersion = tableVersion;
+  return state;
+}
+
 /** 夹具（页面填写用的键名）→ 计算层的表单模型。 */
 function formModelOf(values) {
   return {
@@ -501,6 +543,90 @@ test('F05 原方案两组 60 kg 夹具在计算层得到 20/19/18 与 15/14 分'
   assert.equal(full.totalText, '40 / 40 · 9c · 5.15d · 暂无对应档');
 });
 
+test('F06 评分规则与等级对照表是两个独立版本标识，新记录两个字段分别落盘', () => {
+  // 两个版本号各自存在、各自有值：不是同一个标识在冒充两项。
+  assert.equal(typeof fitness.SCORING_VERSION, 'string');
+  assert.equal(typeof fitness.TABLE_VERSION, 'string');
+  assert.ok(fitness.SCORING_VERSION.length > 0, '评分规则版本不能为空');
+  assert.ok(fitness.TABLE_VERSION.length > 0, '对照表版本不能为空');
+  assert.notEqual(fitness.SCORING_VERSION, fitness.TABLE_VERSION);
+
+  // 新建一次录入：两个版本字段分别写入同一条记录。
+  const saved = fitness.saveTest(formModelOf(FIXTURE_A), { testId: 'fit-version-1' });
+  assert.equal(saved.ok, true, saved.error);
+  const raw = recordsRaw();
+  assert.equal(raw.tests.length, 1);
+  assert.equal(raw.tests[0].scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(raw.tests[0].tableVersion, fitness.TABLE_VERSION);
+  assert.equal(raw.tests[0].versionSource, 'stored');
+
+  // 读回来仍是两个独立字段，展示行也分别给出两个版本号。
+  const loaded = fitness.loadState();
+  assert.equal(loaded.ok, true, loaded.error);
+  const record = loaded.state.tests[0];
+  assert.equal(record.scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(record.tableVersion, fitness.TABLE_VERSION);
+  assert.equal(record.versionSource, 'stored');
+  const row = fitness.describeTest(record);
+  assert.equal(row.scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(row.tableVersion, fitness.TABLE_VERSION);
+  assert.equal(row.scoringVersionText, '评分规则 ' + fitness.SCORING_VERSION);
+  assert.equal(row.tableVersionText, '对照表 ' + fitness.TABLE_VERSION);
+  assert.equal(row.versionSourceText, '');
+});
+
+test('F07 v0.1 只有 tableVersion 的记录按原始 v0.1 规则回显两个版本，读取保留原数据', () => {
+  const legacy = legacyRawState();
+  const legacyText = JSON.stringify(legacy);
+  storage.set(FITNESS_KEY, legacyText);
+
+  // 两个版本都能核对：对照表版本就是原值，评分规则版本按实际原始 v0.1 规则补齐。
+  const loaded = fitness.loadState();
+  assert.equal(loaded.ok, true, loaded.error);
+  assert.equal(loaded.present, true);
+  assert.equal(loaded.corrupt, false);
+  const record = loaded.state.tests[0];
+  assert.equal(record.tableVersion, '9c-v0.1');
+  assert.equal(record.scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(record.versionSource, 'legacy');
+  // 原始输入、分项得分与总分照原样读回，不因补齐版本号而变。
+  assert.equal(record.total, 20);
+  assert.equal(record.points.finger, 5);
+  assert.equal(record.finger.extraKg, 24);
+  assert.equal(record.core.action, 'straight');
+  assert.equal(record.hang.seconds, 150);
+  assert.equal(record.date, '2026-11-08');
+
+  // 读取不动原数据：存储字节与读之前完全一致（没有补写、没有迁移）。
+  assert.equal(storage.get(FITNESS_KEY), legacyText);
+
+  // 展示行直接给出两版本与来源说明。
+  const row = fitness.describeTest(record);
+  assert.equal(row.scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(row.tableVersion, '9c-v0.1');
+  assert.equal(row.scoringVersionText, '评分规则 ' + fitness.SCORING_VERSION);
+  assert.equal(row.tableVersionText, '对照表 9c-v0.1');
+  assert.match(row.versionSourceText, /v0\.1 旧记录/);
+  assert.match(row.versionSourceText, /9c-v0\.1/);
+
+  // 认不出的对照表版本只如实回显原值，不替它推断评分规则版本（不猜历史版本）。
+  const unknown = fitness.resolveVersions({ tableVersion: '9c-v9.9-unknown' });
+  assert.equal(unknown.scoringVersion, '');
+  assert.equal(unknown.tableVersion, '9c-v9.9-unknown');
+  assert.equal(unknown.source, 'unknown');
+  const unknownState = futureVersionRawState('', '9c-v9.9-unknown');
+  storage.set(FITNESS_KEY, JSON.stringify(unknownState));
+  const unknownLoaded = fitness.loadState();
+  assert.equal(unknownLoaded.ok, true, unknownLoaded.error);
+  const unknownRow = fitness.describeTest(unknownLoaded.state.tests[0]);
+  assert.equal(unknownRow.scoringVersion, '');
+  assert.equal(unknownRow.tableVersion, '9c-v9.9-unknown');
+  assert.equal(unknownRow.scoringVersionText, '评分规则 未记录');
+  assert.equal(unknownRow.tableVersionText, '对照表 9c-v9.9-unknown');
+  assert.match(unknownRow.versionSourceText, /无法识别/);
+  assert.equal(storage.get(FITNESS_KEY), JSON.stringify(unknownState));
+});
+
 // ================================================================== 注册与入口
 
 test('P01 页面注册进 app.json、「我的」有入口，WXML 控件与处理器真实存在', () => {
@@ -538,7 +664,7 @@ test('P01 页面注册进 app.json、「我的」有入口，WXML 控件与处�
     );
   });
 
-  // 关键控件：日期、体重、四项输入、状态选择、保存、新建复测、分项、记录与比较。
+  // 关键控件：日期、体重、四项输入、状态选择、保存、新建复测、分项、版本号、记录与比较。
   [
     'date-picker',
     'weight-input',
@@ -552,15 +678,23 @@ test('P01 页面注册进 app.json、「我的」有入口，WXML 控件与处�
     'save-test',
     'new-test',
     'preview-total',
+    'preview-versions',
+    'intro-versions',
+    'editing-versions',
     'records-card',
     'comparison-card',
+    'compare-left-versions',
+    'compare-right-versions',
+    'compare-version-notice',
     'clear-compare'
   ].forEach(id => {
     assert.ok(wxml.indexOf('id="' + id + '"') !== -1, '自测页缺少控件 ' + id);
   });
+  // 每条记录行有自己的两个版本号区域。
+  assert.ok(wxml.indexOf('id="record-versions-') !== -1, '记录行缺少两个版本号的展示区域');
 
-  // 说明区必须写清动作标准与算法口径。
-  ['kg', '秒', '指力板', '引体向上', '前水平', '最高档', '40'].forEach(keyword => {
+  // 说明区必须写清动作标准与算法口径，以及保存的两个版本号。
+  ['kg', '秒', '指力板', '引体向上', '前水平', '最高档', '40', '评分规则', '等级对照表'].forEach(keyword => {
     assert.ok(wxml.indexOf(keyword) !== -1, '说明区缺少 ' + keyword);
   });
   assert.ok(wxml.indexOf('约 V 级') !== -1 || wxml.indexOf('跨项目对照') !== -1);
@@ -621,7 +755,10 @@ test('P03 保存、改正录入、复测另存与退出重开都只写本机且�
   assert.equal(raw.tests[0].core.seconds, 15);
   assert.equal(raw.tests[0].hang.seconds, 150);
   assert.equal(raw.tests[0].points.finger, 5);
+  // 两个版本字段分别落盘，不是只写一个。
+  assert.equal(raw.tests[0].scoringVersion, fitness.SCORING_VERSION);
   assert.equal(raw.tests[0].tableVersion, fitness.TABLE_VERSION);
+  assert.equal(raw.tests[0].versionSource, 'stored');
   assert.equal(raw.tests[0].archiveId, raw.archiveId);
   assert.ok(raw.archiveId.indexOf('fitness-archive-') === 0);
   assert.equal(page.data.records.length, 1);
@@ -667,7 +804,12 @@ test('P03 保存、改正录入、复测另存与退出重开都只写本机且�
   assert.equal(reopened.data.records[1].date, '2026-11-09');
   assert.equal(reopened.data.records[1].totalText, '19 / 40');
   assert.match(reopened.data.records[1].gradeText, /7c\+ · 5\.13a · 约 V7/);
-  assert.match(reopened.data.records[1].tableVersionText, /9c-v0\.1/);
+  // 重开后两个版本号都能逐字段核对。
+  assert.equal(reopened.data.records[1].scoringVersionText, '评分规则 ' + fitness.SCORING_VERSION);
+  assert.equal(reopened.data.records[1].tableVersionText, '对照表 ' + fitness.TABLE_VERSION);
+  assert.equal(reopened.data.records[1].versionSourceText, '');
+  assert.equal(reopened.data.records[0].scoringVersionText, '评分规则 ' + fitness.SCORING_VERSION);
+  assert.equal(reopened.data.records[0].tableVersionText, '对照表 ' + fitness.TABLE_VERSION);
 
   // 「修改」把原记录读回表单：保存只更新它。
   const target = raw.tests.find(item => item.total === 19);
@@ -704,6 +846,18 @@ test('P04 选择两次结果比较各分项原始数据与总分', () => {
   assert.match(comparison.summary.rightText, /2026-11-12/);
   assert.match(comparison.summary.leftText, /20 \/ 40/);
   assert.match(comparison.summary.rightText, /15 \/ 40/);
+  // 比较里两次的两个版本号各自可核对（两条都是当前版本保存的，因此一致）。
+  assert.equal(comparison.summary.leftVersionText, '评分规则 ' + fitness.SCORING_VERSION + ' · 对照表 ' + fitness.TABLE_VERSION);
+  assert.equal(comparison.summary.rightVersionText, '评分规则 ' + fitness.SCORING_VERSION + ' · 对照表 ' + fitness.TABLE_VERSION);
+  assert.deepEqual(comparison.summary.leftVersions, {
+    scoringVersion: fitness.SCORING_VERSION,
+    tableVersion: fitness.TABLE_VERSION
+  });
+  assert.deepEqual(comparison.summary.rightVersions, {
+    scoringVersion: fitness.SCORING_VERSION,
+    tableVersion: fitness.TABLE_VERSION
+  });
+  assert.equal(comparison.summary.versionNoticeText, '');
 
   const fingerRow = comparison.rows.find(row => row.key === 'finger');
   assert.match(fingerRow.left.rawText, /额外负重 24 kg（总负荷 140%）/);
@@ -925,4 +1079,103 @@ test('P08 自测记录损坏或版本不支持时只报错、保留原数据、�
   assert.equal(typeof brokenPage.retryLoad, 'function');
   brokenPage.retryLoad();
   assert.equal(storage.get(FITNESS_KEY), JSON.stringify({ version: 1, archiveId: 'a', tests: 'nope' }));
+});
+
+test('P09 保存、修改、复测、重开与比较都能核对两个版本号，v0.1 旧记录兼容且原数据不丢', () => {
+  // 起点：本机已有一条只有 tableVersion 的 v0.1 记录。
+  const legacy = legacyRawState();
+  const legacyText = JSON.stringify(legacy);
+  storage.set(FITNESS_KEY, legacyText);
+
+  const page = openFitnessPage();
+  assert.equal(page.data.loadError, '');
+  // 重开就能核对这条记录的两个版本号：两个字段分别可见，来源说明是 v0.1 旧记录。
+  const legacyRow = page.data.records[0];
+  assert.equal(legacyRow.scoringVersionText, '评分规则 ' + fitness.SCORING_VERSION);
+  assert.equal(legacyRow.tableVersionText, '对照表 9c-v0.1');
+  assert.match(legacyRow.versionSourceText, /v0\.1 旧记录/);
+  // 旧记录照常可读、可回填：分项与总分不变。
+  assert.equal(legacyRow.totalText, '20 / 40');
+  // 只读展示不改动原数据。
+  assert.equal(storage.get(FITNESS_KEY), legacyText);
+
+  // 「修改」这条旧记录：表单里同时显示它原本的两个版本号。
+  page.editRecord(tapDataset({ id: 'fit-legacy-1' }));
+  assert.equal(page.data.hangSeconds, '150');
+  assert.match(page.data.editingVersionText, /评分规则 9c-score-v0\.1/);
+  assert.match(page.data.editingVersionText, /对照表 9c-v0\.1/);
+  assert.match(page.data.editingVersionText, /v0\.1 旧记录/);
+
+  // 保存后这条记录带上两个独立的版本字段，原成绩（20 分、150 秒）保持。
+  const corrected = page.saveTest();
+  assert.equal(corrected.ok, true, corrected.error);
+  assert.equal(corrected.code, 'updated');
+  let raw = recordsRaw();
+  assert.equal(raw.tests.length, 1, '修改 v0.1 旧记录不得新增第二条');
+  assert.equal(raw.tests[0].scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(raw.tests[0].tableVersion, fitness.TABLE_VERSION);
+  assert.equal(raw.tests[0].versionSource, 'stored');
+  assert.equal(raw.tests[0].total, 20);
+  assert.equal(raw.tests[0].hang.seconds, 150);
+  assert.match(page.data.editingVersionText, /评分规则 9c-score-v0\.1/);
+  assert.match(page.data.editingVersionText, /对照表 9c-v0\.1/);
+
+  // 另存复测：新一条同样带上两个版本字段。
+  page.startNewTest();
+  assert.equal(page.data.editingVersionText, '');
+  fillForm(page, Object.assign({}, FIXTURE_B, { date: '2026-11-10' }));
+  const retest = page.saveTest().record;
+  assert.equal(retest.scoringVersion, fitness.SCORING_VERSION);
+  assert.equal(retest.tableVersion, fitness.TABLE_VERSION);
+  raw = recordsRaw();
+  assert.equal(raw.tests.length, 2);
+  raw.tests.forEach(entry => {
+    assert.equal(entry.scoringVersion, fitness.SCORING_VERSION);
+    assert.equal(entry.tableVersion, fitness.TABLE_VERSION);
+  });
+
+  // 退出重开：每条记录行都分别显示两个版本号；普通记录没有额外来源说明。
+  fitnessDefinition = capturePage(PAGE_JS);
+  const reopened = createPage(fitnessDefinition);
+  reopened.onLoad();
+  assert.equal(reopened.data.records.length, 2);
+  reopened.data.records.forEach(row => {
+    assert.equal(row.scoringVersionText, '评分规则 ' + fitness.SCORING_VERSION);
+    assert.equal(row.tableVersionText, '对照表 ' + fitness.TABLE_VERSION);
+    assert.equal(row.versionSourceText, '');
+  });
+
+  // 比较两次结果：两个版本号各显示一份；两次版本相同，不报版本不同。
+  const legacyId = raw.tests.find(entry => entry.hang.seconds === 150).id;
+  reopened.toggleCompare(tapDataset({ id: legacyId }));
+  reopened.toggleCompare(tapDataset({ id: retest.id }));
+  assert.equal(reopened.data.canCompare, true);
+  const summary = reopened.data.comparison.summary;
+  assert.equal(summary.leftVersionText, '评分规则 ' + fitness.SCORING_VERSION + ' · 对照表 ' + fitness.TABLE_VERSION);
+  assert.equal(summary.rightVersionText, '评分规则 ' + fitness.SCORING_VERSION + ' · 对照表 ' + fitness.TABLE_VERSION);
+  assert.equal(summary.versionNoticeText, '');
+
+  // 与一条版本不同的记录比较：两个版本号仍分别可核对，并明确提示不能直接比。
+  const other = futureVersionRawState('9c-score-v0.2-fixture', '9c-table-v0.2-fixture');
+  const merged = recordsRaw();
+  // 序号必须唯一，否则整份记录会被判为损坏。
+  merged.tests.push(Object.assign({}, other.tests[0], { seq: 3 }));
+  merged.nextTestSeq = 4;
+  storage.set(FITNESS_KEY, JSON.stringify(merged));
+  const comparePage = openFitnessPage();
+  comparePage.toggleCompare(tapDataset({ id: legacyId }));
+  comparePage.toggleCompare(tapDataset({ id: 'fit-future-1' }));
+  const mixed = comparePage.data.comparison.summary;
+  assert.equal(mixed.leftVersionText, '评分规则 ' + fitness.SCORING_VERSION + ' · 对照表 ' + fitness.TABLE_VERSION);
+  assert.equal(mixed.rightVersionText, '评分规则 9c-score-v0.2-fixture · 对照表 9c-table-v0.2-fixture');
+  assert.deepEqual(mixed.leftVersions, {
+    scoringVersion: fitness.SCORING_VERSION,
+    tableVersion: fitness.TABLE_VERSION
+  });
+  assert.deepEqual(mixed.rightVersions, {
+    scoringVersion: '9c-score-v0.2-fixture',
+    tableVersion: '9c-table-v0.2-fixture'
+  });
+  assert.match(mixed.versionNoticeText, /都不同/);
+  assert.match(mixed.versionNoticeText, /不可直接比较/);
 });
