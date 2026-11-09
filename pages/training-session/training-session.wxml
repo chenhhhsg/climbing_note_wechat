@@ -120,7 +120,7 @@
             <view id="route-completed-panel" class="route-completed-panel">
               <text class="route-completed-title">已完攀</text>
               <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次与备注都保留在本机。</text>
-              <text class="route-completed-hint">点错了完攀？在上方「点错了完攀？」里点那一把自己那行改成未完成。</text>
+              <text class="route-completed-hint">如需更正，在下方「点错了完攀？」中找到这一把，点「改为未完成」。</text>
             </view>
           </block>
           <block wx:elif="{{routeClosed}}">
