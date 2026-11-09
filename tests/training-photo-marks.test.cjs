@@ -44,7 +44,7 @@ const PHOTO_MAIN_2 = '/tmp/photo-2.jpg';
 // ---- 微信本地存储替身：只在正式本机命名空间内读写，并按需注入写入故障 ----
 const storage = new Map();
 const keyWrites = new Map();
-const fault = { setFailAt: 0, setCount: 0, getFail: false };
+const fault = { setFailAt: 0, setAfterAt: 0, setCount: 0, getFail: false };
 
 // ---- 显示框与图片尺寸替身：由测试按用例给出，页面只读取 ----
 const geometry = {
@@ -61,6 +61,7 @@ function resetDevice() {
   storage.clear();
   keyWrites.clear();
   fault.setFailAt = 0;
+  fault.setAfterAt = 0;
   fault.setCount = 0;
   fault.getFail = false;
   geometry.rects = { [STAGE]: { left: 20, top: 300, width: 375, height: 420 } };
@@ -88,9 +89,19 @@ function armSetFailAt(callNumber) {
   fault.setFailAt = callNumber;
 }
 
+/**
+ * 从第 N 次 setStorageSync 起「先落盘、再抛错」：构造写成功但回执丢失
+ * （存储层随后抛异常）的情形——这次落点其实已经持久化，页面却看到失败。
+ */
+function armSetFailAfter(callNumber) {
+  fault.setCount = 0;
+  fault.setAfterAt = callNumber;
+}
+
 function disarmSetFail() {
   fault.setCount = 0;
   fault.setFailAt = 0;
+  fault.setAfterAt = 0;
 }
 
 function writesOf(key) {
@@ -129,6 +140,10 @@ global.wx = {
     }
     keyWrites.set(key, writesOf(key) + 1);
     storage.set(key, value);
+    // 写成功了但回执丢失：存储层随后抛错，调用方看到的仍是失败。
+    if (fault.setAfterAt && fault.setCount === fault.setAfterAt) {
+      throw new Error('setStorageSync:ack-lost injected at call ' + fault.setCount);
+    }
   },
   removeStorageSync(key) {
     storage.delete(key);
@@ -732,6 +747,107 @@ test('T028 写失败不报已保存：序号不消耗，重试拿到同一个稳
   assert.equal(listedMarks(route.id, 'photo-1').length, 1);
 });
 
+test('T028 同一次落点以 opId 幂等：写成功后回执丢失的重试只留一条，同坐标的另一份草稿仍是两条', () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const spot = {
+    archiveId: archiveIdOf(),
+    routeId: route.id,
+    photoId: 'photo-1',
+    x: 0.2,
+    y: 0.4,
+    text: '定位同一次落点'
+  };
+
+  // 写之前就失败：不留半条，也不消耗序号。
+  armSetFailAt(1);
+  const beforeWrite = marks.addMark(Object.assign({ opId: 'op-lost' }, spot));
+  assert.equal(beforeWrite.ok, false);
+  assert.equal(beforeWrite.code, 'write-failed');
+  assert.equal(rawOf(MARKS_KEY), '', '写前失败不得留下半条');
+  disarmSetFail();
+
+  // 写成功了但回执丢失：存储层随后抛错，页面看到失败；这条其实已经落盘。
+  armSetFailAfter(1);
+  const lostAck = marks.addMark(Object.assign({ opId: 'op-lost' }, spot));
+  assert.equal(lostAck.ok, false, '回执丢失时仍如实报失败，不假报已保存');
+  assert.equal(lostAck.code, 'write-failed');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1, '这次其实已经落盘');
+  disarmSetFail();
+
+  // 同一次落点再点一次保存：复用已落盘的那条，不新建。
+  const retried = marks.addMark(Object.assign({ opId: 'op-lost' }, spot));
+  assert.equal(retried.ok, true, retried.error);
+  assert.equal(retried.code, 'duplicate', '同一次落点重试复用已落盘的那条');
+  assert.equal(retried.mark.markId, 'mark-1');
+  assert.equal(retried.mark.opId, 'op-lost', '标记记下这次落点的客户端操作身份');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1, '重试不得把一次落点写成两条');
+
+  // 另一份草稿：位置与文字完全相同，但它是另一次落点，成为独立的一条。
+  const another = marks.addMark(Object.assign({ opId: 'op-second' }, spot));
+  assert.equal(another.ok, true, another.error);
+  assert.equal(another.code, 'added');
+  assert.equal(another.mark.markId, 'mark-2');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 2, '不同草稿即使同坐标也各自成一条');
+
+  // 同一 opId 带着别的照片归回来：按冲突拒绝，不覆盖也不新建。
+  const conflict = marks.addMark(Object.assign({ opId: 'op-second' }, spot, { photoId: 'photo-2' }));
+  assert.equal(conflict.ok, false);
+  assert.equal(conflict.code, 'op-conflict');
+  assert.deepEqual(listedMarks(route.id, 'photo-2'), [], '冲突时不得写到别的照片上');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 2, '原照片上的两条都不受影响');
+  assert.equal(storedMarks().nextMarkSeq, 3);
+
+  // 被拒绝的写入不消耗序号，也不改已落盘的字节。
+  const beforeRejected = rawOf(MARKS_KEY);
+  armSetFailAt(1);
+  assert.equal(marks.addMark(Object.assign({ opId: 'op-third' }, spot)).code, 'write-failed');
+  disarmSetFail();
+  assert.equal(rawOf(MARKS_KEY), beforeRejected, '失败与拒绝都不得改动已落盘的标记');
+  assert.equal(storedMarks().nextMarkSeq, 3);
+  assert.equal(listedMarks(route.id, 'photo-1').length, 2);
+});
+
+test('T028 没有 opId 的旧记录照常读回，写入时缺 opId 也不当重试', () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const where = { archiveId: archiveIdOf(), routeId: route.id, photoId: 'photo-1' };
+
+  // 旧版本写下的记录没有 opId 字段：读取时按空串补齐，位置与文字照旧。
+  storage.set(
+    MARKS_KEY,
+    JSON.stringify({
+      version: 1,
+      nextMarkSeq: 2,
+      marks: [
+        {
+          markId: 'mark-1',
+          seq: 1,
+          archiveId: archiveIdOf(),
+          routeId: route.id,
+          photoId: 'photo-1',
+          kind: 'foot',
+          x: 0.2,
+          y: 0.4,
+          text: '旧记录',
+          createdAt: '2026-11-09T10:00:00.000Z'
+        }
+      ]
+    })
+  );
+  const listed = listedMarks(route.id, 'photo-1');
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].text, '旧记录');
+  assert.equal(listed[0].opId, '');
+
+  // 没有 opId 的两次新建（旧页面、直接调用）不做去重，仍是各自独立的两条。
+  const first = marks.addMark(Object.assign({ x: 0.5, y: 0.5, text: 'a' }, where));
+  const second = marks.addMark(Object.assign({ x: 0.5, y: 0.5, text: 'a' }, where));
+  assert.equal(first.ok, true, first.error);
+  assert.equal(second.ok, true, second.error);
+  assert.equal(listedMarks(route.id, 'photo-1').length, 3);
+});
+
 test('T028 位置不在照片上或归属不完整时拒绝新建，不落盘', () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
@@ -1282,6 +1398,269 @@ test('T028 详情页：迟到回调有可见处理，不把旧点位写到新照
   assert.equal(staleDelete, null);
   assert.match(page.data.markNotice, /已变化/);
   assert.equal(listedMarks(route.id, 'photo-1').length, 1, '迟到的删除不得生效');
+});
+
+test('T028 详情页：换图前落下的草稿不能在确认换图后存到新照片上，取消更换则保留', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page, ui } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+
+  // 先存下一条旧照片上的标记。
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  page.onMarkTextInput({ detail: { value: '旧照片的既有脚点' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+
+  // 再落一个未保存的草稿：它属于这张旧照片。
+  await page.tapPhotoStage(tapAt(300, 238.125));
+  page.onMarkTextInput({ detail: { value: '旧照片的独有脚点' } });
+  assert.ok(page.data.markDraft, '落点后应有未保存的草稿');
+
+  // 取消更换：照片 ID 没变，草稿、编辑区与旧标记照旧。
+  ui.set(savedPhotoView('photo-1', PHOTO_MAIN));
+  page.applyPhotoView();
+  await settle();
+  assert.equal(page.data.routePhoto.photoId, 'photo-1');
+  assert.ok(page.data.markDraft, '取消更换后旧草稿保留');
+  assert.equal(page.data.markEditable, true);
+  assert.equal(page.data.markPoints.length, 2, '旧图上的标记照旧显示');
+
+  // 确认换成另一张：归属变化，旧草稿、选中与编辑区一并失效。
+  setImageSize(PHOTO_MAIN_2, 1200, 1600);
+  ui.set(savedPhotoView('photo-2', PHOTO_MAIN_2));
+  page.applyPhotoView();
+  await settle();
+  assert.equal(page.data.routePhoto.photoId, 'photo-2');
+  assert.equal(page.data.markSelected, null);
+  assert.equal(page.data.markDraft, null, '换图后旧草稿必须失效');
+  assert.equal(page.data.markEditable, false);
+  assert.equal(page.saveMarkDraft(), null, '没有草稿时保存不落盘');
+
+  // 即使编辑区被误恢复，保存前也会核对发起落点时的归属：旧草稿写不到新照片上。
+  page.setData({
+    markDraft: { x: 0.16, y: 0.6, kind: 'foot', text: '旧照片的独有脚点', opId: 'op-stale' },
+    markEditable: true
+  });
+  const refused = page.saveMarkDraft();
+  assert.equal(refused.ok, false);
+  assert.equal(refused.code, 'stale-draft');
+  assert.equal(page.data.markDraft, null);
+  assert.deepEqual(listedMarks(route.id, 'photo-2'), [], '旧草稿不得写到新照片上');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1, '旧照片上已保存的那条仍在');
+  assert.equal(listedMarks(route.id, 'photo-1')[0].text, '旧照片的既有脚点');
+});
+
+test('T028 详情页：移除主照片后旧草稿、选中与编辑区一并失效，已保存的标记仍在存储里', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page, ui } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  page.onMarkTextInput({ detail: { value: '移除前的标记' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+  page.selectMarkPoint(tapDataset({ markId: 'mark-1' }));
+  assert.equal(page.data.markSelected.markId, 'mark-1');
+
+  // 移除主照片：没有照片 ID 就不猜归属，编辑区与草稿全部收回。
+  ui.set(noPhotoView());
+  page.applyPhotoView();
+  await settle();
+  assert.equal(page.data.routePhoto.status, 'none');
+  assert.equal(page.data.markSelected, null);
+  assert.equal(page.data.markEditable, false);
+  assert.equal(page.data.markMoving, false);
+  assert.equal(page.data.markPoints.length, 0);
+  assert.equal(page.data.markList.length, 0, '没有照片 ID 时不猜归属');
+  page.setData({ markDraft: { x: 0.2, y: 0.4, kind: 'foot', text: '移除前的标记', opId: 'op-gone' }, markEditable: true });
+  assert.equal(page.saveMarkDraft().ok, false, '没有归属时保存被拒绝');
+  assert.equal(page.data.markDraft, null, '被拒绝的旧草稿也被收回，不会挂在那里等下次换图');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1, '已保存的标记仍在存储里');
+});
+
+test('T028 详情页：移动 A 期间改选 B，A 的迟到测量不得把 B 挪走，正常移动仍能完成', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+  await page.tapPhotoStage(tapAt(60, 150));
+  page.onMarkTextInput({ detail: { value: 'A 的提示' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+  await page.tapPhotoStage(tapAt(240, 230));
+  page.onMarkTextInput({ detail: { value: 'B 的提示' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+  const before = listedMarks(route.id, 'photo-1');
+  const aBefore = JSON.stringify(before[0]);
+  const bBefore = JSON.stringify(before[1]);
+  assert.deepEqual(before.map(item => item.markId), ['mark-1', 'mark-2']);
+
+  // 选中 A 并开始移动；这次点击的显示框测量挂起不返回。
+  page.selectMarkPoint(tapDataset({ markId: 'mark-1' }));
+  page.startMarkMove();
+  const realQuery = page.queryMarkStageRect.bind(page);
+  const box = await realQuery();
+  let release;
+  page.queryMarkStageRect = () => new Promise(resolve => { release = resolve; });
+
+  const pending = page.tapPhotoStage(tapAt(140, 140));
+  // 测量还没回来时改选 B 并开始移动 B。
+  page.selectMarkPoint(tapDataset({ markId: 'mark-2' }));
+  page.startMarkMove();
+  release(box);
+  await pending;
+  await settle();
+
+  const afterLate = listedMarks(route.id, 'photo-1');
+  assert.equal(JSON.stringify(afterLate[1]), bBefore, 'A 的迟到点击不得移动 B');
+  assert.equal(JSON.stringify(afterLate[0]), aBefore, 'A 的位置也不得被这次点击改动');
+  assert.equal(page.data.markSelected.markId, 'mark-2', '选中的仍是 B');
+
+  // 恢复真实测量：B 仍能正常移动到新位置，A 保持原值。
+  page.queryMarkStageRect = realQuery;
+  const moved = await page.tapPhotoStage(tapAt(200, 260));
+  assert.equal(moved.ok, true, moved.error);
+  const expected = marks.markPointFromTap(tapAt(200, 260), geometry.rects[STAGE], geometry.images[PHOTO_MAIN]);
+  assert.equal(expected.ok, true, expected.error);
+  const after = listedMarks(route.id, 'photo-1');
+  assert.deepEqual([after[1].x, after[1].y], [expected.point.x, expected.point.y], 'B 正常完成移动');
+  assert.equal(after[1].text, 'B 的提示', '移动只改位置');
+  assert.equal(JSON.stringify(after[0]), aBefore, 'A 保持原值');
+});
+
+test('T028 详情页：退出或重进标记模式后，旧点击的测量不得重新打开编辑区', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+  const realQuery = page.queryMarkStageRect.bind(page);
+  const box = await realQuery();
+  let release;
+  page.queryMarkStageRect = () => new Promise(resolve => { release = resolve; });
+
+  // 退出标记模式：这次点击的测量还没回来。
+  const afterExit = page.tapPhotoStage(tapAt(75, 181.875));
+  page.exitMarkMode();
+  release(box);
+  await afterExit;
+  await settle();
+  assert.equal(page.data.markMode, false);
+  assert.equal(page.data.markEditable, false, '退出后旧点击不得再打开编辑区');
+  assert.equal(page.data.markDraft, null);
+  assert.equal(rawOf(MARKS_KEY), '', '退出后的旧点击不得落盘');
+
+  // 重进标记模式：上一轮模式里发起的旧点击同样作废。
+  await page.enterMarkMode();
+  const afterReenter = page.tapPhotoStage(tapAt(75, 181.875));
+  page.exitMarkMode();
+  await page.enterMarkMode();
+  release(box);
+  await afterReenter;
+  await settle();
+  assert.equal(page.data.markEditable, false, '重进模式后上一轮的旧点击不得打开编辑区');
+  assert.equal(page.data.markDraft, null);
+  assert.equal(rawOf(MARKS_KEY), '');
+
+  // 当前模式下的点击照常落点并保存。
+  page.queryMarkStageRect = realQuery;
+  const good = await page.tapPhotoStage(tapAt(75, 181.875));
+  assert.equal(good.ok, true, good.error);
+  assert.ok(page.data.markDraft, '当前模式下的点击照常生成草稿');
+  page.onMarkTextInput({ detail: { value: '左脚踩这里' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1);
+});
+
+test('T028 详情页：换屏后较早的一次显示框测量不得把标记恢复回旧屏位置', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  page.onMarkTextInput({ detail: { value: '左脚踩这里' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+  const stored = listedMarks(route.id, 'photo-1')[0];
+  assert.ok(Math.abs(stored.x - 0.2) < 1e-9);
+
+  const realQuery = page.queryMarkStageRect.bind(page);
+  const oldBox = await realQuery();
+  let release;
+  page.queryMarkStageRect = () => new Promise(resolve => { release = resolve; });
+
+  // 主图重新加载发起的一次测量还没回来，此时换了屏幕并完成新的测量。
+  const staleMeasure = page.onMarkImageLoad();
+  setStageRect({ width: 180, height: 300 });
+  page.queryMarkStageRect = async () => Object.assign({}, geometry.rects[STAGE]);
+  page.onResize();
+  await settle();
+
+  const layout = marks.imageLayout({ imageWidth: 1600, imageHeight: 1200, viewWidth: 180, viewHeight: 300 });
+  const expected = marks.imageToScreen({ x: stored.x, y: stored.y }, layout);
+  const position = () => {
+    const pin = page.data.markPoints.find(item => item.markId === 'mark-1');
+    return pin ? { x: pin.leftPx, y: pin.topPx } : null;
+  };
+  const now = position();
+  assert.ok(now, '换屏后标记仍应上图');
+  assert.ok(distance(now, expected) <= 5, '换屏后按新显示框换算，偏差在 5 个显示逻辑像素内');
+
+  // 迟到的那次旧框测量回来：不得把标记恢复回旧屏上的位置。
+  release(Object.assign({}, oldBox));
+  await staleMeasure;
+  await settle();
+  assert.deepEqual(position(), now, '较早的测量不得覆盖新屏的最新布局');
+  assert.deepEqual(
+    [listedMarks(route.id, 'photo-1')[0].x, listedMarks(route.id, 'photo-1')[0].y],
+    [stored.x, stored.y],
+    '已保存点的位置不变（只换显示框）'
+  );
+});
+
+test('T028 详情页：写前失败与回执丢失后重试都只留一条，另一份同坐标草稿仍是两条', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  page.onMarkTextInput({ detail: { value: '定位同一次落点' } });
+
+  // 写前失败：不留半条，保留草稿可再点一次。
+  armSetFailAt(1);
+  const beforeWrite = page.saveMarkDraft();
+  assert.equal(beforeWrite.ok, false);
+  assert.equal(beforeWrite.code, 'write-failed');
+  assert.equal(rawOf(MARKS_KEY), '', '写前失败不得留下半条');
+  assert.ok(page.data.markDraft, '失败后草稿仍在，可再点一次');
+  assert.match(page.data.markSaveError, /保存照片卡点标记失败/);
+  disarmSetFail();
+
+  // 写成功了但回执丢失：页面看到失败，其实已经落盘。
+  armSetFailAfter(1);
+  const lostAck = page.saveMarkDraft();
+  assert.equal(lostAck.ok, false, '回执丢失时仍如实报失败');
+  assert.equal(lostAck.code, 'write-failed');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1, '这时其实已经落盘');
+  assert.ok(page.data.markDraft, '回执丢失后仍保留草稿可重试');
+  disarmSetFail();
+
+  // 同一次落点再点一次保存：复用已落盘的那条，不写第二条。
+  const retried = page.saveMarkDraft();
+  assert.equal(retried.ok, true, retried.error);
+  assert.equal(retried.code, 'duplicate');
+  assert.equal(retried.mark.markId, 'mark-1');
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1, '同一次落点重试不得写成两条');
+  assert.equal(page.data.markDraft, null);
+  assert.equal(page.data.markPoints.length, 1);
+
+  // 另一份草稿落在同一坐标：它是另一次落点，成为第二条，第一条不动。
+  const firstBefore = JSON.stringify(listedMarks(route.id, 'photo-1')[0]);
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  page.onMarkTextInput({ detail: { value: '同位置的第二条' } });
+  const secondSave = page.saveMarkDraft();
+  assert.equal(secondSave.ok, true, secondSave.error);
+  assert.equal(secondSave.mark.markId, 'mark-2');
+  const after = listedMarks(route.id, 'photo-1');
+  assert.equal(after.length, 2, '不同草稿即使同坐标也各自成一条');
+  assert.equal(JSON.stringify(after[0]), firstBefore, '第一条不受影响');
+  assert.equal(page.data.markPoints.length, 2);
 });
 
 test('T028 详情页：无图与原图缺失都有可见处理，且不丢已写的卡点', async () => {

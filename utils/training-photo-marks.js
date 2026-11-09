@@ -23,6 +23,12 @@
  * 写操作都是「先读最新标记，再改这一条，然后落盘」，同一函数内同步完成；以 markId
  * 为键，重复点击、迟到回调与写失败后的重试都幂等：同一 markId 不会变成两条，也不会
  * 影响别的标记。落盘失败时不报已保存，序号不消耗，重试拿到同一个稳定 ID。
+ *
+ * 新建另有一层「客户端操作身份」opId（沿用档案层把次 opId 的同一套语义）：页面为每个
+ * 草稿生成一次 opId，同一次落点无论重试几次都传同一个。若这条 opId 已经落盘（写成功了
+ * 但回执丢失、用户又点了一次），直接复用已落盘的那条，不再新建第二条——重试因此不会把
+ * 一次落点写成一个半。同一 opId 带着别的照片/线路归回来时按冲突拒绝：不覆盖、也不新建。
+ * 位置与文字相同的两份不同草稿各有自己的 opId，所以仍然是各自独立的两条标记。
  */
 const store = require('./training-store.js');
 
@@ -117,12 +123,15 @@ function normalizeMarks(raw) {
     if (MARK_KINDS.indexOf(item.kind) < 0) return null;
     if (!isRelative(item.x) || !isRelative(item.y)) return null;
     if (typeof item.text !== 'string') return null;
+    if (item.opId !== undefined && typeof item.opId !== 'string') return null;
     if (!hasText(item.createdAt)) return null;
     if (item.updatedAt !== undefined && typeof item.updatedAt !== 'string') return null;
     maxSeq = Math.max(maxSeq, item.seq);
     marks.push({
       markId: item.markId,
       seq: item.seq,
+      // 客户端操作身份：旧记录没有这一项时读成空串，照常显示与改写。
+      opId: typeof item.opId === 'string' ? item.opId : '',
       archiveId: item.archiveId,
       routeId: item.routeId,
       photoId: item.photoId,
@@ -503,12 +512,20 @@ function findMark(state, markId) {
   return ((state && state.marks) || []).find(mark => mark.markId === id) || null;
 }
 
+/** 按客户端操作身份找一条（只读）：用于同一次落点重试时不重复新建。 */
+function findMarkByOp(state, opId) {
+  const id = hasText(opId) ? opId : '';
+  if (!id) return null;
+  return ((state && state.marks) || []).find(mark => mark.opId === id) || null;
+}
+
 /**
  * 新建一条卡点。
  *
  * 返回 { ok, code, error, mark, state }。code：
- *   added / invalid-target（缺档案/线路/照片）/ missing-photo / invalid-point
- *   / unreadable / write-failed。
+ *   added / duplicate（这条 opId 已经落盘，复用那一条，典型是写成功后回执丢失的重试）
+ *   / invalid-target（缺档案/线路/照片）/ missing-photo / invalid-point
+ *   / op-conflict（同一 opId 带着别的照片/线路归回来）/ unreadable / write-failed。
  * 落盘失败时序号不消耗：再点一次拿到的是同一个稳定 markId。
  */
 function addMark(input) {
@@ -539,6 +556,33 @@ function addMark(input) {
     return { ok: false, code: 'unreadable', error: loaded.error, mark: null, state: loaded.state };
   }
 
+  // 同一个客户端操作身份：已经落盘就复用它（写成功但回执丢失的重试），不新建第二条。
+  const opId = hasText(data.opId) ? data.opId : '';
+  const persisted = opId ? findMarkByOp(loaded.state, opId) : null;
+  if (persisted) {
+    const sameTarget =
+      persisted.archiveId === where.archiveId &&
+      persisted.routeId === where.routeId &&
+      persisted.photoId === where.photoId;
+    if (sameTarget) {
+      return {
+        ok: true,
+        code: 'duplicate',
+        duplicate: true,
+        error: '',
+        mark: clone(persisted),
+        state: loaded.state
+      };
+    }
+    return {
+      ok: false,
+      code: 'op-conflict',
+      error: '这次落点已经属于别的照片，没有重复保存',
+      mark: null,
+      state: loaded.state
+    };
+  }
+
   const kind = normalizeKind(data.kind) || DEFAULT_MARK_KIND;
   const at = timestamp(data.now);
   const next = clone(loaded.state);
@@ -546,6 +590,7 @@ function addMark(input) {
   const mark = {
     markId: 'mark-' + seq,
     seq,
+    opId,
     archiveId: where.archiveId,
     routeId: where.routeId,
     photoId: where.photoId,
@@ -801,6 +846,7 @@ module.exports = {
   countOtherPhotoMarks,
   listMarks,
   findMark,
+  findMarkByOp,
   addMark,
   updateMark,
   moveMark,

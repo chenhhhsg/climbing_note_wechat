@@ -658,6 +658,44 @@ test('R3 损坏档案显示读取失败并保留原字节，与真实空档可�
 // R4 只读：训练、自测、照片索引与原图逐字节不变
 // ------------------------------------------------------------------ *
 
+test('R4 馆名是用户输入：constructor、__proto__ 与普通馆名各按自己的名字记一把', async () => {
+  const names = ['constructor', '__proto__', '据点的岩馆'];
+  names.forEach((name, index) => {
+    const session = startSession(name, '2026-11-09');
+    const route = addRoute(session, { name: '线路 ' + (index + 1) });
+    const saved = recordAttempt({
+      opId: 'op-gym-' + index,
+      sessionId: session.id,
+      routeId: route.id,
+      result: 'fail'
+    });
+    assert.equal(saved.ok, true, saved.error);
+  });
+
+  const page = openStats();
+  await flush();
+
+  // 把数按把次计，与馆名无关。
+  assert.equal(page.data.totalAttempts, 3, '三个馆各记一把');
+  assert.equal(page.data.sendCount, 0);
+  assert.equal(page.data.failCount, 3);
+
+  // 每个馆名各有一行真实数字与自己的名字：继承键（constructor、__proto__）不参与计数，
+  // 不会把某个馆顶掉，也不会显示成函数字串；同数量时仍按名字稳定排序。
+  assert.deepEqual(page.data.gymRows, [
+    { name: '__proto__', count: 1, percentage: 33 },
+    { name: 'constructor', count: 1, percentage: 33 },
+    { name: '据点的岩馆', count: 1, percentage: 33 }
+  ]);
+  page.data.gymRows.forEach(row => {
+    assert.equal(typeof row.count, 'number');
+    assert.equal(Number.isInteger(row.count), true);
+    assert.equal(/function|native code/.test(row.name), false, '不得把继承来的函数当成馆名');
+  });
+  assert.equal(page.data.typeRows.length, 1, '类型分布不受馆名影响');
+  assert.equal(page.data.typeRows[0].count, 3);
+});
+
 test('R4 只进入、刷新、离开统计后，训练/自测/照片索引与原图都不变', async () => {
   const { session, route } = seedThreeAttempts();
 
