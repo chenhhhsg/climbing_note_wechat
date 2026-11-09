@@ -3,6 +3,7 @@
  * 显示用户基础信息和关于小程序
  */
 const app = getApp();
+const trainingStore = require('../../utils/training-store.js');
 
 Page({
   data: {
@@ -53,22 +54,29 @@ Page({
 
   /**
    * 清除缓存
+   *
+   * T016：普通清缓存只清可重建的派生缓存，不再整片清空微信本地存储。
+   * 本机训练档案、线路主照片索引、正在进行的操作以及命名空间外的其他键
+   * （旧试用工程、旧云缓存）都保持原样，本地原图也不在这里删除。
    */
   clearCache() {
     wx.showModal({
       title: '提示',
-      content: '确定要清除缓存吗？',
+      content: '确定要清除缓存吗？本机训练记录与照片不会被清除。',
       success: (res) => {
-        if (res.confirm) {
-          wx.clearStorage({
-            success: () => {
-              wx.showToast({
-                title: '清除成功',
-                icon: 'success'
-              });
-            }
+        if (!res.confirm) return;
+        const result = trainingStore.clearRebuildableStorage();
+        if (!result.ok) {
+          wx.showToast({
+            title: '清除失败',
+            icon: 'none'
           });
+          return;
         }
+        wx.showToast({
+          title: '清除成功',
+          icon: 'success'
+        });
       }
     });
   },

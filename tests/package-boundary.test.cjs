@@ -108,7 +108,8 @@ test('PK03 正常候选结构通过，且不误判编译产物 project.config.js
   assert.equal(result.status, EXIT_OK, result.stdout + result.stderr);
   assert.match(result.stdout, /结果：PASS/);
   assert.match(result.stdout, /INFO 已区分编译产物：project\.config\.json/);
-  assert.match(result.stdout, /应含 39 项/);
+  // T016 新增 utils/training-store.js 与 utils/training-rules.js，正式运行时清单 39 → 41。
+  assert.match(result.stdout, /应含 41 项/);
 });
 
 test('PK03 缺少正式页面文件时退出 4', t => {
@@ -254,6 +255,7 @@ test('PK03 --json 输出包含检查结果与违规项', t => {
   assert.equal(result.status, EXIT_VIOLATION);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.ok, false);
-  assert.equal(parsed.entryCount, 41);
+  // T016 起正式运行时 41 项，加包内一条违规条目与编译产物 project.config.json 共 43。
+  assert.equal(parsed.entryCount, 43);
   assert.ok(parsed.violations.some(item => item.includes('docs/note.md')));
 });
