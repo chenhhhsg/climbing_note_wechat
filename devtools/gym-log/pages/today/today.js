@@ -1116,7 +1116,10 @@ Page({
       routeId: route.id,
       result,
       note: '',
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
+      // 记下这一把属于哪一次编号空间：重置或切换数据集后，同编号会被新数据复用，
+      // 保存端与回执合并据此把迟到的旧请求认出来。
+      generation: current.generation || ''
     };
     next.pendingSaves.push(op);
     next.activeSessionId = session.id;
@@ -1163,13 +1166,15 @@ Page({
         let outcome;
         try {
           // 只提交这一把操作本身：线路类型与归属由保存端按试用数据里的权威线路
-          // 和当前上下文判定，页面不自带（可省略、可伪造的）声明。
+          // 和当前上下文判定，页面不自带（可省略、可伪造的）声明；世代用于让保存端
+          // 识别重置/切换后的迟到旧请求。
           outcome = trialSaveServer.submitOperation({
             opId: opSnapshot.opId,
             sessionId: opSnapshot.sessionId,
             routeId: opSnapshot.routeId,
             result: opSnapshot.result,
-            note: opSnapshot.note
+            note: opSnapshot.note,
+            generation: opSnapshot.generation || ''
           });
         } catch (error) {
           outcome = {
@@ -1211,7 +1216,8 @@ Page({
    * - 成功：移除该待确认（若还在），补一条同 ID 尝试（若还没有）；
    * - 这条线路已完攀或完攀还在待确认：撤销本条重复的待确认（见 settleConflictingPending）；
    * - 失败：不改动缓存，只保留该待确认并提示重试；
-   * - 已被其他实例核销：只同步显示，不重复写入。
+   * - 已被其他实例核销：只同步显示，不重复写入；
+   * - 重置/切换数据集后的迟到回执：世代不符，只同步显示，不写回新数据。
    * 新场次、备注、其他尝试和其他序号都不由本回调覆盖。
    */
   finishDispatch(opId, outcome, opSnapshot) {
@@ -1225,7 +1231,27 @@ Page({
 
     const latest = loaded.state;
     const pending = latest.pendingSaves.find(item => item.opId === opId) || null;
-    const confirmed = latest.attempts.find(item => item.id === opId) || null;
+
+    // 重置或切换数据集后到达的旧回执：编号空间已经换新（新数据可能复用同一个
+    // opId/sessionId），这份派发时的快照不属于当前状态，只同步显示，绝不写回。
+    if (
+      opSnapshot &&
+      opSnapshot.generation &&
+      opSnapshot.generation !== latest.generation
+    ) {
+      this.state = latest;
+      delete this._pendingFailures[opId];
+      this.setData({ saveNotice: '' });
+      return;
+    }
+
+    // 保存端已按新上下文拒收这条旧请求（世代不符）：同样不写回新数据。
+    if (outcome && outcome.stale) {
+      this.state = latest;
+      delete this._pendingFailures[opId];
+      this.setData({ saveNotice: '' });
+      return;
+    }
 
     // 保存端已有该抱石线路的完攀：不同操作 ID 也不能重复入账。
     // 这条待确认不再保留，按最新状态刷新并说明该线路已完攀。
@@ -1248,22 +1274,17 @@ Page({
     }
 
     if (outcome && outcome.ok) {
-      // 另一个页面实例已经按同一操作 ID 核销：旧回执只同步显示。
-      if (!pending && confirmed) {
+      // 待确认已不在最新状态（别的实例按同一操作 ID 核销，或被重置/切换清掉）：
+      // 只按最新状态同步显示。已核销时确认记录就在最新状态里；若既没有待确认
+      // 也没有确认记录，说明这一把已不属于当前编号空间，绝不用旧快照补写。
+      if (!pending) {
         this.state = latest;
         delete this._pendingFailures[opId];
         this.setData({ saveNotice: '' });
         return;
       }
 
-      const source = pending || opSnapshot;
-      if (!source) {
-        this.state = latest;
-        this.setData({ saveNotice: '' });
-        return;
-      }
-
-      // 重置试用数据后到达的旧回执：不把已经清掉的场次和尝试写回来。
+      const source = pending;
       if (!findSession(latest, source.sessionId)) {
         this.state = latest;
         delete this._pendingFailures[opId];

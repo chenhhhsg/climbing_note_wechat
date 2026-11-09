@@ -5,12 +5,34 @@
  * 岩馆与线路来自虚构样例；用户新建的线路、场次和尝试都保存在本机。
  * 所有 ID 一经创建就固定下来，用于区分同色同级的线路和跨天回看。
  * 抱石首次完攀的共用判定见 routeCompletion；顶绳和先锋可重复完攀。
+ *
+ * 重置世代（generation）标识「这一次的编号空间」：重置或切换数据集后编号会从头
+ * 分配，世代让迟到的旧请求与复用同编号的新数据分开，见 newGeneration。
  */
 const { TRIAL_DATASET_ID, isTrialDatasetId } = require('./trial-profile.js');
 const routeRules = require('./route-rules.js');
 
 const STORE_KEY = 'climbingNote.gymLogTrial.v1';
 const STATE_VERSION = 1;
+
+/**
+ * 重置世代（沿用数据集身份，补上被 datasetId 复用掩盖的那一层）。
+ *
+ * 无照片重置会保持同一个 datasetId（照片语义不变），但场次、线路、尝试与
+ * 待确认编号都从头开始——旧的 `attempt-1` / `session-1` 会被新数据重新分配。
+ * 只靠 datasetId 无法区分「重置前」与「重置后」的请求，所以每次重建编号空间
+ * （首次创建或任一重置）都换一个一次性 token，随状态持久化。
+ * 旧缓存没有该字段时统一按 LEGACY_GENERATION 读取：既不判损坏，也不改写旧缓存。
+ */
+const LEGACY_GENERATION = 'gen-legacy-0';
+let generationSeq = 0;
+
+function newGeneration() {
+  generationSeq += 1;
+  return (
+    'gen-' + generationSeq + '-' + Math.random().toString(36).slice(2, 10)
+  );
+}
 
 const GYMS = [
   { id: 'gym-chalkbox', name: '粉笔盒攀岩馆（虚构）' },
@@ -136,6 +158,8 @@ function createInitialState() {
     version: STATE_VERSION,
     // 试用数据集属于本机试用数据本身；照片归属按 owner + dataset + route 隔离。
     datasetId: TRIAL_DATASET_ID,
+    // 重置世代：每次重建编号空间都换新值，用来区分重置/切换前后的同编号请求。
+    generation: newGeneration(),
     nextSessionSeq: 1,
     nextRouteSeq: 1,
     nextAttemptSeq: 1,
@@ -201,6 +225,10 @@ function normalizeState(raw) {
     raw.datasetId === undefined ? TRIAL_DATASET_ID : raw.datasetId;
   if (!isTrialDatasetId(datasetId)) return null;
 
+  // 旧缓存没有重置世代：按 LEGACY_GENERATION 兼容读取，同一份旧缓存的待确认操作
+  // 会读到同一个世代，不会因为缺字段被判成过期请求。
+  const generation = hasText(raw.generation) ? raw.generation : LEGACY_GENERATION;
+
   const sessionsOk = raw.sessions.every(
     item =>
       item &&
@@ -240,7 +268,9 @@ function normalizeState(raw) {
       hasText(item.routeId) &&
       (item.result === 'fail' || item.result === 'send') &&
       typeof item.note === 'string' &&
-      hasText(item.createdAt)
+      hasText(item.createdAt) &&
+      // 重置世代是后加的字段：旧待确认没有它时仍按可读处理，不判定损坏。
+      (item.generation === undefined || typeof item.generation === 'string')
   );
   if (!sessionsOk || !routesOk || !attemptsOk || !pendingOk) return null;
 
@@ -260,6 +290,7 @@ function normalizeState(raw) {
   return {
     version: STATE_VERSION,
     datasetId,
+    generation,
     nextSessionSeq: normalizeCounter(raw.nextSessionSeq, raw.sessions),
     nextRouteSeq: normalizeCounter(raw.nextRouteSeq, raw.routes, routeSeq),
     // 待确认操作已经占用了序号，重试不能重新分配 ID。
@@ -388,6 +419,7 @@ function routeCompletion(state, routeId) {
 module.exports = {
   STORE_KEY,
   STATE_VERSION,
+  LEGACY_GENERATION,
   GYMS,
   FIXTURE_ROUTES,
   LEGACY_SUMMARY_SAMPLE,

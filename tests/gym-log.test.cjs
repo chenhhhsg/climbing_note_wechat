@@ -211,6 +211,12 @@ function ledgerState() {
   return raw ? JSON.parse(raw) : null;
 }
 
+// 账本行数：重置后账本会被写成空账本（而非删除），空账本同样按 0 行计。
+function ledgerRows() {
+  const ledger = ledgerState();
+  return ledger ? ledger.records.length : 0;
+}
+
 function localToday() {
   return store.todayLocalDate();
 }
@@ -3392,6 +3398,177 @@ test('T014-A5 直接保存入口按权威线路与当前上下文判定：旧签
   assert.equal(blockedByConfirmed.ok, false);
   assert.equal(blockedByConfirmed.alreadySent, true);
   assert.equal(ledgerState(), null, '被拒的提交不得写账本');
+});
+
+// ---- T014 / A6：重置或切换数据集后的迟到回执 ----
+// 复现 PM 探针：页面 A 的完攀回执晚到；页面 B 重置（或切到新数据集）后在
+// 同一条固定线路重新开场，新数据从零分配，旧请求的 opId/sessionId 会被复用。
+// 迟到的 deliver / finish 必须无副作用：不落账、不写新把次、不消费新数据。
+test('T014-A6 无照片重置复用数据集后，旧页面的迟到完攀不落账、不写新把次、不误锁', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0, '2026-11-05');
+  tapRoute(pageA, ROUTE_BLUE);
+  pageA._saveDelayMs = 60; // 页面 A 的完攀回执晚到
+  const outstanding = pageA.recordAttempt({
+    currentTarget: { dataset: { result: 'send' } }
+  });
+  const oldOpId = pageA.data.pendingAttempts[0].opId;
+  const oldSessionId = pageA.data.activeSession.id;
+  assert.equal(oldOpId, 'attempt-1');
+  assert.equal(savedState().pendingSaves.length, 1);
+  assert.equal(ledgerState(), null, 'A 的回执还没到，账本尚未写入');
+
+  // 页面 B：无照片重置保持同一 datasetId，却在同一固定线路重新开场
+  const pageB = createPage();
+  assert.equal(await pageB.resetTrialData(), true);
+  assert.equal(
+    savedState().datasetId,
+    trialProfile.TRIAL_DATASET_ID,
+    '无照片重置保持同一数据集'
+  );
+  tapStart(pageB, 0, '2026-11-09');
+  tapRoute(pageB, ROUTE_BLUE);
+  assert.equal(savedState().attempts.length, 0);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(ledgerRows(), 0, '重置后账本已清空');
+
+  // A 的迟到完攀回执到达：新数据此刻还没有自己的把次，
+  // 旧请求的 opId/sessionId 会被新数据复用，这里必须无副作用。
+  await outstanding;
+  assert.equal(ledgerRows(), 0, '迟到旧回执不落账');
+  assert.equal(savedState().attempts.length, 0, '迟到旧回执不写新把次');
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).closed,
+    false,
+    '旧完攀不得误锁新数据'
+  );
+
+  // 新数据从零分配，复用同一 opId 与 sessionId 正常记一把未完成
+  await tapResult(pageB, 'fail');
+  assert.equal(pageB.data.attempts[0].id, oldOpId, '新数据复用同一 opId');
+  assert.equal(pageB.data.activeSession.id, oldSessionId, '新数据复用同一 sessionId');
+  assert.equal(ledgerState().records.length, 1, '新数据自己那一把正常入账');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).closed,
+    false,
+    '新一把是未完成，不被旧的完攀影响'
+  );
+
+  // 新上下文仍可继续：同一编号空间里正常再记一把完攀
+  await tapResult(pageB, 'send');
+  assert.equal(savedState().attempts.length, 2);
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).completed,
+    true,
+    '新数据自己的完攀正常生效'
+  );
+  assert.equal(ledgerState().records.length, 2);
+});
+
+test('T014-A7 切到新数据集后，旧页面的迟到回执不消费新数据的待确认与把次', async () => {
+  const pageA = createPage();
+  tapStart(pageA, 0, '2026-11-05');
+  tapRoute(pageA, ROUTE_BLUE);
+
+  // 用固定计时器扣住 A 的回执，等 B 重置并在新数据集重开后按确定顺序放行。
+  const originalSetTimeout = global.setTimeout;
+  const heldTimers = [];
+  let outstanding;
+  global.setTimeout = fn => {
+    heldTimers.push(fn);
+    return heldTimers.length;
+  };
+  try {
+    pageA._saveDelayMs = 60;
+    outstanding = pageA.recordAttempt({
+      currentTarget: { dataset: { result: 'send' } }
+    });
+  } finally {
+    global.setTimeout = originalSetTimeout;
+  }
+  const oldOpId = pageA.data.pendingAttempts[0].opId;
+  const oldSessionId = pageA.data.activeSession.id;
+
+  // 页面 B：显式切到新数据集（有照片轮换走的也是这条路径）
+  const pageB = createPage();
+  assert.equal(pageB.applyTrialReset('trial-dataset-local-2'), true);
+  assert.equal(savedState().datasetId, 'trial-dataset-local-2');
+  tapStart(pageB, 0, '2026-11-09');
+  tapRoute(pageB, ROUTE_BLUE);
+
+  // 新数据自己那一把：丢回执，保留待确认，同时账本已有一行
+  pageB.toggleReceiptLossArm();
+  await tapResult(pageB, 'fail');
+  assert.equal(savedState().pendingSaves.length, 1, '新数据的待确认已落盘');
+  assert.equal(savedState().pendingSaves[0].opId, oldOpId, '新数据复用同一 opId');
+  assert.equal(ledgerState().records.length, 1);
+  assert.equal(ledgerState().records[0].opId, oldOpId);
+
+  // 放行 A 的迟到完攀：不落账，也不动新数据仍在待确认的那一把
+  assert.equal(heldTimers.length, 1, '应只有 A 的延迟回执');
+  heldTimers[0]();
+  await outstanding;
+  assert.equal(savedState().pendingSaves.length, 1, '旧回调不消费新数据的待确认');
+  assert.equal(savedState().pendingSaves[0].opId, oldOpId);
+  assert.equal(savedState().pendingSaves[0].result, 'fail', '新一把仍是未完成');
+  assert.equal(savedState().attempts.length, 0);
+  assert.equal(ledgerState().records.length, 1, '旧回调不落账');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).hasPendingSend,
+    false,
+    '旧回执不得把新线路标成完攀待确认'
+  );
+
+  // 新数据自己的回执仍可用原 opId 恢复，且只入账一次
+  await retryPending(pageB, oldOpId);
+  assert.equal(savedState().pendingSaves.length, 0);
+  assert.equal(savedState().attempts.length, 1);
+  assert.equal(savedState().attempts[0].id, oldOpId);
+  assert.equal(ledgerState().records.length, 1, '原操作 ID 仍幂等，不重复入账');
+});
+
+test('T014-A8 新数据先记未完成：复用同 opId 的旧完攀不得落账、不得当确认、不得误锁', async () => {
+  // 新数据集里正常记一把未完成
+  const page = createPage();
+  assert.equal(page.applyTrialReset('trial-dataset-local-2'), true);
+  tapStart(page, 0, '2026-11-09');
+  tapRoute(page, ROUTE_BLUE);
+  await tapResult(page, 'fail');
+  const newOpId = page.data.attempts[0].id;
+  const newSessionId = page.data.activeSession.id;
+  assert.equal(ledgerState().records.length, 1);
+
+  // 重置前编号空间的迟到完攀：opId / sessionId / routeId 都被新数据复用，
+  // 只有世代还是旧的——直接走实际保存入口也不能拿新记录当确认。
+  const staleSend = server.submitOperation({
+    opId: newOpId,
+    sessionId: newSessionId,
+    routeId: ROUTE_BLUE,
+    result: 'send',
+    note: '',
+    generation: 'gen-stale-before-reset'
+  });
+  assert.equal(staleSend.ok, false);
+  assert.equal(staleSend.stale, true, '旧世代一律不入账');
+  assert.equal(staleSend.duplicate, undefined, '不得返回错误确认');
+  assert.equal(staleSend.alreadySent, undefined);
+  assert.equal(ledgerState().records.length, 1, '不新增账本行');
+  assert.equal(savedState().attempts.length, 1, '不写试用数据');
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).closed,
+    false,
+    '新数据的未完成不被旧完攀误锁'
+  );
+
+  // 新数据自己的完攀仍能记录，且与旧请求互不影响
+  await tapResult(page, 'send');
+  assert.equal(page.data.attempts.length, 2);
+  assert.equal(
+    store.routeCompletion(savedState(), ROUTE_BLUE).completed,
+    true
+  );
+  assert.equal(ledgerState().records.length, 2);
 });
 
 

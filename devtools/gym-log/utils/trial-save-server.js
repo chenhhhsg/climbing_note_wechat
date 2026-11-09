@@ -6,6 +6,8 @@
  * - 以客户端操作 ID（opId）为幂等键：同一操作重复或并发提交只入账一次；
  * - 归属与线路类型只认试用数据里的权威线路和当前上下文：请求里的
  *   climbType / ownerId / datasetId 可以被省略或伪造，一律不参与判定；
+ * - 重置世代不同（重置或切换数据集后复用同 opId/sessionId 的迟到旧请求）直接
+ *   拒绝，不入账也不消费新数据的待确认与把次。
  * - 抱石（含缺 climbType 的旧 V 级线路）首次完攀只记一次：同一「试用用户 +
  *   当前数据集 + 长期线路 ID」已有完攀（账本记录、已确认把次或仍在待确认的
  *   完攀）时，不同操作 ID 的新结果（完攀或未完成）都不再入账；
@@ -30,6 +32,8 @@ const PENDING_SEND = '该抱石线路的完攀还在待确认，请先处理原�
 const OP_ID_CONFLICT =
   '操作 ID 已被其他线路或归属使用，请重置本地试用数据后再试';
 const STATE_UNREADABLE = '本地试用数据不可读，暂时无法确认线路归属：';
+const STALE_CONTEXT =
+  '这条保存来自已重置或已切换的试用数据（编号会被新数据复用），不再入账';
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -66,7 +70,8 @@ function isRecord(value) {
     // 归属与类型是后加的字段：旧账本没有它们时仍按可读处理，不判定损坏。
     (value.climbType === undefined || typeof value.climbType === 'string') &&
     (value.ownerId === undefined || typeof value.ownerId === 'string') &&
-    (value.datasetId === undefined || typeof value.datasetId === 'string')
+    (value.datasetId === undefined || typeof value.datasetId === 'string') &&
+    (value.generation === undefined || typeof value.generation === 'string')
   );
 }
 
@@ -199,6 +204,8 @@ function resolveSaveContext(operation) {
     route,
     isBoulder,
     ownership,
+    // 当前编号空间的世代：用来识别重置/切换后复用同编号的迟到旧请求。
+    generation: hasText(state.generation) ? state.generation : '',
     // 记录里存权威线路的类型，作为排查线索；判定不读这个字段。
     climbType: route ? routeRules.climbTypeOf(route) : '',
     confirmedSend: isBoulder
@@ -226,6 +233,7 @@ function resolveSaveContext(operation) {
  * - { ok: false, alreadySent: true } 同一归属的抱石线路已有完攀，本条不入账
  * - { ok: false, pendingSend: true } 同一线路的完攀还在待确认，本条不入账
  * - { ok: false, opIdConflict: true } 该 opId 已用于别的线路或别的归属，不能给出确认
+ * - { ok: false, stale: true }      来自已重置/已切换的旧编号空间，不入账也不动新数据
  * - { ok: false, receiptLost: true } 已入账，但本次回执按演练设置丢失
  * - { ok: false, error }           没有入账（校验失败、账本损坏、数据不可读或写入失败）
  */
@@ -239,6 +247,18 @@ function submitOperation(operation) {
   const ledger = loaded.ledger;
   const context = resolveSaveContext(operation);
   if (context.error) return { ok: false, error: context.error };
+
+  // 重置或切换试用数据后到达的旧请求：新数据会从头发放 opId/sessionId，
+  // 同 opId、同线路、同场次都可能被复用，但世代不同，说明它属于已被换掉的编号空间。
+  // 一律不入账——也不参与下面的操作 ID 幂等，避免拿新数据的记录当旧请求的确认，
+  // 更不能消费、删除或覆盖新的待确认与把次。旧请求不带世代时按原行为兼容处理。
+  if (
+    hasText(operation.generation) &&
+    hasText(context.generation) &&
+    operation.generation !== context.generation
+  ) {
+    return { ok: false, stale: true, error: STALE_CONTEXT };
+  }
 
   // 幂等只覆盖「同一条线路、同一归属」的原操作：被复制到别的线路或别的归属时
   // 不能拿旧记录当确认，否则客户端会以为这一把已经保存。
@@ -282,7 +302,9 @@ function submitOperation(operation) {
     // 归属与类型取权威上下文，不照抄请求里的声明。
     climbType: context.climbType,
     ownerId: context.ownership.ownerId,
-    datasetId: context.ownership.datasetId
+    datasetId: context.ownership.datasetId,
+    // 记录属于哪一次编号空间，作为排查线索；判定不读这个字段。
+    generation: context.generation
   };
   ledger.records.push(record);
 
@@ -369,6 +391,7 @@ module.exports = {
   ALREADY_SENT,
   PENDING_SEND,
   OP_ID_CONFLICT,
+  STALE_CONTEXT,
   createEmptyLedger,
   normalizeLedger,
   loadLedger,
