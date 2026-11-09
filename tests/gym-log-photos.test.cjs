@@ -1923,3 +1923,84 @@ test('PU08 缺类型的旧 V 级线路按抱石读取，照片与备注归属不
   assert.equal(storage.get(INDEX_KEY), indexBefore, '打开详情不改动照片索引');
   assert.equal(virtual.files.has(mainPath), true, '照片文件仍在');
 });
+
+// ---- T015：已完攀线路的照片、备注归属与只回看 ----
+test('T015-P 已完攀抱石线的照片与备注归属不变，详情只回看不显示「今天再爬」', async () => {
+  const page = await createPage();
+  await tapStart(page, 0, '2020-04-02');
+  await tapRoute(page, ROUTE_BLUE);
+  await record(page, 'fail');
+  await record(page, 'fail');
+  page.openNoteEditor({
+    currentTarget: { dataset: { attemptId: page.data.attempts[1].id } }
+  });
+  page.onNoteInput({ detail: { value: '周四第二把备注' } });
+  page.saveNote();
+  await savePhoto(page, ROUTE_BLUE, 'album');
+  const photoId = photoIndex().photos[0].photoId;
+
+  // 跨天完攀同一条线：确认后按已完攀处理
+  const sunday = await createPage();
+  await tapStart(sunday, 0, '2020-04-05');
+  await tapRoute(sunday, ROUTE_BLUE);
+  await record(sunday, 'send');
+  assert.equal(sunday.data.routeCompleted, true);
+  assert.equal(sunday.data.routeClosed, true);
+  assert.equal(sunday.data.routeStateText, '已完攀');
+
+  const blueItem = sunday.data.routes.find(route => route.id === ROUTE_BLUE);
+  assert.equal(blueItem.completionText, '已完攀');
+  assert.equal(blueItem.hasPhoto, true, '照片仍挂在这条已完攀线路上');
+  const balanceItem = sunday.data.routes.find(
+    route => route.id === ROUTE_BLUE_BALANCE
+  );
+  assert.equal(balanceItem.completionText, '', '同色同级另一条无完攀标记');
+  assert.equal(balanceItem.hasPhoto, false, '同色同级另一条不串图');
+
+  // 已完攀：历史项直达详情，不再转入新增流程
+  wxLog.navigations = [];
+  sunday.onRouteTap({ currentTarget: { dataset: { routeId: ROUTE_BLUE } } });
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(wxLog.navigations[0].type, 'navigateTo');
+  assert.ok(wxLog.navigations[0].url.includes(ROUTE_BLUE));
+
+  // 详情：同一张照片、逐把备注、不显示「今天再爬」
+  const detail = await createDetailPage(ROUTE_BLUE);
+  assert.equal(detail.data.routeCompleted, true);
+  assert.equal(detail.data.canRecordAgain, false);
+  assert.equal(detail.data.routePhoto.photoId, photoId, '详情读回同一张照片');
+  assert.equal(detail.data.attemptCount, 3);
+  const thursday = detail.data.groups.find(
+    group => group.dateText === '2020-04-02'
+  );
+  assert.ok(thursday, '跨天记录仍按场次分组');
+  assert.equal(thursday.attempts[1].note, '周四第二把备注');
+  assert.equal(
+    detail.data.groups.find(group => group.dateText === '2020-04-05').attempts[0]
+      .resultText,
+    '完攀'
+  );
+
+  // 原线路照片仍只有一张，同色同级另一条没有照片记录
+  assert.equal(photoIndex().photos.length, 1);
+  assert.equal(photoOfRoute(ROUTE_BLUE, sunday.state.datasetId).photoId, photoId);
+  assert.equal(photoOfRoute(ROUTE_BLUE_BALANCE, sunday.state.datasetId), null);
+
+  // 已完攀后迟到的新增流程不再生效：不新建场次、不发起尝试
+  const sessionsBefore = savedState().sessions.length;
+  const attemptsBefore = savedState().attempts.length;
+  detail.recordAgain();
+  assert.match(detail.data.recordNotice, /已完攀/);
+  assert.equal(savedState().sessions.length, sessionsBefore);
+  assert.equal(savedState().attempts.length, attemptsBefore);
+
+  // 重开页面仍是同一张照片与同一条完攀状态
+  const reentered = await createPage();
+  assert.equal(reentered.data.routeCompleted, true);
+  assert.equal(
+    reentered.data.routes.find(route => route.id === ROUTE_BLUE).photoThumb !==
+      '',
+    true
+  );
+  assert.equal(photoIndex().photos.length, 1);
+});

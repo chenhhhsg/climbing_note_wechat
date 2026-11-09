@@ -29,6 +29,12 @@
       <text class="storage-error-hint">当前操作未生效，请重试；点击可收起</text>
     </view>
 
+    <!-- 已完攀只回看：迟到的「今天再爬」或选场不再新增，只给一次提示 -->
+    <view wx:if="{{recordNotice}}" id="record-notice" class="storage-error" bindtap="dismissRecordNotice">
+      <text class="storage-error-text">{{recordNotice}}</text>
+      <text class="storage-error-hint">点击可收起</text>
+    </view>
+
     <view
       wx:if="{{photoNotice}}"
       id="photo-notice"
@@ -201,6 +207,13 @@
         <text wx:if="{{hasAttempts}}" class="summary-detail">完攀 {{sendCount}} 把</text>
       </view>
 
+      <!-- 已完攀标记：与今日页、历史选线显示同一份判定 -->
+      <text
+        wx:if="{{routeStateText}}"
+        id="detail-route-state"
+        class="detail-route-state {{routeCompleted ? 'detail-route-state-done' : 'detail-route-state-pending'}}"
+      >{{routeStateText}}</text>
+
       <!-- 旧汇总：只读原样展示，不生成逐次尝试，不参与统计 -->
       <view wx:if="{{isLegacy}}" class="card legacy-card">
         <text class="legacy-label">{{legacySummary.label}}</text>
@@ -243,9 +256,21 @@
     </block>
   </block>
 
-  <view wx:if="{{!isLegacy && route}}" class="record-again-footer">
+  <!-- 已完攀的抱石线不再提供「今天再爬」，只保留回看；顶绳和先锋可重复完攀，入口照旧 -->
+  <view
+    wx:if="{{!isLegacy && route && canRecordAgain}}"
+    class="record-again-footer"
+  >
     <button id="record-again" class="record-again-button" bindtap="recordAgain">今天再爬</button>
     <text class="record-again-hint">今天该岩馆只有一场时直接沿用；多场先选归属；没有就新建一场</text>
+  </view>
+  <view
+    wx:elif="{{!isLegacy && route}}"
+    id="detail-completed-footer"
+    class="record-again-footer detail-completed-footer"
+  >
+    <text id="detail-completed-state" class="detail-completed-title">已完攀</text>
+    <text class="detail-completed-hint">这条抱石线路已完攀，只能回看；逐把记录、备注与照片都保留在本机。</text>
   </view>
 
   <!--

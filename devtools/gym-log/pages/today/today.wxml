@@ -172,6 +172,11 @@
           <view class="selected-route-info">
             <text class="selected-route-name">{{selectedRoute.name}}</text>
             <text class="selected-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · 本场 {{routeCountText}}</text>
+            <text
+              wx:if="{{routeStateText}}"
+              id="selected-route-state"
+              class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
+            >{{routeStateText}}</text>
           </view>
           <button
             id="selected-route-detail"
@@ -401,7 +406,7 @@
             id="route-{{item.id}}"
             class="route-item {{item.isSelected ? 'route-selected' : ''}}"
             data-route-id="{{item.id}}"
-            bindtap="selectRoute"
+            bindtap="onRouteTap"
           >
             <view class="route-main">
               <view class="route-swatch" style="background: {{item.colorHex}};"></view>
@@ -418,6 +423,12 @@
                 <text class="route-meta">{{item.climbType}} {{item.grade}} · {{item.colorName}}</text>
                 <text wx:if="{{item.photoMissing}}" class="route-photo-missing">本机照片不可用</text>
               </view>
+              <!-- 已完攀：历史项直接进入详情回看，不再转入新增流程 -->
+              <text
+                wx:if="{{item.completionText}}"
+                id="route-state-{{item.id}}"
+                class="route-state {{item.isCompleted ? 'route-state-done' : 'route-state-pending'}}"
+              >{{item.completionText}}</text>
               <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
             </view>
             <view class="route-actions">
@@ -525,23 +536,38 @@
       </view>
 
       <!-- 拇指可及的两个大按钮，底部留出安全区；
-           本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把 -->
+           本场本线路还有待确认时锁定，先在该行重试，确认后才生成新的一把。
+           抱石首次完攀确认后，原按钮位置改成「已完攀」并只留回看入口。 -->
       <view wx:if="{{selectedRoute && !noteEditor}}" class="result-footer">
-        <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
-        <button
-          id="record-fail"
-          class="result-button result-fail"
-          data-result="fail"
-          disabled="{{resultLocked}}"
-          bindtap="recordAttempt"
-        >未完成</button>
-        <button
-          id="record-send"
-          class="result-button result-send"
-          data-result="send"
-          disabled="{{resultLocked}}"
-          bindtap="recordAttempt"
-        >完攀</button>
+        <block wx:if="{{routeCompleted}}">
+          <view id="route-completed-panel" class="route-completed-panel">
+            <text class="route-completed-title">已完攀</text>
+            <text class="route-completed-hint">这条抱石线路已完攀，只能回看；把次、备注与照片都保留在本机。</text>
+          </view>
+          <button
+            id="route-completed-detail"
+            class="secondary-button route-completed-detail"
+            data-route-id="{{selectedRoute.id}}"
+            bindtap="openRouteDetail"
+          >查看记录</button>
+        </block>
+        <block wx:else>
+          <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
+          <button
+            id="record-fail"
+            class="result-button result-fail"
+            data-result="fail"
+            disabled="{{resultLocked}}"
+            bindtap="recordAttempt"
+          >未完成</button>
+          <button
+            id="record-send"
+            class="result-button result-send"
+            data-result="send"
+            disabled="{{resultLocked}}"
+            bindtap="recordAttempt"
+          >完攀</button>
+        </block>
       </view>
 
       <view class="section session-history">

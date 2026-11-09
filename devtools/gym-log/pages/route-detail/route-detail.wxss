@@ -183,6 +183,29 @@
   font-weight: 600;
 }
 
+/* 完攀标记：与今日页、历史选线同一份状态文案 */
+.detail-route-state {
+  display: inline-block;
+  margin: 0 4rpx 20rpx;
+  padding: 4rpx 16rpx;
+  border-radius: 999rpx;
+  font-size: 24rpx;
+  font-weight: 700;
+  line-height: 34rpx;
+}
+
+.detail-route-state-done {
+  background: #e7efe4;
+  border: 1rpx solid #bcd3b6;
+  color: #3f6a3c;
+}
+
+.detail-route-state-pending {
+  background: #faf0dd;
+  border: 1rpx solid #e0cf9f;
+  color: #8a6d1f;
+}
+
 .legacy-card {
   border-color: #b9b3a2;
   border-style: dashed;
@@ -366,6 +389,29 @@
   margin-top: 10rpx;
   color: #85857a;
   font-size: 22rpx;
+  text-align: center;
+}
+
+/* 抱石已完攀：同一页脚位置改成状态说明，不再提供「今天再爬」 */
+.detail-completed-footer {
+  background: rgba(231, 239, 228, 0.98);
+  border-top: 1rpx solid #bcd3b6;
+}
+
+.detail-completed-title {
+  display: block;
+  color: #3f6a3c;
+  font-size: 34rpx;
+  font-weight: 700;
+  text-align: center;
+}
+
+.detail-completed-hint {
+  display: block;
+  margin-top: 8rpx;
+  color: #55564e;
+  font-size: 22rpx;
+  line-height: 32rpx;
   text-align: center;
 }
 

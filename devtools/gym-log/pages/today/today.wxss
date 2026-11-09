@@ -315,6 +315,34 @@
   font-weight: 600;
 }
 
+/* 完攀标记：今日页选定线路与历史选线列表共用同一份状态文案 */
+.route-state {
+  display: inline-block;
+  margin-top: 8rpx;
+  padding: 2rpx 14rpx;
+  border-radius: 999rpx;
+  font-size: 22rpx;
+  font-weight: 700;
+  line-height: 32rpx;
+}
+
+.route-main .route-state {
+  flex: none;
+  margin: 0 0 0 12rpx;
+}
+
+.route-state-done {
+  background: #e7efe4;
+  border: 1rpx solid #bcd3b6;
+  color: #3f6a3c;
+}
+
+.route-state-pending {
+  background: #faf0dd;
+  border: 1rpx solid #e0cf9f;
+  color: #8a6d1f;
+}
+
 /* 线路详情入口：从今日/历史线路找回稳定 ID */
 .route-detail-link,
 .route-item-detail {
@@ -571,6 +599,36 @@
   background: #23241f;
   color: #fdfbf5;
   border: 3rpx solid #23241f;
+}
+
+/* 抱石已完攀：原两个结果按钮的位置改成状态面板 + 回看入口 */
+.route-completed-panel {
+  width: 100%;
+  margin: 0 0 12rpx;
+  padding: 18rpx 24rpx;
+  background: #e7efe4;
+  border: 2rpx solid #bcd3b6;
+  border-radius: 18rpx;
+  box-sizing: border-box;
+}
+
+.route-completed-title {
+  display: block;
+  color: #3f6a3c;
+  font-size: 34rpx;
+  font-weight: 700;
+}
+
+.route-completed-hint {
+  display: block;
+  margin-top: 6rpx;
+  color: #55564e;
+  font-size: 24rpx;
+  line-height: 34rpx;
+}
+
+.route-completed-detail {
+  width: 100%;
 }
 
 .session-history {

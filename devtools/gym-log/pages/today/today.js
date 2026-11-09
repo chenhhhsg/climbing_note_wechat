@@ -71,6 +71,20 @@ function attemptResultText(result) {
   return result === 'send' ? '完攀' : '未完成';
 }
 
+/**
+ * 线路上的完攀标记文案（T015）：判定来自 store.routeCompletion，
+ * 今日页、历史选线与详情页显示同一份结果。
+ * - 已确认完攀：抱石线只能回看；
+ * - 完攀还在待确认：提示先处理原把次；
+ * - 顶绳、先锋可重复完攀，不显示标记。
+ */
+function completionText(completion) {
+  if (!completion || !completion.known) return '';
+  if (completion.completed) return '已完攀';
+  if (completion.hasPendingSend) return '完攀待确认';
+  return '';
+}
+
 function timeText(createdAt) {
   const date = new Date(createdAt);
   return Number.isNaN(date.getTime()) ? '--:--' : formatLocalTime(date);
@@ -353,17 +367,24 @@ Page({
 
       routes = state.routes
         .filter(route => route.gymId === activeRaw.gymId)
-        .map(route => ({
-          id: route.id,
-          gymId: route.gymId,
-          name: route.name,
-          // 旧 V 级线路没有 climbType，按抱石读取；只读展示，不回写缓存。
-          climbType: climbTypeOf(route),
-          colorName: route.colorName,
-          colorHex: route.colorHex,
-          grade: route.grade,
-          isSelected: route.id === state.activeRouteId
-        }));
+        .map(route => {
+          // 每条线路的完攀状态同样来自共用规则，历史列表与详情一致。
+          const completion = routeCompletion(state, route.id);
+          return {
+            id: route.id,
+            gymId: route.gymId,
+            name: route.name,
+            // 旧 V 级线路没有 climbType，按抱石读取；只读展示，不回写缓存。
+            climbType: climbTypeOf(route),
+            colorName: route.colorName,
+            colorHex: route.colorHex,
+            grade: route.grade,
+            isSelected: route.id === state.activeRouteId,
+            isCompleted: Boolean(completion.completed),
+            isClosed: Boolean(completion.closed),
+            completionText: completionText(completion)
+          };
+        });
 
       selectedRoute =
         routes.find(route => route.id === state.activeRouteId) || null;
@@ -974,6 +995,27 @@ Page({
     this.setData({ noteEditor: null });
     this.refreshView();
     return this.initPhotoUi();
+  },
+
+  /**
+   * 线路列表项的用户入口（T015）：先按共用规则判定完攀状态。
+   * - 已完攀的抱石线：历史项直达详情回看（逐把备注与照片），不进入新增流程，
+   *   也不改动当前选线；
+   * - 其余情况（含完攀待确认）仍按原逻辑选中该线路，待确认行留在本场原处可重试。
+   * 直接调用 selectRoute 的行为不变，页面入口的差异只体现在这里。
+   */
+  onRouteTap(event) {
+    const id = event && event.currentTarget && event.currentTarget.dataset.routeId;
+    if (!id || !this.data.activeSession) return;
+
+    const completion = routeCompletion(this.state, id);
+    if (completion.known && completion.completed) {
+      return this.openRouteDetail({
+        currentTarget: { dataset: { routeId: id } }
+      });
+    }
+    if (this.state.activeRouteId === id) return;
+    return this.selectRoute(event);
   },
 
   /**

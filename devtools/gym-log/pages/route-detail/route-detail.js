@@ -14,7 +14,8 @@ const {
   todayLocalDate,
   createInitialState,
   loadState,
-  saveState
+  saveState,
+  routeCompletion
 } = require('../../utils/store.js');
 const {
   createPhotoController,
@@ -69,6 +70,14 @@ Page({
     sendCount: 0,
     summaryText: '0 天 · 0 场 · 0 把',
 
+    // 完攀状态（T015）：与今日页、历史选线共用 store.routeCompletion 的同一份判定。
+    // 已完攀的抱石线只能回看：不显示「今天再爬」，迟到事件也不再新增。
+    routeCompleted: false,
+    routeClosed: false,
+    canRecordAgain: true,
+    routeStateText: '',
+    recordNotice: '',
+
     // 主照片可以在详情页直接补、换、移除；列表缩略图仍由今日页读取同一索引。
     routePhoto: null,
     photoNotice: '',
@@ -116,6 +125,11 @@ Page({
       attemptCountText: '0 把',
       sendCount: 0,
       summaryText: '0 天 · 0 场 · 0 把',
+      routeCompleted: false,
+      routeClosed: false,
+      canRecordAgain: true,
+      routeStateText: '',
+      recordNotice: '',
       routePhoto: null,
       photoNotice: '',
       sessionPicker: null
@@ -175,6 +189,10 @@ Page({
 
   dismissPhotoNotice() {
     this.setData({ photoNotice: '' });
+  },
+
+  dismissRecordNotice() {
+    this.setData({ recordNotice: '' });
   },
 
   chooseDetailPhoto(event) {
@@ -277,6 +295,11 @@ Page({
         attemptCountText: '0 把',
         sendCount: 0,
         summaryText: '0 天 · 0 场 · 0 把',
+        // 旧汇总样例没有逐次尝试，也不参与新增流程。
+        routeCompleted: false,
+        routeClosed: false,
+        canRecordAgain: false,
+        routeStateText: '',
         routePhoto: null
       });
       return;
@@ -284,7 +307,15 @@ Page({
 
     const route = state.routes.find(item => item.id === this._routeId);
     if (!route) {
-      this.setData({ route: null, notFound: true, routePhoto: null });
+      this.setData({
+        route: null,
+        notFound: true,
+        routePhoto: null,
+        routeCompleted: false,
+        routeClosed: false,
+        canRecordAgain: false,
+        routeStateText: ''
+      });
       return;
     }
 
@@ -323,6 +354,8 @@ Page({
 
     const dayCount = new Set(groups.map(group => group.dateText)).size;
     const sendCount = related.filter(attempt => attempt.result === 'send').length;
+    // 完攀状态与今日页、历史选线同源：已完攀的抱石线只回看，顶绳和先锋可再记。
+    const completion = routeCompletion(state, route.id);
 
     this.setData({
       route: {
@@ -344,6 +377,14 @@ Page({
       attemptCount: related.length,
       attemptCountText: related.length + ' 把',
       sendCount,
+      routeCompleted: completion.completed,
+      routeClosed: completion.closed,
+      canRecordAgain: completion.canRecord,
+      routeStateText: completion.completed
+        ? '已完攀'
+        : completion.hasPendingSend
+          ? '完攀待确认'
+          : '',
       summaryText:
         dayCount + ' 天 · ' + groups.length + ' 场 · ' + related.length + ' 把',
       routePhoto: this._photoUi
@@ -372,6 +413,20 @@ Page({
       return;
     }
     this.state = loaded.state;
+
+    // 迟到的「今天再爬」事件（例如另一页面刚确认了这条抱石线的首次完攀）：
+    // 按最新持久状态重新判定，已完攀只刷新回看，不新建场次也不发起尝试。
+    const completion = routeCompletion(loaded.state, routeId);
+    if (completion.known && completion.closed) {
+      this.refreshView();
+      this.setData({
+        storageError: '',
+        recordNotice: completion.completed
+          ? '这条抱石线路已完攀，只能回看，不能再新增把次。'
+          : '这条抱石线路的完攀还在待确认：请回到原场次的原把次重试保存，确认后只能回看。'
+      });
+      return;
+    }
 
     const next = clone(loaded.state);
     const target = next.routes.find(item => item.id === routeId);
@@ -451,6 +506,22 @@ Page({
       return;
     }
     this.state = loaded.state;
+
+    // 弹层打开期间这条抱石线可能在别处完成完攀：按最新状态判定，
+    // 已完攀时收起弹层并只刷新回看，不切换场次、不发起尝试。
+    const completion = routeCompletion(loaded.state, this._pendingRouteId);
+    if (completion.known && completion.closed) {
+      this._pendingRouteId = '';
+      this.setData({
+        sessionPicker: null,
+        storageError: '',
+        recordNotice: completion.completed
+          ? '这条抱石线路已完攀，只能回看，本次选场未生效。'
+          : '这条抱石线路的完攀还在待确认：请先处理原把次，本次选场未生效。'
+      });
+      this.refreshView();
+      return;
+    }
 
     const next = clone(loaded.state);
     const target = next.routes.find(
