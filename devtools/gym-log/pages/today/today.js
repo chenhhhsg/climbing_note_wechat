@@ -14,7 +14,6 @@ const {
   GYMS,
   LEGACY_SUMMARY_SAMPLE,
   ROUTE_COLORS,
-  GRADES,
   STORE_KEY,
   clone,
   formatLocalTime,
@@ -24,6 +23,17 @@ const {
   loadState,
   saveState
 } = require('../../utils/store.js');
+const {
+  CLIMB_TYPES,
+  DEFAULT_CLIMB_TYPE,
+  DEFAULT_GRADE,
+  GRADE_PLACEHOLDER,
+  climbTypeOf,
+  gradesForType,
+  isClimbType,
+  isGradeForType,
+  gradeText
+} = require('../../utils/route-rules.js');
 const trialSaveServer = require('../../utils/trial-save-server.js');
 const {
   createPhotoController,
@@ -59,6 +69,24 @@ function attemptResultText(result) {
 function timeText(createdAt) {
   const date = new Date(createdAt);
   return Number.isNaN(date.getTime()) ? '--:--' : formatLocalTime(date);
+}
+
+/**
+ * 新建表单的默认类型与等级：抱石 V3。
+ * 默认等级必须属于默认类型，否则宁可留空让用户重选，也不静默取首个等级。
+ */
+function defaultFormSelection() {
+  const grades = gradesForType(DEFAULT_CLIMB_TYPE);
+  const index = grades.indexOf(DEFAULT_GRADE);
+  const grade = index === -1 ? '' : grades[index];
+  return {
+    typeIndex: CLIMB_TYPES.indexOf(DEFAULT_CLIMB_TYPE),
+    type: DEFAULT_CLIMB_TYPE,
+    grades,
+    gradeIndex: index,
+    grade,
+    gradeText: gradeText(grade)
+  };
 }
 
 Page({
@@ -107,9 +135,14 @@ Page({
     quickRouteColors: [],
     quickRouteColorIndex: 0,
     quickRouteColorName: '',
+    // 攀岩类型在左、等级在右；等级选项随类型重算，失效时清空并要求重选。
+    quickRouteTypes: [],
+    quickRouteTypeIndex: 0,
+    quickRouteType: DEFAULT_CLIMB_TYPE,
     quickRouteGrades: [],
     quickRouteGradeIndex: 0,
-    quickRouteGrade: 'V3',
+    quickRouteGrade: DEFAULT_GRADE,
+    quickRouteGradeText: DEFAULT_GRADE,
     quickRouteError: '',
 
     noteEditor: null,
@@ -139,15 +172,20 @@ Page({
     // 从详情页容量失败入口返回时直接展开管理区。
     this._focusSpace = Boolean(query && query.manageSpace);
     this.state = createInitialState();
+    const form = defaultFormSelection();
     this.setData({
       gyms: GYMS,
       legacySample: LEGACY_SUMMARY_SAMPLE,
       quickRouteColors: ROUTE_COLORS,
       quickRouteColorIndex: 0,
       quickRouteColorName: ROUTE_COLORS[0].name,
-      quickRouteGrades: GRADES,
-      quickRouteGradeIndex: GRADES.indexOf('V3'),
-      quickRouteGrade: 'V3'
+      quickRouteTypes: CLIMB_TYPES,
+      quickRouteTypeIndex: form.typeIndex,
+      quickRouteType: form.type,
+      quickRouteGrades: form.grades,
+      quickRouteGradeIndex: form.gradeIndex,
+      quickRouteGrade: form.grade,
+      quickRouteGradeText: form.gradeText
     });
     this.loadTrial();
   },
@@ -221,6 +259,7 @@ Page({
       Object.keys(this._dispatching).find(opId =>
         this.state.pendingSaves.some(op => op.opId === opId)
       ) || '';
+    const formDefaults = defaultFormSelection();
 
     this.setData({
       ready: true,
@@ -238,8 +277,13 @@ Page({
       quickRouteError: '',
       quickRouteColorIndex: 0,
       quickRouteColorName: ROUTE_COLORS[0].name,
-      quickRouteGradeIndex: GRADES.indexOf('V3'),
-      quickRouteGrade: 'V3',
+      quickRouteTypes: CLIMB_TYPES,
+      quickRouteTypeIndex: formDefaults.typeIndex,
+      quickRouteType: formDefaults.type,
+      quickRouteGrades: formDefaults.grades,
+      quickRouteGradeIndex: formDefaults.gradeIndex,
+      quickRouteGrade: formDefaults.grade,
+      quickRouteGradeText: formDefaults.gradeText,
       savingOpId: inFlightOpId,
       saveNotice: '',
       photoNotice: '',
@@ -301,6 +345,8 @@ Page({
           id: route.id,
           gymId: route.gymId,
           name: route.name,
+          // 旧 V 级线路没有 climbType，按抱石读取；只读展示，不回写缓存。
+          climbType: climbTypeOf(route),
           colorName: route.colorName,
           colorHex: route.colorHex,
           grade: route.grade,
@@ -1295,12 +1341,53 @@ Page({
     });
   },
 
+  /**
+   * 切换攀岩类型立即重算等级选项：
+   * 原等级在新类型里仍有效就保留（如顶绳 5.10a 切到先锋），
+   * 失效就清空并显示「请选择等级」，绝不静默落到首个等级。
+   * 颜色与已选照片属于当前表单，切换类型时不改动。
+   */
+  onQuickRouteTypeChange(event) {
+    const index = Number(event && event.detail && event.detail.value);
+    if (!CLIMB_TYPES[index]) return;
+
+    const type = CLIMB_TYPES[index];
+    const grades = gradesForType(type);
+    const current = this.data.quickRouteGrade;
+    const keep = isGradeForType(type, current);
+    const grade = keep ? current : '';
+    this.setData({
+      quickRouteTypeIndex: index,
+      quickRouteType: type,
+      quickRouteGrades: grades,
+      quickRouteGradeIndex: keep ? grades.indexOf(current) : -1,
+      quickRouteGrade: grade,
+      quickRouteGradeText: gradeText(grade),
+      quickRouteError: ''
+    });
+  },
+
+  /**
+   * 等级选择器只在当前类型的选项范围内生效；
+   * 越界索引不静默取首个等级，而是清空并提示重选。
+   */
   onQuickRouteGradeChange(event) {
     const index = Number(event && event.detail && event.detail.value);
-    const safeIndex = GRADES[index] ? index : 0;
+    const grades = this.data.quickRouteGrades || [];
+    if (!grades[index]) {
+      this.setData({
+        quickRouteGradeIndex: -1,
+        quickRouteGrade: '',
+        quickRouteGradeText: GRADE_PLACEHOLDER,
+        quickRouteError: ''
+      });
+      return;
+    }
     this.setData({
-      quickRouteGradeIndex: safeIndex,
-      quickRouteGrade: GRADES[safeIndex]
+      quickRouteGradeIndex: index,
+      quickRouteGrade: grades[index],
+      quickRouteGradeText: grades[index],
+      quickRouteError: ''
     });
   },
 
@@ -1316,9 +1403,27 @@ Page({
       return;
     }
 
+    // 类型与等级必须各自有效且相互匹配。空值、越界或错配都直接拒绝：
+    // 不新建线路、不改当前线路、不动已选照片，也不静默回落到首个等级。
+    const climbType = this.data.quickRouteType;
+    if (!isClimbType(climbType)) {
+      this.setData({ quickRouteError: '请选择攀岩类型' });
+      return;
+    }
+    const grade = this.data.quickRouteGrade;
+    if (!grade) {
+      this.setData({ quickRouteError: GRADE_PLACEHOLDER });
+      return;
+    }
+    if (!isGradeForType(climbType, grade)) {
+      this.setData({
+        quickRouteError: '等级与攀岩类型不匹配，请重新选择' + GRADE_PLACEHOLDER
+      });
+      return;
+    }
+
     const color =
       ROUTE_COLORS[this.data.quickRouteColorIndex] || ROUTE_COLORS[0];
-    const grade = GRADES[this.data.quickRouteGradeIndex] || 'V3';
 
     const outcome = this.commitLatest(next => {
       const session = findSession(next, this.state.activeSessionId);
@@ -1330,6 +1435,7 @@ Page({
         seq,
         gymId: session.gymId,
         name,
+        climbType,
         colorName: color.name,
         colorHex: color.hex,
         grade,
@@ -1500,6 +1606,7 @@ Page({
     this._editingAttemptId = '';
     this._pendingFailures = {};
     this._quickPhotoSource = '';
+    const resetForm = defaultFormSelection();
     if (this._photoUi) {
       // 数据集变化时控制器会清空旧检索并创建新数据集的服务；
       // 相同数据集只重新读取，不删除照片。
@@ -1516,6 +1623,15 @@ Page({
       quickRouteVisible: false,
       quickRouteName: '',
       quickRouteError: '',
+      quickRouteColorIndex: 0,
+      quickRouteColorName: ROUTE_COLORS[0].name,
+      quickRouteTypes: CLIMB_TYPES,
+      quickRouteTypeIndex: resetForm.typeIndex,
+      quickRouteType: resetForm.type,
+      quickRouteGrades: resetForm.grades,
+      quickRouteGradeIndex: resetForm.gradeIndex,
+      quickRouteGrade: resetForm.grade,
+      quickRouteGradeText: resetForm.gradeText,
       quickRoutePhoto: null,
       photoNotice: '',
       photoSpace: null,

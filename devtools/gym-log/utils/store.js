@@ -6,6 +6,7 @@
  * 所有 ID 一经创建就固定下来，用于区分同色同级的线路和跨天回看。
  */
 const { TRIAL_DATASET_ID, isTrialDatasetId } = require('./trial-profile.js');
+const routeRules = require('./route-rules.js');
 
 const STORE_KEY = 'climbingNote.gymLogTrial.v1';
 const STATE_VERSION = 1;
@@ -86,7 +87,8 @@ const ROUTE_COLORS = [
   { name: '白色', hex: '#d8d3c6' }
 ];
 
-const GRADES = ['V0', 'V1', 'V2', 'V3', 'V4', 'V5', 'V6', 'V7', 'V8'];
+// 等级选项按攀岩类型区分，取值与顺序见 utils/route-rules.js（参照正式等级表）。
+// 旧缓存里的线路可能没有 climbType，读取时按抱石兼容展示，不回写、不迁移。
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -330,7 +332,10 @@ module.exports = {
   FIXTURE_ROUTES,
   LEGACY_SUMMARY_SAMPLE,
   ROUTE_COLORS,
-  GRADES,
+  CLIMB_TYPES: routeRules.CLIMB_TYPES,
+  GRADES_BY_TYPE: routeRules.GRADES_BY_TYPE,
+  DEFAULT_CLIMB_TYPE: routeRules.DEFAULT_CLIMB_TYPE,
+  DEFAULT_GRADE: routeRules.DEFAULT_GRADE,
   clone,
   formatLocalDate,
   formatLocalTime,
