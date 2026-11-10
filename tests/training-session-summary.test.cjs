@@ -1242,7 +1242,7 @@ test('R3 独立小结页 WXML 区块与真实绑定齐全；新页在正式 app.
   assert.equal(archiveOf().activeSessionId, s2.id, '核对注册与绑定都不改当前场次');
 });
 
-test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，且入口排在结果按钮之后、清单之前', () => {
+test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，且入口排在结果按钮之后（场内不再铺清单）', () => {
   const { s1, s2 } = twoSessionsFixture();
   // ?sessionId= 仍是既有入口；入口只决定打开哪一场小结。
   const page = openSessionPage({ sessionId: s1.id });
@@ -1266,14 +1266,24 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   assert.equal(typeof sessionDefinition.onSummarySessionChange, 'undefined');
   assert.equal(typeof sessionDefinition.openSessionSummary, 'function');
 
-  // 位置：在小结区里、首屏结果按钮之后、下次想爬清单之前。
+  // 位置：在小结区里、首屏结果按钮之后。
+  // T035 起「下次想爬」整份清单已搬到独立页（pages/training-wishlist），
+  // 场内不再铺清单，也不再有当前线路的清单状态与加入/撤下/归档入口。
   const failButton = wxml.indexOf('class="result-button result-fail"');
   const entry = wxml.indexOf('id="summary-entry"');
   const summaryStart = wxml.indexOf('id="session-summary"');
-  const wishlistStart = wxml.indexOf('id="wishlist-section"');
-  assert.ok(summaryStart !== -1 && failButton !== -1 && wishlistStart !== -1);
+  assert.ok(summaryStart !== -1 && failButton !== -1);
   assert.ok(entry > summaryStart, '入口在小结区里');
-  assert.ok(entry > failButton && entry < wishlistStart, '在结果按钮之后、下次想爬清单之前');
+  assert.ok(entry > failButton, '在结果按钮之后');
+
+  assert.doesNotMatch(wxml, /id="wishlist-section"/);
+  assert.doesNotMatch(wxml, /id="selected-wishlist"/);
+  assert.doesNotMatch(wxml, /id="wishlist-row-/);
+  assert.doesNotMatch(wxml, /bindtap="addSelectedToWishlist"/);
+  assert.equal(typeof sessionDefinition.refreshWishlist, 'undefined');
+  assert.equal(typeof sessionDefinition.addSelectedToWishlist, 'undefined');
+  assert.equal(typeof sessionDefinition.removeSelectedFromWishlist, 'undefined');
+  assert.equal(typeof sessionDefinition.archiveSelectedWishlist, 'undefined');
 
   // 原有绑定一个不少。
   const handlers = handlersIn(wxml);

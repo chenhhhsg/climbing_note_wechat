@@ -707,41 +707,6 @@
 .summary-entry-button { margin:16rpx 0 0; }
 
 
-/* 下次想爬（T027）：本馆清单；加入、撤下与拆线归档只改清单，不动线路、照片与把次 */
-.wishlist-section .section-title { margin-bottom: 20rpx; }
-.wishlist-error-card { background: #f7e6db; border-radius: 12rpx; padding: 20rpx 24rpx; }
-.wishlist-error-text { display: block; font-size: 26rpx; color: #943a23; }
-.wishlist-error-hint { display: block; font-size: 22rpx; color: #745241; margin-top: 8rpx; }
-.wishlist-card { background: #efece0; border: 1px solid #d6d5c6; border-radius: 8rpx; padding: 24rpx; margin-bottom: 20rpx; }
-.wishlist-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
-.wishlist-title { font-family: "Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight: 700; font-size: 32rpx; color: #173d32; word-break: break-all; }
-.wishlist-state { flex: none; font-size: 24rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: #e4ebdf; color: #355e50; }
-.wishlist-state-completed { background: #dfebd9; color: #204b34; }
-.wishlist-state-archived { background: #ede6d7; color: #674b39; }
-.wishlist-state-text { display: block; margin-top: 12rpx; font-size: 28rpx; color: #173d32; }
-.wishlist-hint, .wishlist-error { display: block; margin-top: 8rpx; font-size: 24rpx; line-height: 1.6; color: #526157; }
-.wishlist-error { color: #9c3d22; }
-.wishlist-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16rpx; margin-top: 16rpx; }
-.wishlist-actions .wishlist-action { flex: 1; min-width: 300rpx; }
-.wishlist-archive { color: #9c5222; }
-.wishlist-remove { color: #745241; }
-.wishlist-count { display: block; font-size: 24rpx; color: #606d61; margin-bottom: 12rpx; }
-.wishlist-group { margin-bottom: 16rpx; }
-.wishlist-group-title { display: block; font-size: 26rpx; font-weight: 700; color: #526157; margin: 12rpx 0 8rpx; }
-.wishlist-row { display: flex; align-items: center; background: #fffcf3; border-radius: 8rpx; padding: 20rpx; margin-bottom: 12rpx; }
-.wishlist-row-done { background: #eef2e8; }
-.wishlist-row-archived { background: #f1eee3; }
-.wishlist-thumb { width: 120rpx; height: 120rpx; flex: none; border-radius: 4rpx; background: #e3e5d7; margin-right: 18rpx; }
-.wishlist-thumb-empty { display: flex; align-items: center; justify-content: center; font-size: 22rpx; color: #7a8578; border: 1px dashed #c3c8b5; box-sizing: border-box; }
-.wishlist-row-info { flex: 1; min-width: 0; }
-.wishlist-row-head { display: flex; align-items: center; gap: 10rpx; }
-.wishlist-name { font-size: 30rpx; font-weight: 700; color: #173d32; word-break: break-all; }
-.wishlist-grade { flex: none; font-family: "IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size: 26rpx; color: #ff793f; }
-.wishlist-meta { display: block; font-size: 24rpx; color: #606d61; margin-top: 6rpx; }
-.wishlist-note { display: block; font-size: 24rpx; color: #526157; margin-top: 6rpx; border-left: 4rpx solid #d2784f; padding-left: 14rpx; line-height: 1.5; word-break: break-all; }
-.wishlist-note-empty { border-left-color: #cbd0bf; color: #7a8578; }
-.wishlist-open { flex: none; margin-left: 16rpx; font-size: 26rpx; color: #173d32; }
-
 /* 本场线路与加线（T030）：入口常驻首屏；空场是「添加第一条线路」，有线时「＋ 加线」。
    这里只占标题这一行——全量线路列表不再在页顶重复一份，它就在结果按钮旁的换线区。 */
 .session-routes { margin-bottom: 16rpx; }
