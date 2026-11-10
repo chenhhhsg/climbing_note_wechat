@@ -38,6 +38,19 @@
  *   resumeRouteToday / chooseRouteSession  用户明确点按「再记」时才改当前场次与线路
  *   （同日多场先让用户显式选一场，原归属不动）。打开历史本身只读，不建场次、不改数据，
  *   旧云记录与旧 climbing_sessions 汇总一律不进入本机统计。
+ *
+ * T032 在本层加的是「同一把次的撤回与恢复」：
+ *   undoAttempt / restoreAttempt  给一把已提交把次标上或清掉撤回时间；
+ *   isEffectiveAttempt / attemptsFor({ includeUndone })  各读数端共用的有效集合口径。
+ * 撤回不是删除、也不是把结果改成相反值：把次本身（ID、序号、场次、线路、结果、备注与
+ * 创建时间）逐项保留，只多一个 undoneAt 标记；恢复就是清掉这个标记，因此恢复后拿回的
+ * 是同一次操作的原 ID、原序号、原结果与原备注。每次撤回/恢复落盘后还会把这次操作的
+ * opId 记在原把次的 settledOps 里：同一操作的迟到回调、回执丢失后的重试据此认出「早已
+ * 结清」，只回读当前状态而不写盘，因此延迟到达的撤回不会撤销后来成功的恢复（反之亦然）。
+ * 撤回、恢复各分两段写（先落「进行中」标记，再提交标记本身），任一段失败都返回 ok:false
+ * 并留下可重试的记录；重开后一律按持久状态收敛，不产生第二把、不串线。
+ * 旧档案没有 undoneAt / settledOps 字段时，全部已提交把次按有效读取，只读打开不迁移、
+ * 不改原字节。
  */
 const rules = require('./training-rules.js');
 
@@ -53,6 +66,10 @@ const ARCHIVE_BROKEN = '本机训练档案格式损坏，请重置本地档案�
 const ARCHIVE_UNSUPPORTED = '本机训练档案版本不受支持，请升级小程序或重置本地档案';
 const ARCHIVE_READ_FAILED = '读取本机训练档案失败：';
 const ARCHIVE_WRITE_FAILED = '保存本机训练档案失败：';
+// 撤回/恢复：这一把属于另一份本机档案（换档之后的迟到点击），一律不落盘。
+const ATTEMPT_ARCHIVE_MISMATCH = '这一把属于原来的本机档案，未做改动';
+// 撤回/恢复：这一把的当前状态已经不是发起时的那一种（迟到的旧回调）。
+const ATTEMPT_STALE = '这一把的状态已经变了，请刷新后再试';
 
 // 「进行中」标记与把次一起占用序号：重试不能重新分配 ID。
 function clone(value) {
@@ -151,6 +168,9 @@ function createEmptyArchive(archiveId) {
     pendingSaves: [],
     // 已经点了「改为未完成」、但原位改正还没落盘的操作。
     pendingCorrections: [],
+    // 已经点了撤回/恢复、但撤回标记还没落盘的操作（T032）：按把次 ID 各留一条。
+    pendingUndos: [],
+    pendingRestores: [],
     activeSessionId: '',
     activeRouteId: ''
   };
@@ -189,10 +209,14 @@ function normalizeArchive(raw) {
   const pendingRaw = raw.pendingSaves === undefined ? [] : raw.pendingSaves;
   const correctionsRaw =
     raw.pendingCorrections === undefined ? [] : raw.pendingCorrections;
+  const undosRaw = raw.pendingUndos === undefined ? [] : raw.pendingUndos;
+  const restoresRaw = raw.pendingRestores === undefined ? [] : raw.pendingRestores;
   if (
     !Array.isArray(sessionRoutesRaw) ||
     !Array.isArray(pendingRaw) ||
-    !Array.isArray(correctionsRaw)
+    !Array.isArray(correctionsRaw) ||
+    !Array.isArray(undosRaw) ||
+    !Array.isArray(restoresRaw)
   ) {
     return null;
   }
@@ -229,7 +253,13 @@ function normalizeArchive(raw) {
       hasText(item.routeId) &&
       (item.result === 'fail' || item.result === 'send') &&
       typeof item.note === 'string' &&
-      hasText(item.createdAt)
+      hasText(item.createdAt) &&
+      // 撤回标记：缺字段（旧档案）或空串都表示这一把仍有效。
+      (item.undoneAt === undefined || typeof item.undoneAt === 'string') &&
+      // 已结清的撤回/恢复操作凭据：缺字段（旧档案）按空列表读取，不迁移。
+      (item.settledOps === undefined ||
+        (Array.isArray(item.settledOps) &&
+          item.settledOps.every(op => op && hasText(op.opId))))
   );
   const pendingOk = pendingRaw.every(
     item =>
@@ -245,7 +275,22 @@ function normalizeArchive(raw) {
   const correctionsOk = correctionsRaw.every(
     item => item && hasText(item.attemptId) && hasText(item.sessionId) && hasText(item.routeId)
   );
-  if (!gymsOk || !sessionsOk || !routesOk || !sessionRoutesOk || !attemptsOk || !pendingOk || !correctionsOk) {
+  // 撤回/恢复的「进行中」标记：目标把次、原场次与原线路缺一不可。
+  const markOk = item =>
+    item && hasText(item.attemptId) && hasText(item.sessionId) && hasText(item.routeId);
+  const undosOk = undosRaw.every(markOk);
+  const restoresOk = restoresRaw.every(markOk);
+  if (
+    !gymsOk ||
+    !sessionsOk ||
+    !routesOk ||
+    !sessionRoutesOk ||
+    !attemptsOk ||
+    !pendingOk ||
+    !correctionsOk ||
+    !undosOk ||
+    !restoresOk
+  ) {
     return null;
   }
 
@@ -253,6 +298,10 @@ function normalizeArchive(raw) {
   const uniqueOpIds = new Set(pendingRaw.map(item => item.opId)).size === pendingRaw.length;
   const uniqueCorrectionIds =
     new Set(correctionsRaw.map(item => item.attemptId)).size === correctionsRaw.length;
+  // 同一把次最多各挂一条撤回标记与一条恢复标记（两种意图互斥，见 undoAttempt/restoreAttempt）。
+  const uniqueUndoIds = new Set(undosRaw.map(item => item.attemptId)).size === undosRaw.length;
+  const uniqueRestoreIds =
+    new Set(restoresRaw.map(item => item.attemptId)).size === restoresRaw.length;
   const attemptIds = new Set(raw.attempts.map(item => item.id));
   const linkKey = item => item.sessionId + '\u0000' + item.routeId;
   const uniqueLinks =
@@ -264,6 +313,8 @@ function normalizeArchive(raw) {
     !uniqueIds(raw.attempts) ||
     !uniqueOpIds ||
     !uniqueCorrectionIds ||
+    !uniqueUndoIds ||
+    !uniqueRestoreIds ||
     !uniqueLinks ||
     // 进行中的操作不能与已落盘把次共用 ID。
     pendingRaw.some(item => attemptIds.has(item.opId))
@@ -285,6 +336,22 @@ function normalizeArchive(raw) {
     );
   });
 
+  // 撤回/恢复的「进行中」标记只在还能应用时保留：目标把次必须仍存在、归属一致，
+  // 且当前状态还没走到这次意图的终点（撤回标记对应的把次已撤回、恢复标记对应的把次
+  // 已恢复时，意图已经达成，丢掉标记即可）。丢掉标记不改变任何把次，重复请求按
+  // 持久状态幂等收敛；已达成意图的迟到重试不会把状态翻回去。
+  const markStillApplies = (item, undone) => {
+    const attempt = attemptById.get(item.attemptId);
+    return Boolean(
+      attempt &&
+        attempt.sessionId === item.sessionId &&
+        attempt.routeId === item.routeId &&
+        rules.isUndoneAttempt(attempt) === undone
+    );
+  };
+  const pendingUndos = undosRaw.filter(item => markStillApplies(item, false));
+  const pendingRestores = restoresRaw.filter(item => markStillApplies(item, true));
+
   return {
     version: STATE_VERSION,
     archiveId: raw.archiveId,
@@ -303,6 +370,8 @@ function normalizeArchive(raw) {
     attempts: raw.attempts,
     pendingSaves: pendingRaw,
     pendingCorrections,
+    pendingUndos,
+    pendingRestores,
     activeSessionId: hasText(raw.activeSessionId) ? raw.activeSessionId : '',
     activeRouteId: hasText(raw.activeRouteId) ? raw.activeRouteId : ''
   };
@@ -469,12 +538,37 @@ function routesForSession(archive, sessionId) {
   return (archive.routes || []).filter(item => ids.indexOf(item.id) !== -1).map(clone);
 }
 
+/**
+ * 有效把次：已提交且未被撤回。旧档案没有撤回标记时一律有效；判定只有这一份，
+ * 页面、统计、小结与清单共用 rules 的同一个函数（见 utils/training-rules.js）。
+ */
+function isEffectiveAttempt(attempt) {
+  return rules.isEffectiveAttempt(attempt);
+}
+
+/** 已撤回把次：带非空撤回标记。旧档案缺字段时一律 false（有效），不迁移。 */
+function isUndoneAttempt(attempt) {
+  return rules.isUndoneAttempt(attempt);
+}
+
+function effectiveAttempts(attempts) {
+  return rules.effectiveAttempts(attempts);
+}
+
+/**
+ * 一场次/一条线路下的把次，按序号从小到大。
+ *
+ * 缺省只给**有效把次**（已撤回的那一把不在里面），因此把数、逐把列表与完攀口径一致；
+ * 需要连撤回记录一起看时传 { includeUndone: true }（撤回/恢复界面在原位置保留那一把，
+ * 恢复入口仍落在原处）。撤回标记本身不影响排序：序号是持久不变的。
+ */
 function attemptsFor(archive, filter) {
   const all = (archive && archive.attempts) || [];
   const match = filter || {};
   return all
     .filter(
       item =>
+        (match.includeUndone === true || isEffectiveAttempt(item)) &&
         (match.sessionId === undefined || item.sessionId === match.sessionId) &&
         (match.routeId === undefined || item.routeId === match.routeId)
     )
@@ -487,6 +581,9 @@ function attemptsFor(archive, filter) {
  * 与 v0.3 语义一致：抱石（含缺 climbType 的旧 V 级线路）首次完攀后不再新增，
  * 顶绳和先锋可重复；误点完攀可按原把次「改为未完成」。
  * 只读计算，不写档案、不迁移旧数据、不生成逐把明细。
+ *
+ * 只统计**有效把次**（未撤回的那一把，T032）：撤回唯一一把抱石完攀后这条线重新可记，
+ * 恢复后再次封锁。已撤回的把次不计入 sendCount，也不作为更正目标。
  *
  * options.ignorePendingOpId：把这一条「进行中」的完攀当作不属于封锁来源。只有
  * saveAttempt 恢复同一次操作时用它——否则那条在途完攀会把唯一能补齐它的重试
@@ -501,6 +598,7 @@ function routeCompletion(archive, routeId, options) {
     sendCount: 0,
     pendingSendCount: 0,
     pendingCorrectionCount: 0,
+    undoneCount: 0,
     hasSend: false,
     hasPendingSend: false,
     completed: false,
@@ -518,20 +616,30 @@ function routeCompletion(archive, routeId, options) {
   const ignorePendingOpId = hasText(data.ignorePendingOpId) ? data.ignorePendingOpId : '';
   const isBoulder = rules.isBoulderRoute(route);
   const attempts = (archive.attempts || []).filter(item => item.routeId === route.id);
-  const sends = attempts.filter(item => item.result === 'send');
+  const effective = attempts.filter(isEffectiveAttempt);
+  const sends = effective.filter(item => item.result === 'send');
   const pendingSends = (archive.pendingSaves || []).filter(
     item =>
       item.routeId === route.id &&
       item.result === 'send' &&
       item.opId !== ignorePendingOpId
   );
+  // 撤回进行中：一个「恢复」已经在途的完攀同样算待确认完攀——否则它提交后这条线会多出
+  // 第二次有效完攀。已撤回却还没恢复的那一把本身不算（它就是待恢复的那一次）。
+  const attemptById = new Map(attempts.map(item => [item.id, item]));
+  const pendingRestoreSends = (archive.pendingRestores || []).filter(marker => {
+    if (marker.routeId !== route.id) return false;
+    const attempt = attemptById.get(marker.attemptId);
+    return Boolean(attempt && attempt.result === 'send' && !isEffectiveAttempt(attempt));
+  });
+  const pendingSendCount = pendingSends.length + pendingRestoreSends.length;
   const corrections = (archive.pendingCorrections || []).filter(
     item => item.routeId === route.id
   );
   const hasSend = sends.length > 0;
-  const hasPendingSend = pendingSends.length > 0;
+  const hasPendingSend = pendingSendCount > 0;
   const closed = isBoulder && (hasSend || hasPendingSend);
-  const target = rules.latestSendAttempt(attempts, route.id);
+  const target = rules.latestSendAttempt(effective, route.id);
   const correcting = isBoulder && corrections.length > 0;
 
   return {
@@ -540,8 +648,10 @@ function routeCompletion(archive, routeId, options) {
     isBoulder,
     repeatable: !isBoulder,
     sendCount: sends.length,
-    pendingSendCount: pendingSends.length,
+    pendingSendCount,
     pendingCorrectionCount: corrections.length,
+    // 这条线上已撤回的把次数：页面据此在原位置保留撤回行、提供恢复入口。
+    undoneCount: attempts.length - effective.length,
     hasSend,
     hasPendingSend,
     completed: isBoulder && hasSend,
@@ -556,12 +666,15 @@ function routeCompletion(archive, routeId, options) {
 
 /**
  * 「改为未完成」的行体：原把次 ID、归属与说明（日期/场次/第几把）。
+ * 「第几把」按这条线在本场次的**有效把次**位置算，因此撤回一把后显示的编号与
+ * 用户看到的把数一致（撤回的那一把不再占位）；恢复后又回到原来的位置。
  */
 function correctionRow(archive, attempt) {
   const session = findById(archive.sessions, attempt.sessionId);
   const ordered = (archive.attempts || [])
     .filter(
       item =>
+        isEffectiveAttempt(item) &&
         item.sessionId === attempt.sessionId &&
         item.routeId === attempt.routeId
     )
@@ -580,12 +693,16 @@ function correctionRow(archive, attempt) {
 }
 
 /**
- * 这条抱石线里符合 accept 的把次，「序号大的在前、同序号后加入的在前」。
+ * 这条抱石线里符合 accept 的有效把次，「序号大的在前、同序号后加入的在前」。
+ * 已撤回的把次不在目标里：它已经不在有效集合，没有可更正的完攀。
  */
 function correctionEntries(archive, route, accept) {
   return (archive.attempts || [])
     .map((item, index) => ({ item, index }))
-    .filter(entry => entry.item.routeId === route.id && accept(entry.item))
+    .filter(
+      entry =>
+        isEffectiveAttempt(entry.item) && entry.item.routeId === route.id && accept(entry.item)
+    )
     .sort((left, right) => {
       const seqDiff = (right.item.seq || 0) - (left.item.seq || 0);
       return seqDiff !== 0 ? seqDiff : right.index - left.index;
@@ -641,6 +758,9 @@ function routeCorrectionRows(archive, routeId, correctedIds) {
  * 明细，也不把别的线路或别的场次的把次并到一起。把次的归属场次已不存在时跳过，
  * 不猜、不补一个新归属。
  *
+ * 只列**有效把次**（T032）：已撤回的那一把不进历史、不计「第 N 把」、不计把数与完攀，
+ * 恢复后又回到原来的序号位置。整条线都把次都撤回时，这次训练不再出现在历史里。
+ *
  * 返回 { known, routeId, route, groups, dayCount, sessionCount, attemptCount,
  *        sendCount, completion }；线路不存在时 known:false、groups 为空。
  */
@@ -665,6 +785,7 @@ function routeHistory(archive, routeId) {
   const bySession = new Map();
   (archive.attempts || []).forEach(attempt => {
     if (attempt.routeId !== route.id) return;
+    if (!isEffectiveAttempt(attempt)) return;
     const session = findById(archive.sessions, attempt.sessionId);
     if (!session) return;
     if (!bySession.has(session.id)) bySession.set(session.id, { session, attempts: [] });
@@ -724,14 +845,16 @@ function routeHistory(archive, routeId) {
  * 记录 tab 的本机训练历史（T018，只读）：有逐把记录的长期线路各一条，带最近一次训练
  * 的本地日期/场次与本机「几天 / 几场 / 几把」统计，最近训练的在前。
  *
- * 只统计本机档案里的把次：旧云汇总、旧 climbing_sessions 数据与别的线路都不参与，
- * 也不按名称、颜色或难度归并。线路或场次档案缺失时跳过，不猜。
+ * 只统计本机档案里的**有效把次**（T032）：旧云汇总、旧 climbing_sessions 数据与别的线路
+ * 都不参与，也不按名称、颜色或难度归并。线路或场次档案缺失时跳过，不猜；已撤回的把次
+ * 不贡献把数与完攀，一条线的把次全部撤回后不再出现在这份历史里。
  */
 function routesWithHistory(archive) {
   if (!archive) return [];
 
   const stats = new Map();
   (archive.attempts || []).forEach(attempt => {
+    if (!isEffectiveAttempt(attempt)) return;
     const session = findById(archive.sessions, attempt.sessionId);
     if (!session) return;
     const entry = stats.get(attempt.routeId) || {
@@ -1153,7 +1276,9 @@ function selectRoute(routeId) {
  * 输入：{ opId?, sessionId?, routeId, result: 'fail'|'send', note?, now? }
  * 返回：{ ok, error, archive, attempt, opId, duplicate, blocked, conflict? }
  *
- * - 同一 opId 重复提交/迟到回调：复用已落盘的把次，只提交一次；
+ * - 同一 opId 重复提交/迟到回调：复用已落盘的把次，只提交一次；这一把已经撤回时
+ *   仍然复用原记录（duplicate:true、undone:true），既不复活撤回的那一把、也不新建第二把
+ *   ——撤回保留的正是原保存请求的 opId，去重凭据不因撤回而失效；
  * - 新一次真实尝试：页面换新 opId，得到新的把次 ID；
  * - 抱石已确认（或别的操作已在提交中）完攀：不再新增，blocked，需先「改为未完成」；
  * - 落盘失败：ok:false，不报已保存；先落盘的「进行中」标记让同 opId 重试复用同一把，
@@ -1186,11 +1311,14 @@ function saveAttempt(input) {
   const current = loaded.archive;
 
   // 同一操作重复提交或迟到回调：复用原把次，不新增、不覆盖。
+  // 这一把已被撤回时同样只复用原记录：撤回保留原 ID 就是留下去重凭据，迟到的保存
+  // 不能把撤回标记抹掉（不复活），也不能绕开它再记一把（不重复）。
   const existing = current.attempts.find(item => item.id === opId);
   if (existing) {
     return {
       ok: true,
       duplicate: true,
+      undone: isUndoneAttempt(existing),
       blocked: false,
       error: '',
       archive: current,
@@ -1322,6 +1450,9 @@ function saveAttempt(input) {
  * 场次、时间与其他把次一律不动。传了 routeId/sessionId 时先核对归属，不属于
  * 当前上下文的更正一律拒绝（conflict），避免同名或同色线路之间串备注。
  * 每次都先读最新档案再改，因此两个页面的迟到操作不会互相覆盖。
+ *
+ * 已撤回的把次（T032）拒绝改备注：这一把当前不在有效集合里，迟到的备注回调不能
+ * 改动它保留的原备注——恢复后拿到的仍是撤回前那一句。
  */
 function setAttemptNote(attemptId, input) {
   const data = input || {};
@@ -1337,6 +1468,14 @@ function setAttemptNote(attemptId, input) {
   const attempt = current.attempts.find(item => item.id === attemptId) || null;
   if (!attempt) {
     return { ok: false, code: 'missing', error: '找不到这一把，可能已被重置', archive: current };
+  }
+  if (!isEffectiveAttempt(attempt)) {
+    return {
+      ok: false,
+      code: 'undone',
+      error: '这一把已撤回，未改备注；如需继续记录请先恢复这一把',
+      archive: current
+    };
   }
   if (hasText(data.routeId) && data.routeId !== attempt.routeId) {
     return { ok: false, code: 'conflict', error: '这一把不属于当前线路，未改备注', archive: current };
@@ -1385,6 +1524,9 @@ function setAttemptNote(attemptId, input) {
  *
  * 只翻这一把的 result：把数、ID、序号、场次、备注与其他把次（含后来新记的完攀）
  * 一律不动。两段写让同一把的更正失败后可重试。
+ *
+ * 已撤回的把次（T032）不参与更正：撤回已经表达了「这一把不算」，把它再翻成未完成既
+ * 不是用户意图、也会在恢复后与撤回标记打架；要改就先用恢复拿回原把次。
  */
 function correctAttempt(attemptId, input) {
   const data = input || {};
@@ -1400,6 +1542,14 @@ function correctAttempt(attemptId, input) {
   const attempt = current.attempts.find(item => item.id === attemptId) || null;
   if (!attempt) {
     return { ok: false, code: 'missing', error: '找不到这一把，可能已被重置', archive: current };
+  }
+  if (!isEffectiveAttempt(attempt)) {
+    return {
+      ok: false,
+      code: 'undone',
+      error: '这一把已撤回，不在有效记录里，未做更正；如需继续记录请先恢复这一把',
+      archive: current
+    };
   }
   if (hasText(data.routeId) && data.routeId !== attempt.routeId) {
     return { ok: false, code: 'conflict', error: '这一把不属于当前线路，未做更正', archive: current };
@@ -1451,6 +1601,334 @@ function correctAttempt(attemptId, input) {
   return { ok: true, code: 'corrected', duplicate: false, error: '', archive: committed, attempt: clone(target) };
 }
 
+// ------------------------------------------------------------------ *
+// 撤回 / 恢复同一把次（T032）
+// ------------------------------------------------------------------ *
+
+/**
+ * 撤回/恢复共用的写前校验：每次都先读**最新**持久状态，再逐项核对这次操作的对象。
+ *
+ * 输入：{ archiveId?, routeId?, sessionId? }。
+ * - archiveId：调用方渲染时用的档案 ID，与当前档案不一致时按迟到操作拒绝（不落盘）；
+ * - routeId / sessionId：原归属，与本把次不一致时拒绝。
+ *
+ * 返回 { ok, code, error, archive, attempt }；ok:false 时 attempt 为 null。
+ * code：'' / missing / unreadable / archive-mismatch / conflict。
+ */
+function loadAttemptForChange(attemptId, input) {
+  const data = input || {};
+  if (!hasText(attemptId)) {
+    return { ok: false, code: 'missing', error: '缺少要操作的把次 ID', archive: null, attempt: null };
+  }
+
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return { ok: false, code: 'unreadable', error: loaded.error, archive: loaded.archive, attempt: null };
+  }
+  const current = loaded.archive;
+
+  if (hasText(data.archiveId) && data.archiveId !== current.archiveId) {
+    return { ok: false, code: 'archive-mismatch', error: ATTEMPT_ARCHIVE_MISMATCH, archive: current, attempt: null };
+  }
+
+  const attempt = current.attempts.find(item => item.id === attemptId) || null;
+  if (!attempt) {
+    return { ok: false, code: 'missing', error: '找不到这一把，可能已被重置', archive: current, attempt: null };
+  }
+  if (hasText(data.routeId) && data.routeId !== attempt.routeId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前线路，未做改动', archive: current, attempt: null };
+  }
+  if (hasText(data.sessionId) && data.sessionId !== attempt.sessionId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前场次，未做改动', archive: current, attempt: null };
+  }
+  // 原场次与原线路都必须还在：归属不清时不动任何记录，也不猜一个新归属。
+  if (!findById(current.sessions, attempt.sessionId)) {
+    return { ok: false, code: 'missing', error: '原场次已不存在，未做改动', archive: current, attempt: null };
+  }
+  if (!findById(current.routes, attempt.routeId)) {
+    return { ok: false, code: 'missing', error: '原线路已不存在，未做改动', archive: current, attempt: null };
+  }
+
+  return { ok: true, code: '', error: '', archive: current, attempt };
+}
+
+/**
+ * 「预期状态」核对（T032）：调用方可以带上它渲染时看到的状态——撤回传 'effective'
+ * （这一把当时是有效的），恢复传 'undone'（当时是已撤回的）。
+ * 与当前持久状态不符时返回 true，调用方按 stale 拒绝，让基于过时画面的操作不落盘；
+ * 不传时不校验这一项；取值不认识时一律拒绝，不猜用户意图。
+ */
+function expectedStateMismatch(data, attempt) {
+  if (!hasText(data.expected)) return false;
+  const undone = isUndoneAttempt(attempt);
+  if (data.expected === 'effective') return undone;
+  if (data.expected === 'undone') return !undone;
+  return true;
+}
+
+/**
+ * 这一把上已经结清的撤回/恢复操作凭据（T032）。
+ *
+ * 每次撤回或恢复落盘成功后，都把这次操作的 opId 连同意图记在原把次上。于是同一操作的
+ * 迟到回调、回执丢失后的重试都能被认出来「早已结清」，只回读当前状态、不再写盘——
+ * 因此延迟到达的撤回不会撤销后来成功的恢复，延迟到达的恢复也不会撤销后来成功的撤回，
+ * 并且重开之后依然成立（凭据在档案里，不靠内存）。旧档案没有这个字段时按空列表读取。
+ */
+function findSettledOp(attempt, opId) {
+  const ops = Array.isArray(attempt.settledOps) ? attempt.settledOps : [];
+  return ops.find(op => op && op.opId === opId) || null;
+}
+
+function recordSettledOp(attempt, opId, undone, at) {
+  const ops = Array.isArray(attempt.settledOps) ? attempt.settledOps : [];
+  attempt.settledOps = ops
+    .filter(op => op && op.opId !== opId)
+    .concat([{ opId, undone, at }]);
+}
+
+/**
+ * 这条线上除 excludeAttemptId 以外，是否还有「在途的抱石完攀」：别的待保存完攀，
+ * 或别的已经撤回、正等着恢复的完攀。恢复守卫据此判断会不会凑出第二次有效完攀。
+ */
+function hasOtherPendingSend(archive, routeId, excludeAttemptId) {
+  const pendingSave = (archive.pendingSaves || []).some(
+    item => item.routeId === routeId && item.result === 'send'
+  );
+  if (pendingSave) return true;
+  const attemptById = new Map((archive.attempts || []).map(item => [item.id, item]));
+  return (archive.pendingRestores || []).some(marker => {
+    if (marker.routeId !== routeId || marker.attemptId === excludeAttemptId) return false;
+    const attempt = attemptById.get(marker.attemptId);
+    return Boolean(attempt && attempt.result === 'send' && !isEffectiveAttempt(attempt));
+  });
+}
+
+/**
+ * 撤回同一把次（T032）。把指定原把次标成「已撤回」——不物理删除、不改结果、不动其他把次。
+ *
+ * 输入：{ routeId?, sessionId?, archiveId?, expected?, opId?, now? }，把次由第一个参数的稳定
+ * ID 指定（这个 ID 就是原保存请求的 opId，撤回后仍然认得它）。opId 是**这次撤回操作**自己
+ * 的去重凭据：缺省时由本层生成并随返回值给出，页面重试时带上同一个 opId。
+ * 返回 { ok, code, error, archive, attempt, opId }。code：
+ *   undone（本次已撤回）/ settled（这个 opId 早就结清过，只回读当前状态）/
+ *   missing / conflict / archive-mismatch / stale / unreadable / write-failed。
+ *
+ * 保留原把次的一切：ID、序号、场次、线路、结果、备注与创建时间逐项不变，只多一个
+ * undoneAt 时间戳（以及这次操作的结清凭据 settledOps）。因此恢复能拿回同一次操作；
+ * 同 opId 的迟到 saveAttempt 仍会被去重（对比原 ID，不新建第二把），也不会清掉撤回
+ * 标记把它复活。
+ *
+ * 两段写：先落盘「撤回进行中」标记（pendingUndos），再提交标记本身并清掉进行中记录。
+ * 第一段失败不落任何数据；第二段失败时进行中标记已落盘，重开后可重试同一意图；
+ * 第二段其实已经写成而只是回执丢失时，重试按结清凭据认出这次操作已结清——不再写一次。
+ */
+function undoAttempt(attemptId, input) {
+  const data = input || {};
+  const pre = loadAttemptForChange(attemptId, data);
+  if (!pre.ok) return pre;
+
+  const current = pre.archive;
+  const attempt = pre.attempt;
+  const opId = hasText(data.opId) ? data.opId : newOperationId();
+
+  // 这次操作已经结清过（回执丢失后的同一意图重试、迟到的旧撤回回调）：只回读当前状态，
+  // 不写盘。因此它既不会复活已撤回的那一把，也不会撤销后来成功的恢复。
+  if (findSettledOp(attempt, opId)) {
+    return {
+      ok: true,
+      code: 'settled',
+      settled: true,
+      duplicate: true,
+      error: '',
+      archive: current,
+      attempt: clone(attempt),
+      opId
+    };
+  }
+  if (expectedStateMismatch(data, attempt)) {
+    return { ok: false, code: 'stale', error: ATTEMPT_STALE, archive: current, attempt: null, opId };
+  }
+  // 已经是撤回状态：重复点击、重开的迟到回调都只复用结果，不改任何记录。
+  if (!isEffectiveAttempt(attempt)) {
+    return {
+      ok: true,
+      code: 'undone',
+      duplicate: true,
+      error: '',
+      archive: current,
+      attempt: clone(attempt),
+      opId
+    };
+  }
+
+  const at = timestamp(data.now);
+
+  // 第一段：落盘「撤回进行中」标记（按把次 ID 去重，重试不产生第二条）。
+  const staging = clone(current);
+  staging.pendingUndos = staging.pendingUndos
+    .filter(item => item.attemptId !== attempt.id)
+    .concat([
+      {
+        opId,
+        attemptId: attempt.id,
+        sessionId: attempt.sessionId,
+        routeId: attempt.routeId,
+        createdAt: at
+      }
+    ]);
+  // 同一把次不能同时挂着撤回与恢复两种意图：本次撤回优先，清掉可能残留的恢复标记。
+  staging.pendingRestores = staging.pendingRestores.filter(item => item.attemptId !== attempt.id);
+  const staged = saveArchive(staging);
+  if (!staged.ok) {
+    return { ok: false, code: 'write-failed', error: staged.error, archive: current, attempt: null, opId };
+  }
+
+  // 第二段：只标这一把的撤回时间与这次操作的结清凭据，并清掉进行中标记。
+  const committed = clone(staging);
+  const target = committed.attempts.find(item => item.id === attempt.id);
+  target.undoneAt = at;
+  recordSettledOp(target, opId, true, at);
+  committed.pendingUndos = committed.pendingUndos.filter(item => item.attemptId !== attempt.id);
+  const saved = saveArchive(committed);
+  if (!saved.ok) {
+    return { ok: false, code: 'write-failed', error: saved.error, archive: staging, attempt: null, opId };
+  }
+  return {
+    ok: true,
+    code: 'undone',
+    duplicate: false,
+    error: '',
+    archive: committed,
+    attempt: clone(target),
+    opId
+  };
+}
+
+/**
+ * 恢复同一把次（T032）：清掉撤回标记，把原来那一把放回有效集合。
+ *
+ * 输入与返回形状同 undoAttempt（opId 是这次**恢复操作**自己的去重凭据）。code：
+ *   restored（本次恢复成功）/ settled（这个 opId 早就结清过，只回读当前状态）/
+ *   active（本来就已经有效，幂等）/ conflict（抱石会变成第二次有效完攀）/
+ *   missing / archive-mismatch / stale / unreadable / write-failed。
+ *
+ * 恢复拿回的就是原把次：同 ID、同序号、同场次、同线路、同结果与同备注，时间不变，
+ * 撤回标记被清掉；这次恢复的结清凭据与撤回那次一样记在这一把上（见 settledOps），
+ * 供迟到回调识别。
+ * 绳攀（顶绳/先锋）沿原规则可重复完攀，恢复只影响把数与完攀把数。
+ *
+ * 抱石守卫：恢复一把已撤回的完攀前先**重新计算**这条线当前的有效完攀与在途完攀；
+ * 只要已经有别的有效完攀或待确认完攀，就返回 conflict 且不落盘——恢复不可制造第二次
+ * 有效抱石完攀。判定与 routeCompletion 同源，因此在途的恢复也会先封锁新增。
+ */
+function restoreAttempt(attemptId, input) {
+  const data = input || {};
+  const pre = loadAttemptForChange(attemptId, data);
+  if (!pre.ok) return pre;
+
+  const current = pre.archive;
+  const attempt = pre.attempt;
+  const opId = hasText(data.opId) ? data.opId : newOperationId();
+
+  // 这次恢复已经结清过：只回读当前状态，不写盘（也不会把后来又被撤回的那一把再次恢复）。
+  if (findSettledOp(attempt, opId)) {
+    return {
+      ok: true,
+      code: 'settled',
+      settled: true,
+      duplicate: true,
+      error: '',
+      archive: current,
+      attempt: clone(attempt),
+      opId
+    };
+  }
+  if (expectedStateMismatch(data, attempt)) {
+    return { ok: false, code: 'stale', error: ATTEMPT_STALE, archive: current, attempt: null, opId };
+  }
+  // 已经是有效状态：重复点击、迟到的旧恢复回调都只复用结果，不改任何记录。
+  if (isEffectiveAttempt(attempt)) {
+    return {
+      ok: true,
+      code: 'active',
+      duplicate: true,
+      error: '',
+      archive: current,
+      attempt: clone(attempt),
+      opId
+    };
+  }
+
+  const route = findById(current.routes, attempt.routeId);
+  const completion = routeCompletion(current, route.id);
+  const isBoulderSend = attempt.result === 'send' && rules.isBoulderRoute(route);
+  if (isBoulderSend && completion.hasSend) {
+    return {
+      ok: false,
+      code: 'conflict',
+      blocked: true,
+      conflict: 'second-send',
+      error: '这条抱石线已经有有效完攀，恢复会造成第二次完攀；请先处理现有完攀',
+      archive: current,
+      attempt: clone(attempt),
+      opId
+    };
+  }
+  if (isBoulderSend && hasOtherPendingSend(current, route.id, attempt.id)) {
+    return {
+      ok: false,
+      code: 'conflict',
+      blocked: true,
+      conflict: 'pending-send',
+      error: '这条抱石线还有完攀在提交中，请稍候再恢复',
+      archive: current,
+      attempt: clone(attempt),
+      opId
+    };
+  }
+
+  // 第一段：落盘「恢复进行中」标记。
+  const at = timestamp(data.now);
+  const staging = clone(current);
+  staging.pendingRestores = staging.pendingRestores
+    .filter(item => item.attemptId !== attempt.id)
+    .concat([
+      {
+        opId,
+        attemptId: attempt.id,
+        sessionId: attempt.sessionId,
+        routeId: attempt.routeId,
+        createdAt: at
+      }
+    ]);
+  staging.pendingUndos = staging.pendingUndos.filter(item => item.attemptId !== attempt.id);
+  const staged = saveArchive(staging);
+  if (!staged.ok) {
+    return { ok: false, code: 'write-failed', error: staged.error, archive: current, attempt: null, opId };
+  }
+
+  // 第二段：清掉这一把的撤回标记、记下这次恢复的结清凭据；其他字段一律不动。
+  const committed = clone(staging);
+  const target = committed.attempts.find(item => item.id === attempt.id);
+  delete target.undoneAt;
+  recordSettledOp(target, opId, false, at);
+  committed.pendingRestores = committed.pendingRestores.filter(item => item.attemptId !== attempt.id);
+  const saved = saveArchive(committed);
+  if (!saved.ok) {
+    return { ok: false, code: 'write-failed', error: saved.error, archive: staging, attempt: null, opId };
+  }
+  return {
+    ok: true,
+    code: 'restored',
+    duplicate: false,
+    error: '',
+    archive: committed,
+    attempt: clone(target),
+    opId
+  };
+}
+
+
 module.exports = {
   NAMESPACE,
   ARCHIVE_KEY,
@@ -1459,6 +1937,8 @@ module.exports = {
   STATE_VERSION,
   ARCHIVE_BROKEN,
   ARCHIVE_UNSUPPORTED,
+  ATTEMPT_ARCHIVE_MISMATCH,
+  ATTEMPT_STALE,
   clone,
   formatLocalDate,
   todayLocalDate,
@@ -1478,6 +1958,8 @@ module.exports = {
   routesForGym,
   routesForSession,
   attemptsFor,
+  isEffectiveAttempt,
+  effectiveAttempts,
   newOperationId,
   routeHistory,
   routesWithHistory,
@@ -1494,12 +1976,15 @@ module.exports = {
   routeCorrectionRows,
   setAttemptNote,
   correctAttempt,
+  undoAttempt,
+  restoreAttempt,
   // 转出线路规则，页面与档案层共用同一份判定。
   CLIMB_TYPES: rules.CLIMB_TYPES,
   GRADES_BY_TYPE: rules.GRADES_BY_TYPE,
   DEFAULT_CLIMB_TYPE: rules.DEFAULT_CLIMB_TYPE,
   DEFAULT_GRADE: rules.DEFAULT_GRADE,
   isBoulderRoute: rules.isBoulderRoute,
+  isUndoneAttempt: rules.isUndoneAttempt,
   isGradeForType: rules.isGradeForType,
   resolveGradeForType: rules.resolveGradeForType
 };

@@ -8,6 +8,8 @@
  * 数据模型：清单是独立的一份本机记录，只保存「哪些长期线路被收藏」以及收藏/归档时间，
  * 不复制线路、照片、把次或备注——那些仍然只在本机档案（utils/training-store.js）与
  * 照片索引（utils/training-photos.js）里有一份。因此：
+ * - 清单条目上的累计把数与最近备注只按**有效把次**（未撤回，T032）统计，已撤回的那一把
+ *   不贡献把数、最近有效备注与完攀判定；恢复后读数回到撤回前；
  * - 清单条目按「档案 ID + 长期线路 ID」共同定位。线路 ID 只在一份档案内唯一：A、B 两份
  *   档案里都可以各有一条 route-1，只看 routeId 会让另一份档案里同名的 ID 顶上来（收藏
  *   一条就显示成已收藏）。读取、显示、加入、撤下、归档与小结的批量勾选一律同时核对这两个
@@ -281,14 +283,16 @@ function routeById(archive, routeId) {
 /**
  * 这条长期线在本机的累计把数与最近一条非空备注。
  *
- * 只统计已落盘的把次：还没落盘的「进行中」操作不计入（与底部统计同一口径）；
+ * 只统计**有效把次**（未撤回的那些，T032）：还没落盘的「进行中」操作不计入
+ * （与底部统计同一口径），已撤回的那一把同样不计入把数与「最近备注」——撤回后清单
+ * 上显示的就是剩下那些把次的口径，恢复后又回到原来的读数。
  * 「最近」按把次序号取最大的一条非空备注——序号在档案里全局递增，因此跨日、跨场次
  * 都能取到真正最近写下的那句备注，不按名称或颜色归并。
  */
 function routeAttemptStats(archive, routeId) {
-  const attempts = ((archive && archive.attempts) || []).filter(
-    item => item.routeId === routeId
-  );
+  const attempts = rules
+    .effectiveAttempts((archive && archive.attempts) || [])
+    .filter(item => item.routeId === routeId);
   let latestNote = '';
   let latestSeq = -1;
   attempts.forEach(attempt => {

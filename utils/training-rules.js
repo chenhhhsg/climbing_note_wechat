@@ -115,7 +115,7 @@ function isSameSendOwner(left, right) {
  * 「改为未完成」的明确目标：这条线最近一把可识别的已确认完攀。
  *
  * 只读挑选，不改动任何记录：
- * - 只在同一线路内挑 result === 'send' 的把次，跨线路、跨场次不会串；
+ * - 只在同一线路内挑 result === 'send' 的有效把次，跨线路、跨场次不会串；
  * - 多条历史完攀时取序号最大的一把（最近可识别的那一把），改完一把才轮到前一把，
  *   因此旧汇总和多条历史完攀都能逐次更正，且读取不重写任何历史。
  */
@@ -125,6 +125,7 @@ function latestSendAttempt(attempts, routeId) {
   let bestSeq = -1;
   attempts.forEach(item => {
     if (!item || item.routeId !== routeId || item.result !== 'send') return;
+    if (isUndoneAttempt(item)) return;
     const seq = Number.isInteger(item.seq) ? item.seq : 0;
     // 序号相同时后加入的更晚，取 >= 让「最近」的含义与追加顺序一致。
     if (!best || seq >= bestSeq) {
@@ -133,6 +134,32 @@ function latestSendAttempt(attempts, routeId) {
     }
   });
   return best;
+}
+
+/**
+ * 撤回标记（T032）：把次记录里带非空 undoneAt 表示这一把已被撤回。
+ * 撤回不物理删除原把、也不伪造相反结果——ID、序号、场次、线路、结果、备注与时间都保留，
+ * 只有这一个标记说明它当前不属于有效集合；清掉标记（恢复）就回到原来那一把。
+ *
+ * 旧档案（T032 之前）没有这个字段：缺字段、空串或未定义一律按**有效**读取，
+ * 只读判定，不迁移、不回写、不改原字节。
+ */
+function isUndoneAttempt(attempt) {
+  return Boolean(attempt) && hasText(attempt.undoneAt);
+}
+
+/** 有效把次：已提交且未被撤回的那一把。 */
+function isEffectiveAttempt(attempt) {
+  return Boolean(attempt) && !isUndoneAttempt(attempt);
+}
+
+/**
+ * 有效把次集合：所有读数端（把数、最近有效备注、完攀、统计、小结、清单与历史）
+ * 共用这一份筛选，保证撤回后各页面给出一致的有效读数。
+ * 不传数组时返回空数组，不抛错。
+ */
+function effectiveAttempts(attempts) {
+  return (Array.isArray(attempts) ? attempts : []).filter(isEffectiveAttempt);
 }
 
 module.exports = {
@@ -154,5 +181,8 @@ module.exports = {
   isBoulderRoute,
   allowsRepeatSend,
   isSameSendOwner,
-  latestSendAttempt
+  latestSendAttempt,
+  isUndoneAttempt,
+  isEffectiveAttempt,
+  effectiveAttempts
 };

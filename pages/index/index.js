@@ -11,6 +11,9 @@
  *
  * T027：首页加上「下次想爬」概况（只读）。清单按岩馆分组，带累计把数与最近一条非空
  * 备注；点开某一条回到它的长期线路详情按原线路 ID 继续记。首页本身不写清单、不建场次。
+ *
+ * T032：「继续本场」那一行的把数只数**有效把次**（已撤回的那一把不计），与场内、统计、
+ * 小结、清单共用档案层的同一份有效集合；首页仍然只读，不参与撤回/恢复本身。
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
@@ -94,7 +97,10 @@ Page({
     }
 
     const route = archive.routes.find(item => item.id === archive.activeRouteId) || null;
-    const attempts = (archive.attempts || []).filter(item => item.sessionId === session.id);
+    // 只数有效把次：已撤回的那一把不贡献把数（与场内、统计、小结同一口径，T032）。
+    const attempts = store.effectiveAttempts(
+      (archive.attempts || []).filter(item => item.sessionId === session.id)
+    );
 
     this.setData({
       trainingReady: true,

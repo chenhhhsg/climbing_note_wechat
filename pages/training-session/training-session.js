@@ -47,6 +47,10 @@
  * 走的就是原来那一个 selectRoute：只改当前选择，不新建线路、不加关联、不产生把次；「全部 N
  * 条」按真实本场关联计数，别的场次独有的线路不会出现。展开/收起只切本页展示，不改当前线，
  * 返回后仍在结果按钮旁原地记结果。
+ *
+ * T032 让本页的把数、逐把列表、完攀状态与「第 N 把」编号都按**有效把次**（未撤回的那些）
+ * 计算：撤回一把后本场把数与逐把列表同步减一，恢复后回到原位置，与其他读数端同一口径。
+ * 撤回/恢复的按钮与操作区域由 T033 接在这份读数上，本页本身不新增第二套存储。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
@@ -200,10 +204,16 @@ function routeSwitchShortList(routes, activeRouteId, recentIds) {
 /**
  * 「第 N 把」：同一场次同一线路内按把次序号排出的位置。
  * 已保存与仍待确认的把次共用序号，因此重试后编号稳定，不会因为补齐而跳号。
+ * 只数有效把次（T032）：已撤回的那一把不占位，编号与页面上的把数一致；恢复后
+ * 又回到原来的位置（序号本身就是持久不变的）。
  */
 function attemptLabelMap(archive, sessionId, routeId) {
-  const confirmed = (archive.attempts || [])
-    .filter(item => item.sessionId === sessionId && item.routeId === routeId)
+  const confirmed = store
+    .effectiveAttempts(
+      (archive.attempts || []).filter(
+        item => item.sessionId === sessionId && item.routeId === routeId
+      )
+    )
     .map(item => ({ key: item.id, seq: item.seq || 0 }));
   const pending = (archive.pendingSaves || [])
     .filter(item => item.sessionId === sessionId && item.routeId === routeId)
@@ -824,8 +834,11 @@ Page({
     const activeId = (archive && archive.activeSessionId) || '';
     // 选了哪一场就是哪一场；没选时看当前场次。
     const wanted = this._summarySessionId || activeId;
+    // 有**有效**把次才列（T032）：只剩撤回把次的场次没有内容可看，与小结口径一致。
     const withAttempts = new Set(
-      ((archive && archive.attempts) || []).map(attempt => attempt.sessionId)
+      store
+        .effectiveAttempts((archive && archive.attempts) || [])
+        .map(attempt => attempt.sessionId)
     );
     const options = ((archive && archive.sessions) || [])
       .filter(
