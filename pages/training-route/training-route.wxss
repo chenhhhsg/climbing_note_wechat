@@ -553,3 +553,113 @@
 .wishlist-actions .wishlist-action { flex:1; min-width:300rpx; }
 .wishlist-archive { color:#9c5222; }
 .wishlist-remove { color:#745241; }
+
+/* ---- 照片卡点标记（T028）：只动本机标记记录，图上的点按原图归一化位置复原 ---- */
+/* 显示区即照片本身的矩形：标记的像素位置由这个矩形与原图尺寸换算出，不能有内边距。 */
+.photo-mark-stage {
+  position: relative;
+  margin-top: 16rpx;
+  border-radius: 4rpx;
+  overflow: hidden;
+  background: #e3e5d7;
+}
+.photo-mark-stage .photo-main { margin-top: 0; }
+.photo-mark-stage-active { outline: 4rpx solid #ff793f; outline-offset: -4rpx; }
+
+.mark-pin {
+  position: absolute;
+  z-index: 2;
+  min-width: 44rpx;
+  height: 44rpx;
+  padding: 0 10rpx;
+  box-sizing: border-box;
+  border-radius: 22rpx;
+  transform: translate(-50%, -50%);
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 24rpx;
+  line-height: 44rpx;
+  text-align: center;
+  color: #fffcf3;
+  background: #173d32;
+  box-shadow: 0 2rpx 8rpx rgba(23, 61, 50, 0.35);
+}
+/* 手法与脚法用不同底色，图上不用读字也能区分。 */
+.mark-pin-hand { background: #ff793f; }
+.mark-pin-foot { background: #173d32; }
+.mark-pin-selected { outline: 4rpx solid #ff986c; outline-offset: 2rpx; }
+.mark-pin-draft { background: #b7683d; opacity: 0.9; }
+
+.mark-card { background: #efece0; border: 1px solid #d6d5c6; padding: 24rpx; }
+.mark-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.mark-title {
+  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-weight: 700;
+  font-size: 32rpx;
+  color: #173d32;
+}
+.mark-count { font-size: 24rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: #e4ebdf; color: #355e50; }
+.mark-hint, .mark-warn, .mark-notice, .mark-error {
+  display: block;
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #526157;
+}
+.mark-warn { color: #9c5222; }
+.mark-notice { color: #355e50; }
+.mark-error { color: #9c3d22; }
+
+.mark-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16rpx; margin-top: 16rpx; }
+.mark-actions .mark-action { flex: 1; min-width: 260rpx; margin: 0; }
+.mark-delete { color: #745241; }
+
+.mark-editor { margin-top: 20rpx; padding-top: 20rpx; border-top: 1px solid #cbd0bf; }
+.mark-editor-title { display: block; font-size: 27rpx; font-weight: 700; color: #173d32; }
+.mark-kind-row { display: flex; gap: 16rpx; margin-top: 14rpx; }
+.mark-kind {
+  flex: 1;
+  min-height: 72rpx;
+  line-height: 72rpx;
+  margin: 0;
+  font-size: 27rpx;
+  border-radius: 8rpx;
+  background: #fffcf3;
+  color: #173d32;
+  border: 2rpx solid #cbd0bf;
+}
+.mark-kind::after { border: none; }
+.mark-kind-active { background: #173d32; color: #fffcf3; border-color: #173d32; }
+.mark-input {
+  margin-top: 16rpx;
+  padding: 20rpx;
+  min-height: 88rpx;
+  box-sizing: border-box;
+  font-size: 28rpx;
+  color: #173d32;
+  background: #fffcf3;
+  border: 2rpx solid #cbd0bf;
+  border-radius: 8rpx;
+}
+
+.mark-list { margin-top: 20rpx; }
+.mark-list-title { display: block; font-size: 26rpx; font-weight: 700; color: #173d32; margin-bottom: 8rpx; }
+.mark-item {
+  display: flex;
+  align-items: baseline;
+  gap: 14rpx;
+  padding: 16rpx 0;
+  border-bottom: 1px solid #cbd0bf;
+}
+.mark-item-index {
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 24rpx;
+  min-width: 44rpx;
+  height: 44rpx;
+  line-height: 44rpx;
+  text-align: center;
+  border-radius: 22rpx;
+  color: #fffcf3;
+  background: #173d32;
+}
+.mark-item-kind { font-size: 26rpx; color: #804b27; }
+.mark-item-text { flex: 1; font-size: 27rpx; color: #173d32; word-break: break-all; }

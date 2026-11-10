@@ -1,8 +1,8 @@
 <!--
-  正式长期线路详情页（T018 回看 / T019 主照片）
+  正式长期线路详情页（T018 回看 / T019 主照片 / T028 照片卡点）
   按长期线路 ID 回看跨日、跨场次的逐把结果与备注；打开只读，只有「当天再记」、按把
-  「改为未完成」与照片的确认保存/移除会在本机写（照片只动本机文件与照片索引），
-  且都由用户明确点按触发。
+  「改为未完成」、照片的确认保存/移除，以及卡点标记的新增/移动/改字/删除会在本机写
+  （照片只动本机文件与照片索引；卡点只动本机标记记录），且都由用户明确点按触发。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，保留原数据 -->
@@ -113,17 +113,37 @@
         </view>
 
         <block wx:if="{{routePhoto.status === 'saved'}}">
-          <image
-            id="route-photo-main"
-            class="photo-main"
-            src="{{routePhoto.mainPath}}"
-            mode="aspectFit"
+          <!--
+            标记模式（T028）：点岩点位置落一个卡点；非标记模式点照片打开完整大图。
+            位置按原图归一化保存，指示点由当前显示框布局换算成像素后叠加在原图上。
+          -->
+          <view
+            id="route-photo-stage"
+            class="photo-mark-stage {{markMode ? 'photo-mark-stage-active' : ''}}"
             data-route-id="{{route.id}}"
-            bindtap="previewRoutePhoto"
-          />
+            bindtap="tapPhotoStage"
+          >
+            <image
+              id="route-photo-main"
+              class="photo-main"
+              src="{{routePhoto.mainPath}}"
+              mode="aspectFit"
+              bindload="onMarkImageLoad"
+            />
+            <view
+              wx:for="{{markPoints}}"
+              wx:key="markId"
+              id="photo-mark-{{item.markId}}"
+              class="mark-pin mark-pin-{{item.kind}}{{item.isSelected ? ' mark-pin-selected' : ''}}{{item.isDraft ? ' mark-pin-draft' : ''}}"
+              style="left:{{item.leftPx}}px; top:{{item.topPx}}px;"
+              data-mark-id="{{item.markId}}"
+              catchtap="selectMarkPoint"
+            >{{item.index}}</view>
+          </view>
           <text id="route-photo-status" class="photo-status">{{routePhoto.statusText}}</text>
           <text wx:if="{{routePhoto.bytesText}}" class="photo-meta">{{routePhoto.bytesText}}</text>
-          <text class="photo-hint">点击照片打开完整主图，可双指缩放。</text>
+          <text wx:if="{{!markMode}}" class="photo-hint">点击照片打开完整主图，可双指缩放。</text>
+          <text wx:else class="photo-hint">标记模式：点照片上的岩点落点；点图上的编号可改字、移动或删除。</text>
           <view class="photo-actions">
             <button
               id="route-photo-preview"
@@ -250,6 +270,132 @@
             bindtap="chooseRoutePhoto"
           >{{routePhoto.albumText}}</button>
         </view>
+      </view>
+
+      <!--
+        照片卡点标记（T028）：只读写本机标记记录这一份独立数据，主图字节、把次、备注
+        与体测都不动，也不烧进照片、不上传。位置按原图归一化保存，换屏、旋转或跨天
+        重开仍指向原图上的同一个岩点；点在照片外的留白上不生成卡点。
+      -->
+      <view wx:if="{{routePhoto}}" id="mark-card" class="card mark-card">
+        <view class="mark-head">
+          <text class="mark-title">照片卡点</text>
+          <text wx:if="{{markCountText}}" id="mark-count" class="mark-count">{{markCountText}}</text>
+        </view>
+
+        <text wx:if="{{marksError}}" id="mark-error" class="mark-error">{{marksError}}</text>
+        <text wx:elif="{{markHiddenText}}" id="mark-hidden" class="mark-hint">{{markHiddenText}}</text>
+
+        <block wx:if="{{marksReady}}">
+          <view wx:if="{{routePhoto.status === 'saved'}}" class="mark-actions">
+            <button
+              wx:if="{{!markMode}}"
+              id="mark-enter"
+              class="secondary-button mark-action"
+              bindtap="enterMarkMode"
+            >标记卡点</button>
+            <button
+              wx:else
+              id="mark-exit"
+              class="secondary-button mark-action"
+              bindtap="exitMarkMode"
+            >完成标记</button>
+          </view>
+          <text
+            wx:elif="{{routePhoto.status === 'missing'}}"
+            id="mark-photo-missing"
+            class="mark-hint"
+          >本机照片不可用（文件可能已被清理），重新添加后才能在上面标记；下面仍可读回已写的提示。</text>
+          <text wx:else id="mark-no-photo" class="mark-hint">还没有主照片。先给这条线路加一张照片，再从照片上的大图进入标记模式。</text>
+        </block>
+
+        <text wx:if="{{markLayoutError}}" id="mark-layout-error" class="mark-warn">{{markLayoutError}}</text>
+        <button
+          wx:if="{{markLayoutError && routePhoto.status === 'saved'}}"
+          id="mark-reload-image"
+          class="text-button"
+          bindtap="reloadMarkImage"
+        >重新测量照片尺寸</button>
+
+        <text wx:if="{{markNotice}}" id="mark-notice" class="mark-notice" bindtap="dismissMarkNotice">{{markNotice}}</text>
+        <text wx:if="{{markSaveError}}" id="mark-save-error" class="mark-error" bindtap="dismissMarkSaveError">{{markSaveError}}</text>
+
+        <text wx:if="{{markMode && routePhoto.status === 'saved'}}" id="mark-stage-hint" class="mark-hint">{{markMoving ? '点照片上的新位置，把选中的卡点移过去。' : markEditable ? '可以直接点图上已有的编号，改字、移动或删除。' : '点照片上的岩点位置落一个卡点；点在照片外的留白上不会生成。'}}</text>
+
+        <!-- 编辑区：新草稿点，或选中的已有卡点 -->
+        <view wx:if="{{markEditable}}" id="mark-editor" class="mark-editor">
+          <text wx:if="{{markDraft}}" id="mark-editor-draft-title" class="mark-editor-title">新卡点（还没保存）</text>
+          <text wx:else id="mark-editor-title" class="mark-editor-title">编辑第 {{markSelected.index}} 条卡点</text>
+          <view class="mark-kind-row">
+            <button
+              wx:for="{{markKinds}}"
+              wx:key="value"
+              id="mark-kind-{{item.value}}"
+              class="mark-kind {{markKind === item.value ? 'mark-kind-active' : ''}}"
+              data-kind="{{item.value}}"
+              bindtap="pickMarkKind"
+            >{{item.text}}</button>
+          </view>
+          <input
+            id="mark-text-input"
+            class="mark-input"
+            value="{{markText}}"
+            maxlength="{{markTextMax}}"
+            placeholder="例如：左脚踩这里"
+            bindinput="onMarkTextInput"
+          />
+          <view class="mark-actions">
+            <button
+              wx:if="{{markDraft}}"
+              id="mark-save-draft"
+              class="primary-button mark-action"
+              bindtap="saveMarkDraft"
+            >保存卡点</button>
+            <block wx:else>
+              <button
+                wx:if="{{!markMoving}}"
+                id="mark-save-edit"
+                class="primary-button mark-action"
+                bindtap="saveMarkEdit"
+              >保存修改</button>
+              <button
+                wx:if="{{!markMoving && routePhoto.status === 'saved'}}"
+                id="mark-move"
+                class="secondary-button mark-action"
+                bindtap="startMarkMove"
+              >移动</button>
+              <button
+                wx:if="{{markMoving}}"
+                id="mark-cancel-move"
+                class="secondary-button mark-action"
+                bindtap="cancelMarkMove"
+              >取消移动</button>
+              <button
+                id="mark-delete"
+                class="text-button mark-delete"
+                bindtap="deleteMarkPoint"
+              >删除这条卡点</button>
+            </block>
+          </view>
+        </view>
+
+        <!-- 文字清单：原图缺失或离线时也能读回已写的提示 -->
+        <view wx:if="{{markList.length > 0}}" id="mark-list" class="mark-list">
+          <text class="mark-list-title">已写的卡点</text>
+          <view
+            wx:for="{{markList}}"
+            wx:key="markId"
+            id="mark-item-{{item.markId}}"
+            class="mark-item"
+            data-mark-id="{{item.markId}}"
+            bindtap="selectMarkPoint"
+          >
+            <text class="mark-item-index">{{item.index}}</text>
+            <text class="mark-item-kind">{{item.kindText}}</text>
+            <text class="mark-item-text">{{item.textText}}</text>
+          </view>
+        </view>
+        <text wx:else id="mark-empty" class="mark-hint">还没有卡点。进入标记模式，在主照片的岩点位置点一下。</text>
       </view>
 
       <!-- 回看：按本地日期与场次分组，同一天多场各自保留原归属 -->
