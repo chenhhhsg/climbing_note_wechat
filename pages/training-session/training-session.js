@@ -51,6 +51,17 @@
  * T032 让本页的把数、逐把列表、完攀状态与「第 N 把」编号都按**有效把次**（未撤回的那些）
  * 计算：撤回一把后本场把数与逐把列表同步减一，恢复后回到原位置，与其他读数端同一口径。
  * 撤回/恢复的按钮与操作区域由 T033 接在这份读数上，本页本身不新增第二套存储。
+ *
+ * T033 把 T032 的撤回与恢复接进场内：结果按钮下方常驻一段「最近一把」，写明当前场次、
+ * 当前线路最新那一把的线路名、原序号（按序号排位、含已撤回的把次，因此不跳号）与结果，
+ * 并给出撤回动作。目标只认这一行渲染时带下来的原把次 ID 与归属，不看行下标、名称、
+ * 当前可见行或按钮文字，去掉一行也不会改到别的把次。
+ * 撤回后这一行留在原处变成「已撤回」，撤回按钮的位置留空（行高不变），因此刚才点过的
+ * 坐标既不会被另一把接管，也不会被相反动作接管；「恢复这一把」落在下方独立一行里，
+ * 须有意点击。撤回/恢复沿用档案层 T032 的持久凭据（原把次 ID + opId + 预期状态）与
+ * 两段写重试，不靠计时防抖：失败时显示失败、按原动作与同一个 opId 重试，页面上的把数、
+ * 完攀状态与逐把列表只按**已落盘**的档案显示。这条线还有未落盘的把次时整个操作区收起，
+ * 待保存的一把不当作已保存可撤回项。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
@@ -87,6 +98,19 @@ const ROUTE_COLORS = [
 // 「同一把按钮的同一结果」在窗口内重复点击视为一次误触：真实一次攀爬不会在
 // 几百毫秒内发生两次，记两把之间必然隔着一次攀爬和一次落盘。
 const SAME_TAP_WINDOW_MS = 300;
+
+// 主操作区滚入视口（T030 复验）：把结果区顶部对齐到视口下方留一点余量的位置。
+// 这里只是一个「对齐到哪」的偏移量，真正滚到哪由真实布局接口现量（见 revealElement），
+// 不凭换线面板里的旧坐标或固定像素算位置。
+const REVEAL_TOP_OFFSET = 12;
+// 主操作区看的「门」：换线 + 结果按钮这一块。它已经完整可见就不滚（用户不必被抖一下）。
+const MAIN_OPERATION_GATE = '#result-anchor';
+// 主操作区滚的「位」：本场线路（加线）到结果这一整段的顶端。滚到这里，加线、换线、
+// 结果同时落在首屏里，不会为了露出结果按钮把「＋ 加线」挤到屏幕上方之外。
+const MAIN_OPERATION_ANCHOR = '#session-routes';
+// 场次表单锚点：表单常驻在页顶，从页面下方点「开始新场次」时要把表单滚回可见处，
+// 否则表单渲染在当前滚动位置之上，用户看不到自己刚打开的输入框。
+const SESSION_FORM_ANCHOR = '#session-form';
 
 // 颜色是可选属性：没展开、没选过就是「不指定」，不替用户填一个没看到的颜色。
 const UNSET_COLOR_TEXT = '不指定';
@@ -202,26 +226,53 @@ function routeSwitchShortList(routes, activeRouteId, recentIds) {
 }
 
 /**
- * 「第 N 把」：同一场次同一线路内按把次序号排出的位置。
- * 已保存与仍待确认的把次共用序号，因此重试后编号稳定，不会因为补齐而跳号。
- * 只数有效把次（T032）：已撤回的那一把不占位，编号与页面上的把数一致；恢复后
- * 又回到原来的位置（序号本身就是持久不变的）。
+ * 「第 N 把」：同一场次同一线路内按把次序号排出的**稳定原序号**。
+ * 已保存（含已撤回的那一把）与仍待确认的把次共用序号，因此重试后编号稳定，不会因为
+ * 补齐而跳号；撤回一把后序号也不整体前移——撤回第 3 把之后再记的一把是第 4 把，原来
+ * 的第 3 把还是第 3 把（判定只有档案层那一份 attemptOrdinalMap，不拿全局 seq 当编号）。
  */
 function attemptLabelMap(archive, sessionId, routeId) {
-  const confirmed = store
-    .effectiveAttempts(
-      (archive.attempts || []).filter(
-        item => item.sessionId === sessionId && item.routeId === routeId
-      )
-    )
-    .map(item => ({ key: item.id, seq: item.seq || 0 }));
-  const pending = (archive.pendingSaves || [])
-    .filter(item => item.sessionId === sessionId && item.routeId === routeId)
-    .map(item => ({ key: item.opId, seq: item.seq || 0 }));
-  const ordered = confirmed.concat(pending).sort((left, right) => left.seq - right.seq);
+  const ordinals = store.attemptOrdinalMap(archive, sessionId, routeId, { includePending: true });
   const labels = new Map();
-  ordered.forEach((entry, index) => labels.set(entry.key, '第 ' + (index + 1) + ' 把'));
+  ordinals.forEach((value, key) => labels.set(key, '第 ' + value + ' 把'));
   return labels;
+}
+
+/**
+ * 结果按钮下方「最近一把」的目标（T033）：当前场次、当前线路里序号最大的一把
+ * **已提交**把次——连已撤回的那一把一起看，撤回后这一行留在原处，恢复入口就落在
+ * 原来那一把上，不会被悄悄换成前一把。
+ *
+ * 返回 { attempt, number }：attempt 是原把次；number 是它的**原序号**（按序号在本场
+ * 本线路里排位，含已撤回的把次），撤回前后都是同一个数，因此「第 3 把」在撤回后
+ * 不会变成「第 2 把」。没有已提交把次时返回 null。
+ * 只读派生：不看行下标、名称与当前可见行，也不把档案里「待保存」的那一条算进来
+ * （待保存的一把还没落盘，不是可撤回项）。
+ */
+function recentAttemptTarget(archive, sessionId, routeId) {
+  if (!sessionId || !routeId) return null;
+  const ordered = store.attemptsFor(archive, {
+    sessionId,
+    routeId,
+    includeUndone: true
+  });
+  if (!ordered.length) return null;
+  const attempt = ordered[ordered.length - 1];
+  // number 用档案层的稳定原序号（撤回也占位），不是这一份可见列表的下标。
+  const ordinals = store.attemptOrdinalMap(archive, sessionId, routeId);
+  return { attempt, number: ordinals.get(attempt.id) || ordered.length };
+}
+
+/**
+ * 这条线在这一场次里是否还有未落盘的把次（档案里的「进行中」标记）。
+ * 有的话最近一把的撤回区先收起：待保存的一把不是已保存可撤回项，也不把上一条
+ * 已保存的把次留在这里等着被误撤。
+ */
+function hasPendingOnRoute(archive, sessionId, routeId) {
+  if (!sessionId || !routeId) return false;
+  return ((archive && archive.pendingSaves) || []).some(
+    op => op.sessionId === sessionId && op.routeId === routeId
+  );
 }
 
 Page({
@@ -270,6 +321,10 @@ Page({
     // 按把「改为未完成」：每一把各有自己的控件
     correctionRows: [],
     correctionStatusText: '',
+
+    // 最近一把的撤回与恢复（T033）：结果按钮下方的固定操作区。null 表示不显示
+    // （没有已提交把次、这条线还有未落盘的把次，或没有当前线路）。
+    recentAttempt: null,
 
     noteEditor: null,
 
@@ -343,6 +398,10 @@ Page({
     // _failedOps  本实例发起但未落盘的把次（按线路分组），重试沿用同一 opId；
     // _lastTap    快速双击窗口；
     // _correctedRows / _correctionFailures  按把更正的只读回读与失败重试标记；
+    // _attemptOps  本次实例发起但没落盘的撤回/恢复意图（按 把次 ID + 动作 记原 opId，
+    //              重试沿用同一个 ID；落盘成功即清掉，不用计时窗口防抖）；
+    // _recentStatus  刚落盘成功的那一次动作**带来的状态**（撤回→已撤回、恢复→有效），
+    //              只用于行下方的确认文案，不落盘；重开后以档案里的撤回状态为准。
     // _formDirty / _newRouteDirty  正在填写的场次表单与新建线路表单（不重读、不冲掉输入）；
     // _lastCreateTap  快速重复点击「创建并选中」的窗口，避免连点建出两条线；
     // _photoUi / _newRoutePhotoPath  照片控制器与新建表单里已选的临时照片路径；
@@ -353,6 +412,8 @@ Page({
     this._lastCreateTap = 0;
     this._correctedRows = {};
     this._correctionFailures = {};
+    this._attemptOps = {};
+    this._recentStatus = null;
     this._formDirty = false;
     this._newRouteDirty = false;
     this._photoUi = null;
@@ -621,6 +682,81 @@ Page({
     return (archive.sessions || []).find(item => item.id === sessionId) || null;
   },
 
+  // ---------------------------------------------------------------- 视口定位
+
+  /**
+   * 当前视口高度（px）。拿不到就返回 0，当作「不知道」处理。
+   */
+  viewportHeight() {
+    if (typeof wx === 'undefined') return 0;
+    try {
+      if (typeof wx.getWindowInfo === 'function') {
+        const info = wx.getWindowInfo();
+        if (info && info.windowHeight) return info.windowHeight;
+      }
+      if (typeof wx.getSystemInfoSync === 'function') {
+        const info = wx.getSystemInfoSync();
+        if (info && info.windowHeight) return info.windowHeight;
+      }
+    } catch (error) {
+      return 0;
+    }
+    return 0;
+  },
+
+  /**
+   * 把一个已经渲染出来的元素滚进可见位置（T030 复验）。
+   *
+   * 只做两件事：等这一次重绘的布局落定（wx.nextTick）之后，用真实布局接口现量元素的位置
+   * 与当前滚动量，再决定要不要滚——不拿面板里的旧坐标、也不按固定像素猜。
+   *
+   * gateSelector 是「已经看得见就不用动」的那个元素；targetSelector 是真正滚到的位置。
+   * 两者可以在一次查询里一起量：门已经完整可见就什么都不做，所以「已经看得到」的情形
+   * 不会为了报一次成功而抖一下；否则按目标块的现量位置算滚动量
+   * （当前滚动量 + 目标块相对视口的 top - 偏移），因此和滚动位置无关。
+   *
+   * 撤回、恢复、重试保存这些原地动作不调用它：它们只改这一块里的读数，位置本来就不变。
+   */
+  revealElement(gateSelector, topOffset, targetSelector) {
+    if (typeof wx === 'undefined' || typeof wx.createSelectorQuery !== 'function') return;
+    const offset = typeof topOffset === 'number' ? topOffset : REVEAL_TOP_OFFSET;
+    const measure = () => {
+      let query = null;
+      try {
+        query = wx.createSelectorQuery();
+      } catch (error) {
+        return;
+      }
+      if (!query || typeof query.select !== 'function') return;
+      query.select(gateSelector).boundingClientRect();
+      query.select(targetSelector || gateSelector).boundingClientRect();
+      query.selectViewport().scrollOffset();
+      query.exec(result => {
+        const gate = result && result[0];
+        const target = (result && result[1]) || gate;
+        const viewport = result && result[2];
+        if (!gate || !target || !viewport) return;
+        const height = this.viewportHeight();
+        const visible = gate.top >= 0 && (!height || gate.bottom <= height);
+        if (visible) return;
+        const scrollTop = Math.max(0, (viewport.scrollTop || 0) + target.top - offset);
+        if (typeof wx.pageScrollTo === 'function') {
+          wx.pageScrollTo({ scrollTop, duration: 0 });
+        }
+      });
+    };
+    if (typeof wx.nextTick === 'function') wx.nextTick(measure);
+    else measure();
+  },
+
+  /**
+   * 换线与结果这一块滚回可见位置：新建、关联选中、换线、切场次之后都落在这里，用户不必
+   * 自己再往上找一次结果按钮。滚到「本场线路」这一段顶端，所以「＋ 加线」也还在首屏里。
+   */
+  revealResultRegion() {
+    this.revealElement(MAIN_OPERATION_GATE, REVEAL_TOP_OFFSET, MAIN_OPERATION_ANCHOR);
+  },
+
   /**
    * 由当前档案重新推导展示内容；不改动任何已保存数据。
    */
@@ -774,11 +910,20 @@ Page({
       recentRouteIdsInSession(archive, activeRaw ? activeRaw.id : '', routes)
     );
 
+    // 最近一把的撤回与恢复（T033）：目标、原序号与两种动作都只从这一份只读派生来。
+    const recentAttempt = this.recentAttemptView(
+      archive,
+      activeRaw ? activeSession : null,
+      selectedRoute,
+      pendingRows
+    );
+
     this.setData({
       activeSession,
       sameDaySessions,
       routes,
       selectedRoute,
+      recentAttempt,
       routeStateText: completion && completion.completed
         ? '已完攀'
         : completion && completion.closed
@@ -1013,6 +1158,9 @@ Page({
       sessionDate: store.todayLocalDate(),
       formError: ''
     });
+    // 场次表单常驻页顶（T030 复验把场次标题与日期移到主操作区之后，表单仍在页顶）：
+    // 从页面下方点「开始新场次」时，表单渲染在当前滚动位置之上，这里把它滚回可见处。
+    this.revealElement(SESSION_FORM_ANCHOR);
   },
 
   cancelSessionForm() {
@@ -1076,6 +1224,9 @@ Page({
     this.refreshView();
     // 换场次后当前线路可能不同：按新选中线路读取照片。
     this.loadPhotos();
+    // 「本日场次」入口按 T030 复验排在主操作区之后：切完场次把换线与结果这一块带回
+    // 可见处，用户不用自己往上找回结果按钮。这一步只挪视口，不改任何数据。
+    this.revealResultRegion();
   },
 
   // ---------------------------------------------------------------- 线路
@@ -1085,9 +1236,10 @@ Page({
     const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
     if (!routeId) return;
     // 点的就是当前线（例如在「全部 N 条」里点当前那一行退回结果处）：只收起展示，
-    // 不重复写盘、不改任何数据。
+    // 不重复写盘、不改任何数据；但要把用户带回结果按钮那一块。
     if (routeId === this.archive.activeRouteId) {
       if (this.data.routeSwitchExpanded) this.setData({ routeSwitchExpanded: false });
+      this.revealResultRegion();
       return;
     }
 
@@ -1113,6 +1265,8 @@ Page({
     this.refreshView();
     // 换线路后按新选中线路读取照片（同一线路的照片不重复请求）。
     this.loadPhotos();
+    // 从「全部 N 条」的展开列表里选完线：列表收起、内容上移，把结果按钮带回可见处。
+    this.revealResultRegion();
   },
 
   /**
@@ -1299,6 +1453,8 @@ Page({
     );
     this.refreshView();
     this.loadPhotos();
+    // 关联并选中成功：加线面板收起后内容整体上移，把换线与结果带回可见处。
+    this.revealResultRegion();
   },
 
   /**
@@ -1514,6 +1670,8 @@ Page({
       })
     );
     this.refreshView();
+    // 新建并选中成功：加线面板收起、内容整体上移，把换线与结果带回可见处再读照片。
+    this.revealResultRegion();
 
     // 线路已创建并选中；照片保存失败只影响照片，不回滚线路，也不阻止记把次。
     if (pendingPhotoPath && outcome.route) {
@@ -1849,10 +2007,15 @@ Page({
    * 先按最新档案判定：抱石已完攀（含待确认）时不再新增；同一场次同一线路还有
    * 未落盘的把次时先重试那一把，不生成第二把。然后交给档案层以两段写落盘：
    * 失败不报已保存，这一把留在待保存行，重试沿用同一操作 ID，只会多出一把。
+   *
+   * T030 复验：结果按钮把渲染时在场的场次与线路写进 dataset。切场次或换线之后才送到
+   * 的这一下（旧按钮的迟到点击）如果和当前不一致，整条拒掉——不把新的一把写进别的
+   * 场次，也不写进别的线路。没带 dataset 的调用（数据层与老测试直接驱动）按当前值处理。
    */
   recordAttempt(event) {
     if (this.data.loadError) return;
-    const result = event && event.currentTarget && event.currentTarget.dataset.result;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const result = dataset.result;
     if (result !== 'fail' && result !== 'send') return;
 
     const active = this.data.activeSession;
@@ -1860,7 +2023,29 @@ Page({
       this.setData({ notice: '请先开始一场训练' });
       return;
     }
-    const routeId = this.archive.activeRouteId;
+
+    // 迟到点击：按钮渲染时带的场次与当前场次不同 → 这一下属于上一场，不落到新场次。
+    const boundSessionId = dataset.sessionId || '';
+    if (boundSessionId && boundSessionId !== active.id) {
+      this.setData({
+        notice: '这一下是上一场的按钮，已经切到别的场次，没有记录这一把。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    const currentRouteId = this.archive.activeRouteId;
+    // 迟到点击：按钮渲染时带的线路与当前线路不同 → 这一下属于上一条线，不落到新线路。
+    const boundRouteId = dataset.routeId || '';
+    if (boundRouteId && boundRouteId !== currentRouteId) {
+      this.setData({
+        notice: '这一下是上一条线路的按钮，当前线路已经换了，没有记录这一把。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    const routeId = boundRouteId || currentRouteId;
     if (!routeId) {
       this.setData({ notice: '请先选原线或新建一条线路' });
       return;
@@ -1885,6 +2070,8 @@ Page({
     }
 
     const outcome = store.saveAttempt({
+      // 记下这一把属于哪一份本机档案：换档之后的迟到重试不能把这次操作写进新档案。
+      archiveId: this.archive.archiveId,
       sessionId: active.id,
       routeId,
       result,
@@ -1908,9 +2095,10 @@ Page({
       return;
     }
 
-    // 落盘失败：记下这一把的操作 ID（含两段写都没落盘的情况），提示未保存，
-    // 重试时沿用同一个 opId，只提交一次。
+    // 落盘失败：记下这一把的操作 ID（含两段写都没落盘的情况）与它属于哪一份档案，
+    // 提示未保存，重试时沿用同一个 opId，只提交一次。
     this._failedOps[active.id + '\u0000' + routeId] = {
+      archiveId: this.archive.archiveId,
       opId: outcome.opId,
       sessionId: active.id,
       routeId,
@@ -1923,13 +2111,26 @@ Page({
 
   /**
    * 重试保存：沿用待保存行里的操作 ID，档案层按该 ID 幂等，只多出预期的一把。
+   *
+   * 这次重试绑定**发起时的那一份档案**：先按最新档案读一次，待保存记录（无论来自档案
+   * 里的「进行中」标记还是本实例没落盘的那一条）带的 archiveId 与当前档案不一致时
+   * （换档/换了账号之后又点到旧页面），整条不落盘，也不把这一把写进新的档案。
    */
   retryPendingAttempt(event) {
     if (this.data.loadError) return;
     const opId = event && event.currentTarget && event.currentTarget.dataset.opId;
     if (!opId) return;
 
-    const fromArchive = (this.archive.pendingSaves || []).find(op => op.opId === opId) || null;
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      this.setData({ storageError: loaded.error });
+      this.refreshView();
+      return;
+    }
+    const archive = loaded.archive;
+    this.archive = archive;
+
+    const fromArchive = (archive.pendingSaves || []).find(op => op.opId === opId) || null;
     const localKey = Object.keys(this._failedOps).find(
       key => this._failedOps[key].opId === opId
     );
@@ -1940,8 +2141,24 @@ Page({
       return;
     }
 
+    // 待保存记录属于哪一份档案：档案里的「进行中」标记天然属于当前这一份；本实例的
+    // 那一条记着发起时的档案 ID，换档之后不再往新档案里写这一把。
+    const sourceArchiveId = fromArchive
+      ? archive.archiveId
+      : source.archiveId || archive.archiveId;
+    if (sourceArchiveId !== archive.archiveId) {
+      if (localKey) delete this._failedOps[localKey];
+      this.setData({
+        storageError: '',
+        notice: '这一把属于原来的本机档案，未做改动；已按当前档案刷新。'
+      });
+      this.refreshView();
+      return;
+    }
+
     const outcome = store.saveAttempt({
       opId,
+      archiveId: archive.archiveId,
       sessionId: source.sessionId,
       routeId: source.routeId,
       result: source.result,
@@ -1964,12 +2181,18 @@ Page({
       return;
     }
 
+    // 仍然没落盘：保留同一个 opId 与它属于哪一份档案，可再次重试。
+    const keptArchiveId = localKey
+      ? this._failedOps[localKey].archiveId || archive.archiveId
+      : archive.archiveId;
     if (localKey) {
       this._failedOps[localKey] = Object.assign({}, this._failedOps[localKey], {
+        archiveId: keptArchiveId,
         opId: outcome.opId || opId
       });
     } else if (outcome.opId) {
       this._failedOps[source.sessionId + '\u0000' + source.routeId] = {
+        archiveId: keptArchiveId,
         opId: outcome.opId,
         sessionId: source.sessionId,
         routeId: source.routeId,
@@ -1978,6 +2201,325 @@ Page({
       };
     }
     this.setData({ storageError: outcome.error, notice: '这一把仍未保存，可再次重试。' });
+    this.refreshView();
+  },
+
+  // ---------------------------------------------------------------- 最近一把的撤回与恢复
+
+  /**
+   * 结果按钮下方「最近一把」的展示（T033，只读派生，不写盘）。
+   *
+   * - 没有当前场次、没有当前线路、这条线还没有已提交把次：不显示（返回 null）；
+   * - 这条线还有未落盘的把次：整个操作区收起，待保存的一把不当作已保存可撤回项，
+   *   上一条已保存的把次也不会留在原地等着被误撤；
+   * - 已撤回的那一把仍留在这一行（标题写「已撤回」，序号与结果保持原样）：这一行是同一个
+   *   永久操作区里的两个并排槽——左槽撤回、右槽恢复，各占一半宽度、等高。当前不可用的那
+   *   一个动作在自己那一槽里留一块等宽等高的非交互空位（没有绑定），所以两个动作的命中
+   *   矩形在任何状态下都不相交：刚才点过的坐标不会被另一把、被相反动作或旁边的控件接管；
+   * - 失败（写盘失败）时保留原动作与同一个 opId 的重试文案；成功的那一次在本行下方
+   *   写一句确认（只在本页显示，不落盘，重开后以档案里的撤回状态为准）。
+   */
+  recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
+    if (!activeSession || !selectedRoute) return null;
+    if (pendingRows.length || hasPendingOnRoute(archive, activeSession.id, selectedRoute.id)) {
+      return null;
+    }
+
+    const target = recentAttemptTarget(archive, activeSession.id, selectedRoute.id);
+    if (!target) return null;
+
+    const attempt = target.attempt;
+    const undone = store.isUndoneAttempt(attempt);
+    // 这一行现在提供哪个动作：已撤回给「恢复」，未撤回给「撤回」。重试文案只看当前动作，
+    // 因此同一个坐标上的按钮始终是同一个动作、同一把次。
+    const offered = undone ? 'restore' : 'undo';
+    const offeredText = undone ? '恢复' : '撤回';
+    // 反过来：当前状态是被哪个动作做出来的（已撤回 ← 撤回，有效 ← 恢复），确认文案用它。
+    const madeByText = undone ? '撤回' : '恢复';
+    const retry = this._attemptOps[attempt.id + '\u0000' + offered] || null;
+
+    let stateText = '';
+    if (retry) {
+      stateText = offeredText + '未保存 · 点「重试' + offeredText + '这一把」按同一把重试';
+    } else if (
+      this._recentStatus &&
+      this._recentStatus.attemptId === attempt.id &&
+      this._recentStatus.undone === undone
+    ) {
+      // 只数有效把次：这一句里的把数就是页面上正在显示的那一份（已落盘状态）。
+      const counted = store.attemptsFor(archive, {
+        sessionId: activeSession.id,
+        routeId: selectedRoute.id
+      }).length;
+      stateText = '已' + madeByText + '这一把 · 本场 ' + counted + ' 把';
+    }
+
+    return {
+      attemptId: attempt.id,
+      routeId: attempt.routeId,
+      sessionId: attempt.sessionId,
+      // 渲染这一行时用的档案 ID 与这一把的有效状态版本（rev）。两者都随点击一起交回
+      // 档案层：档案 ID 不一致（换档后的迟到点击）或版本不一致（ABA 式的旧事件）时
+      // 一律拒绝，不落盘。
+      archiveId: archive.archiveId,
+      expectedRev: store.attemptRev(attempt),
+      // 渲染这一行时这一把的状态，随点击一起交回档案层做预期状态核对。
+      expected: undone ? 'undone' : 'effective',
+      titleText:
+        (undone ? '已撤回 · ' : '刚才 · ') +
+        selectedRoute.name +
+        ' 第 ' +
+        target.number +
+        ' 把 · ' +
+        attemptResultText(attempt.result),
+      metaText:
+        '本场 ' + activeSession.label + ' · ' + activeSession.gymName + ' · ' + timeText(attempt.createdAt),
+      stateText,
+      canUndo: !undone,
+      undoText: retry && !undone ? '重试撤回这一把' : '撤回这一把',
+      canRestore: undone,
+      restoreText: retry && undone ? '重试恢复这一把' : '恢复这一把'
+    };
+  },
+
+  /**
+   * 撤回最近一把（T033）：结果按钮下方那一行的「撤回这一把」。
+   */
+  undoLatestAttempt(event) {
+    this.changeRecentAttempt(event, 'undo');
+  },
+
+  /**
+   * 恢复最近一把（T033）：撤回后同一区域下方那一行的「恢复这一把」。
+   * 恢复拿回的是原来那一把（同 ID、同序号、同结果），只在抱石守卫拒绝时不动任何数据。
+   */
+  restoreLatestAttempt(event) {
+    this.changeRecentAttempt(event, 'restore');
+  },
+
+  /**
+   * 撤回 / 恢复共用的一段（T033）：两个入口只在动作本身不同，目标核对、预期状态与
+   * 预期版本、去重凭据、失败重试与「只按已落盘状态显示」完全相同，因此共用。
+   *
+   * 目标只从点击这一行带下来的原把次 ID 与归属取，并**先按最新档案复核**它仍是本场
+   * 本线路的最近一把：晚到的点击（这一把已经不是最近一把、这条线又多了未落盘的把次、
+   * 已经切到别的场次/线路、档案已被重置）一律不落盘，只按最新档案刷新。行下标、名称与
+   * 当前可见行都不参与判定，所以去掉一行也不会改到别的把次。
+   *
+   * 交给档案层的这一次动作带着三样从渲染那一刻带下来的东西：档案 ID（dataset.archiveId）、
+   * 有效状态版本（dataset.expectedRev）与预期状态（dataset.expected）。任一与最新持久
+   * 状态不符（换档后的迟到点击、3→2→3 之后重放的旧事件）都不落盘。幂等来自档案层的持久
+   * 凭据（原把次上的 settledOps + 撤回状态 + rev），不是计时防抖：同一个 opId 的迟到重试
+   * 被认成「早已结清」，只回读状态，不会把撤回翻回成恢复、也不会把恢复翻回成撤回。
+   *
+   * 写失败或回执丢失（write-failed / unreadable）时**重新读一次落盘状态**再显示：页面
+   * 上的把数、完攀状态与最近一把一律以已落盘的档案为准，未落盘的那一次保留原动作与同一个
+   * opId 的重试入口。只有原档案 ID、这一把的场次/线路归属与**这次操作自己**的落盘凭据都
+   * 对上，才把那一次认成「其实已落盘、只是回执丢了」；否则按盘上真实状态显示，并说明盘上
+   * 那一把不是这次写入的（另一个写者或另一份档案），不认领别人的结果。
+   */
+  changeRecentAttempt(event, action) {
+    if (this.data.loadError) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId;
+    if (!attemptId) return;
+
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      // 档案读不出来：不猜状态、不写盘，只报出真实错误。
+      this.setData({ storageError: loaded.error });
+      this.refreshView();
+      return;
+    }
+    const archive = loaded.archive;
+    this.archive = archive;
+
+    const asUndo = action === 'undo';
+    const noun = asUndo ? '撤回' : '恢复';
+    const sessionId = dataset.sessionId || '';
+    const routeId = dataset.routeId || '';
+    const key = attemptId + '\u0000' + action;
+    // **原按钮捕获的**档案 ID：页面上的这一行只属于渲染它的那一份档案。写失败后重读比对
+    // 「盘上这一份还是我原来那一份吗」用的就是它——不能拿已经被 outcome.archive 覆盖过的
+    // this.archive 顶替这个原引用，否则换档后的重读会被当成同一份档案。
+    const originArchiveId = dataset.archiveId || archive.archiveId;
+
+    // 换档之后的迟到点击：事件带的是**渲染那一刻**的档案 ID，与当前档案不一致时整条
+    // 不落盘，也不按新档案改写任何把次。
+    if (
+      typeof dataset.archiveId === 'string' &&
+      dataset.archiveId &&
+      dataset.archiveId !== archive.archiveId
+    ) {
+      delete this._attemptOps[key];
+      this.setData({
+        storageError: '',
+        notice: '这一把属于原来的本机档案，这次' + noun + '没有生效，已按当前档案刷新。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    // 已经切到别的场次/线路：这一行渲染时的归属不再是当前画面，旧事件一律拒绝，不改
+    // 任何一把、也不改归属。
+    if (
+      (sessionId && sessionId !== archive.activeSessionId) ||
+      (routeId && routeId !== archive.activeRouteId)
+    ) {
+      delete this._attemptOps[key];
+      this.setData({
+        storageError: '',
+        notice: '已经切到别的场次或线路，这次' + noun + '没有生效，已按最新档案刷新。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    if (hasPendingOnRoute(archive, sessionId, routeId)) {
+      this.setData({
+        storageError: '',
+        notice: '这条线还有一把没保存：先在「待保存」行重试保存，再' + noun + '。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    const target = recentAttemptTarget(archive, sessionId, routeId);
+    if (!target || target.attempt.id !== attemptId) {
+      // 这一把已经不是最近一把（例如又记了一把）：只刷新，不撤回非最近的一把。
+      delete this._attemptOps[key];
+      this.setData({
+        storageError: '',
+        notice: '最近一把已经变了，已按最新档案刷新；' + noun + '只在最近这一把上生效。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    // 已经是要的状态（撤回一个已撤回的、恢复一个有效的）：不写盘，只说明下一步。
+    // 回执丢失后的重试也会走到这里——按最新档案看，这次意图其实已经落盘。
+    const undone = store.isUndoneAttempt(target.attempt);
+    if (asUndo === undone) {
+      delete this._attemptOps[key];
+      this._recentStatus = { attemptId, undone: asUndo };
+      this.setData({
+        storageError: '',
+        notice: asUndo
+          ? '这一把已经撤回，可用下方的「恢复这一把」找回。'
+          : '这一把已经在本场里了，不用再恢复。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    const previous = this._attemptOps[key];
+    const outcome = (asUndo ? store.undoAttempt : store.restoreAttempt)(attemptId, {
+      routeId,
+      sessionId,
+      // 渲染那次点击时用的档案 ID；页面上的这一行不属于当前档案时不落盘。
+      archiveId: originArchiveId,
+      // 预期状态就是这一次点击所依据的画面（WXML 把渲染时的状态随点击带下来）。
+      // 与档案层读到的最新持久状态不符时按 stale 拒绝，基于过时画面的操作不落盘。
+      expected:
+        dataset.expected === 'undone' || dataset.expected === 'effective'
+          ? dataset.expected
+          : asUndo
+            ? 'effective'
+            : 'undone',
+      // 渲染时这一把的 rev：与最新持久版本不符（旧的撤回/恢复事件在状态又变过之后才
+      // 送到）时按过期事件拒绝，一个字都不写。
+      expectedRev: Number.isInteger(dataset.expectedRev) ? dataset.expectedRev : undefined,
+      opId: previous ? previous.opId : ''
+    });
+    if (outcome.archive) this.archive = outcome.archive;
+
+    if (outcome.ok) {
+      delete this._attemptOps[key];
+      // 记下这次动作带来的状态：撤回成功即「已撤回」，恢复成功即「有效」。
+      this._recentStatus = { attemptId, undone: asUndo };
+      this.setData({ storageError: '', notice: '' });
+      this.refreshView();
+      return;
+    }
+
+    if (outcome.code === 'write-failed' || outcome.code === 'unreadable') {
+      // 未确认落盘：不显示乐观结果，先按**最新落盘状态**重读一次档案，把数、完攀状态、
+      // 最近一把与逐把列表都以磁盘为准。
+      const reloaded = store.loadState();
+      if (reloaded.ok) {
+        this.archive = reloaded.archive;
+        const fresh = reloaded.archive.attempts.find(item => item.id === attemptId) || null;
+        const stateMatches = Boolean(fresh && store.isUndoneAttempt(fresh) === asUndo);
+        // 「这一次确实写进去了，只是回执没回来」要说准，三样都得对上：
+        //   1) 盘上仍是**原来那一份档案**（reloaded.archive.archiveId 与点击时原按钮捕获的
+        //      档案 ID 相等）。另一份档案可以把把次、场次、线路乃至已结清操作的 opId 全都
+        //      复用一遍，只比后面几项就会把别人的结果认成这次的；
+        //   2) 这一把确实属于这次点击带下来的场次与线路；
+        //   3) 这一把上留着**这次操作自己**的落盘凭据（outcome.opId 记在 settledOps 里，
+        //      且意图相符）。
+        // 只比状态是不够的：另一个写者、另一份档案或另一个 opId 都可能把这一把带到同样的
+        // 状态，那时不能说「此前那次已成功」。
+        const sameArchive = reloaded.archive.archiveId === originArchiveId;
+        const receipt =
+          sameArchive &&
+          fresh &&
+          (!sessionId || fresh.sessionId === sessionId) &&
+          (!routeId || fresh.routeId === routeId)
+            ? store.attemptSettledOp(fresh, outcome.opId)
+            : null;
+        const landedByThisOperation = Boolean(receipt && receipt.undone === asUndo);
+        if (stateMatches && landedByThisOperation) {
+          // 清掉重试入口，按盘上状态给出确认。
+          delete this._attemptOps[key];
+          this._recentStatus = { attemptId, undone: asUndo };
+          this.setData({
+            storageError: '',
+            notice: noun + '已经落盘（回执丢失），已按最新档案确认。'
+          });
+          this.refreshView();
+          return;
+        }
+        if (stateMatches) {
+          // 盘上已经是这个状态，但凭据不属于这次操作：可能是同一份档案里另一个写入完成的，
+          // 也可能是盘上已经换成了另一份本机档案（把次与 opId 撞名）。按真实盘上状态显示
+          // （把数、完攀状态与最近一把都以磁盘为准），明确区别开：既不认领那次回执，也不让
+          // 人重试一个已经成立的动作。
+          delete this._attemptOps[key];
+          this.setData({
+            storageError: '',
+            notice: sameArchive
+              ? '盘上这一把已经是' +
+                (asUndo ? '已撤回' : '有效') +
+                '状态，但不是这次' +
+                noun +
+                '写入的（可能由另一处写入完成）；已按最新档案显示。'
+              : '盘上这一把已经是' +
+                (asUndo ? '已撤回' : '有效') +
+                '状态，但盘上已经换成另一份本机档案，不是这次' +
+                noun +
+                '写入的；已按最新档案显示。'
+          });
+          this.refreshView();
+          return;
+        }
+      }
+      // 确实没落盘：保留原动作与同一个 opId 的重试入口（同一把、同一动作，不会换成
+      // 相反动作或另一把），并把失败原因显示出来。
+      this._attemptOps[key] = { opId: outcome.opId, error: outcome.error };
+      this.setData({
+        storageError: outcome.error,
+        notice: noun + '未保存，可再点一次「重试' + noun + '这一把」。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    // 守卫拒绝（例如抱石会变成第二次完攀）、过期的点击或这一把已不存在：不动任何数据。
+    delete this._attemptOps[key];
+    this.setData({
+      storageError: '',
+      notice: outcome.error || '这次' + noun + '没有生效，已按最新档案刷新。'
+    });
     this.refreshView();
   },
 

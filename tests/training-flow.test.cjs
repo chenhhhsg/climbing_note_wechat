@@ -812,6 +812,82 @@ test('T031 快速 A→B：迟到的 A 照片回执不覆盖 B，下一把只归 
   );
 });
 
+test('T030 复验 同日两场：切回已有照片的旧场次再选回原线，照片、把数与备注都跟着原 routeId', async () => {
+  const page = await openSessionPage({ start: '1' });
+  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
+  page.startSession();
+  await settle();
+
+  // 第一场：A 线带照片，记一把并补备注。
+  page.toggleNewRouteForm();
+  page.onNewRouteNameInput({ detail: { value: 'A 线' } });
+  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
+  await page.createRoute();
+  await settle();
+  const session1 = page.data.activeSession.id;
+  const aId = page.data.selectedRoute.id;
+  assert.equal(page.data.routePhoto.status, 'saved');
+  const aPhotoId = page.data.routePhoto.photoId;
+  const aPath = page.data.routePhoto.mainPath;
+
+  page.recordAttempt(tapDataset({ result: 'fail', sessionId: session1, routeId: aId }));
+  await settle();
+  const aAttemptId = page.data.attempts[0].id;
+  page.openNoteEditor(tapDataset({ attemptId: aAttemptId }));
+  page.onNoteInput({ detail: { value: 'A 的旧备注' } });
+  page.saveNote();
+  await settle();
+  assert.equal(page.data.attempts[0].note, 'A 的旧备注');
+
+  // 同日另开第二场：只记一把，不带第一场的照片或把次。
+  page.openSessionForm();
+  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
+  page.startSession();
+  await settle();
+  const session2 = page.data.activeSession.id;
+  assert.notEqual(session2, session1);
+  assert.equal(page.data.routeSwitchTotal, 0, '新场次没有本场线路');
+  page.openAddRoute();
+  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
+  page.onNewRouteNameInput({ detail: { value: 'B 线' } });
+  await page.createRoute();
+  await settle();
+  const bId = page.data.selectedRoute.id;
+  assert.notEqual(bId, aId);
+  assert.equal(page.data.routePhoto.status, 'none', 'B 没有照片');
+  page.recordAttempt(tapDataset({ result: 'fail', sessionId: session2, routeId: bId }));
+  await settle();
+  assert.equal(photoIndex().photos.length, 1, '照片索引里只有 A 那一条');
+
+  // 切回第一场：当前选择被清空（selectSession 契约），但本场线路名册还在，照片不冒充别的线。
+  page.switchSession(tapDataset({ sessionId: session1 }));
+  await settle();
+  assert.equal(page.data.activeSession.id, session1);
+  assert.equal(page.data.selectedRoute, null);
+  assert.equal(page.data.routePhoto, null, '没有当前线时不显示任何线路的照片');
+  assert.equal(page.data.routeSwitchTotal, 1, '本场那一条线仍在换线名册里');
+  assert.equal(page.data.routeSwitchAllRows[0].id, aId);
+
+  // 从名册选回原线：照片、把数与备注一起回到 A（同一个 routeId）。
+  page.selectRoute(tapDataset({ routeId: aId }));
+  await settle();
+  assert.equal(page.data.selectedRoute.id, aId);
+  assert.equal(page.data.routePhoto.status, 'saved');
+  assert.equal(page.data.routePhoto.photoId, aPhotoId);
+  assert.equal(page.data.routePhoto.mainPath, aPath);
+  assert.equal(page.data.routeCountText, '1 把');
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].id, aAttemptId);
+  assert.equal(page.data.attempts[0].note, 'A 的旧备注');
+  assert.equal(photoIndex().photos.length, 1, '选回原线不新建第二条照片记录');
+  assert.equal(photoIndex().photos[0].routeId, aId);
+  // 第二场的把次没有被搬过来。
+  assert.equal(
+    store.attemptsFor(archiveOf(), { sessionId: session2, routeId: bId }).length,
+    1
+  );
+});
+
 // ------------------------------------------------------------------ R5 移除与失败
 
 test('R5 页面移除照片：索引与文件释放，把次与备注不动', async () => {

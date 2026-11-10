@@ -219,21 +219,18 @@
   margin-bottom: 20rpx;
 }
 
-.selected-route-info,
-.route-info {
+.selected-route-info {
   flex: 1;
 }
 
-.selected-route-name,
-.route-name {
+.selected-route-name {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
   color: #173d32;
 }
 
-.selected-route-meta,
-.route-meta {
+.selected-route-meta {
   display: block;
   font-size: 26rpx;
   color: #606d61;
@@ -241,7 +238,9 @@
 }
 
 .route-state {
+  display: inline-block;
   font-size: 22rpx;
+  line-height: 1.4;
   padding: 4rpx 14rpx;
   border-radius: 8rpx;
 }
@@ -256,31 +255,8 @@
   color: #f9a825;
 }
 
-.route-list {
-  margin-bottom: 20rpx;
-}
-
-.route-item {
-  background-color: #fffcf3;
-  border-radius: 16rpx;
-  padding: 24rpx;
-  margin-bottom: 16rpx;
-}
-
-.route-selected {
-  border: 2rpx solid #173d32;
-}
-
-.route-main {
-  display: flex;
-  align-items: center;
-}
-
-.route-check {
-  font-size: 24rpx;
-  color: #173d32;
-  margin-left: 12rpx;
-}
+/* 页顶不再重复一份全量线路列表（T030 复验）：换线与选择都在结果按钮旁的换线区，
+   因此这里只保留线路色块与状态徽标的通用样式。 */
 
 .gym-route-item {
   padding: 18rpx 0;
@@ -482,28 +458,41 @@
   opacity: 0.5;
 }
 
+/* 结果区高度稳定（T033 复验）：正常态的两个结果按钮、抱石完攀收起后的面板与完攀待确认
+   面板高度一致（同一行高度 96rpx），因此「撤回唯一一次抱石完攀」解锁按钮、或再次完攀
+   收起时，下方的最近一把操作区不会上下移动，刚才点过的坐标也就不会落到另一个动作上。 */
 .route-completed-panel,
 .route-pending-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  min-height: 96rpx;
+  box-sizing: border-box;
   background-color: #fffcf3;
   border-radius: 16rpx;
-  padding: 26rpx;
+  padding: 14rpx 22rpx;
 }
 
 .route-completed-title,
 .route-pending-title {
+  flex: none;
   display: block;
   font-size: 30rpx;
   font-weight: bold;
   color: #173d32;
-  margin-bottom: 10rpx;
+  margin-bottom: 0;
 }
 
 .route-completed-hint,
 .route-pending-hint {
+  flex: 1;
+  min-width: 0;
   display: block;
   font-size: 26rpx;
   color: #526157;
-  margin-bottom: 8rpx;
+  margin-bottom: 0;
+  text-align: right;
 }
 
 /* ---- 线路主照片（T019）：详情展示完整主图，保存必须由用户确认 ---- */
@@ -645,31 +634,69 @@
 .photo-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
 .photo-title { font-size:32rpx; color:#173d32; }
 .photo-thumb,.photo-main { background:#e3e5d7; border-radius:4rpx; }
-.route-title-info,.selected-route-info,.session-heading { min-width:0; }
-.route-name,.selected-route-name,.training-gym,.card-title { word-break:break-all; }
+.selected-route-info,.session-heading { min-width:0; }
+.selected-route-name,.training-gym,.card-title { word-break:break-all; }
 .route-completed-panel,.route-pending-panel { border-left:8rpx solid #315d40; background:#e7eddf; border-radius:4rpx; }
 .route-pending-panel { border-left-color:#b7683d; background:#f3ead7; }
 
-.session-card { background:transparent; padding:0 0 18rpx; }
+/* 场次标题、日期与「本日场次」切换（T030 复验）：排在主操作区之后。上边一条细分割线把它
+   和主操作区分开，但主操作区仍是页顶第一块——首屏从页顶就能换线和记结果。 */
+.session-card { background:transparent; padding:16rpx 0 12rpx; border-top:1px solid #c4c8b9; }
 .session-top { column-gap:12rpx; align-items:flex-start; }
 .session-meta { font-size:24rpx; line-height:1.5; }
 .session-heading .card-title { font-size:34rpx; margin-bottom:4rpx; }
 .session-new { margin:0; padding:0 4rpx; font-size:24rpx; min-height:88rpx; }
+/* 当前线卡片（首屏主操作区的第一块）：字号与内边距按小屏收紧，保证结果按钮留在首屏。 */
 .selected-route { position:relative; display:flex; align-items:stretch; padding:0; margin:0 0 12rpx; overflow:hidden; background:#173d32; color:#fffcf3; }
 .selected-route .route-swatch { width:9rpx; height:auto; flex:none; border:0; border-radius:0; margin:0; }
-.selected-route-info { display:flex; flex-direction:column; align-items:flex-start; padding:22rpx 26rpx 24rpx; }
-.selected-route-grade,.route-grade-display { font:italic 700 92rpx/.98 Georgia,"Times New Roman",serif; letter-spacing:-4rpx; }
+.selected-route-info { display:flex; flex-direction:column; align-items:flex-start; padding:16rpx 22rpx 18rpx; }
+.selected-route-grade,.route-grade-display { font:italic 700 76rpx/.98 Georgia,"Times New Roman",serif; letter-spacing:-4rpx; }
 .selected-route-grade { color:#ff986c; }
-.selected-route-name { margin:10rpx 0 5rpx; color:#fffcf3; font-size:36rpx; font-family:"Songti SC","SimSun",serif; }
-.selected-route-meta { color:#dbe7d6; font-size:25rpx; line-height:1.5; }
-.selected-route .route-state { margin-top:8rpx; }
-.result-footer { display:flex; gap:12rpx; flex-wrap:wrap; margin:12rpx 0 24rpx; }
+.selected-route-name { margin:8rpx 0 4rpx; color:#fffcf3; font-size:34rpx; font-family:"Songti SC","SimSun",serif; }
+.selected-route-meta { color:#dbe7d6; font-size:24rpx; line-height:1.5; }
+/* 状态徽标槽：高度固定，完攀/待确认徽标出现或消失都不改当前线卡片的高度。 */
+.selected-route-state-slot { display:flex; align-items:center; min-height:42rpx; margin-top:6rpx; }
+.selected-route .route-state { margin-top:0; }
+/* 未选中任何一条（T030 复验）：本场有线路、但当前选择已被清空时，这一块取代当前线卡片占住
+   主操作区第一格的位置——不占满整张卡片的高度，所以下面的换线与结果永远还在首屏里；
+   文字只说「先选一条」，不替用户默认记到任意线上。 */
+.route-pick-hint { box-sizing:border-box; padding:16rpx 22rpx 18rpx; margin:0 0 12rpx; background:#f3ead7; border-left:8rpx solid #b7683d; border-radius:8rpx; }
+.route-pick-title { display:block; font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-size:30rpx; font-weight:700; color:#173d32; }
+.route-pick-text { display:block; margin-top:6rpx; font-size:24rpx; line-height:1.5; color:#526157; }
+/* 主操作区「门」（T030 复验）：换线 + 结果这一整块，滚动定位用它判断是否已可见，本身不画东西。 */
+.result-anchor { display:block; }
+/* 结果区固定一行高（96rpx，与两个结果按钮同高）：收起/解锁/待确认都不移动下方控件。 */
+.result-footer { display:flex; gap:12rpx; flex-wrap:wrap; align-items:stretch; min-height:96rpx; box-sizing:border-box; margin:12rpx 0 24rpx; }
 .result-footer .result-button { width:auto; flex:1; min-height:96rpx; padding:20rpx 10rpx; margin:0; border-radius:8rpx; font-size:32rpx; font-weight:700; line-height:1.4; }
 .result-fail { color:#214637; background:#ebeadd; }
 .result-send { color:#1b3128; background:#ff793f; }
 .result-footer .route-completed-panel,.result-footer .route-pending-panel,.result-lock-hint { width:100%; box-sizing:border-box; }
 .field,.picker-value,.text-input { line-height:1.5; }
 .text-input { min-height:88rpx; }
+
+/* 最近一把的撤回与恢复（T033 复验）：结果按钮下方**同一个永久操作区**。
+   这一行里是两个并排的交互槽（左：撤回；右：恢复），各占一半宽度、高度相同，
+   所以两个动作的物理命中矩形在任何状态下都不相交——同一个坐标最多命中其中一个。
+   哪一边当前没有动作，就在那一槽里留一块等宽等高的非交互空位（.recent-attempt-idle，
+   没有 bindtap），行高与位置都不变，刚才点过的坐标不会被另一把或旁边的控件接管。 */
+.recent-attempt { border-top:1px solid #c4c8b9; padding-top:14rpx; margin:0 0 24rpx; }
+.recent-attempt-head { display:flex; align-items:baseline; justify-content:space-between; gap:12rpx; }
+.recent-attempt-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:28rpx; color:#173d32; }
+.recent-attempt-note { flex:none; font-size:22rpx; color:#606d61; }
+/* 两个槽：flex-basis 0 + 各占一半，行高固定，按钮出现或消失都不改尺寸。 */
+.recent-attempt-row { display:flex; align-items:stretch; gap:12rpx; min-height:88rpx; margin-top:12rpx; }
+.recent-attempt-slot,
+.recent-attempt-recovery { flex:1 1 0; min-width:0; display:flex; align-items:stretch; min-height:88rpx; }
+.recent-attempt-action,
+.recent-attempt-restore { flex:1 1 0; min-width:0; margin:0; }
+/* 不可用动作的空位：等宽等高、明确不是按钮（虚线、没有 bindtap）。 */
+.recent-attempt-idle { flex:1 1 0; min-width:0; display:flex; align-items:center; justify-content:center; box-sizing:border-box; min-height:88rpx; padding:0 18rpx; border:2rpx dashed #cbd0bf; border-radius:8rpx; }
+.recent-attempt-idle-text { font-size:24rpx; line-height:1.4; color:#7a8578; text-align:center; }
+.recent-attempt-info { display:flex; flex-direction:column; margin-top:10rpx; }
+.recent-attempt-text { font-size:28rpx; color:#173d32; word-break:break-all; }
+.recent-attempt-meta { margin-top:4rpx; font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; font-size:22rpx; line-height:1.5; color:#606d61; }
+.recent-attempt-status { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#2f6248; }
+.recent-attempt-hint { display:block; margin-top:8rpx; font-size:22rpx; line-height:1.6; color:#606d61; }
 
 /* 本次小结（T029）：按原 sessionId 只读回看本场；勾选只改「下次想爬」清单 */
 .session-summary .section-title { margin-bottom:20rpx; }
@@ -741,14 +768,14 @@
 .wishlist-note-empty { border-left-color: #cbd0bf; color: #7a8578; }
 .wishlist-open { flex: none; margin-left: 16rpx; font-size: 26rpx; color: #173d32; }
 
-/* 本场线路与加线（T030）：入口常驻首屏；空场是「添加第一条线路」，有线时「＋ 加线」 */
-.session-routes { margin-bottom: 24rpx; }
-.route-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; margin-bottom: 16rpx; }
+/* 本场线路与加线（T030）：入口常驻首屏；空场是「添加第一条线路」，有线时「＋ 加线」。
+   这里只占标题这一行——全量线路列表不再在页顶重复一份，它就在结果按钮旁的换线区。 */
+.session-routes { margin-bottom: 16rpx; }
+.route-section-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; margin-bottom: 12rpx; }
 .route-section-head .section-title { flex: 1; min-width: 0; margin-bottom: 0; }
 .add-route-inline { flex: none; margin: 0; padding: 0 8rpx; font-size: 26rpx; font-weight: 700; color: #173d32; }
 .first-route-hint { display: block; margin-bottom: 16rpx; font-size: 26rpx; line-height: 1.6; color: #526157; }
 .add-route-first { width: 100%; }
-.session-routes .route-list { margin-bottom: 0; }
 /* 关联成功但选中失败：不报成功，留可点的重试入口 */
 .link-retry-card { margin-top: 16rpx; padding: 20rpx 24rpx; background: #f3ead7; border-left: 8rpx solid #b7683d; border-radius: 4rpx; }
 .link-retry-text { display: block; font-size: 26rpx; line-height: 1.6; color: #943a23; }
@@ -765,23 +792,24 @@
 .color-clear { color: #745241; padding: 6rpx 0; }
 .add-route-cancel { display: block; width: 100%; margin-top: 14rpx; text-align: center; color: #745241; }
 
-/* 结果按钮旁换线（T031）：结果按钮上方；1–3 条直接列全，更多时「全部 N 条」展开 */
-.route-switch { margin: 0 0 12rpx; padding: 16rpx 18rpx; background: #f3f1e6; border: 1px solid #d6d5c6; border-radius: 8rpx; }
-.route-switch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16rpx; margin-bottom: 12rpx; }
+/* 结果按钮旁换线（T031）：结果按钮上方；1–3 条直接列全，更多时「全部 N 条」展开。
+   它是当前线路的直接换线入口，因此整块按首屏预算收紧（内边距、行高、间距）。 */
+.route-switch { margin: 0 0 10rpx; padding: 12rpx 14rpx; background: #f3f1e6; border: 1px solid #d6d5c6; border-radius: 8rpx; }
+.route-switch-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16rpx; margin-bottom: 8rpx; }
 .route-switch-title { flex: 1; min-width: 0; font-size: 24rpx; color: #526157; }
 .route-switch-count { flex: none; font-size: 22rpx; color: #7a8578; }
 .route-switch-chips { display: flex; flex-wrap: wrap; gap: 10rpx; }
-/* 缩略行：整块都是可点区域，长名称换行不撑破；高度按拇指可及排版 */
-.route-switch-chip { display: flex; align-items: center; gap: 8rpx; flex: 1 1 46%; min-width: 0; max-width: 100%; box-sizing: border-box; min-height: 88rpx; padding: 12rpx 18rpx; background: #fffcf3; border: 1px solid #c9c8b8; border-radius: 8rpx; }
+/* 缩略行：整块都是可点区域，高度按拇指可及排版；名称最多两行，长名不会把结果按钮挤走。 */
+.route-switch-chip { display: flex; align-items: center; gap: 8rpx; flex: 1 1 46%; min-width: 0; max-width: 100%; box-sizing: border-box; min-height: 84rpx; padding: 10rpx 16rpx; background: #fffcf3; border: 1px solid #c9c8b8; border-radius: 8rpx; }
 .route-switch-on { background: #173d32; border-color: #173d32; }
 .route-switch-dot { flex: none; width: 14rpx; height: 14rpx; border: 1px solid #9aa392; border-radius: 50%; }
 .route-switch-on .route-switch-dot { border-color: #fffcf3; }
-.route-switch-chip-name { flex: 1 1 auto; min-width: 0; font-size: 28rpx; line-height: 1.4; color: #173d32; word-break: break-all; }
+.route-switch-chip-name { flex: 1 1 auto; min-width: 0; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 28rpx; line-height: 1.4; color: #173d32; word-break: break-all; }
 .route-switch-on .route-switch-chip-name { color: #fffcf3; }
 .route-switch-chip-grade { flex: none; font-family: "IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size: 24rpx; color: #ff793f; }
 .route-switch-check { flex: none; font-size: 22rpx; padding: 2rpx 10rpx; border-radius: 8rpx; background: #dfebd9; color: #204b34; }
 .route-switch-on .route-switch-check { background: #ff793f; color: #173d32; }
-.route-switch-all { display: flex; align-items: center; justify-content: center; flex: 1 1 46%; box-sizing: border-box; min-height: 88rpx; padding: 12rpx 20rpx; font-size: 26rpx; color: #b7683d; background: transparent; border: 1px dashed #d0a184; border-radius: 8rpx; text-align: center; }
+.route-switch-all { display: flex; align-items: center; justify-content: center; flex: 1 1 46%; box-sizing: border-box; min-height: 84rpx; padding: 10rpx 18rpx; font-size: 26rpx; color: #b7683d; background: transparent; border: 1px dashed #d0a184; border-radius: 8rpx; text-align: center; }
 /* 展开后的全集：每条一整行，条形区不挤压下方的结果按钮 */
 .route-switch-list { display: flex; flex-direction: column; gap: 10rpx; }
 .route-switch-row { display: flex; align-items: center; gap: 12rpx; box-sizing: border-box; min-height: 88rpx; padding: 14rpx 18rpx; background: #fffcf3; border: 1px solid #c9c8b8; border-radius: 8rpx; }
