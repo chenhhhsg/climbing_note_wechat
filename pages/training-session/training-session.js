@@ -33,6 +33,13 @@
  *
  * 页面自己只保存「展示用的当前状态」与本实例的临时信息（未落盘操作、已更正的只读
  * 回读行、快速双击窗口），不承担数据权威。
+ *
+ * T030 把「本场线路 · 加线」搬到首屏：空场首屏直接是「添加第一条线路」，有线时在
+ * 「本场线路」旁常驻「＋ 加线」。加线面板只有两个来源——本馆已有线路（复用
+ * resumeRouteInSession：同一个 routeId 关联进本场并选中，重复关联幂等）与新建线路
+ * （复用 createRoute 与原类型/等级校验，名称、类型、等级在首层，颜色收起仍可创建）。
+ * 关联成功而选中失败时页面不报成功，改在首屏保留可点的重试入口（linkRetry）；
+ * 打开与取消面板都不写盘，取消后线路、关联与当前选择与打开前完全相同。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
@@ -70,6 +77,11 @@ const ROUTE_COLORS = [
 // 几百毫秒内发生两次，记两把之间必然隔着一次攀爬和一次落盘。
 const SAME_TAP_WINDOW_MS = 300;
 
+// 颜色是可选属性：没展开、没选过就是「不指定」，不替用户填一个没看到的颜色。
+const UNSET_COLOR_TEXT = '不指定';
+const COLOR_TOGGLE_CLOSED = '＋ 颜色（可选）';
+const COLOR_TOGGLE_OPEN = '收起颜色';
+
 function pad2(value) {
   return value < 10 ? '0' + value : String(value);
 }
@@ -98,6 +110,9 @@ function completionText(completion) {
 /**
  * 新建线路表单的默认类型与等级：抱石 V3。
  * 默认等级必须属于默认类型，否则留空让用户重选，不静默取首个等级。
+ *
+ * 颜色（T030）不设默认值：它是可选属性，收起时按「不指定」保存，
+ * 不替用户记一个他没看过的颜色；展开后才按所选颜色落盘。
  */
 function defaultNewRouteForm() {
   const grades = gradesForType(DEFAULT_CLIMB_TYPE);
@@ -109,7 +124,12 @@ function defaultNewRouteForm() {
     newRouteGrades: grades,
     newRouteGradeIndex: gradeIndex,
     newRouteGrade: grade,
-    newRouteGradeText: gradeText(grade)
+    newRouteGradeText: gradeText(grade),
+    newRouteColorIndex: -1,
+    newRouteColorName: '',
+    newRouteColorText: UNSET_COLOR_TEXT,
+    newRouteColorVisible: false,
+    newRouteColorToggleText: COLOR_TOGGLE_CLOSED
   };
 }
 
@@ -172,11 +192,19 @@ Page({
 
     // 选原线 / 新建线路
     gymRoutes: [],
+    // 加线面板（T030）：首屏「本场线路」旁打开，只有「本馆已有 / 新建线路」两个来源
+    addRouteVisible: false,
+    addRouteMode: 'existing',
+    // 已有线关联成功但选中失败：保留可见的重试入口，界面不给出成功状态
+    linkRetry: null,
     newRouteVisible: false,
     newRouteName: '',
     newRouteColors: ROUTE_COLORS,
-    newRouteColorIndex: 0,
-    newRouteColorName: ROUTE_COLORS[0].name,
+    newRouteColorIndex: -1,
+    newRouteColorName: '',
+    newRouteColorText: UNSET_COLOR_TEXT,
+    newRouteColorVisible: false,
+    newRouteColorToggleText: COLOR_TOGGLE_CLOSED,
     newRouteTypes: CLIMB_TYPES,
     newRouteTypeIndex: 0,
     newRouteType: DEFAULT_CLIMB_TYPE,
@@ -232,11 +260,14 @@ Page({
     // _failedOps  本实例发起但未落盘的把次（按线路分组），重试沿用同一 opId；
     // _lastTap    快速双击窗口；
     // _correctedRows / _correctionFailures  按把更正的只读回读与失败重试标记；
+    // _formDirty / _newRouteDirty  正在填写的场次表单与新建线路表单（不重读、不冲掉输入）；
+    // _lastCreateTap  快速重复点击「创建并选中」的窗口，避免连点建出两条线；
     // _photoUi / _newRoutePhotoPath  照片控制器与新建表单里已选的临时照片路径；
     // _wishlistRows  本馆「下次想爬」的派生条目（不落盘，照片状态叠加在上面）。
     // _summarySessionId  本页显式指定「要回看哪一场」的小结目标（只读，不写盘）。
     this._failedOps = {};
     this._lastTap = {};
+    this._lastCreateTap = 0;
     this._correctedRows = {};
     this._correctionFailures = {};
     this._formDirty = false;
@@ -263,10 +294,12 @@ Page({
       this.loadPhotos();
       return;
     }
-    // 正在填写的场次表单与新建线路表单都不重读重算，避免把输入冲掉。
+    // 正在填写的场次表单与新建线路表单都不重读重算，避免把输入冲掉；
+    // 已经打开的加线面板也保持打开（返回本页不把用户刚打开的面板关掉）。
     const keepForm =
       (this._formDirty && this._formOpen) ||
-      (this._newRouteDirty && this.data.newRouteVisible);
+      (this._newRouteDirty && this.data.newRouteVisible) ||
+      this.data.addRouteVisible;
     this.loadPage({ keepForm });
     this.loadPhotos();
   },
@@ -472,10 +505,17 @@ Page({
       gymName: keepForm ? this.data.gymName : gymName,
       sessionDate: keepForm ? this.data.sessionDate : date,
       formError: keepForm ? this.data.formError : '',
+      addRouteVisible: keepForm ? this.data.addRouteVisible : false,
+      addRouteMode: keepForm ? this.data.addRouteMode : 'existing',
       newRouteVisible: keepForm ? this.data.newRouteVisible : false,
       newRouteName: keepForm ? this.data.newRouteName : '',
-      newRouteColorIndex: keepForm ? this.data.newRouteColorIndex : 0,
-      newRouteColorName: keepForm ? this.data.newRouteColorName : ROUTE_COLORS[0].name,
+      newRouteColorIndex: keepForm ? this.data.newRouteColorIndex : form.newRouteColorIndex,
+      newRouteColorName: keepForm ? this.data.newRouteColorName : form.newRouteColorName,
+      newRouteColorText: keepForm ? this.data.newRouteColorText : form.newRouteColorText,
+      newRouteColorVisible: keepForm ? this.data.newRouteColorVisible : form.newRouteColorVisible,
+      newRouteColorToggleText: keepForm
+        ? this.data.newRouteColorToggleText
+        : form.newRouteColorToggleText,
       newRouteTypeIndex: keepForm ? this.data.newRouteTypeIndex : form.newRouteTypeIndex,
       newRouteType: keepForm ? this.data.newRouteType : form.newRouteType,
       newRouteGrades: keepForm ? this.data.newRouteGrades : form.newRouteGrades,
@@ -954,10 +994,95 @@ Page({
     }
     this.archive = outcome.archive;
     this._lastTap = {};
-    this.setData({ storageError: '', notice: '', noteEditor: null });
+    // 选中成功即上一次「选中失败」已经解决，重试入口可以收掉。
+    this.setData({ storageError: '', notice: '', noteEditor: null, linkRetry: null });
     this.refreshView();
     // 换线路后按新选中线路读取照片（同一线路的照片不重复请求）。
     this.loadPhotos();
+  },
+
+  /**
+   * 把加线面板的展示状态收回到关闭时的样子（含新建表单回到默认类型/等级/颜色）。
+   * 只返回数据补丁，不写盘：取消加线不产生线路、关联或选择上的任何变化。
+   */
+  addRouteFormPatch() {
+    const form = defaultNewRouteForm();
+    const patch = {
+      addRouteVisible: false,
+      addRouteMode: 'existing',
+      newRouteVisible: false,
+      newRouteName: '',
+      newRouteError: '',
+      newRoutePhoto: null
+    };
+    Object.keys(form).forEach(key => {
+      patch[key] = form[key];
+    });
+    return patch;
+  },
+
+  /**
+   * 首屏加线入口（T030）：打开「本馆已有 / 新建线路」面板。
+   * 有本馆旧线时默认停在「本馆已有」（首屏只差一步），没有就直接进新建表单。
+   * 面板已经开着时只切来源、不重置已输入的内容；打开面板本身不写盘，
+   * 没开始场次时只提示，不改任何数据。
+   */
+  openAddRoute(event) {
+    if (this.data.loadError) return;
+    if (!this.data.activeSession) {
+      this.setData({ notice: '请先开始一场训练' });
+      return;
+    }
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const wanted = dataset.mode;
+    if (this.data.addRouteVisible) {
+      // 已经打开：只按入口指定的来源切换，不把正在填的名称/类型/等级冲掉。
+      if (wanted) this.switchAddRouteMode(event);
+      return;
+    }
+    const mode =
+      wanted === 'new' || wanted === 'existing'
+        ? wanted
+        : this.data.gymRoutes.length > 0
+          ? 'existing'
+          : 'new';
+    this._newRouteDirty = false;
+    // 重开面板丢掉上一次未提交的临时照片选择；重新打开表单也是一次新的提交起点。
+    this._newRoutePhotoPath = '';
+    this._lastCreateTap = 0;
+    this.setData(
+      Object.assign(this.addRouteFormPatch(), {
+        addRouteVisible: true,
+        addRouteMode: mode,
+        newRouteVisible: mode === 'new'
+      })
+    );
+  },
+
+  /**
+   * 取消加线：只收起面板并清掉未提交的输入，不写盘。
+   * 取消后本场线路、本场关联与当前选择都保持与打开面板前完全相同。
+   */
+  cancelAddRoute() {
+    this._newRouteDirty = false;
+    this._newRoutePhotoPath = '';
+    this.setData(this.addRouteFormPatch());
+  },
+
+  /**
+   * 加线来源切换：本馆已有线路 / 新建线路。
+   * 只换面板里显示哪一块，已输入的名称与类型等级都留着，切回来还是原样。
+   */
+  switchAddRouteMode(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const mode = dataset.mode === 'new' ? 'new' : 'existing';
+    // 切到「新建线路」是另一次提交的起点，不受上一次连点保护影响。
+    if (mode === 'new') this._lastCreateTap = 0;
+    this.setData({
+      addRouteMode: mode,
+      newRouteVisible: mode === 'new',
+      newRouteError: ''
+    });
   },
 
   /**
@@ -971,9 +1096,23 @@ Page({
   },
 
   /**
+   * 关联成功后选中失败的可见重试入口（T030）：按同一个 routeId 再走一次
+   * 「关联 + 选中」——关联是幂等的，因此重试成功时本场仍然只有一条关联。
+   */
+  retryLinkSelection(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const routeId = dataset.routeId || (this.data.linkRetry && this.data.linkRetry.routeId);
+    return this.resumeRouteInSession(routeId);
+  },
+
+  /**
    * 继续原线：把这条长期线路关联到当前场次并选中（关联幂等，重复点不新增关联）。
    * 「选原线」与「下次想爬」清单的条目共用这一条路径，因此清单里点开的就是
    * 清单上那个长期线路 ID，不会另建一条同名线路，也不会把把次记到别的线上。
+   *
+   * T030：关联成功、选中失败时不报成功——不提示「已加入」、不收起加线面板，
+   * 而是把这条线写进 linkRetry，让首屏留着一个可点的「重试选中」入口；
+   * 关联成功且选中成功才收起面板并回到记结果处。
    */
   resumeRouteInSession(routeId) {
     if (this.data.loadError) return;
@@ -987,7 +1126,7 @@ Page({
     const linked = store.linkRouteToSession(active.id, routeId);
     if (!linked.ok) {
       if (linked.archive) this.archive = linked.archive;
-      this.setData({ storageError: linked.error });
+      this.setData({ storageError: linked.error, linkRetry: null });
       this.refreshView();
       return;
     }
@@ -995,42 +1134,91 @@ Page({
     const selected = store.selectRoute(routeId);
     this.archive = (selected.ok ? selected.archive : linked.archive) || this.archive;
     if (!selected.ok) {
+      const route = ((this.archive && this.archive.routes) || []).find(
+        item => item.id === routeId
+      );
       this.setData({
-        storageError: selected.error
+        storageError: '',
+        notice: '',
+        linkRetry: {
+          routeId,
+          routeName: route ? route.name : '这条线路',
+          error: selected.error
+        }
       });
       this.refreshView();
       return;
     }
+    const route = ((this.archive && this.archive.routes) || []).find(item => item.id === routeId);
     this._lastTap = {};
-    this.setData({ storageError: '', notice: '', noteEditor: null });
+    this._newRouteDirty = false;
+    this._newRoutePhotoPath = '';
+    this.setData(
+      Object.assign(this.addRouteFormPatch(), {
+        storageError: '',
+        notice: route
+          ? '已把「' + route.name + '」加入本场并选中，直接记这一把。'
+          : '已把这条线路加入本场并选中，直接记这一把。',
+        noteEditor: null,
+        linkRetry: null
+      })
+    );
     this.refreshView();
     this.loadPhotos();
   },
 
+  /**
+   * 新建线路表单的开关。加线面板（T030）与旧的直接调用共用它：
+   * 打开即进入面板的「新建线路」来源，收起则整个面板收起。
+   */
   toggleNewRouteForm() {
     const visible = !this.data.newRouteVisible;
     const form = defaultNewRouteForm();
     this._newRouteDirty = false;
-    // 收起或重开表单都会丢掉上一次未提交的临时照片选择。
+    // 收起或重开表单都会丢掉上一次未提交的临时照片选择；
+    // 重新打开表单也是一次新的提交起点（连点保护只针对同一次提交）。
     this._newRoutePhotoPath = '';
-    this.setData(
-      visible
-        ? {
-            newRouteVisible: true,
-            newRouteName: '',
-            newRouteError: '',
-            newRoutePhoto: null,
-            newRouteColorIndex: 0,
-            newRouteColorName: ROUTE_COLORS[0].name,
-            newRouteTypeIndex: form.newRouteTypeIndex,
-            newRouteType: form.newRouteType,
-            newRouteGrades: form.newRouteGrades,
-            newRouteGradeIndex: form.newRouteGradeIndex,
-            newRouteGrade: form.newRouteGrade,
-            newRouteGradeText: form.newRouteGradeText
-          }
-        : { newRouteVisible: false, newRouteName: '', newRouteError: '', newRoutePhoto: null }
-    );
+    this._lastCreateTap = 0;
+    if (!visible) {
+      this.setData(this.addRouteFormPatch());
+      return;
+    }
+    const patch = {
+      addRouteVisible: true,
+      addRouteMode: 'new',
+      newRouteVisible: true,
+      newRouteName: '',
+      newRouteError: '',
+      newRoutePhoto: null
+    };
+    Object.keys(form).forEach(key => {
+      patch[key] = form[key];
+    });
+    this.setData(patch);
+  },
+
+  /**
+   * 颜色是可选属性：默认收起，展开后才填写；收起时按「不指定」保存。
+   */
+  toggleNewRouteColor() {
+    const visible = !this.data.newRouteColorVisible;
+    this._newRouteDirty = true;
+    this.setData({
+      newRouteColorVisible: visible,
+      newRouteColorToggleText: visible ? COLOR_TOGGLE_OPEN : COLOR_TOGGLE_CLOSED
+    });
+  },
+
+  /**
+   * 清除已选颜色，回到「不指定」：不替用户留一个他不想记的颜色。
+   */
+  clearNewRouteColor() {
+    this._newRouteDirty = true;
+    this.setData({
+      newRouteColorIndex: -1,
+      newRouteColorName: '',
+      newRouteColorText: UNSET_COLOR_TEXT
+    });
   },
 
   onNewRouteNameInput(event) {
@@ -1090,10 +1278,21 @@ Page({
 
   onNewRouteColorChange(event) {
     const index = Number(event && event.detail && event.detail.value);
-    const safeIndex = ROUTE_COLORS[index] ? index : 0;
+    const color = ROUTE_COLORS[index];
+    this._newRouteDirty = true;
+    if (!color) {
+      // 越界索引不静默落到首个颜色，回到「不指定」。
+      this.setData({
+        newRouteColorIndex: -1,
+        newRouteColorName: '',
+        newRouteColorText: UNSET_COLOR_TEXT
+      });
+      return;
+    }
     this.setData({
-      newRouteColorIndex: safeIndex,
-      newRouteColorName: ROUTE_COLORS[safeIndex].name
+      newRouteColorIndex: index,
+      newRouteColorName: color.name,
+      newRouteColorText: color.name
     });
   },
 
@@ -1101,6 +1300,11 @@ Page({
    * 新建线路并选中。类型与等级必须各自有效且相互匹配：空值、越界或错配都直接拒绝，
    * 不新建线路、不改当前线路，也不静默回落到首个等级；错误组合由档案层再次把关，
    * 不落盘。
+   *
+   * 颜色（T030）不是必填：收起或没选过就是「不指定」，按空颜色保存，
+   * 不替用户记一个他没看过的颜色；照片同样可以跳过，保存后还能从当前线路补。
+   *
+   * 快速重复点击保存不重复建线：同一次提交在窗口内的第二次点击只提示、不再建线。
    */
   createRoute() {
     if (this.data.loadError) return;
@@ -1132,16 +1336,26 @@ Page({
       return;
     }
 
-    const color = ROUTE_COLORS[this.data.newRouteColorIndex] || ROUTE_COLORS[0];
+    // 按钮连点/双击不能建出两条线：窗口内的第二次提交直接忽略（不改任何数据）。
+    const now = Date.now();
+    if (this._lastCreateTap && now - this._lastCreateTap < SAME_TAP_WINDOW_MS) {
+      this.setData({ notice: '刚提交过这条线路，落盘确认后再提交下一条。' });
+      return;
+    }
+    this._lastCreateTap = now;
+
+    const color = ROUTE_COLORS[this.data.newRouteColorIndex] || null;
     const outcome = store.createRoute({
       sessionId: active.id,
       name,
       climbType,
       grade,
-      colorName: color.name,
-      colorHex: color.hex
+      colorName: color ? color.name : '',
+      colorHex: color ? color.hex : ''
     });
     if (!outcome.ok) {
+      // 没落盘就不算提交过：用户可以立刻原地重试。
+      this._lastCreateTap = 0;
       if (outcome.archive) this.archive = outcome.archive;
       this.setData({ newRouteError: outcome.error, storageError: '' });
       this.refreshView();
@@ -1149,27 +1363,21 @@ Page({
     }
 
     this.archive = outcome.archive;
-    const form = defaultNewRouteForm();
     // 新建表单里已选的照片（临时路径）在这里交给照片控制器：创建成功后才保存。
     const pendingPhotoPath = this._newRoutePhotoPath;
     this._newRouteDirty = false;
     this._newRoutePhotoPath = '';
     this._lastTap = {};
-    this.setData({
-      newRouteVisible: false,
-      newRouteName: '',
-      newRouteError: '',
-      newRoutePhoto: null,
-      storageError: '',
-      notice: '',
-      noteEditor: null,
-      newRouteTypeIndex: form.newRouteTypeIndex,
-      newRouteType: form.newRouteType,
-      newRouteGrades: form.newRouteGrades,
-      newRouteGradeIndex: form.newRouteGradeIndex,
-      newRouteGrade: form.newRouteGrade,
-      newRouteGradeText: form.newRouteGradeText
-    });
+    const createdName = (outcome.route && outcome.route.name) || name;
+    this.setData(
+      Object.assign(this.addRouteFormPatch(), {
+        storageError: '',
+        // 线路已创建并选中：直接回到记结果处，选中线与可记录目标一致。
+        notice: '已新建并选中「' + createdName + '」，直接记这一把。',
+        noteEditor: null,
+        linkRetry: null
+      })
+    );
     this.refreshView();
 
     // 线路已创建并选中；照片保存失败只影响照片，不回滚线路，也不阻止记把次。

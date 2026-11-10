@@ -462,9 +462,15 @@ test('R4 抱石随 V 级、类型切换保留/清空，错误组合不落盘，�
   assert.equal(page.data.newRouteGrade, '');
   assert.equal(page.data.newRouteGradeText, '请选择等级');
 
-  // 同色同级的两条线各自保存，互不带把次。
+  // 同色同级的另一条线各自保存，互不带把次。
   page.onNewRouteGradeChange({ detail: { value: page.data.newRouteGrades.indexOf('V3') } });
   page.onNewRouteNameInput({ detail: { value: '蓝色平衡线' } });
+  // 颜色要展开后才生效（T030）：这里显式选第一个颜色。
+  assert.equal(page.data.newRouteColorVisible, false, '颜色默认收起');
+  page.toggleNewRouteColor();
+  assert.equal(page.data.newRouteColorVisible, true);
+  page.onNewRouteColorChange({ detail: { value: 0 } });
+  assert.equal(page.data.newRouteColorName, '蓝色');
   page.createRoute();
   assert.equal(page.data.storageError, '');
   assert.equal(archiveOf().routes.length, 2);
@@ -520,6 +526,377 @@ test('R4 顶绳与先锋完攀后仍可继续记', () => {
   page2.recordAttempt(tapResult('fail'));
   assert.equal(page2.data.attempts.length, 2);
   assert.equal(page2.data.routeStateText, '');
+});
+
+// ------------------------------------------------------------------ *
+// T030 首屏加线与补录旧记录
+// ------------------------------------------------------------------ *
+
+/** 本场次里这条线路的关联条数（同一线路在本场只能有一条关联）。 */
+function linkCount(sessionId, routeId) {
+  return (archiveOf().sessionRoutes || []).filter(
+    link => link.sessionId === sessionId && link.routeId === routeId
+  ).length;
+}
+
+test('T030 首屏加线区在结果按钮之前：空场是「添加第一条线路」，有线时是「＋ 加线」', () => {
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  const routesStart = wxml.indexOf('id="session-routes"');
+  const failButton = wxml.indexOf('class="result-button result-fail"');
+  assert.ok(routesStart !== -1, '场内页应有首屏「本场线路 · 加线」区');
+  assert.ok(failButton !== -1);
+  assert.ok(routesStart < failButton, '加线入口在结果按钮之前，首屏就能找到');
+
+  // 有线：标题「本场线路」旁的常驻「＋ 加线」。
+  assert.match(wxml, /本场线路[\s\S]{0,200}wx:if="\{\{routes\.length > 0\}\}"[\s\S]{0,200}id="add-route"/);
+  assert.match(wxml, /id="add-route"[\s\S]{0,200}＋ 加线/);
+  // 空场：首屏的「添加第一条线路」。
+  assert.match(wxml, /id="add-first-route"[\s\S]{0,200}添加第一条线路/);
+  // 加线面板只有两个来源。
+  assert.match(wxml, /id="add-route-panel"/);
+  assert.match(wxml, /id="add-route-tab-existing"[\s\S]{0,200}本馆已有/);
+  assert.match(wxml, /id="add-route-tab-new"[\s\S]{0,200}新建线路/);
+  // 本馆已有走原关联路径；新建走原创建表单（名称、类型、等级在首层，颜色可展开）。
+  assert.match(wxml, /id="gym-route-\{\{item\.id\}\}"[\s\S]{0,200}bindtap="pickGymRoute"/);
+  assert.match(wxml, /id="new-route-name"/);
+  assert.match(wxml, /id="new-route-type"/);
+  assert.match(wxml, /id="new-route-grade"/);
+  assert.match(wxml, /id="toggle-new-route-color"[\s\S]{0,120}bindtap="toggleNewRouteColor"/);
+  assert.match(wxml, /wx:if="\{\{newRouteColorVisible\}\}"[\s\S]{0,300}bindchange="onNewRouteColorChange"/);
+  assert.match(wxml, /id="create-route"[\s\S]{0,80}bindtap="createRoute"/);
+  // 关联成功但选中失败：首屏留可点的重试入口。
+  assert.match(wxml, /id="add-route-link-retry"[\s\S]{0,400}bindtap="retryLinkSelection"/);
+  assert.match(wxml, /id="cancel-add-route"[\s\S]{0,80}bindtap="cancelAddRoute"/);
+
+  const handlers = new Set(handlersIn(wxml));
+  for (const required of [
+    'openAddRoute',
+    'cancelAddRoute',
+    'switchAddRouteMode',
+    'retryLinkSelection',
+    'toggleNewRouteColor',
+    'clearNewRouteColor',
+    'pickGymRoute',
+    'createRoute',
+    'selectRoute'
+  ]) {
+    assert.ok(handlers.has(required), '场内页应绑定：' + required);
+    assert.equal(typeof sessionDefinition[required], 'function', required + ' 必须有页面方法');
+  }
+});
+
+test('T030 空场从首屏加线：取消不新增线路与关联，新建一条抱石即选中并能记结果', () => {
+  const started = store.startSession({
+    gymName: '岩馆 A',
+    now: new Date(2026, 10, 9, 8, 30)
+  });
+  assert.equal(started.ok, true, started.error);
+  const page = openSessionPage({});
+  assert.equal(page.data.routes.length, 0, '空场首屏没有本场线路');
+  assert.equal(page.data.addRouteVisible, false);
+
+  // 本馆还没有别的线：打开加线直接进「新建线路」。
+  page.openAddRoute();
+  assert.equal(page.data.addRouteVisible, true);
+  assert.equal(page.data.addRouteMode, 'new');
+  assert.equal(page.data.newRouteVisible, true);
+  assert.equal(page.data.newRouteColorVisible, false, '颜色默认收起');
+
+  // 取消加线：不写盘，线路、关联与当前选择都与打开前相同。
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  page.cancelAddRoute();
+  assert.equal(page.data.addRouteVisible, false);
+  assert.equal(page.data.newRouteVisible, false);
+  assert.equal(page.data.routes.length, 0);
+  assert.equal(archiveOf().sessionRoutes.length, 0);
+  assert.equal(archiveOf().activeRouteId, '');
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '取消加线不得写盘');
+
+  // 再打开，新建一条抱石 V3：颜色收起、没有照片也能保存。
+  page.openAddRoute();
+  assert.equal(page.data.addRouteMode, 'new');
+  page.onNewRouteNameInput({ detail: { value: '蓝色动态线' } });
+  assert.equal(page.data.newRouteType, '抱石');
+  assert.equal(page.data.newRouteGrade, 'V3');
+  assert.equal(page.data.newRouteColorVisible, false);
+  assert.equal(page.data.newRoutePhoto, null);
+  page.createRoute();
+  assert.equal(page.data.storageError, '');
+
+  const archive = archiveOf();
+  assert.equal(archive.routes.length, 1);
+  assert.equal(archive.routes[0].climbType, '抱石');
+  assert.equal(archive.routes[0].grade, 'V3');
+  assert.equal(archive.routes[0].colorName, '', '收起颜色时按「不指定」保存，不替用户填颜色');
+  assert.equal(linkCount(started.session.id, archive.routes[0].id), 1);
+  // 保存后收起面板并回到记结果处；选中线与可记录目标一致。
+  assert.equal(page.data.addRouteVisible, false);
+  assert.equal(page.data.selectedRoute.id, archive.routes[0].id);
+  assert.equal(archive.activeRouteId, page.data.selectedRoute.id);
+  assert.match(page.data.notice, /已新建并选中/);
+
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  assert.equal(
+    store.attemptsFor(archiveOf(), {
+      sessionId: started.session.id,
+      routeId: archive.routes[0].id
+    }).length,
+    1,
+    '新建后可直接记这一把'
+  );
+});
+
+test('T030 从本馆已有加入：复用同一 routeId 与旧备注，本场只关联一次；选中失败留可见重试入口', () => {
+  // 早年场次：A 馆有一条线，第一把带备注。
+  const first = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 9, 0)
+  });
+  assert.equal(first.ok, true, first.error);
+  const old = store.createRoute({
+    sessionId: first.session.id,
+    name: '黄色平衡线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '黄色',
+    colorHex: '#f0b400'
+  });
+  assert.equal(old.ok, true, old.error);
+  const oldAttempt = store.saveAttempt({
+    sessionId: first.session.id,
+    routeId: old.route.id,
+    result: 'fail',
+    note: '起步要贴墙'
+  });
+  assert.equal(oldAttempt.ok, true, oldAttempt.error);
+
+  // 同一天另开一场：新场次默认不带线路，本馆那条线出现在「本馆已有」里。
+  const second = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 10, 0)
+  });
+  assert.equal(second.ok, true, second.error);
+  assert.notEqual(second.session.id, first.session.id);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, second.session.id);
+  assert.equal(page.data.routes.length, 0);
+  assert.deepEqual(page.data.gymRoutes.map(item => item.id), [old.route.id]);
+
+  // 有本馆旧线时加线默认停在「本馆已有」，不用再点一次。
+  page.openAddRoute();
+  assert.equal(page.data.addRouteMode, 'existing');
+  assert.equal(page.data.newRouteVisible, false);
+
+  page.pickGymRoute(tapDataset({ routeId: old.route.id }));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.linkRetry, null);
+  const linked = archiveOf();
+  assert.equal(linked.routes.length, 1, '加入本馆已有线不新建线路');
+  assert.equal(page.data.selectedRoute.id, old.route.id, '选中的就是原来那条线');
+  assert.equal(page.data.selectedRoute.name, '黄色平衡线');
+  assert.equal(linkCount(second.session.id, old.route.id), 1);
+  assert.equal(page.data.addRouteVisible, false, '加入成功后回到记结果处');
+  // 旧备注仍按同一个 routeId 读得到（没有复制到本场，也没有被改写）。
+  const history = store.attemptsFor(linked, { routeId: old.route.id });
+  assert.equal(history.length, 1);
+  assert.equal(history[0].note, '起步要贴墙');
+  assert.equal(history[0].sessionId, first.session.id);
+
+  // 再点一次同一条线：关联幂等，本场仍然只有一条关联。
+  page.pickGymRoute(tapDataset({ routeId: old.route.id }));
+  assert.equal(linkCount(second.session.id, old.route.id), 1, '同一线路在本场只关联一次');
+
+  // 第三场：关联成功、选中失败（第一段写成功、第二段写失败）。
+  const third = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 11, 0)
+  });
+  assert.equal(third.ok, true, third.error);
+  const failedPage = openSessionPage({});
+  assert.equal(failedPage.data.activeSession.id, third.session.id);
+  armSetFailAt(2);
+  failedPage.pickGymRoute(tapDataset({ routeId: old.route.id }));
+  armSetFailAt(0);
+
+  // 界面不给出成功状态：不报「已加入」，也没有选中；关联其实已落盘。
+  assert.equal(failedPage.data.storageError, '');
+  assert.equal(failedPage.data.notice, '');
+  assert.equal(failedPage.data.linkRetry.routeId, old.route.id);
+  assert.match(failedPage.data.linkRetry.error, /保存本机训练档案失败/);
+  assert.equal(linkCount(third.session.id, old.route.id), 1);
+  assert.notEqual(archiveOf().activeRouteId, old.route.id);
+
+  // 重试：按同一个 routeId 再走一次「关联 + 选中」，成功后仍只有一条关联。
+  failedPage.retryLinkSelection(tapDataset({ routeId: old.route.id }));
+  assert.equal(failedPage.data.linkRetry, null);
+  assert.equal(linkCount(third.session.id, old.route.id), 1, '重试后仍只有一条关联');
+  assert.equal(archiveOf().activeRouteId, old.route.id);
+  assert.equal(failedPage.data.selectedRoute.id, old.route.id);
+  assert.match(failedPage.data.notice, /已把「黄色平衡线」加入本场并选中/);
+
+  // 重开本页：关联、选中与原线历史都按原 ID 读回。
+  const reopened = openSessionPage({});
+  assert.equal(reopened.data.selectedRoute.id, old.route.id);
+  assert.equal(linkCount(third.session.id, old.route.id), 1);
+  assert.equal(store.attemptsFor(archiveOf(), { routeId: old.route.id }).length, 1);
+});
+
+test('T030 快速重复点击保存不重复建线，失败后可以立刻原地重试', () => {
+  const started = store.startSession({
+    gymName: '岩馆 A',
+    now: new Date(2026, 10, 9, 8, 30)
+  });
+  assert.equal(started.ok, true, started.error);
+  const page = openSessionPage({});
+  page.openAddRoute();
+  page.onNewRouteNameInput({ detail: { value: '连点测试线' } });
+
+  // 同一次提交在窗口内被点第二次：只提示，不再建线。
+  page.createRoute();
+  assert.equal(archiveOf().routes.length, 1);
+  page.setData({ newRouteName: '连点测试线' });
+  page.createRoute();
+  assert.equal(archiveOf().routes.length, 1, '快速重复点击不能建出第二条线');
+  assert.match(page.data.notice, /刚提交过这条线路/);
+
+  // 重新打开表单是另一次提交：照常能建第二条。
+  page.openAddRoute();
+  page.onNewRouteNameInput({ detail: { value: '另一条线' } });
+  page.createRoute();
+  assert.equal(archiveOf().routes.length, 2);
+  assert.equal(archiveOf().activeRouteId, archiveOf().routes[1].id);
+
+  // 落盘失败时不算提交过：同一实例立刻重试只多出预期的一条。
+  page.openAddRoute();
+  page.onNewRouteNameInput({ detail: { value: '写失败线' } });
+  armSetFailAt(1);
+  page.createRoute();
+  armSetFailAt(0);
+  assert.equal(archiveOf().routes.length, 2, '未落盘就不算已建线');
+  assert.match(page.data.newRouteError, /保存本机训练档案失败/);
+  assert.equal(page.data.newRouteName, '写失败线', '失败保留输入便于重试');
+  page.createRoute();
+  assert.equal(archiveOf().routes.length, 3);
+  assert.equal(archiveOf().routes[2].name, '写失败线');
+});
+
+test('T030 切换加线来源保留已输入内容，清除颜色回到「不指定」', () => {
+  // 先在本馆留一条已存在的线（上一场），再另开一场：本馆旧线出现在「本馆已有」里。
+  const earlier = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 9, 0)
+  });
+  assert.equal(earlier.ok, true, earlier.error);
+  const oldRoute = store.createRoute({
+    sessionId: earlier.session.id,
+    name: '旧线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(oldRoute.ok, true, oldRoute.error);
+  const second = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 10, 0)
+  });
+  assert.equal(second.ok, true, second.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, second.session.id);
+  assert.deepEqual(page.data.gymRoutes.map(item => item.id), [oldRoute.route.id]);
+  page.openAddRoute();
+  assert.equal(page.data.addRouteMode, 'existing');
+
+  // 切到「新建线路」：类型与等级仍是默认组合，名称可填。
+  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
+  assert.equal(page.data.addRouteMode, 'new');
+  assert.equal(page.data.newRouteVisible, true);
+  page.onNewRouteNameInput({ detail: { value: '新线' } });
+  page.toggleNewRouteColor();
+  page.onNewRouteColorChange({ detail: { value: 1 } });
+  assert.equal(page.data.newRouteColorName, '绿色');
+  assert.equal(page.data.newRouteColorText, '绿色');
+
+  // 切回「本馆已有」再切回来：输入与颜色都留着。
+  page.switchAddRouteMode(tapDataset({ mode: 'existing' }));
+  assert.equal(page.data.newRouteVisible, false);
+  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
+  assert.equal(page.data.newRouteName, '新线');
+  assert.equal(page.data.newRouteColorName, '绿色');
+  assert.equal(page.data.newRouteColorVisible, true);
+
+  // 面板已经开着时再点加线入口：不重置正在填的内容。
+  page.openAddRoute();
+  assert.equal(page.data.newRouteName, '新线');
+  assert.equal(page.data.newRouteColorName, '绿色');
+  assert.equal(page.data.addRouteMode, 'new');
+
+  // 清除颜色：回到「不指定」，越界索引也不静默落到首个颜色。
+  page.clearNewRouteColor();
+  assert.equal(page.data.newRouteColorText, '不指定');
+  page.onNewRouteColorChange({ detail: { value: 999 } });
+  assert.equal(page.data.newRouteColorName, '');
+  assert.equal(page.data.newRouteColorText, '不指定');
+
+  // 收起颜色后仍能创建：保存的是「不指定」。
+  page.toggleNewRouteColor();
+  assert.equal(page.data.newRouteColorVisible, false);
+  assert.equal(page.data.newRouteColorToggleText, '＋ 颜色（可选）');
+  page.createRoute();
+  const archive = archiveOf();
+  assert.equal(archive.routes.length, 2);
+  assert.equal(archive.routes[1].name, '新线');
+  assert.equal(archive.routes[1].colorName, '');
+  assert.equal(archive.routes[1].colorHex, '');
+});
+
+test('T030 没有当前场次时首屏加线只提示，不写任何数据', () => {
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession, null);
+  assert.equal(page.data.sessionFormVisible, true, '空档由场次表单接管首屏');
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  page.openAddRoute();
+  assert.equal(page.data.addRouteVisible, false);
+  assert.match(page.data.notice, /请先开始一场训练/);
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore);
+});
+
+test('T030 已有线路与当前选择时取消加线：线路、关联与当前选择都与打开前相同', () => {
+  const seeded = seedTraining({ gymName: '岩馆 A', routeName: '第一条线' });
+  const second = store.createRoute({
+    sessionId: seeded.session.id,
+    name: '第二条线',
+    climbType: '顶绳',
+    grade: '5.10a'
+  });
+  assert.equal(second.ok, true, second.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.selectedRoute.id, second.route.id);
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  const routesBefore = archiveOf().routes.length;
+  const linksBefore = archiveOf().sessionRoutes.length;
+
+  page.openAddRoute();
+  assert.equal(page.data.addRouteVisible, true);
+  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
+  page.onNewRouteNameInput({ detail: { value: '不该出现的线' } });
+  page.cancelAddRoute();
+
+  assert.equal(page.data.addRouteVisible, false);
+  assert.equal(page.data.newRouteVisible, false);
+  assert.equal(page.data.newRouteName, '', '取消后表单回到默认');
+  assert.equal(archiveOf().routes.length, routesBefore, '取消不新增线路');
+  assert.equal(archiveOf().sessionRoutes.length, linksBefore, '取消不新增关联');
+  assert.equal(page.data.selectedRoute.id, second.route.id, '当前选择不变');
+  assert.equal(archiveOf().activeRouteId, second.route.id);
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '取消不写盘');
 });
 
 // ------------------------------------------------------------------ *

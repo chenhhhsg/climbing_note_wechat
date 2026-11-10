@@ -570,6 +570,43 @@ test('R1 过时下拉请求不能提前结束当前下拉动画', async () => {
   assert.equal(wxLog.stopPullDownRefresh, 1);
 });
 
+// ---- T030：补录旧记录 ----
+test('T030 空态与有记录状态都写清「补录旧记录」，点入原表单页且不动本机档案', async () => {
+  resetWxLog();
+  seedLocalHistory();
+  const rawBefore = storage.get(ARCHIVE_KEY);
+
+  // 空库：空态里给的就是「补录旧记录」。
+  useDb(() => Promise.resolve({ data: [] }));
+  let page = createPage();
+  await page.onShow();
+  assert.equal(page.data.isEmpty, true);
+  page.goToAddRecord();
+  assert.equal(wxLog.navigations.at(-1).url, '/pages/add-record/add-record');
+
+  // 有记录：悬浮入口同样写清「补录旧记录」，仍进原表单页。
+  useDb(() => Promise.resolve({ data: [makeRecord('old-1')] }));
+  page = createPage();
+  await page.onShow();
+  assert.equal(page.data.records.length, 1);
+  page.goToAddRecord();
+  assert.equal(wxLog.navigations.at(-1).url, '/pages/add-record/add-record');
+  assert.equal(wxLog.navigations.length, 2);
+
+  const wxml = fs.readFileSync(PAGE_WXML, 'utf8');
+  // 空态按钮与悬浮入口各一处，正文里都不再有「添加旧记录」这种分不清加线与补录的说法。
+  assert.match(wxml, /class="btn-add" bindtap="goToAddRecord">补录旧记录</);
+  assert.match(wxml, /class="fab" bindtap="goToAddRecord"/);
+  assert.match(wxml, /class="fab-text"[^>]*>＋ 补录旧记录</);
+  assert.doesNotMatch(wxml, />添加旧记录</);
+  // 悬浮入口不再是一个只有加号的圆钮。
+  assert.doesNotMatch(wxml, /fab-icon/);
+  // 两个入口都绑到真实处理器（与页面方法一致）。
+  assert.equal(typeof pageDefinition.goToAddRecord, 'function');
+  assert.equal((wxml.match(/bindtap="goToAddRecord"/g) || []).length, 2);
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '进补录入口不改写本机档案');
+});
+
 // ---- 页面模板绑定 ----
 test('WXML 条件分支、事件名与页面方法一致', () => {
   const wxml = fs.readFileSync(PAGE_WXML, 'utf8');
