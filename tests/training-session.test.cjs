@@ -22,10 +22,12 @@ const INDEX_JS = path.join(ROOT, 'pages', 'index', 'index.js');
 const INDEX_WXML = path.join(ROOT, 'pages', 'index', 'index.wxml');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
+const SESSION_WXSS = path.join(ROOT, 'pages', 'training-session', 'training-session.wxss');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
+const PHOTO_KEY = 'climbingNote.training.v1.photos';
 
 // ---- 微信本地存储替身：只在正式本机命名空间内读写，可按需注入故障 ----
 const storage = new Map();
@@ -1742,4 +1744,580 @@ test('R1 本机档案损坏时首页与场内页都可见报错，且不改写�
   // 旧「添加记录」入口仍可达（本机档案损坏不影响旧入口）。
   home.goToAddRecord();
   assert.equal(wxLog.navigations.at(-1).url, '/pages/add-record/add-record');
+});
+
+// ------------------------------------------------------------------ *
+// T033 最近一把的原地撤回与恢复
+// ------------------------------------------------------------------ *
+
+/**
+ * 页面这一行渲染出来的点击参数：原把次 ID、原归属与预期状态，与 WXML 里绑定在撤回 /
+ * 恢复按钮上的 dataset 一一对应（模拟器里点击作用于真实坐标，取到的就是这几个值）。
+ */
+function attemptRowEvent(row) {
+  return tapDataset({
+    attemptId: row.attemptId,
+    routeId: row.routeId,
+    sessionId: row.sessionId,
+    expected: row.expected
+  });
+}
+
+/** 按顺序给一条线路记若干把（第 n 把可带自己的备注），返回原把次。 */
+function saveAttemptSeries(session, route, results, noteOf) {
+  return results.map(
+    (result, index) =>
+      store.saveAttempt({
+        sessionId: session.id,
+        routeId: route.id,
+        result,
+        note: noteOf ? noteOf(index) : '',
+        now: new Date(2026, 10, 9, 9, 5 + index * 3)
+      }).attempt
+  );
+}
+
+/** 档案里一条线路的全部已提交把次（含已撤回），按序号排。 */
+function savedAttempts(sessionId, routeId) {
+  return store.attemptsFor(archiveOf(), { sessionId, routeId, includeUndone: true });
+}
+
+/** 页面这一行现在指向哪一把、什么状态（撤回/恢复目标核对用）。 */
+function rowOf(page) {
+  return page.data.recentAttempt;
+}
+
+test('T033 最近一把操作区在结果按钮之后：写线路名、原序号与结果，撤回按钮只在这一把有效时出现', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
+  const empty = openSessionPage({});
+  assert.equal(empty.data.recentAttempt, null, '这条线还没有已提交把次时不显示操作区');
+
+  const saved = saveAttemptSeries(seeded.session, seeded.route, ['fail', 'fail', 'fail'], index =>
+    index === 2 ? '第三把改成先挂左脚' : ''
+  );
+
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  const sendButton = wxml.indexOf('class="result-button result-send"');
+  const recentStart = wxml.indexOf('id="recent-attempt"');
+  const photoCard = wxml.indexOf('id="route-photo-card"');
+  assert.ok(sendButton !== -1 && recentStart !== -1 && photoCard !== -1);
+  assert.ok(sendButton < recentStart, '撤回区在结果按钮之后（同一屏里紧跟结果按钮）');
+  assert.ok(recentStart < photoCard, '撤回区落在结果按钮下方原位，照片卡仍在它之后');
+
+  // 撤回按钮与恢复按钮是两个控件：恢复入口在「最近一把」这一行下方的独立一行里。
+  const rowStart = wxml.indexOf('class="recent-attempt-row"');
+  const recoveryStart = wxml.indexOf('class="recent-attempt-recovery"');
+  assert.ok(rowStart !== -1 && recoveryStart !== -1);
+  assert.ok(rowStart < recoveryStart, '恢复入口在最近一把这一行之后，是另一个按钮');
+  assert.match(
+    wxml,
+    /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,220}data-expected="\{\{recentAttempt\.expected\}\}"[\s\S]{0,160}bindtap="undoLatestAttempt"/
+  );
+  assert.match(
+    wxml,
+    /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,220}bindtap="restoreLatestAttempt"/
+  );
+  // 已撤回时撤回按钮整个不渲染（位置留空），恢复按钮才出现：同一坐标不会被相反动作接管。
+  assert.match(wxml, /wx:if="\{\{recentAttempt\.canUndo\}\}"[\s\S]{0,240}id="undo-attempt-/);
+  assert.match(wxml, /wx:if="\{\{recentAttempt\.canRestore\}\}"[\s\S]{0,240}id="restore-attempt-/);
+
+  // 行高固定：撤回按钮消失后这一行的高度不变，刚才点过的坐标留在原处、交给空位。
+  const wxss = fs.readFileSync(SESSION_WXSS, 'utf8');
+  const rowStyle = wxss.match(/\.recent-attempt-row\s*\{[^}]*\}/);
+  assert.ok(rowStyle, '样式里应有 .recent-attempt-row');
+  assert.match(rowStyle[0], /min-height:88rpx/, '这一行与文字按钮同高，按钮消失后行高不变');
+  const buttonRule = wxss.match(/\.primary-button,\.secondary-button,\.text-button\s*\{[^}]*\}/);
+  assert.ok(buttonRule && /min-height:88rpx/.test(buttonRule[0]), '文字按钮的高度与这一行一致');
+
+  const handlers = new Set(handlersIn(wxml));
+  for (const required of ['undoLatestAttempt', 'restoreLatestAttempt']) {
+    assert.ok(handlers.has(required), '场内页应绑定：' + required);
+    assert.equal(typeof sessionDefinition[required], 'function', required + ' 必须有页面方法');
+  }
+
+  const page = openSessionPage({});
+  const row = rowOf(page);
+  assert.equal(row.attemptId, saved[2].id, '目标是当前线路最新那一把的稳定 ID');
+  assert.equal(row.routeId, seeded.route.id);
+  assert.equal(row.sessionId, seeded.session.id);
+  assert.equal(row.titleText, '刚才 · T033 A 线 第 3 把 · 未完成');
+  assert.match(row.metaText, /岩馆 T033/, '写明当前场次与岩馆');
+  assert.equal(row.expected, 'effective', '撤回按钮带着渲染这一行时的预期状态');
+  assert.equal(row.canUndo, true);
+  assert.equal(row.canRestore, false);
+  assert.equal(row.undoText, '撤回这一把');
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(page.data.attempts.length, 3);
+});
+
+test('T033 在最近一行撤回回到 2、同处主动恢复回到 3：ID、原序号、结果与备注不变，第 2 把不被顶替', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
+  const saved = saveAttemptSeries(seeded.session, seeded.route, ['fail', 'fail', 'fail'], index =>
+    index === 2 ? '第三把改成先挂左脚' : ''
+  );
+  const page = openSessionPage({});
+  const before = {
+    routes: archiveOf().routes.length,
+    links: archiveOf().sessionRoutes.length,
+    attempts: archiveOf().attempts.length
+  };
+
+  // 撤回：3→2。逐把列表与把数同步，原把次仍在档案里，只多一个撤回标记。
+  const undoRow = rowOf(page);
+  page.undoLatestAttempt(attemptRowEvent(undoRow));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.routeCountText, '2 把');
+  assert.equal(page.data.attempts.length, 2);
+  assert.deepEqual(
+    page.data.attempts.map(item => item.label),
+    ['第 1 把', '第 2 把']
+  );
+
+  const persisted = savedAttempts(seeded.session.id, seeded.route.id);
+  assert.equal(persisted.length, 3, '撤回不是删除：原记录仍在档案里');
+  const thirdAfter = persisted.find(item => item.id === saved[2].id);
+  assert.ok(thirdAfter.undoneAt, '第 3 把带上了撤回标记');
+  assert.deepEqual(
+    {
+      id: thirdAfter.id,
+      seq: thirdAfter.seq,
+      sessionId: thirdAfter.sessionId,
+      routeId: thirdAfter.routeId,
+      result: thirdAfter.result,
+      note: thirdAfter.note,
+      createdAt: thirdAfter.createdAt
+    },
+    {
+      id: saved[2].id,
+      seq: saved[2].seq,
+      sessionId: saved[2].sessionId,
+      routeId: saved[2].routeId,
+      result: saved[2].result,
+      note: saved[2].note,
+      createdAt: saved[2].createdAt
+    }
+  );
+  const secondUntouched = persisted.find(item => item.id === saved[1].id);
+  assert.equal(secondUntouched.undoneAt, undefined, '撤回没有落到第 2 把上');
+  assert.equal(secondUntouched.result, 'fail');
+  assert.equal(archiveOf().attempts.length, before.attempts, '撤回不新增也不删除把次');
+  assert.equal(archiveOf().routes.length, before.routes);
+  assert.equal(archiveOf().sessionRoutes.length, before.links);
+
+  // 撤回后这一行留在原处：同一个原序号「第 3 把」，撤回按钮不再渲染、恢复按钮出现。
+  const afterUndo = rowOf(page);
+  assert.equal(afterUndo.attemptId, saved[2].id, '目标仍是原来那一把，不是第 2 把');
+  assert.equal(afterUndo.titleText, '已撤回 · T033 A 线 第 3 把 · 未完成');
+  assert.equal(afterUndo.canUndo, false, '撤回按钮收起，位置留空');
+  assert.equal(afterUndo.canRestore, true);
+  assert.equal(afterUndo.expected, 'undone', '恢复按钮带着已撤回的预期状态');
+  assert.equal(afterUndo.restoreText, '恢复这一把');
+  assert.equal(afterUndo.stateText, '已撤回这一把 · 本场 2 把');
+
+  // 原坐标再点一次（画面还没重绘时落下来的同一次点击）：只刷新，不再产生一次撤回。
+  const writesAfterUndo = fault.setCount;
+  page.undoLatestAttempt(attemptRowEvent(undoRow));
+  assert.equal(fault.setCount, writesAfterUndo, '原坐标重复点击不产生第二次撤回');
+  assert.match(page.data.notice, /已经撤回/);
+  assert.equal(rowOf(page).attemptId, saved[2].id);
+  assert.equal(savedAttempts(seeded.session.id, seeded.route.id).filter(item => item.undoneAt).length, 1);
+
+  // 在同一操作区主动点「恢复这一把」：2→3，原把次逐项回到原样。
+  const restoreRow = rowOf(page);
+  page.restoreLatestAttempt(attemptRowEvent(restoreRow));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(page.data.attempts.length, 3);
+  assert.deepEqual(
+    page.data.attempts.map(item => item.label),
+    ['第 1 把', '第 2 把', '第 3 把']
+  );
+  assert.equal(page.data.attempts[2].note, '第三把改成先挂左脚', '备注跟着原把次回来');
+
+  const restored = savedAttempts(seeded.session.id, seeded.route.id).find(
+    item => item.id === saved[2].id
+  );
+  assert.equal(restored.undoneAt, undefined, '撤回标记已清掉');
+  assert.equal(restored.note, '第三把改成先挂左脚');
+  assert.equal(restored.seq, saved[2].seq);
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).find(item => item.id === saved[1].id).undoneAt,
+    undefined,
+    '恢复目标没有悄悄换成第 2 把'
+  );
+
+  const afterRestore = rowOf(page);
+  assert.equal(afterRestore.attemptId, saved[2].id);
+  assert.equal(afterRestore.titleText, '刚才 · T033 A 线 第 3 把 · 未完成');
+  assert.equal(afterRestore.canUndo, true);
+  assert.equal(afterRestore.canRestore, false);
+  assert.equal(afterRestore.stateText, '已恢复这一把 · 本场 3 把');
+
+  // 恢复的原坐标再点一次同样只刷新。
+  const writesAfterRestore = fault.setCount;
+  page.restoreLatestAttempt(attemptRowEvent(restoreRow));
+  assert.equal(fault.setCount, writesAfterRestore, '原坐标重复点击不产生第二次恢复');
+  assert.match(page.data.notice, /已经在本场里/);
+  assert.equal(page.data.routeCountText, '3 把');
+});
+
+test('T033 切到 B 再切回、退出重开后 A 的撤回状态与恢复目标仍在；同序号的 B 不被旧按钮事件改到', () => {
+  const a = seedTraining({ gymName: '岩馆 T033', routeName: 'A 线' });
+  const b = store.createRoute({
+    sessionId: a.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  assert.equal(b.ok, true, b.error);
+
+  const aSaved = saveAttemptSeries(a.session, a.route, ['fail', 'fail', 'fail'], index =>
+    index === 2 ? 'A 的第三把' : ''
+  );
+  const bSaved = saveAttemptSeries(a.session, b.route, ['fail', 'fail', 'fail'], index =>
+    index === 2 ? 'B 的第三把' : ''
+  );
+
+  const page = openSessionPage({});
+  assert.equal(page.data.selectedRoute.id, b.route.id, '默认选中最后建的 B');
+  assert.equal(rowOf(page).attemptId, bSaved[2].id, 'B 有自己的最近一把');
+
+  // 走真实换线入口切到 A，撤回 A 的第 3 把。
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  const aRow = rowOf(page);
+  assert.equal(aRow.attemptId, aSaved[2].id);
+  assert.equal(aRow.titleText, '刚才 · A 线 第 3 把 · 未完成');
+  page.undoLatestAttempt(attemptRowEvent(aRow));
+  assert.equal(page.data.routeCountText, '2 把');
+
+  // 切到 B：B 的最近一把仍是有效状态，把数还是 3。
+  page.selectRoute(tapDataset({ routeId: b.route.id }));
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(rowOf(page).attemptId, bSaved[2].id);
+  assert.equal(rowOf(page).canUndo, true);
+
+  // 切回 A：撤回状态与恢复目标都从档案里读回来。
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  assert.equal(page.data.routeCountText, '2 把');
+  assert.equal(rowOf(page).attemptId, aSaved[2].id);
+  assert.equal(rowOf(page).titleText, '已撤回 · A 线 第 3 把 · 未完成');
+  assert.equal(rowOf(page).canRestore, true);
+
+  // A、B 的第 3 把是同一天同一场次里的同序号把次：A 那一行过期的点击参数晚到时，
+  // 不能落到 B 的同序号把次上。
+  const writesBefore = fault.setCount;
+  page.undoLatestAttempt(
+    attemptRowEvent({
+      attemptId: aSaved[2].id,
+      routeId: a.route.id,
+      sessionId: a.session.id,
+      expected: 'effective'
+    })
+  );
+  assert.equal(fault.setCount, writesBefore, '过期的点击不写盘');
+  const bThird = savedAttempts(a.session.id, b.route.id).find(item => item.id === bSaved[2].id);
+  assert.equal(bThird.undoneAt, undefined, 'B 的同序号把次没有被改到');
+  assert.equal(bThird.note, 'B 的第三把');
+  assert.equal(savedAttempts(a.session.id, b.route.id).filter(item => item.undoneAt).length, 0);
+
+  // 补备注仍指向原记录：B 的第一把还是写到自己身上，同线其他把次不被串改。
+  page.selectRoute(tapDataset({ routeId: b.route.id }));
+  page.openNoteEditor(tapDataset({ attemptId: bSaved[0].id }));
+  page.onNoteInput({ detail: { value: 'B 第一把的备注' } });
+  page.saveNote();
+  assert.equal(
+    savedAttempts(a.session.id, b.route.id).find(item => item.id === bSaved[0].id).note,
+    'B 第一把的备注'
+  );
+  assert.equal(
+    savedAttempts(a.session.id, b.route.id).find(item => item.id === bSaved[2].id).note,
+    'B 的第三把'
+  );
+  // 切回 A：当前线是持久化的，退出重开时按它恢复。
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  assert.equal(archiveOf().activeRouteId, a.route.id);
+
+  // 退出重开：新实例读同一份档案，仍停在持久化的当前线 A 上，撤回状态与恢复目标可见。
+  const reopened = openSessionPage({});
+  assert.equal(reopened.data.selectedRoute.id, a.route.id, '当前线是持久化的 A');
+  assert.equal(reopened.data.routeCountText, '2 把');
+  assert.equal(reopened.data.attempts.length, 2);
+  assert.equal(rowOf(reopened).attemptId, aSaved[2].id);
+  assert.equal(rowOf(reopened).titleText, '已撤回 · A 线 第 3 把 · 未完成');
+  assert.equal(rowOf(reopened).canRestore, true, '重开后恢复目标仍在原处');
+  assert.equal(rowOf(reopened).stateText, '', '重开后不再显示只在本页的那句确认');
+
+  // 重开后恢复：回到 3，B 与照片索引都不受影响。
+  const photoBefore = storage.get(PHOTO_KEY);
+  reopened.restoreLatestAttempt(attemptRowEvent(rowOf(reopened)));
+  assert.equal(reopened.data.routeCountText, '3 把');
+  assert.equal(reopened.data.attempts.length, 3);
+  assert.equal(storage.get(PHOTO_KEY), photoBefore, '线路照片索引不动');
+  assert.equal(
+    savedAttempts(a.session.id, b.route.id).find(item => item.id === bSaved[2].id).undoneAt,
+    undefined
+  );
+});
+
+test('T033 撤回写盘失败显示失败与原操作重试，把数只按已落盘状态显示；待保存的一把不当作可撤回项', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
+  const saved = saveAttemptSeries(seeded.session, seeded.route, ['fail', 'fail', 'fail']);
+  const third = saved[2];
+  const page = openSessionPage({});
+
+  // 第一段就失败：不落任何数据，把数与逐把列表保持已落盘的样子，原动作留下可重试。
+  armSetFailAt(1);
+  page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.match(page.data.storageError, /保存本机训练档案失败/);
+  assert.match(page.data.notice, /重试撤回这一把/);
+  assert.equal(page.data.routeCountText, '3 把', '没有落盘就不减把数');
+  assert.equal(page.data.attempts.length, 3);
+  assert.equal(rowOf(page).attemptId, third.id);
+  assert.equal(rowOf(page).canUndo, true);
+  assert.equal(rowOf(page).undoText, '重试撤回这一把');
+  assert.match(rowOf(page).stateText, /^撤回未保存/);
+  assert.equal(archiveOf().pendingUndos.length, 0, '第一段失败不留进行中标记');
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).filter(item => item.undoneAt).length,
+    0
+  );
+
+  // 按原动作重试：沿用同一个 opId，只产生一次撤回。
+  armSetFailAt(0);
+  page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.routeCountText, '2 把');
+  assert.equal(rowOf(page).canRestore, true);
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).find(item => item.id === third.id).settledOps
+      .length,
+    1,
+    '同一意图只结清一次'
+  );
+  assert.equal(archiveOf().pendingUndos.length, 0);
+
+  // 第二段写成后回执丢失：页面只拿到失败，档案里其实已经撤回；重试只回读已落盘状态。
+  assert.equal(
+    store.restoreAttempt(third.id, {
+      opId: 'restore-before-loss',
+      routeId: seeded.route.id,
+      sessionId: seeded.session.id
+    }).code,
+    'restored'
+  );
+  const pageAgain = openSessionPage({});
+  assert.equal(pageAgain.data.routeCountText, '3 把');
+  assert.equal(rowOf(pageAgain).attemptId, third.id);
+
+  armSetLoseResponseAt(2);
+  pageAgain.undoLatestAttempt(attemptRowEvent(rowOf(pageAgain)));
+  assert.match(pageAgain.data.storageError, /保存本机训练档案失败/);
+  assert.match(pageAgain.data.notice, /重试撤回这一把/);
+  assert.equal(rowOf(pageAgain).undoText, '重试撤回这一把');
+  assert.equal(pageAgain.data.routeCountText, '3 把', '把数显示的是这次读到的已落盘状态');
+  assert.ok(
+    JSON.parse(storage.get(ARCHIVE_KEY)).attempts.find(item => item.id === third.id).undoneAt,
+    '回执丢失的这一次其实已经落盘'
+  );
+
+  const settledBefore = savedAttempts(seeded.session.id, seeded.route.id).find(
+    item => item.id === third.id
+  ).settledOps.length;
+  armSetLoseResponseAt(0);
+  const writesBeforeRetry = fault.setCount;
+  pageAgain.undoLatestAttempt(attemptRowEvent(rowOf(pageAgain)));
+  assert.equal(fault.setCount, writesBeforeRetry, '重试认出已经结清，不再写第二次');
+  assert.equal(pageAgain.data.storageError, '');
+  assert.equal(pageAgain.data.routeCountText, '2 把');
+  assert.equal(rowOf(pageAgain).canRestore, true);
+  assert.match(pageAgain.data.notice, /已经撤回/);
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).find(item => item.id === third.id).settledOps
+      .length,
+    settledBefore,
+    '迟到的重试没有结清第二次'
+  );
+
+  // 待保存的一把不当作已保存可撤回项：这条线有未落盘的把次时整个操作区收起。
+  const pagePending = openSessionPage({});
+  pagePending.restoreLatestAttempt(attemptRowEvent(rowOf(pagePending)));
+  assert.equal(pagePending.data.routeCountText, '3 把');
+  const staleRow = rowOf(pagePending);
+  assert.equal(staleRow.attemptId, third.id);
+  assert.equal(staleRow.canUndo, true, '前置：这时第 3 把是可撤回的');
+
+  armSetLoseResponseAt(1);
+  pagePending.recordAttempt(tapResult('fail'));
+  assert.equal(pagePending.data.hasPending, true);
+  assert.equal(rowOf(pagePending), null, '有未落盘把次时撤回区收起');
+  assert.equal(pagePending.data.resultLocked, true);
+  assert.equal(pagePending.data.routeCountText, '3 把 · 1 把待保存');
+
+  // 这时拿旧那一行的点击参数来点：不落盘，只说明先在「待保存」行重试。
+  const writesBeforePending = fault.setCount;
+  pagePending.undoLatestAttempt(attemptRowEvent(staleRow));
+  assert.equal(fault.setCount, writesBeforePending, '有待保存把次时不撤回上一条已保存把次');
+  assert.match(pagePending.data.notice, /还有一把没保存/);
+  assert.equal(rowOf(pagePending), null);
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).filter(item => item.undoneAt).length,
+    0,
+    '第 3 把没有被撤回'
+  );
+});
+
+test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定；绳线继续记，旧「改为未完成」仍计一把', () => {
+  const boulder = seedTraining({ gymName: '岩馆 T033', routeName: '抱石线' });
+  const send = saveAttemptSeries(boulder.session, boulder.route, ['send'])[0];
+
+  const page = openSessionPage({});
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.recentAttempt.canUndo, true, '抱石已完攀时仍能找到撤回');
+  assert.equal(rowOf(page).titleText, '刚才 · 抱石线 第 1 把 · 完攀');
+
+  // 撤回唯一一次完攀：结果按钮重新可用，这一行留在原处变成可恢复。
+  page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.routeClosed, false);
+  assert.equal(page.data.resultLocked, false, '撤回后结果按钮可用');
+  assert.equal(page.data.routeStateText, '');
+  assert.equal(page.data.routeCountText, '0 把');
+  assert.equal(rowOf(page).canRestore, true);
+  assert.equal(rowOf(page).titleText, '已撤回 · 抱石线 第 1 把 · 完攀');
+
+  // 恢复同一把：重新锁定，恢复不会凑出第二次有效完攀。
+  page.restoreLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.routeStateText, '已完攀');
+  assert.equal(page.data.routeCountText, '1 把');
+  assert.equal(rowOf(page).canRestore, false);
+
+  tick();
+  page.recordAttempt(tapResult('send'));
+  assert.equal(page.data.routeCountText, '1 把', '已完攀的抱石不再新增把次');
+  assert.match(page.data.notice, /已完攀/);
+  assert.equal(
+    savedAttempts(boulder.session.id, boulder.route.id).filter(
+      item => item.result === 'send' && !item.undoneAt
+    ).length,
+    1
+  );
+
+  // 旧的按把「改为未完成」入口保留：更正这一把完攀不改把数。
+  assert.equal(page.data.correctionRows.length, 1);
+  const correction = page.data.correctionRows[0];
+  page.correctSend(
+    tapDataset({
+      attemptId: correction.attemptId,
+      routeId: correction.routeId,
+      sessionId: correction.sessionId
+    })
+  );
+  assert.equal(page.data.routeCountText, '1 把', '更正仍计一把');
+  assert.equal(page.data.attempts[0].resultText, '未完成');
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(savedAttempts(boulder.session.id, boulder.route.id).length, 1, '更正不新增也不删除把次');
+  assert.equal(savedAttempts(boulder.session.id, boulder.route.id)[0].id, send.id);
+
+  // 绳线（顶绳/先锋）可重复完攀：撤回与恢复只改把数。
+  const rope = store.createRoute({
+    sessionId: boulder.session.id,
+    name: '顶绳线',
+    climbType: '顶绳',
+    grade: '5.10a',
+    colorName: '红色'
+  });
+  assert.equal(rope.ok, true, rope.error);
+  const ropePage = openSessionPage({});
+  ropePage.selectRoute(tapDataset({ routeId: rope.route.id }));
+  tick();
+  ropePage.recordAttempt(tapResult('send'));
+  tick();
+  ropePage.recordAttempt(tapResult('send'));
+  assert.equal(ropePage.data.routeCountText, '2 把');
+  assert.equal(rowOf(ropePage).titleText, '刚才 · 顶绳线 第 2 把 · 完攀');
+  ropePage.undoLatestAttempt(attemptRowEvent(rowOf(ropePage)));
+  assert.equal(ropePage.data.routeCountText, '1 把');
+  assert.equal(ropePage.data.routeCompleted, false, '绳线不锁完攀入口，仍可继续记');
+  assert.equal(ropePage.data.resultLocked, false);
+  assert.equal(
+    store.routeCompletion(archiveOf(), rope.route.id).sendCount,
+    1,
+    '绳线的完攀把数跟着撤回一起减'
+  );
+  assert.equal(rowOf(ropePage).canRestore, true);
+  ropePage.restoreLatestAttempt(attemptRowEvent(rowOf(ropePage)));
+  assert.equal(ropePage.data.routeCountText, '2 把');
+});
+
+test('T033 过时画面的点击不落盘：这一次动作带的是渲染时的预期状态', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
+  const saved = saveAttemptSeries(seeded.session, seeded.route, ['fail', 'fail', 'fail']);
+  const page = openSessionPage({});
+  assert.equal(rowOf(page).canUndo, true, '前置：这一行现在给的是「撤回这一把」');
+
+  // 这一把在别处已经被恢复过一次（页面手上的还是「已撤回」那一份画面）：
+  // 带下来的预期状态与最新档案不符，撤回不落盘。
+  const writesBefore = fault.setCount;
+  page.undoLatestAttempt(
+    attemptRowEvent({
+      attemptId: saved[2].id,
+      routeId: seeded.route.id,
+      sessionId: seeded.session.id,
+      expected: 'undone'
+    })
+  );
+  assert.equal(fault.setCount, writesBefore, '过时画面的点击不写盘');
+  assert.match(page.data.notice, /状态已经变了/);
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).find(item => item.id === saved[2].id)
+      .undoneAt,
+    undefined
+  );
+
+  // 这一把在别处被撤回过之后，页面上那份「有效」的画面再点撤回：页面先按最新档案
+  // 认出已经是要的状态，不写盘，只说明下一步。
+  assert.equal(store.undoAttempt(saved[2].id, { opId: 'other-instance-undo' }).code, 'undone');
+  const writesBeforeAgain = fault.setCount;
+  page.undoLatestAttempt(
+    attemptRowEvent({
+      attemptId: saved[2].id,
+      routeId: seeded.route.id,
+      sessionId: seeded.session.id,
+      expected: 'effective'
+    })
+  );
+  assert.equal(fault.setCount, writesBeforeAgain, '别处已经撤回过：这次点击不写盘');
+  assert.match(page.data.notice, /已经撤回/);
+  assert.equal(page.data.routeCountText, '2 把');
+
+  // 再走这一行自己的恢复入口（带的是已撤回的预期状态）：恢复正常落盘一次，回到 3。
+  page.restoreLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.equal(fault.setCount, writesBeforeAgain + 2, '恢复按两段写落盘一次');
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(
+    savedAttempts(seeded.session.id, seeded.route.id).find(item => item.id === saved[2].id).undoneAt,
+    undefined
+  );
+});
+
+test('T033 撤回与恢复只写训练档案键，不动照片索引与想爬清单', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
+  saveAttemptSeries(seeded.session, seeded.route, ['fail', 'fail', 'fail'], index =>
+    index === 2 ? '第三把' : ''
+  );
+  const photoBlob = JSON.stringify({ version: 1, photos: [{ routeId: seeded.route.id }] });
+  storage.set(PHOTO_KEY, photoBlob);
+  const wishlistBlob = JSON.stringify({ version: 1, items: [] });
+  storage.set('climbingNote.training.v1.wishlist', wishlistBlob);
+
+  const page = openSessionPage({});
+  page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
+  page.restoreLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(storage.get(PHOTO_KEY), photoBlob, '照片索引保持原字节');
+  assert.equal(storage.get('climbingNote.training.v1.wishlist'), wishlistBlob, '想爬清单不动');
 });

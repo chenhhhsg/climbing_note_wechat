@@ -671,6 +671,24 @@
 .field,.picker-value,.text-input { line-height:1.5; }
 .text-input { min-height:88rpx; }
 
+/* 最近一把的撤回与恢复（T033）：结果按钮下方的固定操作区 */
+.recent-attempt { border-top:1px solid #c4c8b9; padding-top:14rpx; margin:0 0 24rpx; }
+.recent-attempt-head { display:flex; align-items:baseline; justify-content:space-between; gap:12rpx; }
+.recent-attempt-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:28rpx; color:#173d32; }
+.recent-attempt-note { flex:none; font-size:22rpx; color:#606d61; }
+/* 这一行的高度固定：撤回按钮消失后行高不变，刚才点过的坐标留在原处、交给空位，
+   不会被另一把或相反动作接管。 */
+.recent-attempt-row { display:flex; align-items:center; justify-content:space-between; gap:12rpx; min-height:88rpx; }
+.recent-attempt-info { flex:1; min-width:0; display:flex; flex-direction:column; }
+.recent-attempt-text { font-size:28rpx; color:#173d32; word-break:break-all; }
+.recent-attempt-meta { margin-top:4rpx; font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; font-size:22rpx; line-height:1.5; color:#606d61; }
+.recent-attempt-action { flex:none; margin:0; padding:0 4rpx; text-decoration:underline; text-underline-offset:3rpx; }
+.recent-attempt-status { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#2f6248; }
+/* 恢复入口：在「最近一把」这一行下方独立一行，是另一个按钮，须有意点击 */
+.recent-attempt-recovery { margin-top:12rpx; }
+.recent-attempt-restore { width:100%; }
+.recent-attempt-hint { display:block; margin-top:8rpx; font-size:22rpx; line-height:1.6; color:#606d61; }
+
 /* 本次小结（T029）：按原 sessionId 只读回看本场；勾选只改「下次想爬」清单 */
 .session-summary .section-title { margin-bottom:20rpx; }
 .summary-error-card { background:#f7e6db; border-radius:12rpx; padding:20rpx 24rpx; }
