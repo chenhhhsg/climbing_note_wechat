@@ -4,8 +4,10 @@
  * 离馆时按**本场**回看：这一场爬了哪些线、共几把、哪些完攀，并可就地勾选
  * 「下次想继续」的未完成线路（写入 T027 的「下次想爬」清单，见 utils/training-wishlist.js）。
  *
- * 数据来源只有 T016 的正式本机档案（utils/training-store.js）里**已提交的把次**
- * （archive.attempts），按场次稳定 ID（sessionId）过滤：
+ * 数据来源只有 T016 的正式本机档案（utils/training-store.js）里**有效**的把次
+ * （archive.attempts 中未撤回的那些，T032），按场次稳定 ID（sessionId）过滤：
+ * - 已撤回的那一把不在小结里：不贡献把数、本场完攀把数、最近有效备注与勾选状态；
+ *   恢复后又回到原来的位置（沿用原 ID、原序号与原备注）；
  * - 「进行中」的待保存操作（archive.pendingSaves）还没提交，不计入把数，只单独给一个
  *   待保存计数让页面提示，因此小结里不会出现「点了结果却先算一把」的假读数；
  * - 旧云汇总（climbing_records）、旧 climbing_sessions 与 9c 自测成绩都不在本机档案里，
@@ -88,7 +90,9 @@ function buildSessionSummary(archive, sessionId) {
   if (!session) return emptySummary(id);
 
   const routesById = new Map((archive.routes || []).map(item => [item.id, item]));
-  const attempts = (archive.attempts || [])
+  // 只算有效把次：已撤回的那一把既不算把数，也不算线路、完攀与最近备注。
+  const attempts = rules
+    .effectiveAttempts(archive.attempts)
     .filter(item => item.sessionId === session.id)
     .sort((left, right) => (left.seq || 0) - (right.seq || 0));
 

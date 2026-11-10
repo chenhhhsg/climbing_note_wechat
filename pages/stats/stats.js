@@ -2,8 +2,10 @@
  * 统计页面（T022：从底部「统计」查看本机把数与实际完攀）
  *
  * 本机读数全部来自 T016 的正式本机档案（utils/training-store.js）的只读入口：
- * - 只统计**已提交**的把次（archive.attempts）。「进行中」的待保存操作
- *   （pendingSaves）还没落盘，不计入；旧云汇总与 9c 自测等级也不计入。
+ * - 只统计**有效**的已提交把次（archive.attempts 中未撤回的那些，T032）。「进行中」的
+ *   待保存操作（pendingSaves）还没落盘，不计入；已撤回的那一把同样不计入把数、完攀、
+ *   本月与难度分布（与首页、场内、小结、清单共用同一份有效集合）；旧云汇总与 9c 自测
+ *   等级也不计入。
  * - 本机把数、完攀、未完成与完成率共用同一分母（本机已提交把次数），
  *   取整沿用原来的 Math.round(...%，无把次时为 0。
  * - 本月按把次所属场次的**训练日期**计算，只比较本机本地年月，不跨时区解析。
@@ -87,10 +89,10 @@ function countUp(counts, name) {
 }
 
 /**
- * 按本机已提交把次汇总（纯函数，不读盘、不写盘）。
+ * 按本机有效把次汇总（纯函数，不读盘、不写盘）。
  *
  * 归属场次缺失的把次跳过（不猜日期与岩馆）；线路缺失时仍计入把数与完攀，
- * 只是不参与地点/类型/最高难度。旧云记录、待保存操作与 9c 成绩都不在这里。
+ * 只是不参与地点/类型/最高难度。旧云记录、待保存操作、已撤回的把次与 9c 成绩都不在这里。
  */
 function buildLocalStats(archive, now) {
   const month = localMonthKey(now);
@@ -107,7 +109,8 @@ function buildLocalStats(archive, now) {
   const boulderGrades = [];
   const ropeGrades = [];
 
-  (archive.attempts || []).forEach(attempt => {
+  // 已撤回的把次不在有效集合里：与首页、场内、小结、清单同一份口径（见 rules）。
+  store.effectiveAttempts(archive.attempts).forEach(attempt => {
     const session = sessionsById.get(attempt.sessionId);
     if (!session) return;
 
