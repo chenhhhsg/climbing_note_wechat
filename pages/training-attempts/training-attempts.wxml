@@ -1,0 +1,96 @@
+<!--
+  本线逐把明细（T036）
+  只列所选场次与长期线路的已提交把次；按原序号、结果、备注对齐，给指定把次补/改备注。
+  保存、取消与失败重试都只影响原 attemptId；撤回与恢复在单线记录页。
+-->
+<view class="page">
+  <view wx:if="{{loadError}}" id="load-error" class="card error-card">
+    <text class="error-title">本机训练档案读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <text class="error-hint">原档案保持原样，没有被改写。</text>
+    <button id="retry-load" class="secondary-button" bindtap="retryLoad">重试读取</button>
+  </view>
+
+  <block wx:else>
+    <view wx:if="{{contextError}}" id="attempts-context-error" class="card error-card">
+      <text class="error-title">这个入口不能用来查看明细</text>
+      <text class="error-text">{{contextError}}</text>
+      <text class="error-hint">没有改动任何数据；请从单线记录页重新进入。</text>
+      <button id="attempts-back" class="secondary-button" bindtap="backToList">返回单线记录</button>
+    </view>
+
+    <block wx:if="{{ready && !contextError}}">
+      <view
+        wx:if="{{storageError}}"
+        id="storage-error"
+        class="storage-error"
+        bindtap="dismissStorageError"
+      >
+        <text class="storage-error-text">{{storageError}}</text>
+        <text class="storage-error-hint">当前操作未生效，可重试；点击收起</text>
+      </view>
+
+      <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
+        <text class="notice-text">{{notice}}</text>
+        <text class="notice-hint">点击收起</text>
+      </view>
+
+      <block wx:if="{{activeSession && selectedRoute}}">
+        <view id="attempts-route" class="attempts-route">
+          <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
+          <view class="attempts-route-info">
+            <text class="attempts-route-name">{{selectedRoute.name}}</text>
+            <text class="attempts-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · 本场 {{attempts.length}} 把</text>
+            <text id="attempts-session-meta" class="attempts-session-meta">{{activeSession.dateText}} · {{activeSession.gymName}} · {{activeSession.label}}</text>
+          </view>
+        </view>
+
+        <view wx:if="{{!hasAttempts}}" id="attempts-empty" class="empty-attempts">
+          <text>这一场这一条线还没有已提交把次。回到单线记录页记第一把。</text>
+        </view>
+
+        <view wx:else id="attempts-list" class="attempts-list">
+          <view
+            wx:for="{{attempts}}"
+            wx:key="id"
+            id="attempt-{{item.id}}"
+            class="attempt-item"
+          >
+            <view class="attempt-main">
+              <text class="attempt-label">{{item.label}}</text>
+              <text class="attempt-result {{item.isSend ? 'attempt-send' : ''}}">{{item.resultText}}</text>
+              <text class="attempt-time">{{item.timeText}}</text>
+            </view>
+            <text wx:if="{{item.hasNote}}" class="attempt-note">{{item.note}}</text>
+            <button
+              id="note-{{item.id}}"
+              class="text-button attempt-note-button"
+              data-attempt-id="{{item.id}}"
+              bindtap="openNoteEditor"
+            >{{item.hasNote ? '改备注' : '补备注'}}</button>
+          </view>
+        </view>
+
+        <!-- 按把备注：只改打开时那一把；取消不写盘，失败保留输入可原地重试 -->
+        <view wx:if="{{noteEditor}}" id="note-editor" class="card note-editor">
+          <text class="card-title">补备注</text>
+          <text class="note-context">{{noteEditor.routeName}} · {{noteEditor.attemptLabel}} · {{noteEditor.resultText}}</text>
+          <textarea
+            id="note-input"
+            class="note-input"
+            value="{{noteEditor.text}}"
+            placeholder="例如：抓到后向右摆"
+            maxlength="120"
+            bindinput="onNoteInput"
+          ></textarea>
+          <view class="button-row">
+            <button id="cancel-note" class="secondary-button" bindtap="cancelNote">取消</button>
+            <button id="save-note" class="primary-button" bindtap="saveNote">保存备注</button>
+          </view>
+        </view>
+
+        <text class="attempts-foot-hint">这里只列这一场这一条线的有效把次；撤回、恢复与结果记录在单线记录页。</text>
+      </block>
+    </block>
+  </block>
+</view>

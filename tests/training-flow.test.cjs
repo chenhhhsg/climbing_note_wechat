@@ -29,6 +29,9 @@ const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-sessio
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wxml');
+const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
+const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.js');
 const PROFILE_JS = path.join(ROOT, 'pages', 'profile', 'profile.js');
 const PROFILE_WXML = path.join(ROOT, 'pages', 'profile', 'profile.wxml');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
@@ -400,6 +403,8 @@ function seedTraining(options) {
 
 let indexDefinition = null;
 let sessionDefinition = null;
+let recordDefinition = null;
+let attemptsDefinition = null;
 let routeDefinition = null;
 let profileDefinition = null;
 
@@ -410,6 +415,8 @@ beforeEach(() => {
   controllerModule.setTrainingPhotoSpacePolicy(null);
   indexDefinition = capturePage(INDEX_JS);
   sessionDefinition = capturePage(SESSION_JS);
+  recordDefinition = capturePage(RECORD_JS);
+  attemptsDefinition = capturePage(ATTEMPTS_JS);
   routeDefinition = capturePage(ROUTE_JS);
   profileDefinition = capturePage(PROFILE_JS);
 });
@@ -419,14 +426,15 @@ beforeEach(() => {
 test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真实存在', () => {
   const appJson = JSON.parse(fs.readFileSync(APP_JSON, 'utf8'));
   assert.equal(appJson.pages[0], 'pages/index/index');
-  ['pages/training-session/training-session', 'pages/training-route/training-route', 'pages/profile/profile']
+  ['pages/training-session/training-session', 'pages/training-route/training-route', 'pages/training-record/training-record', 'pages/profile/profile']
     .forEach(pagePath => {
       assert.ok(appJson.pages.includes(pagePath), pagePath + ' 必须注册进 app.json');
     });
 
+  // T036：照片只在「线路资料」（training-route）里维护；场内页与单线页只提供入口。
   const cases = [
-    { name: '场内页', definition: sessionDefinition, wxml: SESSION_WXML },
-    { name: '线路详情页', definition: routeDefinition, wxml: ROUTE_WXML },
+    { name: '线路资料页', definition: routeDefinition, wxml: ROUTE_WXML },
+    { name: '单线记录页', definition: recordDefinition, wxml: RECORD_WXML },
     { name: '个人页', definition: profileDefinition, wxml: PROFILE_WXML }
   ];
   cases.forEach(entry => {
@@ -442,36 +450,31 @@ test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真�
     });
   });
 
-  // 照片相关的关键入口必须在 WXML 里真实可达。
-  const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  // 照片相关的关键入口在资料页真实可达。
+  const routeWxml = fs.readFileSync(ROUTE_WXML, 'utf8');
   [
-    'new-route-photo-album',
-    'new-route-photo-camera',
+    'route-photo-card',
     'route-photo-confirm',
     'route-photo-cancel',
-    'route-photo-remove'
+    'route-photo-remove',
+    'route-photo-album',
+    'route-photo-rebuild-thumb'
   ].forEach(id => {
-    assert.ok(sessionWxml.indexOf('id="' + id + '"') !== -1, '场内页缺少 ' + id);
+    assert.ok(routeWxml.indexOf('id="' + id + '"') !== -1, '资料页缺少 ' + id);
   });
-  const routeWxml = fs.readFileSync(ROUTE_WXML, 'utf8');
-  ['route-photo-card', 'route-photo-confirm', 'route-photo-remove', 'route-photo-album']
-    .forEach(id => {
-      assert.ok(routeWxml.indexOf('id="' + id + '"') !== -1, '详情页缺少 ' + id);
-    });
+  assert.ok(routeWxml.indexOf('bindtap="rebuildRoutePhoto"') !== -1);
+  // 单线页只提供「线路资料」入口，不铺第二套照片操作。
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.match(recordWxml, /id="open-route-profile"[\s\S]{0,80}bindtap="openRouteProfile"/);
+  assert.equal(recordWxml.indexOf('id="route-photo-card"'), -1, '单线页不再铺照片卡');
+  // 场内页不再有新建线路时的照片选择（照片统一在资料页补）。
+  const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  assert.equal(sessionWxml.indexOf('id="new-route-photo-album"'), -1);
+  assert.equal(typeof sessionDefinition.chooseRoutePhoto, 'undefined');
   // 个人页保持 T016 的「清除缓存」入口（照片可重建缓存的清理从这里发起）。
   const profileWxml = fs.readFileSync(PROFILE_WXML, 'utf8');
   assert.ok(profileWxml.indexOf('bindtap="clearCache"') !== -1, '个人页缺少清缓存入口');
-  // 缩略图重建入口放在线路照片卡片上（详情页与场内页各一处）。
-  [routeWxml, sessionWxml].forEach((source, index) => {
-    assert.ok(
-      source.indexOf('id="route-photo-rebuild-thumb"') !== -1,
-      (index === 0 ? '详情页' : '场内页') + '缺少缩略图重建入口'
-    );
-    assert.ok(source.indexOf('bindtap="rebuildRoutePhoto"') !== -1);
-  });
 });
-
-// ------------------------------------------------------------------ R2 新建与照片
 
 test('R2 从正式首页「开始训练」进入场内页，选照片并确认（正式入口链路）', async () => {
   const home = createPage(indexDefinition);
@@ -483,27 +486,33 @@ test('R2 从正式首页「开始训练」进入场内页，选照片并确认�
     '/pages/training-session/training-session?start=1'
   );
 
-  // 按首页给出的目标打开场内页并走完一次选照片。
+  // 按首页给出的目标打开场内页，建线后直达单线页，再从资料页走完一次选照片。
   const page = await openSessionPage({ start: '1' });
   page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
   page.startSession();
   await settle();
   page.toggleNewRouteForm();
   page.onNewRouteNameInput({ detail: { value: '蓝色动态线' } });
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
   await page.createRoute();
   await settle();
-
-  assert.equal(page.data.routePhoto.status, 'saved');
+  assert.match(wxLog.navigations.at(-1).url, /^\/pages\/training-record\/training-record\?/);
   const archive = archiveOf();
+  const routeId = archive.routes[0].id;
+
+  const detail = await openRoutePage(routeId);
+  assert.equal(detail.data.routePhoto.status, 'none', '新线还没有照片');
+  await detail.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  await detail.confirmRoutePhoto(tapDataset({ routeId }));
+  await settle();
+  assert.equal(detail.data.routePhoto.status, 'saved');
   const root = USER_DATA_PATH + '/training-photos/v1/' + archive.archiveId;
   assert.equal(filesUnder(root + '/main').length, 1);
-  assert.equal(photoIndex().photos[0].routeId, archive.routes[0].id);
+  assert.equal(photoIndex().photos[0].routeId, routeId);
 });
 
 test('R2 拍照/相册按微信的选项对象回调调用，兼容首选与回退返回路径', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
 
   // 首选 wx.chooseMedia：只传一个选项对象，success/fail 都在对象里。
@@ -559,25 +568,20 @@ test('R2 拍照/相册按微信的选项对象回调调用，兼容首选与回�
 });
 
 test('R2 新建线路时从相册选一张主照片并确认，照片落到本机档案目录', async () => {
-  const page = await openSessionPage({ start: '1' });
-  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
-  page.startSession();
+  // T036：照片在新建后从线路资料页补；创建表单不再收集临时照片。
+  const seeded = seedTraining();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
-
-  page.toggleNewRouteForm();
-  page.onNewRouteNameInput({ detail: { value: '蓝色动态线' } });
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
-  assert.equal(page.data.newRoutePhoto !== null, true, '表单里应显示已选照片');
-  assert.equal(page.data.newRoutePhoto.path.indexOf('http://tmp/'), 0);
-
-  await page.createRoute();
+  await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  assert.equal(page.data.routePhoto.status, 'preview');
+  assert.equal(page.data.routePhoto.previewPath.indexOf('http://tmp/'), 0);
+  await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
 
   const archive = archiveOf();
-  assert.equal(archive.routes.length, 1, '应只新建一条线路');
+  assert.equal(archive.routes.length, 1, '应只保留一条线路');
   const route = archive.routes[0];
   assert.equal(page.data.routePhoto.status, 'saved', '页面应显示照片已保存');
-  assert.equal(page.data.newRoutePhoto, null, '创建后表单里的临时照片应清掉');
 
   const index = photoIndex();
   assert.equal(index.photos.length, 1);
@@ -599,76 +603,57 @@ test('R2 新建线路时从相册选一张主照片并确认，照片落到本�
 });
 
 test('R2 同色同级另一条线路不带前一条的把次或照片', async () => {
-  const page = await openSessionPage({ start: '1' });
-  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
-  page.startSession();
-  await settle();
+  const seeded = seedTraining({ routeName: '蓝色动态线' });
+  const second = store.createRoute({
+    sessionId: seeded.session.id,
+    name: '蓝色平衡线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(second.ok, true, second.error);
 
-  page.toggleNewRouteForm();
-  page.onNewRouteNameInput({ detail: { value: '蓝色动态线' } });
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
-  await page.createRoute();
+  const first = await openRoutePage(seeded.route.id);
+  await first.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  await first.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
-  const firstRouteId = page.data.selectedRoute.id;
-  const firstPhotoId = page.data.routePhoto.photoId;
+  assert.equal(first.data.routePhoto.status, 'saved');
+  const firstPhotoId = first.data.routePhoto.photoId;
+  const firstMainPath = first.data.routePhoto.mainPath;
 
-  page.toggleNewRouteForm();
-  page.onNewRouteNameInput({ detail: { value: '蓝色平衡线' } });
-  await page.createRoute();
-  await settle();
-
-  const secondRouteId = page.data.selectedRoute.id;
-  assert.notEqual(secondRouteId, firstRouteId);
-  assert.equal(page.data.routePhoto.status, 'none', '第二条线没有照片');
-  assert.equal(page.data.routePhoto.hasPhoto, false);
-  assert.equal(page.data.attempts.length, 0, '第二条线不带前一条的把次');
+  // 同色同级的第二条线：没有照片，也没有前一条的把次。
+  const other = await openRoutePage(second.route.id);
+  assert.equal(other.data.routePhoto.status, 'none', '第二条线没有照片');
+  assert.equal(other.data.routePhoto.hasPhoto, false);
+  assert.equal(other.data.attemptCount, 0, '第二条线不带前一条的把次');
 
   const index = photoIndex();
   assert.equal(index.photos.length, 1);
   assert.equal(index.photos[0].photoId, firstPhotoId);
-  assert.equal(index.photos[0].routeId, firstRouteId);
+  assert.equal(index.photos[0].routeId, seeded.route.id);
 
   // 回到第一条线仍是同一张照片。
-  page.selectRoute(tapDataset({ routeId: firstRouteId }));
-  await settle();
-  assert.equal(page.data.routePhoto.photoId, firstPhotoId);
-  assert.equal(page.data.routePhoto.status, 'saved');
-
-  // 新页面实例（照片视图未缓存）换到第一条线时，必须主动读取到同一张照片，
-  // 不能停在上一条线的状态或一直显示读取中。
-  const reopened = await openSessionPage();
-  assert.equal(reopened.data.selectedRoute.id, firstRouteId);
-  assert.equal(reopened.data.routePhoto.status, 'saved', '重开本页应按当前线路读回照片');
-  assert.equal(reopened.data.routePhoto.photoId, firstPhotoId);
-  reopened.selectRoute(tapDataset({ routeId: secondRouteId }));
-  await settle();
-  assert.equal(reopened.data.routePhoto.status, 'none', '换到没有照片的线路应清空展示');
-  reopened.selectRoute(tapDataset({ routeId: firstRouteId }));
-  await settle();
+  const reopened = await openRoutePage(seeded.route.id);
   assert.equal(reopened.data.routePhoto.status, 'saved');
   assert.equal(reopened.data.routePhoto.photoId, firstPhotoId);
-  assert.equal(reopened.data.routePhoto.mainPath, page.data.routePhoto.mainPath);
+  assert.equal(reopened.data.routePhoto.mainPath, firstMainPath);
 });
 
 test('R2 试选后取消可立即重选，且取消不产生任何文件或索引', async () => {
-  const page = await openSessionPage({ start: '1' });
-  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
-  page.startSession();
+  const seeded = seedTraining();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
-  page.toggleNewRouteForm();
 
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
-  assert.ok(page.data.newRoutePhoto);
-  page.cancelNewRoutePhoto();
-  assert.equal(page.data.newRoutePhoto, null, '取消后表单里的选择应清空');
+  await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  assert.equal(page.data.routePhoto.status, 'preview');
+  page.cancelRoutePhoto(tapDataset({ routeId: seeded.route.id }));
+  assert.equal(page.data.routePhoto.status, 'none', '取消后回到没有照片');
   assert.equal(filesUnder(USER_DATA_PATH + '/training-photos').length, 0);
   assert.equal(photoIndex(), null);
 
-  // 立刻重选：仍能选到，并且创建后正常保存。
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'camera' }));
-  assert.ok(page.data.newRoutePhoto);
-  page.onNewRouteNameInput({ detail: { value: '蓝色动态线' } });
-  await page.createRoute();
+  // 立刻重选：仍能选到，并且确认后正常保存。
+  await page.chooseRoutePhoto(tapDataset({ source: 'camera' }));
+  assert.equal(page.data.routePhoto.status, 'preview');
+  await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
   assert.equal(page.data.routePhoto.status, 'saved');
   assert.equal(photoIndex().photos.length, 1);
@@ -676,9 +661,9 @@ test('R2 试选后取消可立即重选，且取消不产生任何文件或索�
 
 test('R2 取消更换后仍显示原来的主图，旧文件与索引不变', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
-  // 先经页面存一张主照片，再验证“取消更换保留原图”。
+  // 先经资料页存一张主照片，再验证“取消更换保留原图”。
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
@@ -709,50 +694,36 @@ test('R2 取消更换后仍显示原来的主图，旧文件与索引不变', as
   assert.equal(photoIndex().photos.length, 1);
 });
 
-// ------------------------------------------------------------------ T031 结果旁换线
-
 test('T031 结果旁换线：同色同级两条线各自带自己的照片，换线只切当前线与照片', async () => {
-  const page = await openSessionPage({ start: '1' });
-  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
-  page.startSession();
-  await settle();
+  const seeded = seedTraining({ gymName: '我自己去的岩馆', routeName: 'A 线' });
+  const b = store.createRoute({
+    sessionId: seeded.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(b.ok, true, b.error);
 
-  // A 建线时带照片并确认保存。
-  page.toggleNewRouteForm();
-  page.onNewRouteNameInput({ detail: { value: 'A 线' } });
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
-  await page.createRoute();
+  // A 在资料页存一张照片。
+  const aPage = await openRoutePage(seeded.route.id);
+  await aPage.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  await aPage.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
-  const aId = page.data.selectedRoute.id;
-  const aPhotoId = page.data.routePhoto.photoId;
-  assert.equal(page.data.routePhoto.status, 'saved');
+  const aPhotoId = aPage.data.routePhoto.photoId;
+  assert.equal(aPage.data.routePhoto.status, 'saved');
 
-  // B 同色同级（都不指定颜色、都是抱石 V3）、没有照片。
-  page.openAddRoute();
-  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
-  page.onNewRouteNameInput({ detail: { value: 'B 线' } });
-  await page.createRoute();
-  await settle();
-  const bId = page.data.selectedRoute.id;
-  assert.notEqual(bId, aId);
-  assert.equal(page.data.routePhoto.status, 'none');
-
-  // 结果旁的短列表：两条线都在，点 A 即切到 A 的线路与照片。
-  assert.deepEqual(page.data.routeSwitchRows.map(row => row.id), [aId, bId]);
-  page.selectRoute(tapDataset({ routeId: aId }));
-  await settle();
-  assert.equal(page.data.selectedRoute.id, aId);
-  assert.equal(page.data.routePhoto.status, 'saved');
-  assert.equal(page.data.routePhoto.photoId, aPhotoId);
-
-  // 再切回 B：照片跟着切换，A 的照片与索引不变。
-  page.selectRoute(tapDataset({ routeId: bId }));
-  await settle();
-  assert.equal(page.data.selectedRoute.id, bId);
-  assert.equal(page.data.routePhoto.status, 'none', 'B 没有照片');
+  // B 同色同级、没有照片；两条线按原 routeId 各开各的资料页。
+  const bPage = await openRoutePage(b.route.id);
+  assert.equal(bPage.data.routePhoto.status, 'none', 'B 没有照片');
   assert.equal(photoIndex().photos.length, 1);
-  assert.equal(photoIndex().photos[0].routeId, aId);
+  assert.equal(photoIndex().photos[0].routeId, seeded.route.id);
   assert.equal(photoIndex().photos[0].photoId, aPhotoId);
+
+  // 回到 A：同一张照片、同一个文件。
+  const aAgain = await openRoutePage(seeded.route.id);
+  assert.equal(aAgain.data.routePhoto.status, 'saved');
+  assert.equal(aAgain.data.routePhoto.photoId, aPhotoId);
+  assert.equal(aAgain.data.routePhoto.mainPath, aPage.data.routePhoto.mainPath);
 });
 
 test('T031 快速 A→B：迟到的 A 照片回执不覆盖 B，下一把只归 B', async () => {
@@ -766,40 +737,40 @@ test('T031 快速 A→B：迟到的 A 照片回执不覆盖 B，下一把只归 
     colorHex: '#2f6fe4'
   });
   assert.equal(b.ok, true, b.error);
-  store.selectRoute(seeded.route.id);
 
-  const page = await openSessionPage({});
-  assert.equal(page.data.selectedRoute.id, seeded.route.id);
-
-  // A 的照片选择挂起：用户在回执之前就切到了 B。
+  // A 的资料页发起照片选择，回执挂起。
+  const aPage = await openRoutePage(seeded.route.id);
   const realChooseMedia = global.wx.chooseMedia;
   let pending = null;
   global.wx.chooseMedia = options => {
     pending = options;
   };
-  page.chooseRoutePhoto(tapDataset({ source: 'album', routeId: seeded.route.id }));
+  aPage.chooseRoutePhoto(tapDataset({ source: 'album', routeId: seeded.route.id }));
   assert.ok(pending, 'A 的照片选择已经发起');
   global.wx.chooseMedia = realChooseMedia;
 
-  page.selectRoute(tapDataset({ routeId: b.route.id }));
-  await settle();
-  assert.equal(page.data.selectedRoute.id, b.route.id, '换线已经切到 B');
-
-  // A 的迟到回执落地：照片只属于 A，不能顶掉 B 的展示，也不产生预览。
+  // 用户已经打开 B 的资料页：B 没有照片，A 的迟到回执不得覆盖 B 的展示。
+  const bPage = await openRoutePage(b.route.id);
   pending.success({ tempFiles: [{ tempFilePath: pickerFile() }] });
   await settle();
-  assert.equal(page.data.selectedRoute.id, b.route.id, '当前线仍是 B');
-  assert.equal(page.data.routePhoto.status, 'none', 'B 没有照片，迟到回执不得覆盖');
-  assert.equal(page.data.routePhoto.hasPhoto, false);
+  assert.equal(bPage.data.routePhoto.status, 'none', 'B 没有照片，迟到回执不得覆盖');
+  assert.equal(bPage.data.routePhoto.hasPhoto, false);
   const index = photoIndex();
   assert.equal((index && index.photos ? index.photos : []).length, 0, '只选未确认不写照片索引');
+  assert.equal(aPage.data.routePhoto.status, 'preview', '回执只落在发起它的 A 页面');
 
-  // 下一把只归 B，A 不产生把次。
+  // 下一把只归 B（单线页），A 不产生把次。
+  const bRecord = createPage(recordDefinition);
+  bRecord.onLoad({
+    archiveId: archiveOf().archiveId,
+    sessionId: seeded.session.id,
+    routeId: b.route.id
+  });
   const beforeB = store.attemptsFor(archiveOf(), {
     sessionId: seeded.session.id,
     routeId: b.route.id
   }).length;
-  page.recordAttempt(tapDataset({ result: 'fail' }));
+  bRecord.recordAttempt(tapDataset({ result: 'fail' }));
   await settle();
   assert.equal(
     store.attemptsFor(archiveOf(), { sessionId: seeded.session.id, routeId: b.route.id }).length,
@@ -813,73 +784,68 @@ test('T031 快速 A→B：迟到的 A 照片回执不覆盖 B，下一把只归 
 });
 
 test('T030 复验 同日两场：切回已有照片的旧场次再选回原线，照片、把数与备注都跟着原 routeId', async () => {
-  const page = await openSessionPage({ start: '1' });
-  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
-  page.startSession();
-  await settle();
-
   // 第一场：A 线带照片，记一把并补备注。
-  page.toggleNewRouteForm();
-  page.onNewRouteNameInput({ detail: { value: 'A 线' } });
-  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
-  await page.createRoute();
+  const first = seedTraining({ gymName: '我自己去的岩馆', routeName: 'A 线' });
+  const session1 = first.session.id;
+  const aId = first.route.id;
+  const aDetail = await openRoutePage(aId);
+  await aDetail.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  await aDetail.confirmRoutePhoto(tapDataset({ routeId: aId }));
   await settle();
-  const session1 = page.data.activeSession.id;
-  const aId = page.data.selectedRoute.id;
-  assert.equal(page.data.routePhoto.status, 'saved');
-  const aPhotoId = page.data.routePhoto.photoId;
-  const aPath = page.data.routePhoto.mainPath;
+  assert.equal(aDetail.data.routePhoto.status, 'saved');
+  const aPhotoId = aDetail.data.routePhoto.photoId;
+  const aPath = aDetail.data.routePhoto.mainPath;
 
-  page.recordAttempt(tapDataset({ result: 'fail', sessionId: session1, routeId: aId }));
+  const recordA = createPage(recordDefinition);
+  recordA.onLoad({ archiveId: archiveOf().archiveId, sessionId: session1, routeId: aId });
+  recordA.recordAttempt(tapDataset({ result: 'fail', sessionId: session1, routeId: aId }));
+  const aAttemptId = recordA.data.attempts[0].id;
+  const attemptsPage = createPage(attemptsDefinition);
+  attemptsPage.onLoad({ archiveId: archiveOf().archiveId, sessionId: session1, routeId: aId });
+  attemptsPage.openNoteEditor(tapDataset({ attemptId: aAttemptId }));
+  attemptsPage.onNoteInput({ detail: { value: 'A 的旧备注' } });
+  attemptsPage.saveNote();
   await settle();
-  const aAttemptId = page.data.attempts[0].id;
-  page.openNoteEditor(tapDataset({ attemptId: aAttemptId }));
-  page.onNoteInput({ detail: { value: 'A 的旧备注' } });
-  page.saveNote();
-  await settle();
-  assert.equal(page.data.attempts[0].note, 'A 的旧备注');
 
   // 同日另开第二场：只记一把，不带第一场的照片或把次。
-  page.openSessionForm();
-  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
-  page.startSession();
+  const second = store.startSession({ gymName: '我自己去的岩馆' });
+  assert.equal(second.ok, true, second.error);
+  const session2 = second.archive.activeSessionId;
+  const bRoute = store.createRoute({
+    sessionId: session2,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(bRoute.ok, true, bRoute.error);
+  const bId = bRoute.route.id;
+  const bRecord = createPage(recordDefinition);
+  bRecord.onLoad({ archiveId: archiveOf().archiveId, sessionId: session2, routeId: bId });
+  bRecord.recordAttempt(tapDataset({ result: 'fail', sessionId: session2, routeId: bId }));
   await settle();
-  const session2 = page.data.activeSession.id;
-  assert.notEqual(session2, session1);
-  assert.equal(page.data.routeSwitchTotal, 0, '新场次没有本场线路');
-  page.openAddRoute();
-  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
-  page.onNewRouteNameInput({ detail: { value: 'B 线' } });
-  await page.createRoute();
-  await settle();
-  const bId = page.data.selectedRoute.id;
-  assert.notEqual(bId, aId);
-  assert.equal(page.data.routePhoto.status, 'none', 'B 没有照片');
-  page.recordAttempt(tapDataset({ result: 'fail', sessionId: session2, routeId: bId }));
-  await settle();
+  assert.equal((await openRoutePage(bId)).data.routePhoto.status, 'none', 'B 没有照片');
   assert.equal(photoIndex().photos.length, 1, '照片索引里只有 A 那一条');
 
-  // 切回第一场：当前选择被清空（selectSession 契约），但本场线路名册还在，照片不冒充别的线。
-  page.switchSession(tapDataset({ sessionId: session1 }));
-  await settle();
-  assert.equal(page.data.activeSession.id, session1);
-  assert.equal(page.data.selectedRoute, null);
-  assert.equal(page.data.routePhoto, null, '没有当前线时不显示任何线路的照片');
-  assert.equal(page.data.routeSwitchTotal, 1, '本场那一条线仍在换线名册里');
-  assert.equal(page.data.routeSwitchAllRows[0].id, aId);
+  // 切回第一场：列表只改归属（当前选择被清空），本场线路仍在。
+  store.selectSession(session1);
+  const listPage = await openSessionPage();
+  assert.equal(listPage.data.activeSession.id, session1);
+  assert.equal(listPage.data.selectedRoute, null);
+  assert.equal(listPage.data.routeSwitchTotal, 1, '本场那一条线仍在列表里');
+  assert.equal(listPage.data.routeSwitchAllRows[0].id, aId);
 
-  // 从名册选回原线：照片、把数与备注一起回到 A（同一个 routeId）。
-  page.selectRoute(tapDataset({ routeId: aId }));
-  await settle();
-  assert.equal(page.data.selectedRoute.id, aId);
-  assert.equal(page.data.routePhoto.status, 'saved');
-  assert.equal(page.data.routePhoto.photoId, aPhotoId);
-  assert.equal(page.data.routePhoto.mainPath, aPath);
-  assert.equal(page.data.routeCountText, '1 把');
-  assert.equal(page.data.attempts.length, 1);
-  assert.equal(page.data.attempts[0].id, aAttemptId);
-  assert.equal(page.data.attempts[0].note, 'A 的旧备注');
-  assert.equal(photoIndex().photos.length, 1, '选回原线不新建第二条照片记录');
+  // 从列表重开原线：照片、把数与备注一起回到 A（同一个 routeId）。
+  const aAgain = await openRoutePage(aId);
+  assert.equal(aAgain.data.routePhoto.status, 'saved');
+  assert.equal(aAgain.data.routePhoto.photoId, aPhotoId);
+  assert.equal(aAgain.data.routePhoto.mainPath, aPath);
+  const recordAgain = createPage(recordDefinition);
+  recordAgain.onLoad({ archiveId: archiveOf().archiveId, sessionId: session1, routeId: aId });
+  assert.equal(recordAgain.data.routeCountText, '1 把');
+  assert.equal(recordAgain.data.attempts.length, 1);
+  assert.equal(recordAgain.data.attempts[0].id, aAttemptId);
+  assert.equal(recordAgain.data.attempts[0].note, 'A 的旧备注');
+  assert.equal(photoIndex().photos.length, 1, '重开原线不新建第二条照片记录');
   assert.equal(photoIndex().photos[0].routeId, aId);
   // 第二场的把次没有被搬过来。
   assert.equal(
@@ -888,17 +854,21 @@ test('T030 复验 同日两场：切回已有照片的旧场次再选回原线�
   );
 });
 
-// ------------------------------------------------------------------ R5 移除与失败
-
 test('R5 页面移除照片：索引与文件释放，把次与备注不动', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
 
-  page.recordAttempt(tapDataset({ result: 'fail' }));
+  const recordPage = createPage(recordDefinition);
+  recordPage.onLoad({
+    archiveId: archiveOf().archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id
+  });
+  recordPage.recordAttempt(tapDataset({ result: 'fail' }));
   await settle();
   const archiveBefore = JSON.parse(rawArchive());
   const mainPath = page.data.routePhoto.mainPath;
@@ -929,7 +899,7 @@ test('R5 空间不足时页面提示原因并保留旧照片', async () => {
   });
   controllerModule.resetTrainingPhotos();
 
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
@@ -959,16 +929,20 @@ test('R5 空间不足时页面提示原因并保留旧照片', async () => {
   controllerModule.resetTrainingPhotos();
 });
 
-// ------------------------------------------------------------------ R3 跨天回看
-
 test('R3 跨天详情读到同一张照片，更正与再记不动照片', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
-  page.recordAttempt(tapDataset({ result: 'fail' }));
+  const recordPage = createPage(recordDefinition);
+  recordPage.onLoad({
+    archiveId: archiveOf().archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id
+  });
+  recordPage.recordAttempt(tapDataset({ result: 'fail' }));
   await settle();
   const photoId = page.data.routePhoto.photoId;
   const mainPath = page.data.routePhoto.mainPath;
@@ -1008,21 +982,31 @@ test('R3 跨天详情读到同一张照片，更正与再记不动照片', async
   assert.equal(index.photos[0].photoId, photoId);
 });
 
-// ------------------------------------------------------------------ R5 个人页清缓存
-
 test('R5 个人页清缓存后场次、备注、索引与仍被引用的原图都在，缩略图可重建', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
   await settle();
-  page.recordAttempt(tapDataset({ result: 'fail' }));
+  const recordPage = createPage(recordDefinition);
+  recordPage.onLoad({
+    archiveId: archiveOf().archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id
+  });
+  recordPage.recordAttempt(tapDataset({ result: 'fail' }));
   await settle();
-  const attemptId = page.data.attempts[0].id;
-  page.openNoteEditor(tapDataset({ attemptId }));
-  page.onNoteInput({ detail: { value: '抓到后向右摆' } });
-  page.saveNote();
+  const attemptId = recordPage.data.attempts[0].id;
+  const attemptsPage = createPage(attemptsDefinition);
+  attemptsPage.onLoad({
+    archiveId: archiveOf().archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id
+  });
+  attemptsPage.openNoteEditor(tapDataset({ attemptId }));
+  attemptsPage.onNoteInput({ detail: { value: '抓到后向右摆' } });
+  attemptsPage.saveNote();
   await settle();
 
   const mainPath = page.data.routePhoto.mainPath;
@@ -1042,7 +1026,7 @@ test('R5 个人页清缓存后场次、备注、索引与仍被引用的原图�
   assert.equal(photoIndex().photos[0].storage.location, mainPath);
   assert.equal(storage.has(serviceModule.THUMB_CACHE_KEY), false);
 
-  // 缩略图可重建：从详情页照片卡片上的「重建缩略图」入口发起，只补缓存。
+  // 缩略图可重建：从资料页照片卡片上的「重建缩略图」入口发起，只补缓存。
   const beforeRebuild = await openRoutePage(seeded.route.id);
   assert.equal(beforeRebuild.data.routePhoto.thumbnailAvailable, false);
   await beforeRebuild.rebuildRoutePhoto(tapDataset({ routeId: seeded.route.id }));
@@ -1062,7 +1046,7 @@ test('R5 个人页清缓存后场次、备注、索引与仍被引用的原图�
 
 test('R5 照片操作未落定时不顺手清缓存，也不删正在写的文件', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   const profile = await openProfilePage();
 
@@ -1077,11 +1061,9 @@ test('R5 照片操作未落定时不顺手清缓存，也不删正在写的文�
   assert.ok(virtual.files.has(page.data.routePhoto.mainPath));
 });
 
-// ------------------------------------------------------------------ 退出重开与命名空间
-
 test('R5 退出重开（重新加载模块）后照片、索引与原图仍在', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
@@ -1098,26 +1080,19 @@ test('R5 退出重开（重新加载模块）后照片、索引与原图仍在',
       delete require.cache[key];
     });
 
-  const freshSessionDefinition = capturePage(SESSION_JS);
   const freshRouteDefinition = capturePage(ROUTE_JS);
-  const freshPage = createPage(freshSessionDefinition);
-  freshPage.onLoad({});
-  await settle();
-
-  assert.equal(freshPage.data.routePhoto.status, 'saved', '重开后场内页仍显示照片');
-  assert.equal(freshPage.data.routePhoto.photoId, photoId);
-
   const freshDetail = createPage(freshRouteDefinition);
   freshDetail.onLoad({ routeId: seeded.route.id });
   await settle();
   assert.equal(freshDetail.data.routePhoto.status, 'saved');
+  assert.equal(freshDetail.data.routePhoto.photoId, photoId);
   assert.equal(freshDetail.data.routePhoto.mainPath, mainPath);
   assert.ok(virtual.files.has(mainPath), '重开后原图仍在');
 });
 
 test('R6 照片流程只落正式本机命名空间：无云调用、不写旧记录或试用工程的键', async () => {
   const seeded = seedTraining();
-  const page = await openSessionPage();
+  const page = await openRoutePage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));

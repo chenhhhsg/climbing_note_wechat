@@ -403,7 +403,7 @@
         <text class="section-title">本机逐把记录</text>
 
         <view wx:if="{{!hasAttempts}}" id="history-empty" class="empty-attempts">
-          <text>这条线路在本机还没有逐把记录。点「当天再记」回场内页记第一把。</text>
+          <text>这条线路在本机还没有逐把记录。点「当天再记」进单线记录记第一把。</text>
         </view>
 
         <view wx:else>
@@ -413,10 +413,20 @@
             id="history-group-{{item.sessionId}}"
             class="history-group"
           >
-            <view class="history-group-head">
+            <!--
+              分组标题即回到那一条记录（T036）：按这一组渲染时的原 sessionId 与当前长期
+              routeId 打开单线记录；同日两场各自保留原归属，不会并到别的场次。
+            -->
+            <view
+              class="history-group-head history-group-open"
+              data-session-id="{{item.sessionId}}"
+              data-route-id="{{route.id}}"
+              bindtap="openRecordFromHistory"
+            >
               <text class="history-date">{{item.dateText}}</text>
               <text class="history-session">{{item.sessionLabel}} · {{item.gymName}}</text>
               <text class="history-count">{{item.countText}}</text>
+              <text class="history-open-hint">回到这一场记录 ›</text>
             </view>
             <view wx:for="{{item.attempts}}" wx:for-item="attempt" wx:key="id" id="attempt-{{attempt.id}}" class="attempt-item">
               <view class="attempt-main">
@@ -445,6 +455,7 @@
               data-attempt-id="{{item.attemptId}}"
               data-route-id="{{item.routeId}}"
               data-session-id="{{item.sessionId}}"
+              data-archive-id="{{item.archiveId}}"
               bindtap="correctSend"
             >{{item.buttonText}}</button>
             <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
@@ -456,7 +467,7 @@
       <view class="record-again-footer">
         <block wx:if="{{canRecordAgain}}">
           <button id="record-again" class="primary-button" bindtap="recordAgain">当天再记</button>
-          <text class="record-again-hint">回场内页在这条线上继续记：当日该岩馆已有场次就直接用，当日多场会先让你选一场。</text>
+          <text class="record-again-hint">进这条线在本场/当日的单线记录继续记：当日该岩馆已有场次就直接用，当日多场会先让你选一场。</text>
         </block>
         <block wx:else>
           <view id="route-closed-panel" class="route-completed-panel">

@@ -34,12 +34,13 @@
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
 const photoMarks = require('../../utils/training-photo-marks.js');
+const recordActions = require('../../utils/training-record-actions.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 const {
   createTrainingPhotoController
 } = require('../../utils/training-photo-controller.js');
 
-const SESSION_URL = '/pages/training-session/training-session';
+const RECORD_URL = '/pages/training-record/training-record';
 const PROFILE_URL = '/pages/profile/profile';
 
 function pad2(value) {
@@ -1146,6 +1147,7 @@ Page({
             attemptId: row.attemptId,
             routeId: row.routeId,
             sessionId: row.sessionId,
+            archiveId: this.archive.archiveId,
             label: row.label,
             contextText: row.contextText,
             state: 'corrected',
@@ -1161,6 +1163,7 @@ Page({
           attemptId: row.attemptId,
           routeId: row.routeId,
           sessionId: row.sessionId,
+          archiveId: this.archive.archiveId,
           label: row.label,
           contextText: row.contextText,
           state: needsRetry ? 'retry' : 'ready',
@@ -1381,7 +1384,7 @@ Page({
     this.archive = outcome.archive;
     this.setData({ storageError: '', notice: '', sessionPicker: null });
     this.refreshView();
-    this.goToSession();
+    this.goToRecord(outcome.archive.activeSessionId, routeId);
   },
 
   /**
@@ -1407,7 +1410,7 @@ Page({
     this.archive = outcome.archive;
     this.setData({ storageError: '', notice: '', sessionPicker: null });
     this.refreshView();
-    this.goToSession();
+    this.goToRecord(sessionId, picker.routeId);
   },
 
   /**
@@ -1417,8 +1420,43 @@ Page({
     this.setData({ sessionPicker: null });
   },
 
-  goToSession() {
-    wx.navigateTo({ url: SESSION_URL });
+  /**
+   * 当天再记 / 选场之后：进入这条线在指定场次的单线记录页（T036）。
+   * 带齐档案、场次与长期线路 ID；单线页再按同一组参数核对归属。
+   * 目标不明确时不猜场次，只提示并留在本页。
+   */
+  goToRecord(sessionId, routeId) {
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const targetRouteId = routeId || this._routeId || '';
+    if (!archiveId || !sessionId || !targetRouteId) {
+      this.setData({ notice: '无法定位这一场这条线的单线记录，请重试。' });
+      return;
+    }
+    wx.navigateTo({
+      url:
+        RECORD_URL +
+        '?archiveId=' +
+        encodeURIComponent(archiveId) +
+        '&sessionId=' +
+        encodeURIComponent(sessionId) +
+        '&routeId=' +
+        encodeURIComponent(targetRouteId),
+      fail: () => {
+        this.setData({ notice: '单线记录页没有打开，请再点一次「当天再记」。' });
+      }
+    });
+  },
+
+  /**
+   * 跨天历史按原场次回到对应的单线记录（T036）：只认这一组渲染时的 sessionId 与
+   * 当前长期线路 ID；同一天两场各自保留原归属，不会并到别的场次。
+   */
+  openRecordFromHistory(event) {
+    if (this.data.loadError || this.data.notFound) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const sessionId = dataset.sessionId || '';
+    const routeId = dataset.routeId || this._routeId || '';
+    this.goToRecord(sessionId, routeId);
   },
 
   // ---------------------------------------------------------------- 按把更正
@@ -1429,49 +1467,11 @@ Page({
    * 目标来自该行按钮带下来的原把次 ID 与归属，连点/双击原坐标只会重复更正同一把
    * （第二次幂等返回 resolved），不会改到另一把；只翻这一把的 result，把数、ID、
    * 序号、场次、时间与备注都不变，之后可以正常再记并再次完攀。
+   *
+   * T036：与单线记录页共用 utils/training-record-actions.js 的同一份实现，避免两个
+   * 不一致的写实现；本页的 _correctedRows / _correctionFailures 由 refreshView 读取。
    */
-  correctSend(event) {
-    if (this.data.loadError || this.data.notFound) return;
-    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
-    const attemptId = dataset.attemptId;
-    if (!attemptId) return;
-
-    const outcome = store.correctAttempt(attemptId, {
-      routeId: dataset.routeId,
-      sessionId: dataset.sessionId
-    });
-    if (outcome.archive) this.archive = outcome.archive;
-
-    if (outcome.ok) {
-      delete this._correctionFailures[attemptId];
-      // 改好的那一把留在原位置变成只读回读：下面的行不上移，同一坐标不会被
-      // 另一把的控件接管（改另一把必须点它自己那一行）。
-      this._correctedRows[attemptId] = {
-        statusText: '已改为未完成 · 本把次保留原时间、场次与备注'
-      };
-      this.setData({
-        storageError: '',
-        notice: outcome.code === 'resolved' ? '这一把已经是未完成。' : ''
-      });
-      this.refreshView();
-      return;
-    }
-
-    if (outcome.code === 'missing') {
-      delete this._correctedRows[attemptId];
-      this.setData({ storageError: '', notice: outcome.error });
-      this.refreshView();
-      return;
-    }
-
-    // 写盘失败与归属冲突：保留可重试的控件，明确提示，不改任何数据。
-    this._correctionFailures[attemptId] = outcome.code;
-    this.setData({
-      storageError: outcome.code === 'write-failed' ? outcome.error : '',
-      notice: outcome.code === 'write-failed' ? '更正未保存，可再点一次重试。' : outcome.error
-    });
-    this.refreshView();
-  },
+  correctSend: recordActions.correctSend,
 
   dismissNotice() {
     this.setData({ notice: '' });

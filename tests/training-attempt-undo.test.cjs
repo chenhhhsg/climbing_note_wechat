@@ -35,6 +35,7 @@ const WISHLIST_JS = path.join(ROOT, 'utils', 'training-wishlist.js');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const INDEX_JS = path.join(ROOT, 'pages', 'index', 'index.js');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
+const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const LIST_JS = path.join(ROOT, 'pages', 'record-list', 'record-list.js');
 const STATS_JS = path.join(ROOT, 'pages', 'stats', 'stats.js');
@@ -138,6 +139,7 @@ function capturePage(jsPath) {
 
 const indexDefinition = capturePage(INDEX_JS);
 const sessionDefinition = capturePage(SESSION_JS);
+const recordDefinition = capturePage(RECORD_JS);
 const routeDefinition = capturePage(ROUTE_JS);
 const listDefinition = capturePage(LIST_JS);
 const statsDefinition = capturePage(STATS_JS);
@@ -912,11 +914,15 @@ test('T032 撤回后首页、场内、线路历史、跨天历史、统计、小
     'undone'
   );
 
-  // 1) 场内页：当前场次 = 第二天，当前线路 = A。
+  // 1) 单线记录页：当前场次 = 第二天，当前线路 = A。
   assert.equal(store.selectSession(fixture.second.session.id).ok, true);
   assert.equal(store.selectRoute(fixture.first.route.id).ok, true);
-  const sessionPage = createPage(sessionDefinition);
-  sessionPage.onLoad({});
+  const sessionPage = createPage(recordDefinition);
+  sessionPage.onLoad({
+    archiveId: store.loadState().archive.archiveId,
+    sessionId: fixture.second.session.id,
+    routeId: fixture.first.route.id
+  });
   assert.equal(sessionPage.data.selectedRoute.id, fixture.first.route.id);
   assert.equal(sessionPage.data.attempts.length, 1, '场内逐把只列有效把次');
   assert.equal(sessionPage.data.attempts[0].label, '第 1 把');
@@ -924,8 +930,12 @@ test('T032 撤回后首页、场内、线路历史、跨天历史、统计、小
   // 换回第一天：那条线的第 3 把已撤回，逐把列表与把数同步为 2。
   assert.equal(store.selectSession(fixture.first.session.id).ok, true);
   assert.equal(store.selectRoute(fixture.first.route.id).ok, true);
-  const day1Page = createPage(sessionDefinition);
-  day1Page.onLoad({});
+  const day1Page = createPage(recordDefinition);
+  day1Page.onLoad({
+    archiveId: store.loadState().archive.archiveId,
+    sessionId: fixture.first.session.id,
+    routeId: fixture.first.route.id
+  });
   assert.equal(day1Page.data.attempts.length, 2);
   assert.deepEqual(day1Page.data.attempts.map(row => row.label), ['第 1 把', '第 2 把']);
   assert.equal(day1Page.data.routeCountText, '2 把');
