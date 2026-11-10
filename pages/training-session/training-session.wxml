@@ -317,6 +317,71 @@
           </view>
         </view>
 
+        <!--
+          结果按钮旁换线（T031）：不用滚回页顶的「本场线路」就能换线，换完就地记结果。
+          1–3 条时直接列出本场全部线路；超过 3 条时只列当前线与最多两条不重复的近期线路，
+          其余由「全部 N 条」展开（N 是真实的本场关联数）。点线路名走的就是原来那一个
+          selectRoute —— 只改当前选择，不新建线路、不加关联、不产生把次；别的场次独有的
+          线路不在本场列表里，因此不会出现。展开与收起只切本页展示，不改当前线。
+        -->
+        <view wx:if="{{routes.length > 0}}" id="route-switch" class="route-switch">
+          <view class="route-switch-head">
+            <text class="route-switch-title">换线</text>
+            <text class="route-switch-count">本场 {{routeSwitchTotal}} 条</text>
+          </view>
+
+          <!-- 展开：本场全部线路，每条一整行，长名称换行显示 -->
+          <block wx:if="{{routeSwitchExpanded}}">
+            <view class="route-switch-list">
+              <view
+                wx:for="{{routeSwitchAllRows}}"
+                wx:key="id"
+                id="route-switch-row-{{item.id}}"
+                class="route-switch-row {{item.isSelected ? 'route-switch-row-on' : ''}}"
+                data-route-id="{{item.id}}"
+                bindtap="selectRoute"
+              >
+                <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+                <view class="route-switch-row-info">
+                  <text class="route-switch-name">{{item.name}}</text>
+                  <text class="route-switch-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
+                </view>
+                <text wx:if="{{item.isSelected}}" class="route-switch-check">已选</text>
+              </view>
+            </view>
+            <button
+              id="route-switch-close"
+              class="text-button route-switch-close"
+              bindtap="closeRouteSwitch"
+            >收起（不改当前线）</button>
+          </block>
+
+          <!-- 收起：短列表；超过 3 条时留下「全部 N 条」 -->
+          <block wx:else>
+            <view class="route-switch-chips">
+              <view
+                wx:for="{{routeSwitchRows}}"
+                wx:key="id"
+                id="route-switch-{{item.id}}"
+                class="route-switch-chip {{item.isSelected ? 'route-switch-on' : ''}}"
+                data-route-id="{{item.id}}"
+                bindtap="selectRoute"
+              >
+                <view class="route-switch-dot" style="background: {{item.colorHex}};"></view>
+                <text class="route-switch-chip-name">{{item.name}}</text>
+                <text class="route-switch-chip-grade">{{item.grade}}</text>
+                <text wx:if="{{item.isSelected}}" class="route-switch-check">已选</text>
+              </view>
+              <view
+                wx:if="{{routeSwitchHasMore}}"
+                id="route-switch-all"
+                class="route-switch-all"
+                bindtap="expandRouteSwitch"
+              >{{routeSwitchMoreText}}</view>
+            </view>
+          </block>
+        </view>
+
         <!-- 结果按钮：抱石完攀后收起；有未保存的把次时先重试那一把 -->
         <view class="result-footer">
           <block wx:if="{{routeCompleted}}">
