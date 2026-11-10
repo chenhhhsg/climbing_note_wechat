@@ -11,6 +11,11 @@
  * 报错、写入失败重试与迟到重复点击幂等、普通清缓存不动清单，以及收藏前后训练档案
  * 与照片索引的原始字节一致。
  *
+ * 串档修复：清单按「档案 ID + 长期线路 ID」共同定位（两份档案可以各有一条 route-1）。
+ * 因此还覆盖：换成另一份档案后看不到、也动不了原来那份档案的收藏（含小结的批量勾选
+ * 口径与场内页显示），切回原档案收藏仍在；换档前打开的页面上的迟到点击按原归属被拒绝；
+ * 没有注明档案 ID 的旧条目不归属于任何档案（不上屏、也不被增删改，原字节保留）。
+ *
  * 刻意不提供 wx.cloud 与本地文件系统：本机清单、清单展示与「继续原线」都不得依赖
  * 云能力；照片只验证「有照片 / 无图 / 照片不可用」三种展示分支，照片文件本身的读写
  * 由 T019 的测试覆盖。真实设备字体、日光对比度与触控留给负责人整体验收（待验）。
@@ -241,6 +246,58 @@ function record(session, route, result, note, at) {
 
 function archiveOf() {
   return store.loadState().archive;
+}
+
+/**
+ * 另一份完整的本机档案（B）：archiveId 不同，但里面的线路 ID 也是 route-1。
+ * 用来复现并守住「只看 routeId 会串档」：换档后 B 自己的 route-1 不该被 A 的收藏认领。
+ */
+function otherArchiveRaw(archiveId, gymName) {
+  return JSON.stringify({
+    version: 1,
+    archiveId: archiveId,
+    nextGymSeq: 2,
+    nextSessionSeq: 2,
+    nextRouteSeq: 2,
+    nextAttemptSeq: 1,
+    gyms: [{ id: 'gym-1', name: gymName, createdAt: '2026-11-08T09:00:00.000Z' }],
+    sessions: [
+      {
+        id: 'session-1',
+        seq: 1,
+        gymId: 'gym-1',
+        date: '2026-11-08',
+        createdAt: '2026-11-08T09:00:00.000Z'
+      }
+    ],
+    routes: [
+      {
+        id: 'route-1',
+        seq: 1,
+        gymId: 'gym-1',
+        name: '另一份档案里的线路',
+        climbType: '抱石',
+        grade: 'V3',
+        colorName: '蓝色',
+        colorHex: '#2f6fe4',
+        createdAt: '2026-11-08T09:05:00.000Z'
+      }
+    ],
+    sessionRoutes: [
+      { sessionId: 'session-1', routeId: 'route-1', addedAt: '2026-11-08T09:05:00.000Z' }
+    ],
+    attempts: [],
+    pendingSaves: [],
+    pendingCorrections: [],
+    activeSessionId: 'session-1',
+    activeRouteId: 'route-1'
+  });
+}
+
+/** 直接换掉档案键＝换成另一份档案（同机重开、档案被重置都走这条路径）。 */
+function swapArchive(raw) {
+  storage.set(ARCHIVE_KEY, raw);
+  return archiveOf();
 }
 
 /** 两个岩馆各一条同色同级的抱石线：A 馆在前，B 馆在后。 */
@@ -784,13 +841,14 @@ test('T027 清单键受保护：普通清缓存不动它，也不动命名空间
 test('T027 条目指向的线路已不在当前档案里时跳过，不串到别的岩馆', () => {
   const { routeA } = twoGymsFixture();
   favorite(routeA.id);
+  const archiveId = archiveOf().archiveId;
   storage.set(
     WISHLIST_KEY,
     JSON.stringify({
       version: 1,
       items: [
-        { routeId: routeA.id, gymId: '', addedAt: '2026-11-09T09:00:00.000Z', archivedAt: '' },
-        { routeId: 'route-999', gymId: '', addedAt: '2026-11-09T09:00:00.000Z', archivedAt: '' }
+        { archiveId: archiveId, routeId: routeA.id, gymId: '', addedAt: '2026-11-09T09:00:00.000Z', archivedAt: '' },
+        { archiveId: archiveId, routeId: 'route-999', gymId: '', addedAt: '2026-11-09T09:00:00.000Z', archivedAt: '' }
       ]
     })
   );
@@ -799,9 +857,206 @@ test('T027 条目指向的线路已不在当前档案里时跳过，不串到别
   assert.equal(listed.ok, true);
   assert.equal(listed.items.length, 1, '找不到的线路不显示，也不顶替别的馆');
   assert.equal(listed.orphanCount, 1);
+  assert.equal(listed.foreignCount, 0, '同一份档案里找不到线路与「属于别的档案」是两回事');
   assert.equal(listed.items[0].routeId, routeA.id);
   assert.equal(listed.groups.length, 1);
   assert.equal(listed.groups[0].gymName, 'A 馆');
+});
+
+// ------------------------------------------------------------------ *
+// 串档修复：按 archiveId + 长期 routeId 共同定位（B 的增删归档不得触及 A）
+// ------------------------------------------------------------------ *
+
+test('T027 换成另一份档案后不串档：B 看不到 A 的收藏，切回 A 仍然看得见', () => {
+  // A 档案：收藏它自己的 route-1。
+  const sessionA = startAt('2026-11-09', 'A 馆');
+  const routeA = newRoute(sessionA, { name: '蓝色动态线', grade: 'V3' });
+  record(sessionA, routeA, 'fail', '起步用右脚', '2026-11-09T10:00:00');
+  const archiveA = archiveOf();
+  assert.notEqual(archiveA.archiveId, 'archive-b-1');
+  favorite(routeA.id);
+  assert.equal(writesOf(WISHLIST_KEY), 1);
+  assert.deepEqual(entriesFor().items.map(item => item.routeId), [routeA.id]);
+
+  // 换成另一份档案 B：它里面也有一条 route-1，但那是另一条线。
+  const archiveB = swapArchive(otherArchiveRaw('archive-b-1', 'QA 岩馆 A'));
+  assert.equal(archiveB.archiveId, 'archive-b-1');
+  assert.equal(archiveB.routes[0].id, routeA.id, '两份档案里都有同名的 route-1');
+
+  // B 里看不到 A 的收藏：清单为空，也不是「已收藏」。
+  const listedB = wishlist.listWishlist(archiveB);
+  assert.equal(listedB.ok, true, listedB.error);
+  assert.deepEqual(listedB.items, [], 'B 里不显示 A 的收藏');
+  assert.deepEqual(listedB.groups, []);
+  assert.equal(listedB.foreignCount, 1, 'A 的那条属于别的档案，记在 foreignCount');
+  assert.equal(listedB.orphanCount, 0);
+  assert.equal(wishlist.wishlistEntry(archiveB, routeA.id).entry, null, 'B 的 route-1 不是已收藏');
+  assert.equal(wishlist.wishlistMembership(archiveB, [routeA.id]).entries.size, 0);
+
+  // B 的撤下与归档只按自己的档案找：都不落盘，也不动 A 的收藏。
+  const wishlistBefore = rawOf(WISHLIST_KEY);
+  const removeInB = wishlist.removeWishlist(routeA.id);
+  assert.equal(removeInB.ok, true);
+  assert.equal(removeInB.code, 'absent', 'B 的清单里本来就没有这一条');
+  const archiveInB = wishlist.archiveWishlist(routeA.id);
+  assert.equal(archiveInB.ok, false);
+  assert.equal(archiveInB.code, 'missing');
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore, 'B 的撤下与归档不得改写 A 的清单');
+  assert.equal(writesOf(WISHLIST_KEY), 1);
+
+  // B 加入自己的 route-1：两份档案各一条，各自只看得见自己的那条。
+  const addedInB = wishlist.addWishlist(routeA.id, { now: new Date('2026-11-08T10:00:00') });
+  assert.equal(addedInB.ok, true, addedInB.error);
+  assert.equal(addedInB.code, 'added', 'B 里这条还没收藏过，应是新加入');
+  assert.equal(addedInB.entry.name, '另一份档案里的线路');
+  assert.deepEqual(
+    wishlist.listWishlist(archiveB).items.map(item => item.name),
+    ['另一份档案里的线路']
+  );
+
+  // 切回 A：先前那条收藏还在，也不是 B 的条目。
+  swapArchive(JSON.stringify(archiveA));
+  const listedA = wishlist.listWishlist(archiveA);
+  assert.deepEqual(listedA.items.map(item => item.routeId), [routeA.id]);
+  assert.equal(listedA.items[0].name, '蓝色动态线');
+  assert.equal(listedA.items[0].latestNote, '起步用右脚');
+  assert.equal(listedA.foreignCount, 1, 'B 的那条对 A 来说也是别的档案');
+
+  // 清单里确实各存一条；A 的撤下只删 A 的那条。
+  assert.equal(wishlist.loadWishlist().state.items.length, 2);
+  assert.deepEqual(
+    wishlist.loadWishlist().state.items.map(item => item.archiveId),
+    [archiveA.archiveId, 'archive-b-1']
+  );
+  const removedInA = wishlist.removeWishlist(routeA.id);
+  assert.equal(removedInA.ok, true);
+  assert.equal(removedInA.removed, true);
+  const left = wishlist.loadWishlist().state.items;
+  assert.equal(left.length, 1);
+  assert.equal(left[0].archiveId, 'archive-b-1', 'A 的撤下只撤掉 A 的那条');
+  assert.deepEqual(
+    wishlist.listWishlist(archiveB).items.map(item => item.routeId),
+    [routeA.id],
+    'B 的收藏一条不少'
+  );
+});
+
+test('T027 合计清单与小结勾选也按档案隔离：换档后 A 的收藏不画成勾选状态', () => {
+  const sessionA = startAt('2026-11-09', 'A 馆');
+  const routeA = newRoute(sessionA, { name: '蓝色动态线', grade: 'V3' });
+  favorite(routeA.id);
+  const archiveA = archiveOf();
+
+  const archiveB = swapArchive(otherArchiveRaw('archive-b-1', 'QA 岩馆 A'));
+  // 小结的批量勾选（T029）读的是同一份清单：B 里 route-1 不是已收藏。
+  const membershipB = wishlist.wishlistMembership(archiveB, [routeA.id]);
+  assert.equal(membershipB.ok, true, membershipB.error);
+  assert.equal(membershipB.entries.size, 0, '别的档案的收藏不当成本档案的勾选状态');
+  assert.equal(membershipB.entries.has(routeA.id), false);
+  const entryB = wishlist.wishlistEntry(archiveB, routeA.id);
+  assert.equal(wishlist.wishlistActionView(entryB.entry).canAdd, true, 'B 里可以正常加入');
+
+  // 切回 A：勾选状态回到 A 的实际存储。
+  swapArchive(JSON.stringify(archiveA));
+  const membershipA = wishlist.wishlistMembership(archiveA, [routeA.id]);
+  assert.equal(membershipA.entries.get(routeA.id).status, 'wanted');
+  assert.equal(membershipA.entries.get(routeA.id).inList, true);
+});
+
+test('T027 没有注明档案 ID 的旧条目不归属任何档案：不上屏、不被增删改、原字节保留', () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
+  const legacy = JSON.stringify({
+    version: 1,
+    items: [
+      { routeId: route.id, gymId: '', addedAt: '2026-11-09T09:00:00.000Z', archivedAt: '' }
+    ]
+  });
+  storage.set(WISHLIST_KEY, legacy);
+
+  // 读得出来（不算损坏），但不猜它属于哪一份档案，因此不上屏。
+  const loaded = wishlist.loadWishlist();
+  assert.equal(loaded.ok, true, '缺 archiveId 的旧条目不算损坏');
+  assert.equal(loaded.present, true);
+  assert.equal(loaded.state.items.length, 1);
+  assert.equal(loaded.state.items[0].archiveId, '');
+
+  const listed = wishlist.listWishlist(archiveOf());
+  assert.equal(listed.ok, true, listed.error);
+  assert.deepEqual(listed.items, []);
+  assert.equal(listed.foreignCount, 1);
+  assert.equal(listed.orphanCount, 0, '没注明来源不等于线路在档案里找不到');
+  assert.equal(wishlist.wishlistEntry(archiveOf(), route.id).entry, null);
+  assert.equal(wishlist.wishlistMembership(archiveOf(), [route.id]).entries.size, 0);
+
+  // 撤下与归档这条同名线路 ID：只对本档案的条目生效，旧条目一个字节都不动。
+  const absent = wishlist.removeWishlist(route.id);
+  assert.equal(absent.code, 'absent');
+  assert.equal(writesOf(WISHLIST_KEY), 0, '不猜归属：旧条目不被撤下');
+  assert.equal(wishlist.archiveWishlist(route.id).code, 'missing');
+  assert.equal(rawOf(WISHLIST_KEY), legacy, '旧条目原字节保留');
+
+  // 加入：新条目带自己的档案 ID，旧条目仍留在原处（routeId 相同、归属不同，互不覆盖）。
+  const added = wishlist.addWishlist(route.id);
+  assert.equal(added.ok, true, added.error);
+  assert.equal(added.code, 'added');
+  const items = wishlist.loadWishlist().state.items;
+  assert.equal(items.length, 2);
+  assert.equal(items[0].archiveId, '');
+  assert.equal(items[0].addedAt, '2026-11-09T09:00:00.000Z', '旧条目原样保留');
+  assert.equal(items[1].archiveId, archiveOf().archiveId);
+  assert.deepEqual(wishlist.listWishlist(archiveOf()).items.map(item => item.routeId), [route.id]);
+});
+
+test('T027 场内页：换档后清单显示为空，换档前的迟到点击按原归属被拒绝', () => {
+  const sessionA = startAt('2026-11-09', 'A 馆');
+  const routeA = newRoute(sessionA, { name: '蓝色动态线', grade: 'V3' });
+  favorite(routeA.id);
+
+  // 页面在 A 档案里渲染过一次：它记住的是 A 的档案 ID。
+  const pageA = openSessionPage();
+  assert.equal(pageA.data.hasWishlist, true);
+  assert.deepEqual(pageA.data.wishlistWanted.map(item => item.routeId), [routeA.id]);
+  assert.equal(pageA.data.selectedWishlist.inList, true);
+
+  // 换成另一份档案 B：它里面也有一条 route-1，但那是另一条线。
+  const archiveARaw = rawOf(ARCHIVE_KEY);
+  storage.set(ARCHIVE_KEY, otherArchiveRaw('archive-b-1', 'QA 岩馆 A'));
+  const wishlistBefore = rawOf(WISHLIST_KEY);
+
+  // B 的页面：清单为空（A 的收藏不乱入），当前线路也没有被画成已收藏。
+  const pageB = openSessionPage();
+  assert.equal(pageB.data.loadError, '');
+  assert.equal(pageB.data.hasWishlist, false);
+  assert.deepEqual(pageB.data.wishlistWanted, []);
+  assert.equal(pageB.data.selectedWishlist.inList, false);
+  assert.equal(pageB.data.selectedWishlist.canAdd, true);
+
+  // pageA 是换档前那份档案上的实例：它的迟到点击按原归属被拒绝，不落盘、不改 B。
+  pageA.removeSelectedFromWishlist();
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore, '迟到点击不得改写清单');
+  assert.match(pageA.data.notice, /属于原来的本机档案/);
+  assert.equal(
+    wishlist.listWishlist(archiveOf()).items.length,
+    0,
+    'B 的清单仍然为空'
+  );
+
+  // B 的页面加入写的是 B 自己的那一条；A 的收藏原样留着。
+  pageB.addSelectedToWishlist();
+  assert.equal(pageB.data.notice, '已加入下次想爬。');
+  const items = wishlist.loadWishlist().state.items;
+  assert.equal(items.length, 2, '两份档案各一条，同名的 route-1 不互相覆盖');
+  assert.equal(items.filter(item => item.archiveId === 'archive-b-1').length, 1);
+  assert.equal(items.filter(item => item.routeId === routeA.id).length, 2);
+
+  // 切回 A：那条收藏还在，页面上显示的仍是 A 自己的那条线。
+  storage.set(ARCHIVE_KEY, archiveARaw);
+  const backInA = openSessionPage();
+  assert.equal(backInA.data.hasWishlist, true);
+  assert.deepEqual(backInA.data.wishlistWanted.map(item => item.routeId), [routeA.id]);
+  assert.equal(backInA.data.wishlistWanted[0].name, '蓝色动态线');
+  assert.equal(backInA.data.selectedWishlist.inList, true);
 });
 
 test('T027 收藏、撤下与归档不改训练档案与照片索引的原始字节', () => {

@@ -8,6 +8,15 @@
  * 数据模型：清单是独立的一份本机记录，只保存「哪些长期线路被收藏」以及收藏/归档时间，
  * 不复制线路、照片、把次或备注——那些仍然只在本机档案（utils/training-store.js）与
  * 照片索引（utils/training-photos.js）里有一份。因此：
+ * - 清单条目按「档案 ID + 长期线路 ID」共同定位。线路 ID 只在一份档案内唯一：A、B 两份
+ *   档案里都可以各有一条 route-1，只看 routeId 会让另一份档案里同名的 ID 顶上来（收藏
+ *   一条就显示成已收藏）。读取、显示、加入、撤下、归档与小结的批量勾选一律同时核对这两个
+ *   ID，因此换成 B 档案时看不到也动不了 A 档案的收藏，切回 A 仍然看得见；
+ * - 归属凭据只用档案自己持久化的 archiveId（见 utils/training-store.js），不按线路名称、
+ *   颜色、等级或时间猜。条目没有注明档案 ID 时（早期版本或手工写入）一律不归属于任何
+ *   档案：既不上屏，也不被任何档案的加入、撤下、归档改动，原字节保留，不猜它落在哪份档案；
+ * - 写入口额外核对调用方带上的 archiveId：页面渲染时用的是哪份档案，就必须还是那一份，
+ *   否则按「迟到操作」拒绝并不落盘，不把别人的收藏改到当前档案上；
  * - 清单按岩馆分组时，岩馆归属取自档案里那条线路的 gymId，不按名称、颜色或等级猜；
  *   同色同级的 A、B 两条线各自独立，收藏 A 不会让 B 出现；
  * - 撤下收藏、拆线归档都只改清单里的这一条，线路、照片文件、照片索引、把次、备注与
@@ -40,6 +49,9 @@ const WISHLIST_BROKEN = '下次想爬清单格式损坏，为保护原清单未�
 const WISHLIST_UNSUPPORTED = '下次想爬清单版本不受支持，请升级小程序后重试';
 const WISHLIST_READ_FAILED = '读取下次想爬清单失败：';
 const WISHLIST_WRITE_FAILED = '保存下次想爬清单失败：';
+// 迟到操作：页面渲染时用的档案已经换成了另一份，这条收藏属于原来的那份档案。
+const WISHLIST_ARCHIVE_MISMATCH = '这条收藏属于原来的本机档案，未做改动';
+const WISHLIST_ARCHIVE_MISSING = '本机档案缺少档案 ID，暂不能保存下次想爬清单';
 
 const STATUS_WANTED = 'wanted';
 const STATUS_COMPLETED = 'completed';
@@ -72,6 +84,60 @@ function errorText(error) {
   return error.errMsg || error.message || String(error);
 }
 
+/** 档案自己的持久化 ID：清单归属的唯一凭据，不按线路名称/颜色/等级猜。 */
+function archiveIdOf(archive) {
+  return archive && hasText(archive.archiveId) ? archive.archiveId : '';
+}
+
+/**
+ * 条目归属判定：条目必须注明档案 ID，且与这份档案的 archiveId 一致。
+ * 没注明来源的旧条目不属于任何档案（不上屏、也不被任何档案改动）。
+ */
+function belongsToArchive(item, archiveId) {
+  return hasText(archiveId) && Boolean(item) && item.archiveId === archiveId;
+}
+
+/**
+ * 在清单里找这一份档案的这一条线路。档案 ID 与长期线路 ID 缺一不可：
+ * 只看 routeId 会把另一份档案里同名的 route-1 当成同一条。
+ */
+function findItem(state, archiveId, routeId) {
+  if (!hasText(archiveId) || !hasText(routeId)) return null;
+  const items = (state && state.items) || [];
+  return items.find(item => belongsToArchive(item, archiveId) && item.routeId === routeId) || null;
+}
+
+/**
+ * 写入口要用的当前档案：读不出来（损坏/版本不支持/读取失败）或缺少档案 ID 时拒绝落盘，
+ * 因为此时无法确定这条收藏属于哪份档案——宁可不改，也不猜。
+ */
+function currentArchive() {
+  const loaded = store.loadState();
+  if (!loaded.ok) {
+    return { ok: false, code: 'archive-unreadable', error: loaded.error, archive: null, archiveId: '' };
+  }
+  const archiveId = archiveIdOf(loaded.archive);
+  if (!archiveId) {
+    return {
+      ok: false,
+      code: 'archive-unreadable',
+      error: WISHLIST_ARCHIVE_MISSING,
+      archive: loaded.archive,
+      archiveId: ''
+    };
+  }
+  return { ok: true, code: '', error: '', archive: loaded.archive, archiveId };
+}
+
+/**
+ * 迟到操作的原归属核对：页面带上它渲染时用的 archiveId 时，必须与当前档案一致，
+ * 否则这条操作是在另一份档案上点下的，一律不落盘。
+ */
+function ownershipConflict(data, archiveId) {
+  const claimed = hasText(data.archiveId) ? data.archiveId : '';
+  return Boolean(claimed) && claimed !== archiveId;
+}
+
 /**
  * 收藏时间：调用方可以传入固定的 Date 或 ISO 字符串，便于离线测试注入时间；
  * 缺省取当前时间。只用于加入与归档时间，不参与任何判定。
@@ -90,8 +156,11 @@ function createEmptyWishlist() {
 }
 
 /**
- * 只接受当前版本、结构完整且同一线路只有一条的清单；损坏时返回 null，
+ * 只接受当前版本、结构完整且同一份档案里同一条线路只有一条的清单；损坏时返回 null，
  * 由调用方返回可见错误并保留原数据（不自动重建，避免把已收藏的线当成没收藏过）。
+ *
+ * archiveId 缺省按空字符串读取：早期版本或手工写入的条目没有档案 ID，保留原字节、
+ * 不算损坏，但也不会被当成任何档案的收藏（见 belongsToArchive），不猜它的归属。
  */
 function normalizeWishlist(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
@@ -103,12 +172,17 @@ function normalizeWishlist(raw) {
   for (const item of raw.items) {
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
     if (!hasText(item.routeId)) return null;
-    if (seen.has(item.routeId)) return null;
-    seen.add(item.routeId);
+    if (item.archiveId !== undefined && typeof item.archiveId !== 'string') return null;
+    const archiveId = hasText(item.archiveId) ? item.archiveId : '';
+    // 同一份档案里同一条线路最多一条；不同档案里的同名线路 ID 各占一条。
+    const key = archiveId + '\u0000' + item.routeId;
+    if (seen.has(key)) return null;
+    seen.add(key);
     if (!hasText(item.addedAt)) return null;
     if (item.gymId !== undefined && typeof item.gymId !== 'string') return null;
     if (item.archivedAt !== undefined && typeof item.archivedAt !== 'string') return null;
     items.push({
+      archiveId,
       routeId: item.routeId,
       gymId: hasText(item.gymId) ? item.gymId : '',
       addedAt: item.addedAt,
@@ -236,9 +310,11 @@ function routeAttemptStats(archive, routeId) {
 
 /**
  * 一条清单条目在页面上的样子：线路信息、累计把数、最近非空备注与状态。
- * 线路已不在当前档案里时返回 null（调用方跳过它，不猜、不补、不串馆）。
+ * 条目属于另一份档案（或没有注明档案 ID）时返回 null——不猜、不补、不串档；
+ * 属于当前档案但这条线路已不在档案里时也返回 null（调用方跳过它）。
  */
 function buildEntry(archive, item) {
+  if (!belongsToArchive(item, archiveIdOf(archive))) return null;
   const route = routeById(archive, item.routeId);
   if (!route) return null;
 
@@ -285,15 +361,19 @@ function compareEntries(left, right) {
 /**
  * 按岩馆分组的下次想爬清单（只读，不写盘、不改档案）。
  *
- * 返回 { ok, error, corrupt, present, groups, items, orphanCount }：
+ * 只列属于**这份档案**的条目（archiveId + routeId 共同定位），因此换成另一份档案时
+ * 看不到原来那份档案的收藏，也不会把同名线路 ID 当成同一条。
+ *
+ * 返回 { ok, error, corrupt, present, groups, items, orphanCount, foreignCount }：
  * - groups 按岩馆名排序，馆内先想爬、再已完成、最后已归档；
  * - options.gymId 只取某一个岩馆（场内页按当前场次所属岩馆过滤）；
- * - 清单里有、但当前档案里已经没有这条线路时跳过（记在 orphanCount），
- *   不猜归属，也不让别的岩馆的线顶上来。
+ * - 属于别的档案、或没有注明档案 ID 的条目记在 foreignCount，不上屏、也绝不顶替本馆的线；
+ * - 属于本档案、但档案里已经没有这条线路时跳过（记在 orphanCount），不猜归属。
  */
 function listWishlist(archive, options) {
   const data = options || {};
   const onlyGymId = hasText(data.gymId) ? data.gymId : '';
+  const archiveId = archiveIdOf(archive);
   const loaded = loadWishlist();
 
   if (!loaded.ok) {
@@ -304,10 +384,11 @@ function listWishlist(archive, options) {
       present: loaded.present,
       groups: [],
       items: [],
-      orphanCount: 0
+      orphanCount: 0,
+      foreignCount: 0
     };
   }
-  if (!archive) {
+  if (!archive || !archiveId) {
     return {
       ok: true,
       error: '',
@@ -315,14 +396,21 @@ function listWishlist(archive, options) {
       present: loaded.present,
       groups: [],
       items: [],
-      orphanCount: 0
+      orphanCount: 0,
+      foreignCount: 0
     };
   }
 
   const byGym = new Map();
   const items = [];
   let orphanCount = 0;
+  let foreignCount = 0;
   loaded.state.items.forEach(item => {
+    // 别的档案的条目（含没有注明档案 ID 的旧条目）：不显示、不猜归属、也不删。
+    if (!belongsToArchive(item, archiveId)) {
+      foreignCount += 1;
+      return;
+    }
     const entry = buildEntry(archive, item);
     if (!entry) {
       orphanCount += 1;
@@ -357,21 +445,88 @@ function listWishlist(archive, options) {
     present: loaded.present,
     groups,
     items: items.sort(compareEntries),
-    orphanCount
+    orphanCount,
+    foreignCount
   };
 }
 
 /**
  * 单条线路的清单状态（线路详情页与场内页当前线路共用）。
- * 返回 { ok, error, entry }：entry 为 null 表示这条线不在清单里。
+ * 按这份档案的 archiveId 与这条长期线路 ID 共同定位；返回 { ok, error, entry }，
+ * entry 为 null 表示这条线不在这份档案的清单里。
  */
 function wishlistEntry(archive, routeId) {
   const loaded = loadWishlist();
   if (!loaded.ok) return { ok: false, error: loaded.error, entry: null };
-  const id = hasText(routeId) ? routeId : '';
-  const item = loaded.state.items.find(entry => entry.routeId === id) || null;
-  if (!item || !archive) return { ok: true, error: '', entry: null };
+  const archiveId = archiveIdOf(archive);
+  if (!archive || !archiveId) return { ok: true, error: '', entry: null };
+  const item = findItem(loaded.state, archiveId, hasText(routeId) ? routeId : '');
+  if (!item) return { ok: true, error: '', entry: null };
   return { ok: true, error: '', entry: buildEntry(archive, item) };
+}
+
+/**
+ * 一批长期线路的清单状态（T029 小结勾选用，只读）：整批只读一次清单，
+ * 不必逐行读盘，也不写清单、不写档案、不改线路与把次。
+ *
+ * 与单条读取同一份定位规则：只有属于**这份档案**（archiveId 一致）的条目参与，
+ * 因此换过档案后小结不会把另一份档案里同名线路 ID 的收藏画成勾选状态。
+ *
+ * 返回 { ok, error, corrupt, present, entries }：entries 是以长期线路 ID 为键的 Map，
+ * 只包含这份档案的清单里真实存在的那几条（不在清单里的线路不在 Map 里，不猜）；
+ * 每条的状态与 listWishlist 同源——已归档优先，其次是关注抱石的首次完攀
+ * （completed），其余为想爬。档案缺失或缺少档案 ID 时返回空 Map，不猜归属。
+ * 清单损坏、版本不支持或读取失败时 ok:false、entries 为空，调用方据此显示
+ * 可见错误并收回写入口（写入口自己也会拒绝）。
+ */
+function wishlistMembership(archive, routeIds) {
+  const wanted = new Set((Array.isArray(routeIds) ? routeIds : []).filter(hasText));
+  const loaded = loadWishlist();
+  if (!loaded.ok) {
+    return {
+      ok: false,
+      error: loaded.error,
+      corrupt: loaded.corrupt,
+      present: loaded.present,
+      entries: new Map()
+    };
+  }
+
+  const archiveId = archiveIdOf(archive);
+  const entries = new Map();
+  if (!archiveId) {
+    return { ok: true, error: '', corrupt: false, present: loaded.present, entries };
+  }
+
+  loaded.state.items.forEach(item => {
+    if (!wanted.has(item.routeId)) return;
+    if (!belongsToArchive(item, archiveId)) return;
+    const archived = hasText(item.archivedAt);
+    const completion = archive ? store.routeCompletion(archive, item.routeId) : null;
+    const status = archived
+      ? STATUS_ARCHIVED
+      : completion && completion.completed
+        ? STATUS_COMPLETED
+        : STATUS_WANTED;
+    entries.set(item.routeId, {
+      routeId: item.routeId,
+      inList: true,
+      status,
+      statusText: STATUS_TEXT[status],
+      archived,
+      completed: status === STATUS_COMPLETED,
+      addedAt: item.addedAt,
+      archivedAt: item.archivedAt || ''
+    });
+  });
+
+  return {
+    ok: true,
+    error: '',
+    corrupt: false,
+    present: loaded.present,
+    entries
+  };
 }
 
 /**
@@ -422,11 +577,15 @@ function wishlistActionView(entry) {
 /**
  * 加入下次想爬。
  *
+ * 输入：{ now?, archiveId? }。options.archiveId 是调用方渲染时用的档案 ID（可选）：
+ * 带上它时先核对还是同一份档案，不是就按迟到操作拒绝，不落盘。
+ *
  * 返回 { ok, code, error, state, entry, duplicate }。code：
  *   added / duplicate（已在活跃清单，幂等）/ reactivated（把已归档的恢复成想爬）/
- *   missing-route / archive-unreadable / unreadable / write-failed。
- * 同一线路最多一条：重复点击、迟到回调与写失败重试都不会产生第二条；落盘失败时
- * 清单保持原样（不报已保存），重试同一条线路幂等。只写清单，不动线路、照片与把次。
+ *   missing-route / archive-unreadable / archive-mismatch / unreadable / write-failed。
+ * 同一份档案里同一线路最多一条：重复点击、迟到回调与写失败重试都不会产生第二条；
+ * 落盘失败时清单保持原样（不报已保存），重试同一条线路幂等。
+ * 只写清单，不动线路、照片与把次，也不碰别的档案的收藏。
  */
 function addWishlist(routeId, options) {
   const data = options || {};
@@ -437,17 +596,21 @@ function addWishlist(routeId, options) {
     return { ok: false, code: 'unreadable', error: loaded.error, state: loaded.state, entry: null };
   }
 
-  const archives = store.loadState();
-  if (!archives.ok) {
+  const current = currentArchive();
+  if (!current.ok) {
+    return { ok: false, code: current.code, error: current.error, state: loaded.state, entry: null };
+  }
+  if (ownershipConflict(data, current.archiveId)) {
     return {
       ok: false,
-      code: 'archive-unreadable',
-      error: archives.error,
+      code: 'archive-mismatch',
+      error: WISHLIST_ARCHIVE_MISMATCH,
       state: loaded.state,
       entry: null
     };
   }
-  const route = routeById(archives.archive, id);
+
+  const route = routeById(current.archive, id);
   if (!route) {
     return {
       ok: false,
@@ -458,8 +621,7 @@ function addWishlist(routeId, options) {
     };
   }
 
-  const existing = loaded.state.items.find(item => item.routeId === id) || null;
-  const at = timestamp(data.now);
+  const existing = findItem(loaded.state, current.archiveId, id);
 
   // 已在活跃清单里：重复点击不写盘、不产生第二条。
   if (existing && !hasText(existing.archivedAt)) {
@@ -469,19 +631,28 @@ function addWishlist(routeId, options) {
       duplicate: true,
       error: '',
       state: loaded.state,
-      entry: buildEntry(archives.archive, existing)
+      entry: buildEntry(current.archive, existing)
     };
   }
 
+  const at = timestamp(data.now);
   const next = clone(loaded.state);
   let target;
   if (existing) {
     // 已归档的重新加入＝「又要爬了」：恢复成想爬，仍是一条；归档时间清掉便于再次归档。
-    target = next.items.find(item => item.routeId === id);
+    target = next.items.find(
+      item => belongsToArchive(item, current.archiveId) && item.routeId === id
+    );
     target.archivedAt = '';
     target.addedAt = at;
   } else {
-    target = { routeId: id, gymId: route.gymId, addedAt: at, archivedAt: '' };
+    target = {
+      archiveId: current.archiveId,
+      routeId: id,
+      gymId: route.gymId,
+      addedAt: at,
+      archivedAt: ''
+    };
     next.items.push(target);
   }
 
@@ -495,29 +666,50 @@ function addWishlist(routeId, options) {
     duplicate: false,
     error: '',
     state: next,
-    entry: buildEntry(archives.archive, target)
+    entry: buildEntry(current.archive, target)
   };
 }
 
 /**
- * 撤下收藏：只从清单里移除这一条，线路、照片、把次、备注与跨日历史都不动。
+ * 撤下收藏：只从清单里移除**这份档案**的这条线路，线路、照片、把次、备注与跨日历史都不动，
+ * 别的档案里同名的线路 ID 也一条不少。
+ *
+ * 输入：{ archiveId? }（调用方渲染时用的档案 ID，可选，用于核对原归属）。
  * 返回 { ok, code, error, state, removed }。code：
- *   removed / absent（本来就没有这一条，幂等）/ unreadable / write-failed。
+ *   removed / absent（本来就没有这一条，幂等）/ archive-unreadable / archive-mismatch /
+ *   unreadable / write-failed。
  */
-function removeWishlist(routeId) {
+function removeWishlist(routeId, options) {
+  const data = options || {};
   const id = hasText(routeId) ? routeId : '';
   const loaded = loadWishlist();
   if (!loaded.ok) {
     return { ok: false, code: 'unreadable', error: loaded.error, state: loaded.state, removed: false };
   }
 
-  const existing = loaded.state.items.find(item => item.routeId === id) || null;
+  const current = currentArchive();
+  if (!current.ok) {
+    return { ok: false, code: current.code, error: current.error, state: loaded.state, removed: false };
+  }
+  if (ownershipConflict(data, current.archiveId)) {
+    return {
+      ok: false,
+      code: 'archive-mismatch',
+      error: WISHLIST_ARCHIVE_MISMATCH,
+      state: loaded.state,
+      removed: false
+    };
+  }
+
+  const existing = findItem(loaded.state, current.archiveId, id);
   if (!existing) {
     return { ok: true, code: 'absent', duplicate: true, error: '', state: loaded.state, removed: false };
   }
 
   const next = clone(loaded.state);
-  next.items = next.items.filter(item => item.routeId !== id);
+  next.items = next.items.filter(
+    item => !(belongsToArchive(item, current.archiveId) && item.routeId === id)
+  );
   const saved = saveWishlist(next);
   if (!saved.ok) {
     return { ok: false, code: 'write-failed', error: saved.error, state: loaded.state, removed: false };
@@ -526,10 +718,13 @@ function removeWishlist(routeId) {
 }
 
 /**
- * 拆线归档：岩馆把这条线拆了，从活跃清单移到已归档，历史仍可按原线路 ID 回看。
+ * 拆线归档：岩馆把这条线拆了，把**这份档案**的这一条从活跃清单移到已归档，
+ * 历史仍可按原线路 ID 回看。别份档案里同名的线路 ID 不受影响。
  * 只改清单里的这一条（archive 时间），照片文件、照片索引、把次、备注与历史一律不动。
- * 返回 { ok, code, error, state, entry }。code：
- *   archived / already-archived（幂等）/ missing（不在清单里）/ unreadable / write-failed。
+ *
+ * 输入：{ now?, archiveId? }。返回 { ok, code, error, state, entry }。code：
+ *   archived / already-archived（幂等）/ missing（不在这份档案的清单里）/ archive-unreadable /
+ *   archive-mismatch / unreadable / write-failed。
  */
 function archiveWishlist(routeId, options) {
   const data = options || {};
@@ -540,7 +735,21 @@ function archiveWishlist(routeId, options) {
     return { ok: false, code: 'unreadable', error: loaded.error, state: loaded.state, entry: null };
   }
 
-  const existing = loaded.state.items.find(item => item.routeId === id) || null;
+  const current = currentArchive();
+  if (!current.ok) {
+    return { ok: false, code: current.code, error: current.error, state: loaded.state, entry: null };
+  }
+  if (ownershipConflict(data, current.archiveId)) {
+    return {
+      ok: false,
+      code: 'archive-mismatch',
+      error: WISHLIST_ARCHIVE_MISMATCH,
+      state: loaded.state,
+      entry: null
+    };
+  }
+
+  const existing = findItem(loaded.state, current.archiveId, id);
   if (!existing) {
     return {
       ok: false,
@@ -551,7 +760,6 @@ function archiveWishlist(routeId, options) {
     };
   }
 
-  const archives = store.loadState();
   if (hasText(existing.archivedAt)) {
     return {
       ok: true,
@@ -559,12 +767,14 @@ function archiveWishlist(routeId, options) {
       duplicate: true,
       error: '',
       state: loaded.state,
-      entry: archives.ok ? buildEntry(archives.archive, existing) : null
+      entry: buildEntry(current.archive, existing)
     };
   }
 
   const next = clone(loaded.state);
-  const target = next.items.find(item => item.routeId === id);
+  const target = next.items.find(
+    item => belongsToArchive(item, current.archiveId) && item.routeId === id
+  );
   target.archivedAt = timestamp(data.now);
   const saved = saveWishlist(next);
   if (!saved.ok) {
@@ -576,7 +786,7 @@ function archiveWishlist(routeId, options) {
     duplicate: false,
     error: '',
     state: next,
-    entry: archives.ok ? buildEntry(archives.archive, target) : null
+    entry: buildEntry(current.archive, target)
   };
 }
 
@@ -587,6 +797,8 @@ module.exports = {
   WISHLIST_UNSUPPORTED,
   WISHLIST_READ_FAILED,
   WISHLIST_WRITE_FAILED,
+  WISHLIST_ARCHIVE_MISMATCH,
+  WISHLIST_ARCHIVE_MISSING,
   STATUS_WANTED,
   STATUS_COMPLETED,
   STATUS_ARCHIVED,
@@ -600,6 +812,7 @@ module.exports = {
   routeAttemptStats,
   listWishlist,
   wishlistEntry,
+  wishlistMembership,
   wishlistActionView,
   addWishlist,
   removeWishlist,

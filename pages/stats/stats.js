@@ -8,6 +8,8 @@
  *   取整沿用原来的 Math.round(...%，无把次时为 0。
  * - 本月按把次所属场次的**训练日期**计算，只比较本机本地年月，不跨时区解析。
  * - 地点按岩馆（场次所属 gymId 的名称）、类型按长期线路（route.climbType）关联；
+ *   馆名是用户输入，分布按无原型字典（Object.create(null)）计数，constructor、
+ *   __proto__ 这类合法名字也只按自己计数，不会被继承键顶掉或算成函数字串；
  *   最高难度按 V 级（抱石）与 YDS（顶绳/先锋）分开显示，不把两套难度混成一条。
  *
  * 本机数字先算先显示，且完全同步、不依赖网络；旧云汇总单独一段只读展示
@@ -72,6 +74,19 @@ function rowsFromCounts(counts, total) {
 }
 
 /**
+ * 计数表：岩馆名与线路类型都是用户输入/档案里的字符串，用无原型字典按名计数。
+ * 普通对象会按继承键计数（constructor、__proto__、toString 这些合法馆名会被算成
+ * 继承来的函数或直接丢失），无原型字典只认自己写进去的键，每个馆名各算各的。
+ */
+function createCounts() {
+  return Object.create(null);
+}
+
+function countUp(counts, name) {
+  counts[name] = (counts[name] || 0) + 1;
+}
+
+/**
  * 按本机已提交把次汇总（纯函数，不读盘、不写盘）。
  *
  * 归属场次缺失的把次跳过（不猜日期与岩馆）；线路缺失时仍计入把数与完攀，
@@ -87,8 +102,8 @@ function buildLocalStats(archive, now) {
   let fails = 0;
   let monthTotal = 0;
   let monthSends = 0;
-  const gymCounts = {};
-  const typeCounts = {};
+  const gymCounts = createCounts();
+  const typeCounts = createCounts();
   const boulderGrades = [];
   const ropeGrades = [];
 
@@ -106,13 +121,13 @@ function buildLocalStats(archive, now) {
     }
 
     const gymName = store.gymName(archive, session.gymId) || UNKNOWN_GYM;
-    gymCounts[gymName] = (gymCounts[gymName] || 0) + 1;
+    countUp(gymCounts, gymName);
 
     const route = routesById.get(attempt.routeId);
     if (route) {
       const isBoulder = store.isBoulderRoute(route);
       const type = isBoulder ? '抱石' : route.climbType;
-      typeCounts[type] = (typeCounts[type] || 0) + 1;
+      countUp(typeCounts, type);
       if (isBoulder) boulderGrades.push(route.grade);
       else ropeGrades.push(route.grade);
     }

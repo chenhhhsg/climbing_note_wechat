@@ -130,13 +130,25 @@ Page({
     this._correctedRows = {};
     this._correctionFailures = {};
     this._photoUi = null;
-    // 标记：当前照片上的标记内存快照、显示框布局缓存、图片尺寸缓存与代次。
-    // 代次在照片 ID 变化时递增，早期的异步回调据此丢弃，不把旧点位写到新照片上。
+    // 标记：当前照片上的标记内存快照、显示框布局缓存、图片尺寸缓存与各类代次。
+    // - _markIdentity 是「档案 + 线路 + 主照片」三者拼出的当前归属；换了任意一项就递增
+    //   _markGeneration，早期的异步回调据此丢弃，不把旧点位写到新照片上；
+    // - _markLayoutSeq 是显示框测量的请求序号：每次重新测量都换一个号，更早的测量回来
+    //   时若已经不是最新一次，就直接作废（换屏后旧矩形不得覆盖新屏的最新布局）；
+    // - _markModeSeq 是标记模式的进出序号：退出或重入都会换号，退出前的旧点击不会
+    //   再把编辑区打开；
+    // - _markMoveOp 记录「正在进行的移动」这一次操作（序号 + 标记 ID + 当时归属）：
+    //   点新位置的测量期间若换了选中，这次点击不再提交坐标。
     this._markMarks = [];
     this._markLayout = null;
     this._markLayoutIdentity = '';
-    this._markPhotoId = '';
+    this._markLayoutSeq = 0;
+    this._markIdentity = '';
     this._markGeneration = 0;
+    this._markModeSeq = 0;
+    this._markMoveSeq = 0;
+    this._markMoveOp = null;
+    this._markDraftContext = null;
     this._imageSizes = {};
     this._unloaded = false;
     this.loadPage();
@@ -156,8 +168,7 @@ Page({
    * 只需丢掉旧的显示框布局重新测量，位置就会落回原图上的同一个点。
    */
   onResize() {
-    this._markLayout = null;
-    this._markLayoutIdentity = '';
+    this.invalidateMarkLayout();
     this.ensureMarkLayout();
   },
 
@@ -200,20 +211,26 @@ Page({
 
   /**
    * 只更新当前线路的照片展示；线路或档案变化时按最新档案重算。
-   * 照片 ID 变化（换图/移图）时递增标记代次并丢掉旧布局：旧照片上的标记
-   * 不再叠加到新照片，早期的异步回调也不再写回。
+   * 归属（档案 + 线路 + 主照片）变化——确认换图、移图或移除主照片——时递增标记代次、
+   * 丢掉旧布局，并让旧草稿、选中、移动与待决回调一并失效：旧照片上的标记不再叠加到
+   * 新照片，旧草稿也不能再被保存到新照片上。取消更换时归属没变，原照片与标记照旧。
    */
   applyPhotoView() {
     if (!this._photoUi || !this.data.route) return;
     const view = this._photoUi.view(this.data.route.id);
-    const photoId = (view && view.photoId) || '';
-    if (photoId !== this._markPhotoId) {
-      this._markPhotoId = photoId;
+    const identity = [
+      (this.archive && this.archive.archiveId) || '',
+      (this.data.route && this.data.route.id) || this._routeId || '',
+      (view && view.photoId) || ''
+    ].join('|');
+    const patch = { routePhoto: view };
+    if (identity !== this._markIdentity) {
+      this._markIdentity = identity;
       this._markGeneration += 1;
-      this._markLayout = null;
-      this._markLayoutIdentity = '';
+      this.invalidateMarkLayout();
+      Object.assign(patch, this.resetMarkEditing());
     }
-    this.setData({ routePhoto: view });
+    this.setData(patch);
     this.refreshMarkView();
     this.ensureMarkLayout();
   },
@@ -314,9 +331,37 @@ Page({
   },
 
   /**
-   * 发起异步操作前固定上下文（档案 + 线路 + 照片 + 代次）。
-   * 读取显示框、读取图片尺寸和确认弹窗都可能晚于换图/换档/切页返回，
-   * 旧回调必须按发起时的上下文校验，不能把旧点位写到新照片上。
+   * 丢掉显示框布局缓存，并换一个测量请求号：已经在路上的旧测量回来时直接作废。
+   * 换屏、重新加载主图、换照片或移除照片都走这里。
+   */
+  invalidateMarkLayout() {
+    this._markLayout = null;
+    this._markLayoutIdentity = '';
+    this._markLayoutSeq += 1;
+  },
+
+  /**
+   * 收回编辑区：草稿、选中、移动与它们的待决身份一起失效。
+   * 返回可直接并入 setData 的补丁；换图/移除照片、退出标记模式与重读页面都用它，
+   * 避免旧草稿在归属变化后被保存到新照片上。
+   */
+  resetMarkEditing() {
+    this._markDraftContext = null;
+    this._markMoveOp = null;
+    return {
+      markSelected: null,
+      markDraft: null,
+      markEditable: false,
+      markMoving: false,
+      markText: ''
+    };
+  },
+
+  /**
+   * 发起异步操作前固定上下文（档案 + 线路 + 照片 + 照片代次 + 模式序号）。
+   * 读取显示框、读取图片尺寸和确认弹窗都可能晚于换图/换档/退出标记模式返回，
+   * 旧回调必须按发起时的上下文校验，不能把旧点位写到新照片上，也不能在退出后
+   * 又把编辑区打开。
    */
   captureMarkContext() {
     const target = this.markTarget();
@@ -324,7 +369,8 @@ Page({
       archiveId: target.archiveId,
       routeId: target.routeId,
       photoId: target.photoId,
-      generation: this._markGeneration
+      generation: this._markGeneration,
+      modeSeq: this._markModeSeq
     };
   },
 
@@ -335,7 +381,8 @@ Page({
       context.archiveId === target.archiveId &&
       context.routeId === target.routeId &&
       context.photoId === target.photoId &&
-      context.generation === this._markGeneration
+      context.generation === this._markGeneration &&
+      context.modeSeq === this._markModeSeq
     );
   },
 
@@ -348,40 +395,37 @@ Page({
     if (!target.routeId || !target.photoId || !target.archiveId) {
       // 还没有主照片（或档案不可读）时不猜归属：不显示、也不写。
       this._markMarks = [];
-      this.setData({
-        marksReady: true,
-        marksError: '',
-        markPoints: [],
-        markList: [],
-        markCountText: '',
-        markHiddenText: '',
-        markMode: false,
-        markSelected: null,
-        markDraft: null,
-        markEditable: false,
-        markMoving: false,
-        markText: '',
-        markLayoutError: ''
-      });
+      this.setData(Object.assign(
+        {
+          marksReady: true,
+          marksError: '',
+          markPoints: [],
+          markList: [],
+          markCountText: '',
+          markHiddenText: '',
+          markMode: false,
+          markLayoutError: ''
+        },
+        this.resetMarkEditing()
+      ));
       return;
     }
 
     const listed = photoMarks.listMarks(target);
     if (!listed.ok) {
       this._markMarks = [];
-      this.setData({
-        marksReady: false,
-        marksError: listed.error,
-        markPoints: [],
-        markList: [],
-        markCountText: '',
-        markHiddenText: '',
-        markMode: false,
-        markSelected: null,
-        markDraft: null,
-        markEditable: false,
-        markMoving: false
-      });
+      this.setData(Object.assign(
+        {
+          marksReady: false,
+          marksError: listed.error,
+          markPoints: [],
+          markList: [],
+          markCountText: '',
+          markHiddenText: '',
+          markMode: false
+        },
+        this.resetMarkEditing()
+      ));
       return;
     }
 
@@ -446,23 +490,24 @@ Page({
       this.applyMarkPoints();
       return Promise.resolve(this._markLayout);
     }
-    return this.refreshMarkLayout(identity, target, photo.mainPath);
+    return this.refreshMarkLayout(identity, photo.mainPath);
   },
 
-  refreshMarkLayout(identity, target, mainPath) {
-    const generation = this._markGeneration;
+  refreshMarkLayout(identity, mainPath) {
+    const context = this.captureMarkContext();
+    const generation = context.generation;
+    // 这次测量领一个请求号：只有仍是最新一次测量的结果才允许落回布局。
+    const seq = ++this._markLayoutSeq;
     return Promise.all([this.queryMarkStageRect(), this.resolveImageSize(mainPath)]).then(
       results => {
         const rect = results[0];
         const size = results[1];
         if (this._unloaded) return null;
         if (generation !== this._markGeneration) return null;
-        if (!this.isMarkContextCurrent({
-          archiveId: target.archiveId,
-          routeId: target.routeId,
-          photoId: target.photoId,
-          generation
-        })) {
+        // 更晚的一次测量（换屏、重新加载主图、换照片）已经开始：这次量到的旧矩形作废，
+        // 不能把已经显示好的新布局覆盖回旧屏幕上的位置。
+        if (seq !== this._markLayoutSeq) return null;
+        if (!this.isMarkContextCurrent(context)) {
           // 测量期间换了图/换了档：丢掉这次结果，并让用户看到原因。
           this.setData({ markLayoutError: '照片或线路已变化，这次测量已放弃。' });
           return null;
@@ -558,31 +603,31 @@ Page({
       this.setData({ markNotice: '先添加线路主照片，才能在上面标记卡点。' });
       return Promise.resolve(null);
     }
-    this.setData({
-      markMode: true,
-      markNotice: '',
-      markSelected: null,
-      markDraft: null,
-      markEditable: false,
-      markMoving: false,
-      markText: '',
-      markKind: photoMarks.DEFAULT_MARK_KIND,
-      markSaveError: ''
-    });
+    // 进入标记模式换一个模式序号：更早一次（上一轮模式）里发起的点击测量据此作废。
+    this._markModeSeq += 1;
+    this.setData(Object.assign(
+      {
+        markMode: true,
+        markNotice: '',
+        markKind: photoMarks.DEFAULT_MARK_KIND,
+        markSaveError: ''
+      },
+      this.resetMarkEditing()
+    ));
     return this.ensureMarkLayout();
   },
 
   exitMarkMode() {
-    this.setData({
-      markMode: false,
-      markSelected: null,
-      markDraft: null,
-      markEditable: false,
-      markMoving: false,
-      markText: '',
-      markNotice: '',
-      markSaveError: ''
-    });
+    // 退出也换模式序号：退出前发起的旧点击回来时不能再把编辑区打开。
+    this._markModeSeq += 1;
+    this.setData(Object.assign(
+      {
+        markMode: false,
+        markNotice: '',
+        markSaveError: ''
+      },
+      this.resetMarkEditing()
+    ));
     this.applyMarkPoints();
   },
 
@@ -626,6 +671,8 @@ Page({
     }
 
     const context = this.captureMarkContext();
+    // 这次点击落在哪一次移动上：测量期间若换了选中或退出移动，这次点击不提交坐标。
+    const moveOp = this.data.markMoving ? this._markMoveOp : null;
     return Promise.all([this.queryMarkStageRect(), this.resolveImageSize(photo.mainPath)]).then(
       results => {
         if (this._unloaded) return null;
@@ -638,22 +685,34 @@ Page({
           this.setData({ markNotice: outcome.error });
           return null;
         }
-        if (this.data.markMoving) return this.applyMarkMove(outcome.point);
+        if (this.data.markMoving) return this.applyMarkMove(outcome.point, moveOp);
         return this.startMarkDraft(outcome);
       }
     );
   },
 
-  /** 草稿点只存在这次渲染里：确认保存才落盘，取消不留痕迹。 */
+  /**
+   * 草稿点只存在这次渲染里：确认保存才落盘，取消不留痕迹。
+   * 草稿带一个稳定的客户端操作身份（opId）并记下当时的归属：同一次落点重试几次都用
+   * 同一个 opId（写成功后回执丢失也不会变成两条），归属变了则整份草稿作废。
+   */
   startMarkDraft(outcome) {
     const kind = this.data.markKind || photoMarks.DEFAULT_MARK_KIND;
     if (outcome.layout && outcome.layout.ok) {
+      // 这次落点用的是刚量到的最新矩形：换一个测量请求号，作废此前的迟到测量。
       this._markLayout = outcome.layout;
       const target = this.markTarget();
       this._markLayoutIdentity = [target.archiveId, target.routeId, target.photoId].join('|');
+      this._markLayoutSeq += 1;
     }
     this.setData({
-      markDraft: { x: outcome.point.x, y: outcome.point.y, kind, text: '' },
+      markDraft: {
+        x: outcome.point.x,
+        y: outcome.point.y,
+        kind,
+        text: '',
+        opId: store.newOperationId()
+      },
       markSelected: null,
       markEditable: true,
       markMoving: false,
@@ -663,6 +722,8 @@ Page({
       markLayoutError: '',
       markNotice: '已在照片上落点，写一句手法/脚法提示后点「保存卡点」。'
     });
+    this._markMoveOp = null;
+    this._markDraftContext = this.captureMarkContext();
     this.applyMarkPoints();
     return outcome;
   },
@@ -670,11 +731,31 @@ Page({
   saveMarkDraft() {
     const draft = this.data.markDraft;
     if (!draft) return null;
+    // 保存前先核对发起落点时的归属（档案 + 线路 + 照片 + 代次 + 模式序号）：
+    // 换图、移图、移除照片或退出标记模式之后，这份旧草稿一律不落盘。
+    if (!this._markDraftContext || !this.isMarkContextCurrent(this._markDraftContext)) {
+      this._markDraftContext = null;
+      this.setData(Object.assign(
+        {
+          markNotice: '这张照片（或标记模式）已经变化，这次草稿没有保存。',
+          markSaveError: ''
+        },
+        this.resetMarkEditing()
+      ));
+      this.applyMarkPoints();
+      return {
+        ok: false,
+        code: 'stale-draft',
+        error: '这张照片（或标记模式）已经变化，这次草稿没有保存',
+        mark: null
+      };
+    }
     const target = this.markTarget();
     const outcome = photoMarks.addMark({
       archiveId: target.archiveId,
       routeId: target.routeId,
       photoId: target.photoId,
+      opId: draft.opId,
       x: draft.x,
       y: draft.y,
       kind: this.data.markKind,
@@ -682,6 +763,7 @@ Page({
     });
     if (!outcome.ok) {
       // 不报已保存；落盘失败时序号不消耗，再点一次拿到同一个稳定 ID。
+      // 同一次落点带同一个 opId：若这次其实已经落盘（回执丢失），重试只会复用那一条。
       this.setData({
         markSaveError: outcome.code === 'write-failed' ? outcome.error : '',
         markNotice:
@@ -689,6 +771,7 @@ Page({
       });
       return outcome;
     }
+    this._markDraftContext = null;
     this.setData({
       markDraft: null,
       markSaveError: '',
@@ -723,6 +806,8 @@ Page({
       markSaveError: '',
       markNotice: ''
     });
+    // 换了选中：这一次选择取代此前的移动操作，旧的移动点击不再属于任何人。
+    this._markMoveOp = null;
     this.applyMarkPoints();
   },
 
@@ -797,7 +882,16 @@ Page({
   },
 
   startMarkMove() {
-    if (!this.data.markSelected) return;
+    const selected = this.data.markSelected;
+    if (!selected) return;
+    // 这一次移动领一个操作号，并记下要移动的标记与当时的归属：点新位置的测量期间若换了
+    // 选中或换了照片，迟到的点击凭这个号知道它已经不归自己，不再提交坐标。
+    this._markMoveSeq += 1;
+    this._markMoveOp = {
+      opId: this._markMoveSeq,
+      markId: selected.markId,
+      context: this.captureMarkContext()
+    };
     this.setData({
       markMoving: true,
       markSaveError: '',
@@ -807,15 +901,33 @@ Page({
   },
 
   cancelMarkMove() {
+    this._markMoveOp = null;
     this.setData({ markMoving: false, markNotice: '' });
     this.applyMarkPoints();
   },
 
-  /** 把选中的那条移到新位置：只改位置，文字、手法/脚法与别的标记都不变。 */
-  applyMarkMove(point) {
+  /**
+   * 把选中的那条移到新位置：只改位置，文字、手法/脚法与别的标记都不变。
+   * 提交坐标前先核对这次点击所属的移动操作：与当前正在移动的标记不是同一条、
+   * 或归属/模式已经变化时，一律不写，位置保持原值。
+   */
+  applyMarkMove(point, op) {
     const selected = this.data.markSelected;
-    if (!selected) {
+    if (!selected || !this.data.markMoving) {
       this.setData({ markMoving: false, markNotice: '没有选中要移动的卡点。' });
+      return null;
+    }
+    const moveOp = this._markMoveOp;
+    if (
+      !moveOp ||
+      !op ||
+      op.opId !== moveOp.opId ||
+      op.markId !== selected.markId ||
+      !this.isMarkContextCurrent(op.context)
+    ) {
+      this.setData({
+        markNotice: '这次点击属于更早的一次移动（期间选中或照片已变化），位置没有改动，请再点一次新位置。'
+      });
       return null;
     }
     const outcome = photoMarks.moveMark({
@@ -825,6 +937,7 @@ Page({
     });
     if (!outcome.ok) {
       if (outcome.code === 'missing') {
+        this._markMoveOp = null;
         this.setData({
           markSelected: null,
           markEditable: false,
@@ -843,6 +956,7 @@ Page({
       });
       return outcome;
     }
+    this._markMoveOp = null;
     this.setData({
       markSaveError: '',
       markMoving: false,
@@ -918,8 +1032,7 @@ Page({
   },
 
   reloadMarkImage() {
-    this._markLayout = null;
-    this._markLayoutIdentity = '';
+    this.invalidateMarkLayout();
     this.setData({ markLayoutError: '' });
     return this.ensureMarkLayout();
   },
@@ -929,8 +1042,7 @@ Page({
    * 这时量到的是空矩形，指示点就不上图；图加载完成后按真实矩形补一次。
    */
   onMarkImageLoad() {
-    this._markLayout = null;
-    this._markLayoutIdentity = '';
+    this.invalidateMarkLayout();
     return this.ensureMarkLayout();
   },
 
@@ -942,41 +1054,41 @@ Page({
     const loaded = store.loadState();
     this.archive = loaded.archive;
 
-    this.setData({
-      ready: true,
-      loadError: loaded.error || '',
-      storageError: '',
-      notice: '',
-      route: null,
-      notFound: false,
-      routePhoto: null,
-      photoNotice: '',
-      // 卡点标记的临时状态一并归零：按最新照片与标记记录重算（标记本身不删）。
-      markNotice: '',
-      markSaveError: '',
-      markLayoutError: '',
-      markMode: false,
-      markSelected: null,
-      markDraft: null,
-      markEditable: false,
-      markMoving: false,
-      markText: '',
-      wishlistState: null,
-      groups: [],
-      hasAttempts: false,
-      attemptCount: 0,
-      attemptCountText: '0 把',
-      sendCount: 0,
-      summaryText: '0 天 · 0 场 · 0 把',
-      routeCompleted: false,
-      routeClosed: false,
-      canRecordAgain: false,
-      routeStateText: '',
-      correctionRows: [],
-      correctionStatusText: '',
-      routeCorrectable: false,
-      sessionPicker: keepPicker ? this.data.sessionPicker : null
-    });
+    // 重读页面等于离开编辑：换一个模式序号，上一轮模式里发起的旧点击与旧草稿一并失效。
+    this._markModeSeq += 1;
+    this.setData(Object.assign(
+      {
+        ready: true,
+        loadError: loaded.error || '',
+        storageError: '',
+        notice: '',
+        route: null,
+        notFound: false,
+        routePhoto: null,
+        photoNotice: '',
+        // 卡点标记的临时状态一并归零：按最新照片与标记记录重算（标记本身不删）。
+        markNotice: '',
+        markSaveError: '',
+        markLayoutError: '',
+        markMode: false,
+        wishlistState: null,
+        groups: [],
+        hasAttempts: false,
+        attemptCount: 0,
+        attemptCountText: '0 把',
+        sendCount: 0,
+        summaryText: '0 天 · 0 场 · 0 把',
+        routeCompleted: false,
+        routeClosed: false,
+        canRecordAgain: false,
+        routeStateText: '',
+        correctionRows: [],
+        correctionStatusText: '',
+        routeCorrectable: false,
+        sessionPicker: keepPicker ? this.data.sessionPicker : null
+      },
+      this.resetMarkEditing()
+    ));
 
     this.refreshView();
   },
@@ -1131,6 +1243,15 @@ Page({
   },
 
   /**
+   * 清单写入口的原归属：本页渲染时用的档案 ID。数据层据此核对这条操作是不是还落在
+   * 同一份档案上——换档之后的迟到点击会被拒绝，不会改到另一份档案里同名线路 ID 的收藏。
+   */
+  wishlistOwnership() {
+    const archiveId = this.archive && this.archive.archiveId;
+    return archiveId ? { archiveId: archiveId } : undefined;
+  },
+
+  /**
    * 加入下次想爬。只写清单这一份独立记录：线路、照片、把次与备注都不动。
    * 重复点击幂等（已在清单里不写盘）；落盘失败不报已保存，可再点一次重试。
    */
@@ -1139,7 +1260,7 @@ Page({
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
 
-    const outcome = wishlist.addWishlist(routeId);
+    const outcome = wishlist.addWishlist(routeId, this.wishlistOwnership());
     if (!outcome.ok) {
       this.setData({
         storageError: outcome.code === 'write-failed' ? outcome.error : '',
@@ -1168,7 +1289,7 @@ Page({
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
 
-    const outcome = wishlist.removeWishlist(routeId);
+    const outcome = wishlist.removeWishlist(routeId, this.wishlistOwnership());
     if (!outcome.ok) {
       this.setData({
         storageError: outcome.code === 'write-failed' ? outcome.error : '',
@@ -1194,7 +1315,7 @@ Page({
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
 
-    const outcome = wishlist.archiveWishlist(routeId);
+    const outcome = wishlist.archiveWishlist(routeId, this.wishlistOwnership());
     if (!outcome.ok) {
       this.setData({
         storageError: outcome.code === 'write-failed' ? outcome.error : '',
