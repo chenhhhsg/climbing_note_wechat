@@ -709,6 +709,109 @@ test('R2 取消更换后仍显示原来的主图，旧文件与索引不变', as
   assert.equal(photoIndex().photos.length, 1);
 });
 
+// ------------------------------------------------------------------ T031 结果旁换线
+
+test('T031 结果旁换线：同色同级两条线各自带自己的照片，换线只切当前线与照片', async () => {
+  const page = await openSessionPage({ start: '1' });
+  page.onGymNameInput({ detail: { value: '我自己去的岩馆' } });
+  page.startSession();
+  await settle();
+
+  // A 建线时带照片并确认保存。
+  page.toggleNewRouteForm();
+  page.onNewRouteNameInput({ detail: { value: 'A 线' } });
+  await page.chooseNewRoutePhoto(tapDataset({ source: 'album' }));
+  await page.createRoute();
+  await settle();
+  const aId = page.data.selectedRoute.id;
+  const aPhotoId = page.data.routePhoto.photoId;
+  assert.equal(page.data.routePhoto.status, 'saved');
+
+  // B 同色同级（都不指定颜色、都是抱石 V3）、没有照片。
+  page.openAddRoute();
+  page.switchAddRouteMode(tapDataset({ mode: 'new' }));
+  page.onNewRouteNameInput({ detail: { value: 'B 线' } });
+  await page.createRoute();
+  await settle();
+  const bId = page.data.selectedRoute.id;
+  assert.notEqual(bId, aId);
+  assert.equal(page.data.routePhoto.status, 'none');
+
+  // 结果旁的短列表：两条线都在，点 A 即切到 A 的线路与照片。
+  assert.deepEqual(page.data.routeSwitchRows.map(row => row.id), [aId, bId]);
+  page.selectRoute(tapDataset({ routeId: aId }));
+  await settle();
+  assert.equal(page.data.selectedRoute.id, aId);
+  assert.equal(page.data.routePhoto.status, 'saved');
+  assert.equal(page.data.routePhoto.photoId, aPhotoId);
+
+  // 再切回 B：照片跟着切换，A 的照片与索引不变。
+  page.selectRoute(tapDataset({ routeId: bId }));
+  await settle();
+  assert.equal(page.data.selectedRoute.id, bId);
+  assert.equal(page.data.routePhoto.status, 'none', 'B 没有照片');
+  assert.equal(photoIndex().photos.length, 1);
+  assert.equal(photoIndex().photos[0].routeId, aId);
+  assert.equal(photoIndex().photos[0].photoId, aPhotoId);
+});
+
+test('T031 快速 A→B：迟到的 A 照片回执不覆盖 B，下一把只归 B', async () => {
+  const seeded = seedTraining({ gymName: '我自己去的岩馆', routeName: 'A 线' });
+  const b = store.createRoute({
+    sessionId: seeded.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  assert.equal(b.ok, true, b.error);
+  store.selectRoute(seeded.route.id);
+
+  const page = await openSessionPage({});
+  assert.equal(page.data.selectedRoute.id, seeded.route.id);
+
+  // A 的照片选择挂起：用户在回执之前就切到了 B。
+  const realChooseMedia = global.wx.chooseMedia;
+  let pending = null;
+  global.wx.chooseMedia = options => {
+    pending = options;
+  };
+  page.chooseRoutePhoto(tapDataset({ source: 'album', routeId: seeded.route.id }));
+  assert.ok(pending, 'A 的照片选择已经发起');
+  global.wx.chooseMedia = realChooseMedia;
+
+  page.selectRoute(tapDataset({ routeId: b.route.id }));
+  await settle();
+  assert.equal(page.data.selectedRoute.id, b.route.id, '换线已经切到 B');
+
+  // A 的迟到回执落地：照片只属于 A，不能顶掉 B 的展示，也不产生预览。
+  pending.success({ tempFiles: [{ tempFilePath: pickerFile() }] });
+  await settle();
+  assert.equal(page.data.selectedRoute.id, b.route.id, '当前线仍是 B');
+  assert.equal(page.data.routePhoto.status, 'none', 'B 没有照片，迟到回执不得覆盖');
+  assert.equal(page.data.routePhoto.hasPhoto, false);
+  const index = photoIndex();
+  assert.equal((index && index.photos ? index.photos : []).length, 0, '只选未确认不写照片索引');
+
+  // 下一把只归 B，A 不产生把次。
+  const beforeB = store.attemptsFor(archiveOf(), {
+    sessionId: seeded.session.id,
+    routeId: b.route.id
+  }).length;
+  page.recordAttempt(tapDataset({ result: 'fail' }));
+  await settle();
+  assert.equal(
+    store.attemptsFor(archiveOf(), { sessionId: seeded.session.id, routeId: b.route.id }).length,
+    beforeB + 1
+  );
+  assert.equal(
+    store.attemptsFor(archiveOf(), { sessionId: seeded.session.id, routeId: seeded.route.id }).length,
+    0,
+    'A 不产生把次'
+  );
+});
+
 // ------------------------------------------------------------------ R5 移除与失败
 
 test('R5 页面移除照片：索引与文件释放，把次与备注不动', async () => {

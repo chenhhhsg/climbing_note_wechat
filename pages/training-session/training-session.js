@@ -40,6 +40,13 @@
  * （复用 createRoute 与原类型/等级校验，名称、类型、等级在首层，颜色收起仍可创建）。
  * 关联成功而选中失败时页面不报成功，改在首屏保留可点的重试入口（linkRetry）；
  * 打开与取消面板都不写盘，取消后线路、关联与当前选择与打开前完全相同。
+ *
+ * T031 在结果按钮上方加上「换线」：不用滚回页顶的「本场线路」就能换线。1–3 条时直接列出
+ * 本场全部线路；超过 3 条时只列当前线与最多两条不重复的近期线路，其余由「全部 N 条」展开。
+ * 短列表与全集都只用本场关联（store.routesForSession）派生的同一个 routeId 数组，点线路名
+ * 走的就是原来那一个 selectRoute：只改当前选择，不新建线路、不加关联、不产生把次；「全部 N
+ * 条」按真实本场关联计数，别的场次独有的线路不会出现。展开/收起只切本页展示，不改当前线，
+ * 返回后仍在结果按钮旁原地记结果。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
@@ -134,6 +141,63 @@ function defaultNewRouteForm() {
 }
 
 /**
+ * 结果按钮旁换线的「近期」顺序（T031）：从本机档案只读推导，不建立第二套存储。
+ *
+ * 一条线路在本场的近期程度取「本场最近一次把次时间」与「它在本场的关联时间」中较新者；
+ * 两者都取不到的线路排最后。返回的是线路 ID，从最近到最远。
+ */
+function recentRouteIdsInSession(archive, sessionId, routes) {
+  const lastAttemptAt = new Map();
+  ((archive && archive.attempts) || []).forEach(attempt => {
+    if (attempt.sessionId !== sessionId) return;
+    const at = typeof attempt.createdAt === 'string' ? attempt.createdAt : '';
+    if (!at) return;
+    const current = lastAttemptAt.get(attempt.routeId) || '';
+    if (at > current) lastAttemptAt.set(attempt.routeId, at);
+  });
+  const linkedAt = new Map();
+  ((archive && archive.sessionRoutes) || []).forEach(link => {
+    if (link.sessionId !== sessionId) return;
+    linkedAt.set(link.routeId, typeof link.addedAt === 'string' ? link.addedAt : '');
+  });
+
+  return routes
+    .map((route, index) => {
+      const attemptAt = lastAttemptAt.get(route.id) || '';
+      const linkAt = linkedAt.get(route.id) || '';
+      return { id: route.id, at: attemptAt > linkAt ? attemptAt : linkAt, index };
+    })
+    .sort((left, right) => {
+      if (left.at === right.at) return left.index - right.index;
+      return left.at > right.at ? -1 : 1;
+    })
+    .map(entry => entry.id);
+}
+
+/**
+ * 结果按钮旁的短列表（T031）：1–3 条时按本场顺序直接列出全部线路；
+ * 超过 3 条时只列当前线与最多两条不重复的近期线路，其余交给「全部 N 条」。
+ *
+ * 只排展示用的顺序，不改 routes、不写盘；选中的是原来的 routeId，
+ * 因此换线不会新建线路、不会多出关联，也不产生把次。
+ */
+function routeSwitchShortList(routes, activeRouteId, recentIds) {
+  if (routes.length <= 3) return routes.slice();
+  const picked = [];
+  const push = id => {
+    if (!id || picked.some(route => route.id === id)) return;
+    const route = routes.find(item => item.id === id);
+    if (route) picked.push(route);
+  };
+  push(activeRouteId);
+  (recentIds || []).forEach(id => {
+    if (picked.length >= 3) return;
+    push(id);
+  });
+  return picked;
+}
+
+/**
  * 「第 N 把」：同一场次同一线路内按把次序号排出的位置。
  * 已保存与仍待确认的把次共用序号，因此重试后编号稳定，不会因为补齐而跳号。
  */
@@ -183,6 +247,15 @@ Page({
     // 有未落盘的把次时锁定结果按钮：先在待保存行按同一操作重试，确认后才记下一把。
     resultLocked: false,
     resultLockHint: '',
+
+    // 结果按钮旁换线（T031）：短列表（1–3 条全列，更多时当前线 + 两条近期线）、
+    // 展开后的全集与「全部 N 条」。N 就是本场关联数；展开状态只在本页，不落盘。
+    routeSwitchRows: [],
+    routeSwitchAllRows: [],
+    routeSwitchTotal: 0,
+    routeSwitchHasMore: false,
+    routeSwitchMoreText: '',
+    routeSwitchExpanded: false,
 
     // 按把「改为未完成」：每一把各有自己的控件
     correctionRows: [],
@@ -682,6 +755,15 @@ Page({
       ? '更正未保存 · 点「重试改为未完成」按同一把重试'
       : '';
 
+    // 结果按钮旁换线（T031）：只排展示顺序。「全部 N 条」计数就是本场关联数
+    // （routes 由 store.routesForSession 派生，别的场次独有的线路不在里面）。
+    const routeSwitchAllRows = routes.slice();
+    const routeSwitchRows = routeSwitchShortList(
+      routes,
+      selectedRoute ? selectedRoute.id : '',
+      recentRouteIdsInSession(archive, activeRaw ? activeRaw.id : '', routes)
+    );
+
     this.setData({
       activeSession,
       sameDaySessions,
@@ -706,6 +788,11 @@ Page({
         : '',
       correctionRows,
       correctionStatusText,
+      routeSwitchRows,
+      routeSwitchAllRows,
+      routeSwitchTotal: routeSwitchAllRows.length,
+      routeSwitchHasMore: routeSwitchAllRows.length > 3,
+      routeSwitchMoreText: '全部 ' + routeSwitchAllRows.length + ' 条',
       gymRoutes,
       // 照片展示与逐把记录各自独立：照片由控制器按 routeId 推导，不改档案数据。
       routePhoto: selectedRoute && this._photoUi
@@ -972,7 +1059,7 @@ Page({
     this._lastTap = {};
     // 用户自己切场次：小结跟着当前场次走，不再停留在 ?sessionId= 的回看目标上。
     this._summarySessionId = '';
-    this.setData({ storageError: '', notice: '', noteEditor: null });
+    this.setData({ storageError: '', notice: '', noteEditor: null, routeSwitchExpanded: false });
     this.refreshView();
     // 换场次后当前线路可能不同：按新选中线路读取照片。
     this.loadPhotos();
@@ -983,22 +1070,55 @@ Page({
   selectRoute(event) {
     if (this.data.loadError) return;
     const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
-    if (!routeId || routeId === this.archive.activeRouteId) return;
+    if (!routeId) return;
+    // 点的就是当前线（例如在「全部 N 条」里点当前那一行退回结果处）：只收起展示，
+    // 不重复写盘、不改任何数据。
+    if (routeId === this.archive.activeRouteId) {
+      if (this.data.routeSwitchExpanded) this.setData({ routeSwitchExpanded: false });
+      return;
+    }
 
     const outcome = store.selectRoute(routeId);
     if (!outcome.ok) {
       this.setData({ storageError: outcome.error });
       if (outcome.archive) this.archive = outcome.archive;
+      // 选线失败：保留换线列表与展开状态，用户可以原地再点同一条重试。
       this.refreshView();
       return;
     }
     this.archive = outcome.archive;
     this._lastTap = {};
-    // 选中成功即上一次「选中失败」已经解决，重试入口可以收掉。
-    this.setData({ storageError: '', notice: '', noteEditor: null, linkRetry: null });
+    // 选中成功即上一次「选中失败」已经解决，重试入口可以收掉；换线后回到短列表，
+    // 结果按钮就在换线区下方，原地继续记这一把。
+    this.setData({
+      storageError: '',
+      notice: '',
+      noteEditor: null,
+      linkRetry: null,
+      routeSwitchExpanded: false
+    });
     this.refreshView();
     // 换线路后按新选中线路读取照片（同一线路的照片不重复请求）。
     this.loadPhotos();
+  },
+
+  /**
+   * 「全部 N 条」（T031）：把本场所有线路都列出来，便于线路多时换线。
+   * 只切本页展示，不选线路、不写盘，当前线不变；N 就是真实的本场关联数。
+   */
+  expandRouteSwitch() {
+    if (this.data.loadError) return;
+    if (this.data.routeSwitchExpanded) return;
+    this.setData({ routeSwitchExpanded: true });
+  },
+
+  /**
+   * 收起全部线路列表，回到结果按钮旁的短列表（T031）。
+   * 只切展示：当前线、把次、照片与备注都不变。
+   */
+  closeRouteSwitch() {
+    if (!this.data.routeSwitchExpanded) return;
+    this.setData({ routeSwitchExpanded: false });
   },
 
   /**
@@ -1160,7 +1280,8 @@ Page({
           ? '已把「' + route.name + '」加入本场并选中，直接记这一把。'
           : '已把这条线路加入本场并选中，直接记这一把。',
         noteEditor: null,
-        linkRetry: null
+        linkRetry: null,
+        routeSwitchExpanded: false
       })
     );
     this.refreshView();
@@ -1375,7 +1496,8 @@ Page({
         // 线路已创建并选中：直接回到记结果处，选中线与可记录目标一致。
         notice: '已新建并选中「' + createdName + '」，直接记这一把。',
         noteEditor: null,
-        linkRetry: null
+        linkRetry: null,
+        routeSwitchExpanded: false
       })
     );
     this.refreshView();

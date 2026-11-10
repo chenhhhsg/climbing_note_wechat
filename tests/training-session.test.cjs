@@ -900,6 +900,347 @@ test('T030 已有线路与当前选择时取消加线：线路、关联与当前
 });
 
 // ------------------------------------------------------------------ *
+// T031 结果按钮旁换线
+// ------------------------------------------------------------------ *
+
+/** 本场次关联的线路 ID，按本场顺序（与档案里的线路顺序一致）。 */
+function sessionRouteIds(sessionId) {
+  return store.routesForSession(archiveOf(), sessionId).map(route => route.id);
+}
+
+test('T031 换线区在结果按钮之前：短列表点线路名走原 selectRoute，多线时「全部 N 条」可展开收起', () => {
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  const switchStart = wxml.indexOf('id="route-switch"');
+  const failButton = wxml.indexOf('class="result-button result-fail"');
+  assert.ok(switchStart !== -1, '场内页结果按钮旁应有换线区');
+  assert.ok(failButton !== -1);
+  assert.ok(switchStart < failButton, '换线区在结果按钮之前，记结果前就能换线');
+  assert.ok(
+    wxml.indexOf('id="session-routes"') < switchStart,
+    '换线区在本场记录里，页顶的本场线路列表仍保留'
+  );
+
+  // 空场没有换线区；有线时短列表直接点线路名。
+  assert.match(wxml, /wx:if="\{\{routes\.length > 0\}\}"[\s\S]{0,80}id="route-switch"/);
+  assert.match(wxml, /id="route-switch-\{\{item\.id\}\}"[\s\S]{0,300}bindtap="selectRoute"/);
+  // 超过 3 条：短列表留「全部 N 条」（N 是真实本场关联数）。
+  assert.match(wxml, /wx:if="\{\{routeSwitchHasMore\}\}"[\s\S]{0,200}id="route-switch-all"/);
+  assert.match(wxml, /id="route-switch-all"[\s\S]{0,200}routeSwitchMoreText/);
+  // 展开后列出本场全部线路，每条仍是同一个 selectRoute；收起不改当前线。
+  assert.match(
+    wxml,
+    /wx:if="\{\{routeSwitchExpanded\}\}"[\s\S]{0,400}id="route-switch-row-\{\{item\.id\}\}"[\s\S]{0,200}bindtap="selectRoute"/
+  );
+  assert.match(wxml, /id="route-switch-close"[\s\S]{0,120}bindtap="closeRouteSwitch"/);
+
+  const handlers = new Set(handlersIn(wxml));
+  for (const required of ['selectRoute', 'expandRouteSwitch', 'closeRouteSwitch']) {
+    assert.ok(handlers.has(required), '场内页应绑定：' + required);
+    assert.equal(typeof sessionDefinition[required], 'function', required + ' 必须有页面方法');
+  }
+});
+
+test('T031 短列表换线：同色同级 A、B 只换当前线，换线不建线不加关联，记一把与备注只落在 B', () => {
+  const a = seedTraining({ gymName: '岩馆 A', routeName: 'A 线', colorName: '蓝色' });
+  const b = store.createRoute({
+    sessionId: a.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  assert.equal(b.ok, true, b.error);
+
+  // A 先记一把带备注；B 还是空的。
+  const aAttempt = store.saveAttempt({
+    sessionId: a.session.id,
+    routeId: a.route.id,
+    result: 'fail',
+    note: 'A 的备注',
+    now: new Date(2026, 10, 9, 8, 40)
+  });
+  assert.equal(aAttempt.ok, true, aAttempt.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.selectedRoute.id, b.route.id, '默认选中最后建的 B');
+  assert.equal(page.data.attempts.length, 0);
+  assert.equal(page.data.routeCountText, '0 把');
+
+  // 1–3 条：短列表直接列出本场全部线路，当前线带已选态。
+  assert.deepEqual(page.data.routeSwitchRows.map(row => row.id), [a.route.id, b.route.id]);
+  assert.equal(page.data.routeSwitchTotal, 2);
+  assert.equal(page.data.routeSwitchHasMore, false);
+  assert.equal(page.data.routeSwitchRows[1].isSelected, true);
+
+  // 点 A 的线路名：名称、等级、已选态与把数一起切到 A，且不产生线路/关联/把次。
+  const before = {
+    routes: archiveOf().routes.length,
+    links: archiveOf().sessionRoutes.length,
+    attempts: archiveOf().attempts.length
+  };
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  assert.equal(page.data.selectedRoute.id, a.route.id);
+  assert.equal(page.data.selectedRoute.name, 'A 线');
+  assert.equal(page.data.selectedRoute.grade, 'V3');
+  assert.equal(page.data.routeCountText, '1 把');
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].note, 'A 的备注');
+  assert.equal(page.data.routeSwitchRows[0].isSelected, true);
+  assert.equal(page.data.routeSwitchRows[1].isSelected, false);
+  assert.equal(archiveOf().routes.length, before.routes, '选线不新建线路');
+  assert.equal(archiveOf().sessionRoutes.length, before.links, '选线不新增关联');
+  assert.equal(archiveOf().attempts.length, before.attempts, '选线不产生把次');
+
+  // 回到 B 记一把并补备注：只改 B，A 的把次与备注不动。
+  page.selectRoute(tapDataset({ routeId: b.route.id }));
+  assert.equal(page.data.attempts.length, 0, 'B 还是空的');
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  assert.equal(page.data.attempts.length, 1);
+  const bAttemptId = page.data.attempts[0].id;
+  page.openNoteEditor(tapDataset({ attemptId: bAttemptId }));
+  page.onNoteInput({ detail: { value: 'B 的备注' } });
+  page.saveNote();
+
+  const archive = archiveOf();
+  const bAttempts = store.attemptsFor(archive, { sessionId: a.session.id, routeId: b.route.id });
+  const aAttempts = store.attemptsFor(archive, { sessionId: a.session.id, routeId: a.route.id });
+  assert.equal(bAttempts.length, 1);
+  assert.equal(bAttempts[0].note, 'B 的备注');
+  assert.equal(aAttempts.length, 1, 'A 仍只有原来那一把');
+  assert.equal(aAttempts[0].note, 'A 的备注', 'A 的备注不变');
+
+  // 回到 A：读到的仍是 A 自己的那一把。
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  assert.equal(page.data.attempts.length, 1);
+  assert.equal(page.data.attempts[0].note, 'A 的备注');
+});
+
+test('T031 四条以上：短列表 = 当前线 + 最多两条近期线，「全部 N 条」按本场关联计数且别的场次不出现', () => {
+  // 四条线各自带明确的本场关联时间（08:30–08:33），把次时间更晚（见下）。
+  const started = store.startSession({
+    gymName: '岩馆 A',
+    now: new Date(2026, 10, 9, 8, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const sessionId = started.session.id;
+  const routes = ['线 1', '线 2', '线 3', '线 4'].map((name, index) => {
+    const created = store.createRoute({
+      sessionId,
+      name,
+      climbType: '抱石',
+      grade: 'V3',
+      colorName: '蓝色',
+      colorHex: '#2f6fe4',
+      now: new Date(2026, 10, 9, 8, 30 + index)
+    });
+    assert.equal(created.ok, true, created.error);
+    return created.route;
+  });
+
+  // 另一场次独有的线路：不得出现在本场换线列表里。
+  const other = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 9, 0)
+  });
+  assert.equal(other.ok, true, other.error);
+  const otherRoute = store.createRoute({
+    sessionId: other.session.id,
+    name: '别的场次的线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(otherRoute.ok, true, otherRoute.error);
+
+  // 回到第一场，当前线是最后建的「线 4」；按把次时间为线 2/3/4 排出近期顺序。
+  store.selectSession(sessionId);
+  store.selectRoute(routes[3].id);
+  [
+    { route: routes[1], at: new Date(2026, 10, 9, 8, 40) },
+    { route: routes[2], at: new Date(2026, 10, 9, 8, 50) },
+    { route: routes[3], at: new Date(2026, 10, 9, 9, 0) }
+  ].forEach(item => {
+    const saved = store.saveAttempt({
+      sessionId,
+      routeId: item.route.id,
+      result: 'fail',
+      now: item.at
+    });
+    assert.equal(saved.ok, true, saved.error);
+  });
+
+  const page = openSessionPage({});
+  assert.equal(page.data.selectedRoute.id, routes[3].id);
+  assert.equal(page.data.routeSwitchTotal, 4);
+  assert.equal(page.data.routeSwitchMoreText, '全部 4 条');
+  assert.equal(page.data.routeSwitchHasMore, true);
+  assert.equal(page.data.routeSwitchExpanded, false);
+  // 短列表：当前线在首位，另两条是不重复的近期线路（线 3、线 2）。
+  assert.deepEqual(
+    page.data.routeSwitchRows.map(row => row.id),
+    [routes[3].id, routes[2].id, routes[1].id]
+  );
+  assert.equal(page.data.routeSwitchRows[0].isSelected, true);
+  assert.equal(
+    new Set(page.data.routeSwitchAllRows.map(row => row.id)).size,
+    4,
+    '展开后的本场线路不重复'
+  );
+  assert.deepEqual(
+    page.data.routeSwitchAllRows.map(row => row.id).sort(),
+    sessionRouteIds(sessionId).sort(),
+    '全部 N 条就是真实的本场关联'
+  );
+
+  // 展开：本场全部线路都可选，别的场次独有的线不出现；只切展示不写盘。
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  page.expandRouteSwitch();
+  assert.equal(page.data.routeSwitchExpanded, true);
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '展开全部线路不写盘');
+  assert.equal(archiveOf().activeRouteId, routes[3].id, '展开不改当前线');
+  const allIds = page.data.routeSwitchAllRows.map(row => row.id);
+  assert.equal(allIds.indexOf(otherRoute.route.id), -1, '别的场次独有的线不出现');
+
+  // 收起：只切展示，当前线不变。
+  page.closeRouteSwitch();
+  assert.equal(page.data.routeSwitchExpanded, false);
+  assert.equal(archiveOf().activeRouteId, routes[3].id, '收起不改当前线');
+  assert.deepEqual(
+    page.data.routeSwitchRows.map(row => row.id),
+    [routes[3].id, routes[2].id, routes[1].id],
+    '收起后仍是包含当前线的短列表'
+  );
+
+  // 在全集里点当前那一行「返回」：只收起列表，不重复写盘、不改当前线。
+  page.expandRouteSwitch();
+  const rawAtCurrent = storage.get(ARCHIVE_KEY);
+  page.selectRoute(tapDataset({ routeId: routes[3].id }));
+  assert.equal(page.data.routeSwitchExpanded, false, '点当前线回到结果按钮旁');
+  assert.equal(storage.get(ARCHIVE_KEY), rawAtCurrent, '点当前线不写盘');
+  assert.equal(archiveOf().activeRouteId, routes[3].id);
+
+  // 从全集里选一条：换到它并回到短列表；不新建线路、不加关联、不产生把次。
+  const counts = {
+    routes: archiveOf().routes.length,
+    links: archiveOf().sessionRoutes.length,
+    attempts: archiveOf().attempts.length
+  };
+  page.expandRouteSwitch();
+  page.selectRoute(tapDataset({ routeId: routes[0].id }));
+  assert.equal(page.data.selectedRoute.id, routes[0].id);
+  assert.equal(page.data.routeSwitchExpanded, false, '选完线回到结果按钮旁的短列表');
+  assert.equal(page.data.routeSwitchRows[0].id, routes[0].id, '短列表始终含当前线');
+  assert.equal(archiveOf().routes.length, counts.routes, '选线不新建线路');
+  assert.equal(archiveOf().sessionRoutes.length, counts.links, '选线不新增关联');
+  assert.equal(archiveOf().attempts.length, counts.attempts, '选线不产生把次');
+});
+
+test('T031 选线落盘失败：报未保存、当前线不变，换线列表保留可原地重试', () => {
+  const a = seedTraining({ gymName: '岩馆 A', routeName: 'A 线' });
+  const b = store.createRoute({
+    sessionId: a.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(b.ok, true, b.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.selectedRoute.id, b.route.id);
+
+  armSetFailAt(1);
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  assert.ok(page.data.storageError, '落盘失败要明确报出来，不报成功');
+  assert.equal(archiveOf().activeRouteId, b.route.id, '失败不改当前线');
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '失败不写盘');
+  assert.equal(page.data.selectedRoute.id, b.route.id);
+  assert.equal(
+    page.data.routeSwitchRows.some(row => row.id === a.route.id),
+    true,
+    '失败后这条线仍在列表里，可以原地再点一次'
+  );
+
+  // 原地重试同一条：成功后才换过去。
+  armSetFailAt(0);
+  page.selectRoute(tapDataset({ routeId: a.route.id }));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.selectedRoute.id, a.route.id);
+  assert.equal(archiveOf().activeRouteId, a.route.id);
+});
+
+test('T031 重新打开同一场次恢复持久化的当前线，并按原 ID 读到逐把、小结与清单', () => {
+  const a = seedTraining({ gymName: '岩馆 A', routeName: 'A 线' });
+  const b = store.createRoute({
+    sessionId: a.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(b.ok, true, b.error);
+
+  const aAttempt = store.saveAttempt({
+    sessionId: a.session.id,
+    routeId: a.route.id,
+    result: 'fail',
+    note: 'A 的备注',
+    now: new Date(2026, 10, 9, 8, 40)
+  });
+  assert.equal(aAttempt.ok, true, aAttempt.error);
+  const bAttempt = store.saveAttempt({
+    sessionId: a.session.id,
+    routeId: b.route.id,
+    result: 'fail',
+    note: 'B 的备注',
+    now: new Date(2026, 10, 9, 8, 50)
+  });
+  assert.equal(bAttempt.ok, true, bAttempt.error);
+
+  // 换到 A，并把 A 加入下次想爬：换线只改当前选择，清单是另一份记录。
+  store.selectRoute(a.route.id);
+  const first = openSessionPage({});
+  assert.equal(first.data.selectedRoute.id, a.route.id);
+  first.addSelectedToWishlist();
+
+  // 重新打开同一场次：当前线是持久化的那一条。
+  const reopened = openSessionPage({});
+  assert.equal(reopened.data.selectedRoute.id, a.route.id, '重开恢复持久化的当前线');
+  assert.equal(reopened.data.selectedRoute.name, 'A 线');
+
+  // 逐把记录按原把次 ID 读回，且只读当前线的。
+  const expected = store.attemptsFor(archiveOf(), {
+    sessionId: a.session.id,
+    routeId: a.route.id
+  });
+  assert.deepEqual(reopened.data.attempts.map(row => row.id), expected.map(item => item.id));
+  assert.equal(reopened.data.attempts[0].note, 'A 的备注');
+  assert.equal(reopened.data.routeCountText, '1 把');
+
+  // 小结与清单同样按原线路 ID 列出这条线。
+  assert.equal(
+    reopened.data.summaryRows.some(row => row.routeId === a.route.id),
+    true,
+    '小结按原线路 ID 列出当前线'
+  );
+  assert.equal(
+    reopened.data.wishlistWanted.some(row => row.routeId === a.route.id),
+    true,
+    '清单按原线路 ID 列出当前线'
+  );
+  // B 的记录没有被 A 的换线或重开改动。
+  assert.equal(
+    store.attemptsFor(archiveOf(), { sessionId: a.session.id, routeId: b.route.id }).length,
+    1
+  );
+  assert.equal(
+    store.attemptsFor(archiveOf(), { sessionId: a.session.id, routeId: b.route.id })[0].note,
+    'B 的备注'
+  );
+});
+
+// ------------------------------------------------------------------ *
 // R3 逐把结果、备注与按把更正
 // ------------------------------------------------------------------ *
 
