@@ -8,6 +8,10 @@
  * controller.js 驱动，照片文件落在本机档案目录、索引落在正式照片索引键；照片操作
  * 不写旧云记录，也不改场次、把次与备注。
  *
+ * T027 在本页加上「下次想爬」：加入、撤下与拆线归档都只改清单这一份独立记录
+ * （utils/training-wishlist.js），不动线路、照片、把次与备注；清单状态由档案推导，
+ * 关注的抱石完攀后显示已完成，把那一把改为未完成后自动回到想爬。
+ *
  * 本页只读本机档案（utils/training-store.js），与旧云记录完全分开：
  * - 打开历史本身不建场次、不改当前选择、不写任何数据；损坏或版本不支持时可见报错
  *   并保留原数据；
@@ -19,6 +23,7 @@
  *   只读回读，同一坐标不会自动接上另一把。
  */
 const store = require('../../utils/training-store.js');
+const wishlist = require('../../utils/training-wishlist.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 const {
   createTrainingPhotoController
@@ -60,6 +65,9 @@ Page({
     // 线路主照片（T019）：展示状态由控制器推导，页面只渲染
     routePhoto: null,
     photoNotice: '',
+
+    // 下次想爬（T027）：加入/撤下/拆线归档都只改清单，状态由档案推导
+    wishlistState: null,
 
     groups: [],
     hasAttempts: false,
@@ -237,6 +245,7 @@ Page({
       notFound: false,
       routePhoto: null,
       photoNotice: '',
+      wishlistState: null,
       groups: [],
       hasAttempts: false,
       attemptCount: 0,
@@ -267,7 +276,7 @@ Page({
     if (this.data.loadError) return;
 
     if (!this._routeId) {
-      this.setData({ notFound: true, route: null, canRecordAgain: false, routePhoto: null });
+      this.setData({ notFound: true, route: null, canRecordAgain: false, routePhoto: null, wishlistState: null });
       return;
     }
 
@@ -277,6 +286,7 @@ Page({
         notFound: true,
         route: null,
         routePhoto: null,
+        wishlistState: null,
         groups: [],
         hasAttempts: false,
         attemptCount: 0,
@@ -348,6 +358,7 @@ Page({
       routePhoto: this._photoUi
         ? this._photoUi.view(route.id)
         : this.data.routePhoto,
+      wishlistState: this.wishlistView(route.id),
       groups: history.groups.map(group => ({
         sessionId: group.sessionId,
         dateText: group.date,
@@ -382,8 +393,111 @@ Page({
     });
   },
 
-  // ---------------------------------------------------------------- 当天再记
+  // ---------------------------------------------------------------- 下次想爬
 
+  /**
+   * 这条线在「下次想爬」清单里的状态（只读，不写盘）。
+   *
+   * 状态由档案推导：清单里的活跃条目是「想爬」，关注的抱石出现完攀后变「已完成」，
+   * 把那一把改为未完成后又会回到「想爬」，都不需要另存一份状态。
+   * 清单损坏、版本不支持或读取失败时只显示可见错误并收回写入口，保留原清单。
+   */
+  wishlistView(routeId) {
+    const listed = wishlist.wishlistEntry(this.archive, routeId);
+    if (!listed.ok) {
+      return Object.assign(wishlist.wishlistActionView(null), {
+        error: listed.error,
+        canAdd: false,
+        stateText: ''
+      });
+    }
+    return Object.assign({ error: '' }, wishlist.wishlistActionView(listed.entry));
+  },
+
+  /**
+   * 加入下次想爬。只写清单这一份独立记录：线路、照片、把次与备注都不动。
+   * 重复点击幂等（已在清单里不写盘）；落盘失败不报已保存，可再点一次重试。
+   */
+  addToWishlist() {
+    if (this.data.loadError || this.data.notFound) return;
+    const routeId = this.data.route && this.data.route.id;
+    if (!routeId) return;
+
+    const outcome = wishlist.addWishlist(routeId);
+    if (!outcome.ok) {
+      this.setData({
+        storageError: outcome.code === 'write-failed' ? outcome.error : '',
+        notice: outcome.code === 'write-failed' ? '收藏未保存，可再点一次重试。' : outcome.error
+      });
+      this.refreshView();
+      return;
+    }
+
+    this.setData({
+      storageError: '',
+      notice: outcome.code === 'duplicate'
+        ? '这条线路已经在下次想爬清单里。'
+        : outcome.code === 'reactivated'
+          ? '已重新加入下次想爬。'
+          : '已加入下次想爬。'
+    });
+    this.refreshView();
+  },
+
+  /**
+   * 撤下收藏：只从清单里移除这一条，线路、照片、把次、备注与历史都保留。
+   */
+  removeFromWishlist() {
+    if (this.data.loadError || this.data.notFound) return;
+    const routeId = this.data.route && this.data.route.id;
+    if (!routeId) return;
+
+    const outcome = wishlist.removeWishlist(routeId);
+    if (!outcome.ok) {
+      this.setData({
+        storageError: outcome.code === 'write-failed' ? outcome.error : '',
+        notice: outcome.code === 'write-failed' ? '撤下未保存，可再点一次重试。' : outcome.error
+      });
+      this.refreshView();
+      return;
+    }
+
+    this.setData({
+      storageError: '',
+      notice: outcome.removed ? '已从下次想爬撤下；线路、照片与把次都不变。' : '这条线路本来就不在清单里。'
+    });
+    this.refreshView();
+  },
+
+  /**
+   * 拆线归档：岩馆把这条线拆了，把它从活跃清单移到已归档。
+   * 只改清单里的这一条，照片文件、照片索引、把次、备注与跨日历史都不动。
+   */
+  archiveWishlistItem() {
+    if (this.data.loadError || this.data.notFound) return;
+    const routeId = this.data.route && this.data.route.id;
+    if (!routeId) return;
+
+    const outcome = wishlist.archiveWishlist(routeId);
+    if (!outcome.ok) {
+      this.setData({
+        storageError: outcome.code === 'write-failed' ? outcome.error : '',
+        notice: outcome.code === 'write-failed' ? '归档未保存，可再点一次重试。' : outcome.error
+      });
+      this.refreshView();
+      return;
+    }
+
+    this.setData({
+      storageError: '',
+      notice: outcome.code === 'already-archived'
+        ? '这条线路已经归档。'
+        : '已归档；照片、把次与历史都保留，仍可按原线路 ID 回看。'
+    });
+    this.refreshView();
+  },
+
+  // ---------------------------------------------------------------- 当天再记
   /**
    * 「当天再记」：把当前场次与线路指到这条线所在岩馆的本地当日场次。
    *

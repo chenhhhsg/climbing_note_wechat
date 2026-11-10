@@ -538,3 +538,18 @@
 .history-group-head { flex-wrap:wrap; gap:6rpx 12rpx; }
 .result-send { background:#dfebd9; color:#204b34; }
 .result-fail { background:#ede6d7; color:#674b39; }
+
+/* 下次想爬（T027）：加入、撤下与拆线归档只改清单，线路、照片与把次都不动 */
+.wishlist-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
+.wishlist-head { display:flex; align-items:center; justify-content:space-between; gap:16rpx; }
+.wishlist-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:32rpx; color:#173d32; }
+.wishlist-state { font-size:24rpx; padding:6rpx 16rpx; border-radius:8rpx; background:#e4ebdf; color:#355e50; }
+.wishlist-state-completed { background:#dfebd9; color:#204b34; }
+.wishlist-state-archived { background:#ede6d7; color:#674b39; }
+.wishlist-state-text { display:block; margin-top:12rpx; font-size:28rpx; color:#173d32; }
+.wishlist-hint, .wishlist-error { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#526157; }
+.wishlist-error { color:#9c3d22; }
+.wishlist-actions { display:flex; align-items:center; flex-wrap:wrap; gap:16rpx; margin-top:16rpx; }
+.wishlist-actions .wishlist-action { flex:1; min-width:300rpx; }
+.wishlist-archive { color:#9c5222; }
+.wishlist-remove { color:#745241; }

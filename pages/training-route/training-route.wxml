@@ -65,6 +65,44 @@
       </view>
 
       <!--
+        下次想爬（T027）：加入、撤下与拆线归档都只改清单这一份独立记录，
+        线路、照片、把次与备注都不动；拆线归档后仍可按原线路 ID 回看。
+      -->
+      <view wx:if="{{wishlistState}}" id="wishlist-card" class="card wishlist-card">
+        <view class="wishlist-head">
+          <text class="wishlist-title">下次想爬</text>
+          <text
+            wx:if="{{wishlistState.statusText}}"
+            id="wishlist-state"
+            class="wishlist-state wishlist-state-{{wishlistState.status}}"
+          >{{wishlistState.statusText}}</text>
+        </view>
+        <text id="wishlist-state-text" class="wishlist-state-text">{{wishlistState.stateText}}</text>
+        <text wx:if="{{wishlistState.error}}" id="wishlist-error" class="wishlist-error">{{wishlistState.error}}</text>
+        <text wx:else class="wishlist-hint">{{wishlistState.hintText}}</text>
+        <view wx:if="{{!wishlistState.error}}" class="wishlist-actions">
+          <button
+            wx:if="{{wishlistState.canAdd}}"
+            id="wishlist-add"
+            class="secondary-button wishlist-action"
+            bindtap="addToWishlist"
+          >{{wishlistState.inList ? '重新加入下次想爬' : '加入下次想爬'}}</button>
+          <button
+            wx:if="{{wishlistState.canArchive}}"
+            id="wishlist-archive"
+            class="text-button wishlist-archive"
+            bindtap="archiveWishlistItem"
+          >拆线归档</button>
+          <button
+            wx:if="{{wishlistState.canRemove}}"
+            id="wishlist-remove"
+            class="text-button wishlist-remove"
+            bindtap="removeFromWishlist"
+          >撤下收藏</button>
+        </view>
+      </view>
+
+      <!--
         线路主照片（T019）：保存必须由用户确认；取消预览不改动已保存照片，
         取消更换后仍显示原来的主图。照片只在本机保存一份。
       -->
