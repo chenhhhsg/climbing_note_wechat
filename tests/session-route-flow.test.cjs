@@ -174,13 +174,18 @@ function tapDataset(dataset) {
   return { currentTarget: { dataset } };
 }
 
-/** 「最近一把」这一行渲染出来的点击参数，与 WXML 上的 dataset 一一对应。 */
+/**
+ * 「最近一把」这一行渲染出来的点击参数，与 WXML 上的 dataset 一一对应：
+ * 原把次 ID、归属、渲染时的档案 ID、预期状态与预期版本（rev）。
+ */
 function rowEvent(row) {
   return tapDataset({
     attemptId: row.attemptId,
     routeId: row.routeId,
     sessionId: row.sessionId,
-    expected: row.expected
+    archiveId: row.archiveId,
+    expected: row.expected,
+    expectedRev: row.expectedRev
   });
 }
 
@@ -474,13 +479,16 @@ test('T033 撤回／恢复交错与延迟保存：每个动作各结清一次，
   assert.equal(settled.filter(op => op.undone === true).length, 2, '两次撤回答各结清一次');
   assert.equal(settled.filter(op => op.undone === false).length, 1, '恢复结清一次');
 
-  // 第二段写成后回执丢失：页面只拿到失败，档案里其实已经恢复。
+  // 第二段写成后回执丢失：页面只拿到失败，档案里其实已经恢复。页面这时**重读落盘状态**
+  // 再显示：把数、最近一把与恢复/撤回入口都以磁盘为准，不留一个会重复写入的重试入口。
   const reopened = openSessionPage({});
   armSetLoseResponseAt(2);
   reopened.restoreLatestAttempt(rowEvent(reopened.data.recentAttempt));
-  assert.match(reopened.data.storageError, /保存本机训练档案失败/);
-  assert.match(reopened.data.notice, /重试恢复这一把/);
-  assert.equal(reopened.data.routeCountText, '2 把', '没确认落盘前就把数不动');
+  assert.equal(reopened.data.storageError, '', '回执丢失不当作未保存：先按落盘状态核对');
+  assert.match(reopened.data.notice, /回执丢失|已经落盘/);
+  assert.equal(reopened.data.routeCountText, '3 把', '把数是重新读到的已落盘状态');
+  assert.equal(reopened.data.recentAttempt.attemptId, thirdId);
+  assert.equal(reopened.data.recentAttempt.canUndo, true, '恢复入口换成撤回入口');
   assert.equal(
     JSON.parse(storage.get(ARCHIVE_KEY)).attempts.find(item => item.id === thirdId).undoneAt,
     undefined,
@@ -685,4 +693,156 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
   );
   assert.equal(archiveOf().attempts.length, 4, '全流程只新增、不删除把次');
   assert.equal(storage.get(WISHLIST_KEY).includes(flow.aId), true, '想爬清单仍指向原线路 ID');
+});
+
+
+// ------------------------------------------------------------------ *
+// T030–T033 返工：稳定原序号、过期事件与换档后的迟到重试
+// ------------------------------------------------------------------ *
+
+test('T033 撤回第 3 把后再记一把：新一把是第 4 把，原第 3 把不挪号（场内行与线路历史一致）', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  const thirdId = flow.aAttempts[2];
+  switchTo(page, flow.aId);
+  assert.equal(page.data.recentAttempt.expectedRev, 0, '还没动过的这一把版本是 0');
+
+  // 记第 4 把前先撤回第 3 把：撤回的那一把照样占着原序号。
+  page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+  assert.equal(page.data.routeCountText, '2 把');
+  recordThroughPage(page, 'fail');
+  const fourth = attemptsOf(page).at(-1);
+  assert.notEqual(fourth.id, thirdId);
+  assert.equal(page.data.routeCountText, '3 把', '有效把数是第 1、2 与新的第 4 把，被撤回的第 3 把不算');
+
+  // 场内「最近一把」与逐把列表都按稳定原序号标号：第 4 把不会被撤回挤成第 3 把。
+  assert.equal(page.data.recentAttempt.attemptId, fourth.id);
+  assert.equal(page.data.recentAttempt.titleText, '刚才 · A 线 第 4 把 · 未完成');
+  assert.equal(page.data.attempts.at(-1).label, '第 4 把');
+
+  // 跨日线路历史用同一份标号：第 4 把仍是第 4 把，原第 3 把的号也不动。
+  const routePage = createPage(routeDefinition);
+  routePage.onLoad({ routeId: flow.aId });
+  const group = routePage.data.groups.find(item => item.sessionId === flow.sessionId);
+  const labels = Object.fromEntries(group.attempts.map(item => [item.id, item.label]));
+  assert.equal(labels[fourth.id], '第 4 把');
+  assert.equal(labels[thirdId], undefined, '已撤回的第 3 把不进有效历史');
+  assert.equal(group.attempts.length, 3, '历史只列有效把次（第 1、2、4 把）');
+  assert.deepEqual(
+    group.attempts.map(item => item.label),
+    ['第 1 把', '第 2 把', '第 4 把'],
+    '序号是稳定原序号，不拿可见下标当编号'
+  );
+});
+
+test('T033 旧撤回/恢复事件在 3→2→3 之后才送到：按渲染时的版本拒绝，把数与档案都不动', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  const thirdId = flow.aAttempts[2];
+  switchTo(page, flow.aId);
+
+  // 渲染时的这一份点击参数（版本 0）：它一直没送到，用户先完成了完整的 3→2→3。
+  const undeliveredRow = page.data.recentAttempt;
+  assert.equal(undeliveredRow.expectedRev, 0);
+
+  page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+  assert.equal(page.data.routeCountText, '2 把');
+  const cold = openSessionPage({});
+  assert.equal(cold.data.selectedRoute.id, flow.aId);
+  cold.restoreLatestAttempt(rowEvent(cold.data.recentAttempt));
+  assert.equal(cold.data.routeCountText, '3 把');
+  assert.equal(cold.data.recentAttempt.expectedRev, 2, '撤回、恢复各让版本加一');
+
+  // 迟到的旧撤回（版本 0）现在才到：状态看起来又变回「有效」，只比状态挡不住，版本能挡。
+  const before = storage.get(ARCHIVE_KEY);
+  cold.undoLatestAttempt(rowEvent(undeliveredRow));
+  assert.equal(storage.get(ARCHIVE_KEY), before, '过期事件一个字都不写');
+  assert.equal(cold.data.routeCountText, '3 把', '把数不回退成 2');
+  assert.match(cold.data.notice, /状态已经变了|最新档案/);
+
+  // 反向：先撤回（版本 3），再重放当时那一份「恢复」事件（版本 1）也不生效。
+  cold.undoLatestAttempt(rowEvent(cold.data.recentAttempt));
+  assert.equal(cold.data.routeCountText, '2 把');
+  const beforeAgain = storage.get(ARCHIVE_KEY);
+  cold.restoreLatestAttempt(rowEvent({ ...undeliveredRow, expected: 'undone', expectedRev: 1 }));
+  assert.equal(storage.get(ARCHIVE_KEY), beforeAgain, '过期的恢复事件也不写盘');
+  assert.equal(cold.data.routeCountText, '2 把');
+  assert.notEqual(
+    savedAttempts(flow.sessionId, flow.aId).find(item => item.id === thirdId).undoneAt,
+    undefined,
+    '已撤回的那一把没有被旧的恢复事件复活'
+  );
+});
+
+test('T033 换档后的迟到点击：渲染时的档案 ID 与当前档案不符时整条不落盘', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  switchTo(page, flow.aId);
+  const staleRow = page.data.recentAttempt;
+
+  // 另一份本机档案（同一账号换档、或另一台设备）与原档同名 ID：整份替换。
+  const twin = JSON.parse(storage.get(ARCHIVE_KEY));
+  twin.archiveId = 'archive-of-another-profile';
+  twin.attempts.find(item => item.id === staleRow.attemptId).note = '另一份档案自己的备注';
+  const twinBytes = JSON.stringify(twin);
+  storage.set(ARCHIVE_KEY, twinBytes);
+
+  page.undoLatestAttempt(rowEvent(staleRow));
+  assert.equal(storage.get(ARCHIVE_KEY), twinBytes, '换档后的迟到点击不改新档案');
+  const replaced = JSON.parse(storage.get(ARCHIVE_KEY)).attempts.find(
+    item => item.id === staleRow.attemptId
+  );
+  assert.equal(replaced.undoneAt, undefined, '新档案里这一把没有被撤回');
+  assert.equal(replaced.note, '另一份档案自己的备注', '新档案里的备注也没被改写');
+  assert.match(page.data.notice, /原来的本机档案/);
+});
+
+test('T033 切到 B 之后旧 A 那一行的点击不改任何一把、也不改归属', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  switchTo(page, flow.aId);
+  const staleARow = page.data.recentAttempt;
+  assert.equal(staleARow.routeId, flow.aId);
+
+  switchTo(page, flow.bId);
+  recordThroughPage(page, 'fail');
+  const bBefore = JSON.stringify(savedAttempts(flow.sessionId, flow.bId));
+  const aBefore = JSON.stringify(savedAttempts(flow.sessionId, flow.aId));
+  const bytesBefore = storage.get(ARCHIVE_KEY);
+
+  page.undoLatestAttempt(rowEvent(staleARow));
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '旧 A 事件不写盘');
+  assert.equal(JSON.stringify(savedAttempts(flow.sessionId, flow.bId)), bBefore, 'B 这一把不动');
+  assert.equal(JSON.stringify(savedAttempts(flow.sessionId, flow.aId)), aBefore, 'A 那一把也不被改');
+  assert.equal(page.data.selectedRoute.id, flow.bId, '归属仍是 B');
+  assert.equal(page.data.recentAttempt.attemptId, attemptsOf(page).at(-1).id);
+  assert.match(page.data.notice, /切到别的场次或线路/);
+});
+
+test('T033 待保存的一把绑定发起时的档案：换档之后重试不写进新档案', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  switchTo(page, flow.aId);
+  tick();
+
+  // 第一次写就失败：这一把没落盘，留在「待保存」行里，操作 ID 记在页面实例上。
+  armSetFailAt(1);
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  assert.equal(page.data.pendingRows.length, 1);
+  const opId = page.data.pendingRows[0].opId;
+
+  const twin = JSON.parse(storage.get(ARCHIVE_KEY));
+  twin.archiveId = 'archive-of-another-profile';
+  const twinBytes = JSON.stringify(twin);
+  storage.set(ARCHIVE_KEY, twinBytes);
+
+  page.retryPendingAttempt(tapDataset({ opId }));
+  assert.equal(storage.get(ARCHIVE_KEY), twinBytes, '换档后的重试不改新档案');
+  assert.equal(
+    JSON.parse(storage.get(ARCHIVE_KEY)).attempts.filter(item => item.id === opId).length,
+    0,
+    '这一把没有被写进新档案'
+  );
+  assert.match(page.data.notice, /原来的本机档案/);
 });

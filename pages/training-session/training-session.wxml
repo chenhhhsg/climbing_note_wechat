@@ -420,6 +420,9 @@
           最近一把的撤回与恢复（T033）：结果按钮下方固定一段，写明当前场次、当前线路最新
           那一把的线路名、原序号与结果，并给出撤回动作。目标只认这一行带下来的原把次 ID
           与归属（bindtap 的 dataset），不看行下标、名称或当前可见行。
+          点击还带回落款时这一行的档案 ID（data-archive-id）与有效状态版本
+          （data-expected-rev）：换档后的迟到点击、或者旧的撤回/恢复事件在状态又变过之后
+          才送到（3→2→3 之后重放旧撤回），档案层按这两个值拒绝，一个字都不写。
           撤回后这一行留在原处变成「已撤回」，撤回按钮的位置留空（行高由样式固定），
           因此刚才点过的坐标不会被另一把或相反动作接管；「恢复这一把」在下方独立一行，
           是另一个按钮，须有意点击。这条线还有未落盘的把次时整段收起。
@@ -441,7 +444,9 @@
               data-attempt-id="{{recentAttempt.attemptId}}"
               data-route-id="{{recentAttempt.routeId}}"
               data-session-id="{{recentAttempt.sessionId}}"
+              data-archive-id="{{recentAttempt.archiveId}}"
               data-expected="{{recentAttempt.expected}}"
+              data-expected-rev="{{recentAttempt.expectedRev}}"
               bindtap="undoLatestAttempt"
             >{{recentAttempt.undoText}}</button>
           </view>
@@ -457,7 +462,9 @@
               data-attempt-id="{{recentAttempt.attemptId}}"
               data-route-id="{{recentAttempt.routeId}}"
               data-session-id="{{recentAttempt.sessionId}}"
+              data-archive-id="{{recentAttempt.archiveId}}"
               data-expected="{{recentAttempt.expected}}"
+              data-expected-rev="{{recentAttempt.expectedRev}}"
               bindtap="restoreLatestAttempt"
             >{{recentAttempt.restoreText}}</button>
           </view>

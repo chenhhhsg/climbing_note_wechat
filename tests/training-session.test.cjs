@@ -1759,7 +1759,9 @@ function attemptRowEvent(row) {
     attemptId: row.attemptId,
     routeId: row.routeId,
     sessionId: row.sessionId,
-    expected: row.expected
+    archiveId: row.archiveId,
+    expected: row.expected,
+    expectedRev: row.expectedRev
   });
 }
 
@@ -1811,11 +1813,11 @@ test('T033 最近一把操作区在结果按钮之后：写线路名、原序号
   assert.ok(rowStart < recoveryStart, '恢复入口在最近一把这一行之后，是另一个按钮');
   assert.match(
     wxml,
-    /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,220}data-expected="\{\{recentAttempt\.expected\}\}"[\s\S]{0,160}bindtap="undoLatestAttempt"/
+    /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,260}data-archive-id="\{\{recentAttempt\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{recentAttempt\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,120}bindtap="undoLatestAttempt"/
   );
   assert.match(
     wxml,
-    /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,220}bindtap="restoreLatestAttempt"/
+    /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,260}data-archive-id="\{\{recentAttempt\.archiveId\}\}"[\s\S]{0,120}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,120}bindtap="restoreLatestAttempt"/
   );
   // 已撤回时撤回按钮整个不渲染（位置留空），恢复按钮才出现：同一坐标不会被相反动作接管。
   assert.match(wxml, /wx:if="\{\{recentAttempt\.canUndo\}\}"[\s\S]{0,240}id="undo-attempt-/);
@@ -2098,7 +2100,8 @@ test('T033 撤回写盘失败显示失败与原操作重试，把数只按已落
   );
   assert.equal(archiveOf().pendingUndos.length, 0);
 
-  // 第二段写成后回执丢失：页面只拿到失败，档案里其实已经撤回；重试只回读已落盘状态。
+  // 第二段写成后回执丢失：页面只拿到失败，档案里其实已经撤回。页面这时重新读一次
+  // 落盘状态再显示——把数是确认过的持久数量（2 把），不留会重复写入的「重试撤回」入口。
   assert.equal(
     store.restoreAttempt(third.id, {
       opId: 'restore-before-loss',
@@ -2113,10 +2116,11 @@ test('T033 撤回写盘失败显示失败与原操作重试，把数只按已落
 
   armSetLoseResponseAt(2);
   pageAgain.undoLatestAttempt(attemptRowEvent(rowOf(pageAgain)));
-  assert.match(pageAgain.data.storageError, /保存本机训练档案失败/);
-  assert.match(pageAgain.data.notice, /重试撤回这一把/);
-  assert.equal(rowOf(pageAgain).undoText, '重试撤回这一把');
-  assert.equal(pageAgain.data.routeCountText, '3 把', '把数显示的是这次读到的已落盘状态');
+  assert.equal(pageAgain.data.storageError, '', '回执丢失不当作未保存：先按落盘状态核对');
+  assert.match(pageAgain.data.notice, /回执丢失|已经落盘/);
+  assert.equal(pageAgain.data.routeCountText, '2 把', '把数显示的是这次重新读到的已落盘状态');
+  assert.equal(rowOf(pageAgain).canUndo, false);
+  assert.equal(rowOf(pageAgain).canRestore, true, '恢复入口仍落在原来那一把上');
   assert.ok(
     JSON.parse(storage.get(ARCHIVE_KEY)).attempts.find(item => item.id === third.id).undoneAt,
     '回执丢失的这一次其实已经落盘'
@@ -2128,7 +2132,7 @@ test('T033 撤回写盘失败显示失败与原操作重试，把数只按已落
   armSetLoseResponseAt(0);
   const writesBeforeRetry = fault.setCount;
   pageAgain.undoLatestAttempt(attemptRowEvent(rowOf(pageAgain)));
-  assert.equal(fault.setCount, writesBeforeRetry, '重试认出已经结清，不再写第二次');
+  assert.equal(fault.setCount, writesBeforeRetry, '已经是要的状态：不再写第二次');
   assert.equal(pageAgain.data.storageError, '');
   assert.equal(pageAgain.data.routeCountText, '2 把');
   assert.equal(rowOf(pageAgain).canRestore, true);
@@ -2320,4 +2324,29 @@ test('T033 撤回与恢复只写训练档案键，不动照片索引与想爬清
   assert.equal(page.data.routeCountText, '3 把');
   assert.equal(storage.get(PHOTO_KEY), photoBlob, '照片索引保持原字节');
   assert.equal(storage.get('climbingNote.training.v1.wishlist'), wishlistBlob, '想爬清单不动');
+});
+
+test('T033 恢复的第二段写成后回执丢失：页面重读落盘状态，按确认过的把数与恢复目标显示', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
+  const only = saveAttemptSeries(seeded.session, seeded.route, ['fail'])[0];
+  const page = openSessionPage({});
+  page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
+  assert.equal(page.data.routeCountText, '0 把');
+
+  const cooled = openSessionPage({});
+  assert.equal(rowOf(cooled).canRestore, true, '前置：这一行现在给的是「恢复这一把」');
+  armSetLoseResponseAt(2);
+  cooled.restoreLatestAttempt(attemptRowEvent(rowOf(cooled)));
+  assert.equal(cooled.data.storageError, '', '回执丢失不报未保存：先按落盘状态核对');
+  assert.match(cooled.data.notice, /回执丢失|已经落盘/);
+  assert.equal(cooled.data.routeCountText, '1 把', '把数就是重新读到的、确认过的持久数量');
+  assert.equal(cooled.data.attempts.length, 1);
+  assert.equal(rowOf(cooled).canUndo, true);
+  assert.equal(rowOf(cooled).canRestore, false);
+
+  // 重开一次：读数与刚才那一份完全一致（各读端同一个口径）。
+  const reopened = openSessionPage({});
+  assert.equal(reopened.data.routeCountText, '1 把');
+  assert.equal(rowOf(reopened).attemptId, only.id);
+  assert.equal(rowOf(reopened).canUndo, true);
 });

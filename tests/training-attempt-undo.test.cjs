@@ -1313,3 +1313,179 @@ test('T032 撤回后再保存新把：新把 ID 唯一；故障后按原意图�
   assert.equal(new Set(ids).size, ids.length, '新把的持久 ID 唯一');
   assert.equal(store.attemptsFor(archiveOf(), { sessionId: first.session.id }).length, 1);
 });
+
+// ------------------------------------------------------------------ *
+// T032 返工：有效状态变更版本（rev）、稳定原序号与自动 ID 唯一
+// ------------------------------------------------------------------ *
+
+/** 重新加载一次档案层模块：让本层自己的 ID 计数器归零，模拟「退出重开一次小程序」。 */
+function reloadStoreModule() {
+  delete require.cache[require.resolve(STORE_JS)];
+  return require(STORE_JS);
+}
+
+test('T032 有效状态变更版本：旧档缺省 0、撤回与恢复各加一、只读打开不回写', () => {
+  const seeded = seedThreeAttempts();
+  const thirdId = seeded.third.id;
+  const persisted = () => archiveOf().attempts.find(item => item.id === thirdId);
+
+  // 旧档/没动过的把次没有 rev：按 0 读，且只读打开不迁移、不改原字节。
+  assert.equal(store.attemptRev(persisted()), 0);
+  assert.equal(persisted().rev, undefined, '只读读取不写入 rev');
+  const bytesBefore = rawArchive();
+  store.loadState();
+  store.routeHistory(store.loadState().archive, seeded.route.id);
+  store.routeCompletion(store.loadState().archive, seeded.route.id);
+  assert.equal(rawArchive(), bytesBefore, '只读打开不改原字节');
+
+  // 撤回加一、恢复再加一：版本随着「有效状态变过几次」单调递增，重开后仍在。
+  assert.equal(
+    store.undoAttempt(thirdId, {
+      opId: 'rev-undo',
+      routeId: seeded.route.id,
+      sessionId: seeded.session.id
+    }).code,
+    'undone'
+  );
+  assert.equal(store.attemptRev(persisted()), 1);
+  assert.equal(
+    store.restoreAttempt(thirdId, {
+      opId: 'rev-restore',
+      routeId: seeded.route.id,
+      sessionId: seeded.session.id
+    }).code,
+    'restored'
+  );
+  assert.equal(store.attemptRev(persisted()), 2);
+  assert.equal(store.attemptRev(store.loadState().archive.attempts.find(item => item.id === thirdId)), 2);
+});
+
+test('T032 带渲染时版本的撤回/恢复：版本不符按过期事件拒绝，一个字都不写', () => {
+  const seeded = seedThreeAttempts();
+  const thirdId = seeded.third.id;
+  const scope = { routeId: seeded.route.id, sessionId: seeded.session.id };
+  const revOf = () => store.attemptRev(store.loadState().archive.attempts.find(item => item.id === thirdId));
+  assert.equal(revOf(), 0);
+
+  // 渲染时版本为 0 的撤回：现在版本就是 0，落盘。
+  assert.equal(store.undoAttempt(thirdId, { opId: 'v0-undo', ...scope, expectedRev: 0 }).code, 'undone');
+  assert.equal(revOf(), 1);
+
+  // 同一份「版本 0 的撤回」再来一次：版本已经变了，按过期事件拒绝，不改档案。
+  const afterUndo = rawArchive();
+  const replay = store.undoAttempt(thirdId, { opId: 'v0-undo-replay', ...scope, expectedRev: 0 });
+  assert.equal(replay.ok, false);
+  assert.equal(replay.code, 'stale');
+  assert.equal(rawArchive(), afterUndo);
+
+  // 版本为 1 的恢复：对得上，落盘。
+  assert.equal(store.restoreAttempt(thirdId, { opId: 'v1-restore', ...scope, expectedRev: 1 }).code, 'restored');
+  assert.equal(revOf(), 2);
+
+  // 现在状态看起来又变回「有效」：一份**从未送达**的旧撤回（版本 0）此时才送到，
+  // 只比状态会误判成合法，靠版本认出它已经过期，不落盘。
+  const afterRestore = rawArchive();
+  const neverSent = store.undoAttempt(thirdId, { opId: 'never-sent-undo', ...scope, expectedRev: 0 });
+  assert.equal(neverSent.ok, false);
+  assert.equal(neverSent.code, 'stale');
+  assert.equal(rawArchive(), afterRestore, '过期事件一个字都不写');
+  assert.equal(effectiveOn(seeded.route.id, seeded.session.id).some(item => item.id === thirdId), true);
+
+  // 反向同理：已撤回时，一份旧恢复事件（版本 1）也拒绝。
+  const undoneAgain = store.undoAttempt(thirdId, { opId: 'v2-undo', ...scope, expected: 'effective', expectedRev: 2 });
+  assert.equal(undoneAgain.code, 'undone');
+  const afterSecondUndo = rawArchive();
+  const staleRestore = store.restoreAttempt(thirdId, { opId: 'stale-restore', ...scope, expectedRev: 1 });
+  assert.equal(staleRestore.ok, false);
+  assert.equal(staleRestore.code, 'stale');
+  assert.equal(rawArchive(), afterSecondUndo);
+  assert.equal(effectiveOn(seeded.route.id, seeded.session.id).some(item => item.id === thirdId), false);
+
+  // 旧调用（不带版本）保持兼容：状态一致即按原语义落盘。
+  assert.equal(store.restoreAttempt(thirdId, { opId: 'no-version-restore', ...scope }).code, 'restored');
+});
+
+test('T032 没带 opId 的新一把另取唯一 ID：不顶替已撤回的同名把次，显式旧 opId 仍去重', () => {
+  const seeded = seedThreeAttempts();
+  const scope = { sessionId: seeded.session.id, routeId: seeded.route.id };
+  const realNow = Date.now;
+  const realRandom = Math.random;
+  const pages = [];
+  try {
+    // 固定时钟与熵：两次「重开」会生成一模一样的候选 ID，用来逼出真正的撞名。
+    Date.now = () => new Date(2026, 10, 9, 10, 0, 0).getTime();
+    Math.random = () => 0.625;
+
+    const firstStore = reloadStoreModule();
+    pages.push(firstStore);
+    const first = firstStore.saveAttempt({ ...scope, result: 'fail', note: '自动 ID 的第一把' }).attempt;
+    assert.equal(
+      firstStore.undoAttempt(first.id, { opId: 'undo-auto-id', ...scope }).code,
+      'undone',
+      '第一把先撤回，留在档案里占着这个 ID'
+    );
+
+    // 「退出重开」：本层计数器归零，候选 ID 与刚才完全相同。
+    const secondStore = reloadStoreModule();
+    const second = secondStore.saveAttempt({ ...scope, result: 'fail', note: '重开后的新一把' }).attempt;
+    assert.notEqual(second.id, first.id, '新一把必须另取唯一 ID，不能复用已撤回的那一把');
+    assert.equal(second.note, '重开后的新一把');
+    const persisted = secondStore.loadState().archive.attempts;
+    assert.equal(persisted.filter(item => item.id === first.id).length, 1);
+    assert.equal(persisted.filter(item => item.id === second.id).length, 1);
+    const firstRow = persisted.find(item => item.id === first.id);
+    assert.notEqual(firstRow.undoneAt, undefined, '已撤回的那一把保持撤回，没有被新一把复活');
+    assert.equal(firstRow.note, '自动 ID 的第一把');
+
+    // 显式带旧 opId 的延迟保存仍然去重：只复用原记录，不新增、也不复活。
+    const before = rawArchive();
+    const delayed = secondStore.saveAttempt({ opId: first.id, ...scope, result: 'fail', note: '迟到的旧保存' });
+    assert.equal(delayed.ok, true);
+    assert.equal(delayed.duplicate, true);
+    assert.equal(delayed.undone, true);
+    assert.equal(rawArchive(), before, '显式旧 opId 的迟到保存不写盘');
+  } finally {
+    Date.now = realNow;
+    Math.random = realRandom;
+    delete require.cache[require.resolve(STORE_JS)];
+    require(STORE_JS);
+  }
+});
+
+test('T032 单场单线稳定原序号：撤回第 3 把后新记的一把是第 4 把，历史与更正行共用同一份标号', () => {
+  const seeded = seedThreeAttempts();
+  const scope = { routeId: seeded.route.id, sessionId: seeded.session.id };
+  assert.equal(
+    store.undoAttempt(seeded.third.id, { opId: 'ordinal-undo', ...scope }).code,
+    'undone'
+  );
+  const fourth = addAttempt(seeded.session, seeded.route, 'fail', '撤回后的新一把', new Date(2026, 10, 9, 10, 30));
+
+  // 已撤回的那一把照样占着原序号：新一把接第 4 把，不被撤回挤成第 3 把。
+  const ordinals = store.attemptOrdinalMap(archiveOf(), seeded.session.id, seeded.route.id);
+  assert.equal(ordinals.get(seeded.first.id), 1);
+  assert.equal(ordinals.get(seeded.second.id), 2);
+  assert.equal(ordinals.get(seeded.third.id), 3, '已撤回的第 3 把仍是第 3 把');
+  assert.equal(ordinals.get(fourth.id), 4);
+  assert.equal(ordinals.get(seeded.neighborAttempt.id), undefined, '别的线路不参与本线的编号');
+
+  // 跨日历史用同一份标号，且只列有效把次（第 1、2、4 把）。
+  const history = store.routeHistory(archiveOf(), seeded.route.id);
+  const group = history.groups.find(item => item.sessionId === seeded.session.id);
+  assert.deepEqual(
+    group.attempts.map(item => [item.id, item.label]),
+    [
+      [seeded.first.id, '第 1 把'],
+      [seeded.second.id, '第 2 把'],
+      [fourth.id, '第 4 把']
+    ]
+  );
+  assert.equal(history.attemptCount, 3, '已撤回的那一把不贡献把数');
+
+  // 「改为未完成」的行体（抱石唯一完攀）也用同一份稳定原序号。
+  const send = addAttempt(seeded.session, seeded.route, 'send', '第五把完攀', new Date(2026, 10, 9, 10, 40));
+  const targets = store.routeCorrectionTargets(archiveOf(), seeded.route.id);
+  assert.equal(targets.length, 1);
+  assert.equal(targets[0].attemptId, send.id);
+  assert.equal(targets[0].label, '第 5 把');
+});
