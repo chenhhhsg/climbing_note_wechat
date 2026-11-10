@@ -2084,9 +2084,10 @@ Page({
    * - 没有当前场次、没有当前线路、这条线还没有已提交把次：不显示（返回 null）；
    * - 这条线还有未落盘的把次：整个操作区收起，待保存的一把不当作已保存可撤回项，
    *   上一条已保存的把次也不会留在原地等着被误撤；
-   * - 已撤回的那一把仍留在这一行（标题写「已撤回」，序号与结果保持原样），撤回按钮
-   *   位置留空、行高不变，因此刚才点过的坐标不会被另一把或相反动作接管；恢复入口
-   *   在下方独立一行，须有意点击；
+   * - 已撤回的那一把仍留在这一行（标题写「已撤回」，序号与结果保持原样）：这一行是同一个
+   *   永久操作区里的两个并排槽——左槽撤回、右槽恢复，各占一半宽度、等高。当前不可用的那
+   *   一个动作在自己那一槽里留一块等宽等高的非交互空位（没有绑定），所以两个动作的命中
+   *   矩形在任何状态下都不相交：刚才点过的坐标不会被另一把、被相反动作或旁边的控件接管；
    * - 失败（写盘失败）时保留原动作与同一个 opId 的重试文案；成功的那一次在本行下方
    *   写一句确认（只在本页显示，不落盘，重开后以档案里的撤回状态为准）。
    */
@@ -2184,8 +2185,10 @@ Page({
    * 被认成「早已结清」，只回读状态，不会把撤回翻回成恢复、也不会把恢复翻回成撤回。
    *
    * 写失败或回执丢失（write-failed / unreadable）时**重新读一次落盘状态**再显示：页面
-   * 上的把数、完攀状态与最近一把一律以已落盘的档案为准（回执丢了但写入其实成功的，
-   * 这里就会直接显示成功后的状态），未落盘的那一次保留原动作与同一个 opId 的重试入口。
+   * 上的把数、完攀状态与最近一把一律以已落盘的档案为准，未落盘的那一次保留原动作与同一个
+   * opId 的重试入口。只有原档案 ID、这一把的场次/线路归属与**这次操作自己**的落盘凭据都
+   * 对上，才把那一次认成「其实已落盘、只是回执丢了」；否则按盘上真实状态显示，并说明盘上
+   * 那一把不是这次写入的（另一个写者或另一份档案），不认领别人的结果。
    */
   changeRecentAttempt(event, action) {
     if (this.data.loadError) return;
@@ -2208,6 +2211,10 @@ Page({
     const sessionId = dataset.sessionId || '';
     const routeId = dataset.routeId || '';
     const key = attemptId + '\u0000' + action;
+    // **原按钮捕获的**档案 ID：页面上的这一行只属于渲染它的那一份档案。写失败后重读比对
+    // 「盘上这一份还是我原来那一份吗」用的就是它——不能拿已经被 outcome.archive 覆盖过的
+    // this.archive 顶替这个原引用，否则换档后的重读会被当成同一份档案。
+    const originArchiveId = dataset.archiveId || archive.archiveId;
 
     // 换档之后的迟到点击：事件带的是**渲染那一刻**的档案 ID，与当前档案不一致时整条
     // 不落盘，也不按新档案改写任何把次。
@@ -2282,7 +2289,7 @@ Page({
       routeId,
       sessionId,
       // 渲染那次点击时用的档案 ID；页面上的这一行不属于当前档案时不落盘。
-      archiveId: dataset.archiveId || archive.archiveId,
+      archiveId: originArchiveId,
       // 预期状态就是这一次点击所依据的画面（WXML 把渲染时的状态随点击带下来）。
       // 与档案层读到的最新持久状态不符时按 stale 拒绝，基于过时画面的操作不落盘。
       expected:
@@ -2309,19 +2316,60 @@ Page({
 
     if (outcome.code === 'write-failed' || outcome.code === 'unreadable') {
       // 未确认落盘：不显示乐观结果，先按**最新落盘状态**重读一次档案，把数、完攀状态、
-      // 最近一把与逐把列表都以磁盘为准（回执丢失但写入其实成功时，这里就显示成功后的状态）。
+      // 最近一把与逐把列表都以磁盘为准。
       const reloaded = store.loadState();
       if (reloaded.ok) {
         this.archive = reloaded.archive;
         const fresh = reloaded.archive.attempts.find(item => item.id === attemptId) || null;
-        const landed = Boolean(fresh && store.isUndoneAttempt(fresh) === asUndo);
-        if (landed) {
-          // 这一次其实已经落盘，只是回执没回来：清掉重试入口，按落盘状态给出确认。
+        const stateMatches = Boolean(fresh && store.isUndoneAttempt(fresh) === asUndo);
+        // 「这一次确实写进去了，只是回执没回来」要说准，三样都得对上：
+        //   1) 盘上仍是**原来那一份档案**（reloaded.archive.archiveId 与点击时原按钮捕获的
+        //      档案 ID 相等）。另一份档案可以把把次、场次、线路乃至已结清操作的 opId 全都
+        //      复用一遍，只比后面几项就会把别人的结果认成这次的；
+        //   2) 这一把确实属于这次点击带下来的场次与线路；
+        //   3) 这一把上留着**这次操作自己**的落盘凭据（outcome.opId 记在 settledOps 里，
+        //      且意图相符）。
+        // 只比状态是不够的：另一个写者、另一份档案或另一个 opId 都可能把这一把带到同样的
+        // 状态，那时不能说「此前那次已成功」。
+        const sameArchive = reloaded.archive.archiveId === originArchiveId;
+        const receipt =
+          sameArchive &&
+          fresh &&
+          (!sessionId || fresh.sessionId === sessionId) &&
+          (!routeId || fresh.routeId === routeId)
+            ? store.attemptSettledOp(fresh, outcome.opId)
+            : null;
+        const landedByThisOperation = Boolean(receipt && receipt.undone === asUndo);
+        if (stateMatches && landedByThisOperation) {
+          // 清掉重试入口，按盘上状态给出确认。
           delete this._attemptOps[key];
           this._recentStatus = { attemptId, undone: asUndo };
           this.setData({
             storageError: '',
             notice: noun + '已经落盘（回执丢失），已按最新档案确认。'
+          });
+          this.refreshView();
+          return;
+        }
+        if (stateMatches) {
+          // 盘上已经是这个状态，但凭据不属于这次操作：可能是同一份档案里另一个写入完成的，
+          // 也可能是盘上已经换成了另一份本机档案（把次与 opId 撞名）。按真实盘上状态显示
+          // （把数、完攀状态与最近一把都以磁盘为准），明确区别开：既不认领那次回执，也不让
+          // 人重试一个已经成立的动作。
+          delete this._attemptOps[key];
+          this.setData({
+            storageError: '',
+            notice: sameArchive
+              ? '盘上这一把已经是' +
+                (asUndo ? '已撤回' : '有效') +
+                '状态，但不是这次' +
+                noun +
+                '写入的（可能由另一处写入完成）；已按最新档案显示。'
+              : '盘上这一把已经是' +
+                (asUndo ? '已撤回' : '有效') +
+                '状态，但盘上已经换成另一份本机档案，不是这次' +
+                noun +
+                '写入的；已按最新档案显示。'
           });
           this.refreshView();
           return;

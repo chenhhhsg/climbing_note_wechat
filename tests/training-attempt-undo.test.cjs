@@ -1489,3 +1489,34 @@ test('T032 单场单线稳定原序号：撤回第 3 把后新记的一把是第
   assert.equal(targets[0].attemptId, send.id);
   assert.equal(targets[0].label, '第 5 把');
 });
+
+test('T032 已结清凭据的只读查询：只认这次操作自己的 opId，别的不认领也不写盘', () => {
+  const seeded = seedThreeAttempts();
+  const scope = { routeId: seeded.route.id, sessionId: seeded.session.id };
+
+  // 同一把上先撤回一次、再恢复一次：两条结清凭据各带自己的 opId 与意图。
+  assert.equal(store.undoAttempt(seeded.third.id, { opId: 'op-undo-1', ...scope }).code, 'undone');
+  assert.equal(store.restoreAttempt(seeded.third.id, { opId: 'op-restore-1', ...scope }).code, 'restored');
+
+  const attempt = archiveOf().attempts.find(item => item.id === seeded.third.id);
+  const bytes = rawArchive();
+
+  const undoReceipt = store.attemptSettledOp(attempt, 'op-undo-1');
+  assert.equal(undoReceipt.opId, 'op-undo-1');
+  assert.equal(undoReceipt.undone, true, '这一次凭据记的是撤回');
+  assert.ok(undoReceipt.at, '凭据带落盘时间');
+  assert.equal(store.attemptSettledOp(attempt, 'op-restore-1').undone, false, '这一次凭据记的是恢复');
+
+  // 返回的是副本：改它不改档案。
+  undoReceipt.undone = false;
+  assert.equal(store.attemptSettledOp(attempt, 'op-undo-1').undone, true, '查询结果是副本');
+
+  // 别的 operation 的 opId 认不出来：另一个写者不能借用这次的回执。
+  assert.equal(store.attemptSettledOp(attempt, 'op-of-another-writer'), null);
+  assert.equal(store.attemptSettledOp(attempt, ''), null);
+  assert.equal(store.attemptSettledOp(attempt, null), null);
+  assert.equal(store.attemptSettledOp(null, 'op-undo-1'), null);
+  // 旧档案没有 settledOps：按空读取，也不因此改写原数据。
+  assert.equal(store.attemptSettledOp({ id: 'legacy' }, 'op-undo-1'), null);
+  assert.equal(rawArchive(), bytes, '只读查询不写盘');
+});

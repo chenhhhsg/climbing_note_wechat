@@ -1817,6 +1817,19 @@ function findSettledOp(attempt, opId) {
   return ops.find(op => op && op.opId === opId) || null;
 }
 
+/**
+ * 只读：这一把上是否有**某个指定操作**（撤回或恢复自己的 opId）的落盘凭据。
+ *
+ * 调用方拿它回答一个很窄的问题：「盘上现在的状态，是不是我刚才那一次操作写出来的？」
+ * 只按状态判断是不够的——另一个写者、另一份档案或另一个 opId 也可能把这一把带到同样的
+ * 状态；那种情况下不能告诉人「此前那次已确认成功」。返回 { opId, undone, at } 或 null。
+ */
+function attemptSettledOp(attempt, opId) {
+  if (!attempt || !hasText(opId)) return null;
+  const found = findSettledOp(attempt, opId);
+  return found ? clone(found) : null;
+}
+
 function recordSettledOp(attempt, opId, undone, at) {
   const ops = Array.isArray(attempt.settledOps) ? attempt.settledOps : [];
   attempt.settledOps = ops
@@ -2131,6 +2144,7 @@ module.exports = {
   correctAttempt,
   undoAttempt,
   restoreAttempt,
+  attemptSettledOp,
   // 转出线路规则，页面与档案层共用同一份判定。
   CLIMB_TYPES: rules.CLIMB_TYPES,
   GRADES_BY_TYPE: rules.GRADES_BY_TYPE,

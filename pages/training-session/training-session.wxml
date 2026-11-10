@@ -98,8 +98,10 @@
       </view>
 
       <!--
-        本场线路与加线入口（T030）：常驻首屏。
-        空场首屏直接是「添加第一条线路」；有线时在「本场线路」旁常驻「＋ 加线」。
+        本场线路与加线入口（T030）：常驻首屏，只占标题这一行。
+        空场首屏就是「添加第一条线路」；有线时只留「本场线路 · ＋ 加线」与加线面板。
+        本场线路的完整列表不再在这里重复一遍——它就在下方结果按钮旁（换线短列表与
+        「全部 N 条」），在那里换完线就能直接记这一把，不必滚回页顶。
         加线面板只有两个来源：本馆已有线路（同一个 routeId 关联进本场并选中）与新建线路
         （沿用原有的类型/等级校验与本机保存）。打开与取消面板都不写盘。
       -->
@@ -114,33 +116,7 @@
           >＋ 加线</button>
         </view>
 
-        <!-- 本场已有线路：点名字即切为当前记录目标 -->
-        <view wx:if="{{routes.length > 0}}" class="route-list">
-          <view
-            wx:for="{{routes}}"
-            wx:key="id"
-            id="route-{{item.id}}"
-            class="route-item {{item.isSelected ? 'route-selected' : ''}}"
-            data-route-id="{{item.id}}"
-            bindtap="selectRoute"
-          >
-            <view class="route-main">
-              <view class="route-swatch" style="background: {{item.colorHex}};"></view>
-              <view class="route-info">
-                <text class="route-name">{{item.name}}</text>
-                <text class="route-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
-              </view>
-              <text
-                wx:if="{{item.completionText}}"
-                id="route-state-{{item.id}}"
-                class="route-state {{item.isCompleted ? 'route-state-done' : 'route-state-pending'}}"
-              >{{item.completionText}}</text>
-              <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
-            </view>
-          </view>
-        </view>
-
-        <block wx:else>
+        <block wx:if="{{routes.length === 0}}">
           <text class="first-route-hint">本场还没有线路，先加一条再记结果。</text>
           <button
             id="add-first-route"
@@ -300,20 +276,30 @@
         </view>
       </view>
 
-      <!-- 本场记录：已选线路、逐把结果、待保存行与按把更正 -->
+      <!--
+        本场记录：当前线、换线、结果按钮与「最近一把」构成首屏主操作区（顺序不变，
+        仍是当前线 → 换线 → 结果 → 最近一把），照片、逐把记录、备注、按把更正等
+        次要块一律排在主操作区之后，不再用标题与说明把主操作推出首屏。
+      -->
       <view wx:if="{{selectedRoute}}" class="section current-route">
-        <text class="section-title">本场记录</text>
         <view class="selected-route">
           <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
           <view class="selected-route-info">
             <text class="selected-route-grade">{{selectedRoute.grade}}</text>
             <text class="selected-route-name">{{selectedRoute.name}}</text>
             <text class="selected-route-meta">{{selectedRoute.climbType}} · 本场 {{routeCountText}}</text>
-            <text
-              wx:if="{{routeStateText}}"
-              id="selected-route-state"
-              class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
-            >{{routeStateText}}</text>
+            <!--
+              状态徽标槽（T033 复验）：这一格的高度固定，完攀/待确认徽标出现或消失
+              都不改变当前线卡片的高度，因此下方的换线区、结果按钮与「最近一把」不会
+              因为完攀状态变化而上下移动。
+            -->
+            <view class="selected-route-state-slot">
+              <text
+                wx:if="{{routeStateText}}"
+                id="selected-route-state"
+                class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
+              >{{routeStateText}}</text>
+            </view>
           </view>
         </view>
 
@@ -382,19 +368,23 @@
           </block>
         </view>
 
-        <!-- 结果按钮：抱石完攀后收起；有未保存的把次时先重试那一把 -->
+        <!--
+          结果按钮：抱石完攀后收起；有未保存的把次时先重试那一把。
+          收起（已完攀）、待确认与正常态的结果区高度相同（样式里给整条结果区与两种面板
+          都定了同一个高度），因此撤回「唯一一次抱石完攀」之后结果区解锁、按钮回来，
+          下方的「最近一把」也不会挪位。
+        -->
         <view class="result-footer">
           <block wx:if="{{routeCompleted}}">
             <view id="route-completed-panel" class="route-completed-panel">
               <text class="route-completed-title">已完攀</text>
-              <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次与备注都保留在本机。</text>
-              <text class="route-completed-hint">如需更正，在下方「点错了完攀？」中找到这一把，点「改为未完成」。</text>
+              <text class="route-completed-hint">不再新增把次</text>
             </view>
           </block>
           <block wx:elif="{{routeClosed}}">
             <view id="route-pending-panel" class="route-pending-panel">
               <text class="route-pending-title">完攀待确认</text>
-              <text class="route-pending-hint">这一把的完攀还没保存：先在「待保存」行点「重试保存」。</text>
+              <text class="route-pending-hint">先在下方「待保存」行重试保存</text>
             </view>
           </block>
           <block wx:else>
@@ -417,58 +407,77 @@
         </view>
 
         <!--
-          最近一把的撤回与恢复（T033）：结果按钮下方固定一段，写明当前场次、当前线路最新
-          那一把的线路名、原序号与结果，并给出撤回动作。目标只认这一行带下来的原把次 ID
-          与归属（bindtap 的 dataset），不看行下标、名称或当前可见行。
-          点击还带回落款时这一行的档案 ID（data-archive-id）与有效状态版本
-          （data-expected-rev）：换档后的迟到点击、或者旧的撤回/恢复事件在状态又变过之后
-          才送到（3→2→3 之后重放旧撤回），档案层按这两个值拒绝，一个字都不写。
-          撤回后这一行留在原处变成「已撤回」，撤回按钮的位置留空（行高由样式固定），
-          因此刚才点过的坐标不会被另一把或相反动作接管；「恢复这一把」在下方独立一行，
-          是另一个按钮，须有意点击。这条线还有未落盘的把次时整段收起。
+          最近一把的撤回与恢复（T033）：结果按钮下方**同一个永久操作区**，里面是两个
+          并排、每次都存在的交互槽——左槽放「撤回这一把」，右槽放「恢复这一把」。
+          两个槽各占一半宽度、高度相同，所以两边的物理命中矩形在任何状态下都不相交：
+          同一个坐标在撤回前命中的是撤回（或该槽的空位），撤回后命中的最多是空位，
+          永远不会落到相反动作上。哪一个动作当前不可用，就在它自己那一槽里留一块
+          等宽等高的非交互空位（透明、无 bindtap），既保住行高也保住刚才点过的位置。
+          目标只认这一行带下来的原把次 ID 与归属（bindtap 的 dataset），不看行下标、
+          名称或当前可见行。点击还带回落款时这一行的档案 ID（data-archive-id）与有效
+          状态版本（data-expected-rev）：换档后的迟到点击、或者旧的撤回/恢复事件在状态
+          又变过之后才送到（3→2→3 之后重放旧撤回），档案层按这两个值拒绝，一个字都不写。
+          这条线还有未落盘的把次时整段收起（待保存的一把不是已保存可撤回项）。
         -->
         <view wx:if="{{recentAttempt}}" id="recent-attempt" class="recent-attempt">
           <view class="recent-attempt-head">
             <text class="recent-attempt-title">最近一把</text>
             <text class="recent-attempt-note">撤回只减本场一把</text>
           </view>
+
           <view class="recent-attempt-row">
-            <view class="recent-attempt-info">
-              <text id="recent-attempt-text" class="recent-attempt-text">{{recentAttempt.titleText}}</text>
-              <text class="recent-attempt-meta">{{recentAttempt.metaText}}</text>
+            <!-- 左槽：撤回。不可用时留一块同样大小的非交互空位。 -->
+            <view class="recent-attempt-slot">
+              <button
+                wx:if="{{recentAttempt.canUndo}}"
+                id="undo-attempt-{{recentAttempt.attemptId}}"
+                class="secondary-button recent-attempt-action"
+                data-attempt-id="{{recentAttempt.attemptId}}"
+                data-route-id="{{recentAttempt.routeId}}"
+                data-session-id="{{recentAttempt.sessionId}}"
+                data-archive-id="{{recentAttempt.archiveId}}"
+                data-expected="{{recentAttempt.expected}}"
+                data-expected-rev="{{recentAttempt.expectedRev}}"
+                bindtap="undoLatestAttempt"
+              >{{recentAttempt.undoText}}</button>
+              <view wx:else class="recent-attempt-idle">
+                <text class="recent-attempt-idle-text">已撤回</text>
+              </view>
             </view>
-            <button
-              wx:if="{{recentAttempt.canUndo}}"
-              id="undo-attempt-{{recentAttempt.attemptId}}"
-              class="text-button recent-attempt-action"
-              data-attempt-id="{{recentAttempt.attemptId}}"
-              data-route-id="{{recentAttempt.routeId}}"
-              data-session-id="{{recentAttempt.sessionId}}"
-              data-archive-id="{{recentAttempt.archiveId}}"
-              data-expected="{{recentAttempt.expected}}"
-              data-expected-rev="{{recentAttempt.expectedRev}}"
-              bindtap="undoLatestAttempt"
-            >{{recentAttempt.undoText}}</button>
+
+            <!-- 右槽：恢复。恢复入口就在这一行旁边，好找也好点，须有意点击。 -->
+            <view class="recent-attempt-recovery">
+              <button
+                wx:if="{{recentAttempt.canRestore}}"
+                id="restore-attempt-{{recentAttempt.attemptId}}"
+                class="secondary-button recent-attempt-restore"
+                data-attempt-id="{{recentAttempt.attemptId}}"
+                data-route-id="{{recentAttempt.routeId}}"
+                data-session-id="{{recentAttempt.sessionId}}"
+                data-archive-id="{{recentAttempt.archiveId}}"
+                data-expected="{{recentAttempt.expected}}"
+                data-expected-rev="{{recentAttempt.expectedRev}}"
+                bindtap="restoreLatestAttempt"
+              >{{recentAttempt.restoreText}}</button>
+              <view wx:else class="recent-attempt-idle">
+                <text class="recent-attempt-idle-text">撤回后可恢复</text>
+              </view>
+            </view>
+          </view>
+
+          <view class="recent-attempt-info">
+            <text id="recent-attempt-text" class="recent-attempt-text">{{recentAttempt.titleText}}</text>
+            <text class="recent-attempt-meta">{{recentAttempt.metaText}}</text>
           </view>
           <text
             wx:if="{{recentAttempt.stateText}}"
             id="recent-attempt-state"
             class="recent-attempt-status"
           >{{recentAttempt.stateText}}</text>
-          <view wx:if="{{recentAttempt.canRestore}}" class="recent-attempt-recovery">
-            <button
-              id="restore-attempt-{{recentAttempt.attemptId}}"
-              class="secondary-button recent-attempt-restore"
-              data-attempt-id="{{recentAttempt.attemptId}}"
-              data-route-id="{{recentAttempt.routeId}}"
-              data-session-id="{{recentAttempt.sessionId}}"
-              data-archive-id="{{recentAttempt.archiveId}}"
-              data-expected="{{recentAttempt.expected}}"
-              data-expected-rev="{{recentAttempt.expectedRev}}"
-              bindtap="restoreLatestAttempt"
-            >{{recentAttempt.restoreText}}</button>
-          </view>
           <text class="recent-attempt-hint">原把次的备注、照片与时间都保留；恢复后回到原来的位置。</text>
+          <text wx:if="{{routeCompleted}}" id="route-completed-guidance" class="recent-attempt-hint">
+            要改这一把：用下方「点错了完攀？」里的「改为未完成」。
+          </text>
         </view>
 
         <!--

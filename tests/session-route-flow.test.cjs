@@ -43,13 +43,15 @@ const WISHLIST_KEY = 'climbingNote.training.v1.wishlist';
 
 // ---- 微信本地存储替身：只在正式本机命名空间内读写，可按需注入故障 ----
 const storage = new Map();
-const fault = { setFailAt: 0, setCount: 0, loseResponseAt: 0 };
+const fault = { setFailAt: 0, setCount: 0, loseResponseAt: 0, rivalAt: 0, rival: null };
 
 function resetDevice() {
   storage.clear();
   fault.setFailAt = 0;
   fault.setCount = 0;
   fault.loseResponseAt = 0;
+  fault.rivalAt = 0;
+  fault.rival = null;
 }
 
 /** 第 n 次写盘就失败（数据没写进去）。 */
@@ -62,6 +64,20 @@ function armSetFailAt(callNumber) {
 function armSetLoseResponseAt(callNumber) {
   fault.setCount = 0;
   fault.loseResponseAt = callNumber;
+}
+
+/**
+ * 第 n 次写盘时**另一个写者抢先**：先让 rival(key, incomingJson) 把键改成它自己的结果，
+ * 再让本次写盘失败（本页这一笔一个字都没进去）。incomingJson 是本次本来要写的那份档案，
+ * 例如可以从它的 pendingUndos 里读到**这次操作自己**的 opId。
+ *
+ * 这是「写失败 + 盘上恰好等于期望状态」的现实来源：同一份档案里另一个操作完成过、或者
+ * 盘上已经被换成了另一份档案。QA 的 field.test.cjs 用同一手法劫持 setStorageSync（F08）。
+ */
+function armRivalWriterAt(callNumber, rival) {
+  fault.setCount = 0;
+  fault.rivalAt = callNumber;
+  fault.rival = rival;
 }
 
 const wxLog = { navigations: [], switches: [], toasts: [] };
@@ -78,6 +94,13 @@ global.wx = {
   },
   setStorageSync(key, value) {
     fault.setCount += 1;
+    if (fault.rivalAt && fault.setCount === fault.rivalAt) {
+      const rival = fault.rival;
+      fault.rivalAt = 0;
+      fault.rival = null;
+      rival(key, value);
+      throw new Error('setStorageSync:fail with rival writer interleaved at call ' + fault.setCount);
+    }
     if (fault.setFailAt && fault.setCount === fault.setFailAt) {
       throw new Error('setStorageSync:fail injected at call ' + fault.setCount);
     }
@@ -542,26 +565,117 @@ test('T033 撤回／恢复交错与延迟保存：每个动作各结清一次，
 // 按钮位置与绑定约定（离线可核的部分）
 // ------------------------------------------------------------------ *
 
-test('T033 按钮位置可核：撤回与恢复是两个控件，行高固定，绑定都带原把次 ID 与预期状态', () => {
+/** 去掉注释后按选择器取声明块（后声明的规则覆盖前面的，与 CSS 一致）。 */
+function cssRules(wxss) {
+  const clean = wxss.replace(/\/\*[\s\S]*?\*\//g, '');
+  return [...clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map(match => ({
+    selectors: match[1].split(',').map(text => text.trim()),
+    body: match[2].trim()
+  }));
+}
+
+function declarationsOf(wxss, selector) {
+  return cssRules(wxss)
+    .filter(rule => rule.selectors.includes(selector))
+    .map(rule => rule.body)
+    .join('\n');
+}
+
+function minHeightOf(wxss, selector) {
+  const found = declarationsOf(wxss, selector).match(/min-height\s*:\s*([^;]+)/);
+  return found ? found[1].trim() : '';
+}
+
+test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半的独立槽，命中矩形不相交，绑定都带原把次 ID', () => {
   const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
   const wxss = fs.readFileSync(SESSION_WXSS, 'utf8');
 
   const resultSend = wxml.indexOf('class="result-button result-send"');
   const recent = wxml.indexOf('id="recent-attempt"');
-  const row = wxml.indexOf('class="recent-attempt-row"');
-  const recovery = wxml.indexOf('class="recent-attempt-recovery"');
   const photo = wxml.indexOf('id="route-photo-card"');
   assert.ok(resultSend < recent, '撤回区在结果按钮之后');
   assert.ok(recent < photo, '撤回区在结果按钮下方的原位置');
-  assert.ok(row < recovery, '恢复入口在这一行下方的独立一行');
 
-  // 撤回按钮与恢复按钮不是同一个控件，也不是同一类按钮（文字按钮 / 实体按钮）。
-  assert.match(wxml, /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,120}class="text-button recent-attempt-action"/);
-  assert.match(wxml, /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,120}class="secondary-button recent-attempt-restore"/);
-  // 行高固定：撤回按钮收起后这一行的高度不变，刚才点过的坐标留在空位上。
-  const rowStyle = wxss.match(/\.recent-attempt-row\s*\{[^}]*\}/);
-  assert.ok(rowStyle && /min-height:88rpx/.test(rowStyle[0]));
+  // 首屏主操作区顺序：本场线路（加线）→ 换线 → 结果按钮 → 最近一把。次要块（照片、
+  // 逐把记录、备注、小结）都排在这之后，主要动作不必滚出首屏。
+  assert.ok(wxml.indexOf('id="session-routes"') < wxml.indexOf('id="route-switch"'));
+  assert.ok(wxml.indexOf('id="route-switch"') < resultSend);
+  assert.ok(recent < wxml.indexOf('id="route-photo-card"'));
+  // 页顶不再重复一份全量线路列表：那种重复正是把结果按钮推出首屏的原因。
+  assert.doesNotMatch(wxml, /class="route-list"/);
 
+  // 同一行、两个兄弟槽：撤回在前（左槽），恢复在后（右槽）。
+  const rowAt = wxml.indexOf('class="recent-attempt-row"');
+  const undoSlotAt = wxml.indexOf('class="recent-attempt-slot"');
+  const undoAt = wxml.indexOf('id="undo-attempt-{{recentAttempt.attemptId}}"');
+  const restoreSlotAt = wxml.indexOf('class="recent-attempt-recovery"');
+  const restoreAt = wxml.indexOf('id="restore-attempt-{{recentAttempt.attemptId}}"');
+  const rowEndAt = wxml.indexOf('class="recent-attempt-info"');
+  assert.ok(rowAt !== -1 && undoSlotAt !== -1 && restoreSlotAt !== -1, '两个槽都在这一行里');
+  assert.ok(rowAt < undoSlotAt && undoSlotAt < undoAt, '左槽先放撤回');
+  assert.ok(undoAt < restoreSlotAt && restoreSlotAt < restoreAt, '右槽再放恢复');
+  assert.ok(restoreAt < rowEndAt, '两个槽都在行内，行外的信息排在后面');
+
+  // 两个动作各在自己的槽里：可用时是按钮，不可用时是**等宽等高的非交互空位**，
+  // 因此同一个坐标最多命中其中一个，撤回后也不会被相反动作接管。
+  for (const selector of ['.recent-attempt-action', '.recent-attempt-restore']) {
+    assert.match(declarationsOf(wxss, selector), /flex:1 1 0/, selector + ' 与同排按钮等分宽度');
+  }
+  assert.match(declarationsOf(wxss, '.recent-attempt-slot'), /flex:1 1 0/);
+  assert.match(declarationsOf(wxss, '.recent-attempt-recovery'), /flex:1 1 0/);
+  assert.equal(
+    declarationsOf(wxss, '.recent-attempt-slot'),
+    declarationsOf(wxss, '.recent-attempt-recovery'),
+    '左右两个槽同一套尺寸：各占一半、行高相同'
+  );
+  // 空位与实体按钮同高：按钮出现或消失都不改这一行的高度。
+  const slotHeight = minHeightOf(wxss, '.recent-attempt-slot');
+  assert.ok(slotHeight, '这一行有固定行高');
+  assert.equal(minHeightOf(wxss, '.recent-attempt-idle'), slotHeight, '空位与整行同高');
+  assert.equal(minHeightOf(wxss, '.secondary-button'), slotHeight, '两个动作的按钮基础高度与空位一致');
+  assert.match(wxml, /wx:else class="recent-attempt-idle"/);
+  const idleViews = [...wxml.matchAll(/<view[^>]*class="recent-attempt-idle"[^>]*>[\s\S]*?<\/view>/g)].map(
+    match => match[0]
+  );
+  assert.equal(idleViews.length, 2, '两个槽各留一块空位（不可用的那一侧）');
+  // 空位不是控件：没有 bindtap，也不是 <button>。
+  for (const idle of idleViews) {
+    assert.doesNotMatch(idle, /bindtap=/, '空位是透明区域，没有任何绑定');
+  }
+
+  // 命中矩形不相交的根：这一行是 flex 排布（左一半、右一半），没有任何绝对定位把
+  // 两个动作叠到同一个坐标上。
+  const recentCss = cssRules(wxss)
+    .filter(rule => rule.selectors.some(selector => selector.indexOf('.recent-attempt') === 0))
+    .map(rule => rule.body)
+    .join('\n');
+  assert.match(declarationsOf(wxss, '.recent-attempt-row'), /display:flex/, '这一行是 flex 行');
+  assert.doesNotMatch(recentCss, /position\s*:\s*(absolute|fixed)/, '这一行不用绝对定位叠放动作');
+
+  // 换线短列表的长名最多两行：长名不会把结果按钮挤出首屏。
+  assert.match(
+    declarationsOf(wxss, '.route-switch-chip-name'),
+    /-webkit-line-clamp:\s*2/,
+    '缩略行的长名称最多两行'
+  );
+
+  // 结果区高度稳定：常规态的两个结果按钮、完攀收起与完攀待确认面板同一高度，所以撤回
+  // 唯一一次抱石完攀而解锁、或再次完攀收起时，下方的最近一把不会上下移动。
+  const buttonHeight = minHeightOf(wxss, '.result-footer .result-button');
+  assert.ok(buttonHeight, '结果按钮有固定行高');
+  assert.equal(minHeightOf(wxss, '.result-footer'), buttonHeight, '结果区整条与按钮同高');
+  assert.equal(minHeightOf(wxss, '.route-completed-panel'), buttonHeight, '完攀收起面板与按钮同高');
+  assert.equal(minHeightOf(wxss, '.route-pending-panel'), buttonHeight, '完攀待确认面板与按钮同高');
+
+  // 绑定与处理器：两个动作都带原把次 ID、归属、原档案 ID、预期状态与版本。
+  assert.match(
+    wxml,
+    /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,80}bindtap="undoLatestAttempt"/
+  );
+  assert.match(
+    wxml,
+    /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,80}bindtap="restoreLatestAttempt"/
+  );
   const handlers = new Set(handlersIn(wxml));
   for (const required of [
     'openAddRoute',
@@ -579,6 +693,160 @@ test('T033 按钮位置可核：撤回与恢复是两个控件，行高固定，
   assert.doesNotMatch(source, /wx\.cloud/);
   assert.match(source, /store\.undoAttempt/);
   assert.match(source, /store\.restoreAttempt/);
+});
+
+test('T033 同一坐标连点两个方向：撤回只减一次、恢复只加一次，同一把末态与序号都对', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  const thirdId = flow.aAttempts[2];
+  switchTo(page, flow.aId);
+  const original = savedAttempts(flow.sessionId, flow.aId).find(item => item.id === thirdId);
+  /** 这一把上已结清的撤回/恢复凭据。 */
+  const settledOpsOf = () =>
+    (savedAttempts(flow.sessionId, flow.aId).find(item => item.id === thirdId).settledOps || []).map(
+      op => op.opId
+    );
+
+  // 两个方向的操作永远只占其中一个槽：一行里不会同时给出撤回与恢复。
+  const checkOffered = expected => {
+    const row = page.data.recentAttempt;
+    assert.equal(row.attemptId, thirdId, '这一行始终指向同一把');
+    assert.equal(row.canUndo, expected === 'undo', '撤回槽只在有效态给按钮');
+    assert.equal(row.canRestore, expected === 'restore', '恢复槽只在已撤回态给按钮');
+    assert.notEqual(row.canUndo && row.canRestore, true, '两个动作不会同时出现在同一行');
+  };
+  checkOffered('undo');
+
+  // 方向一：撤回。同一个控件（模拟器里就是同一个坐标）连点两次——第二次是同一份渲染
+  // 参数的重放，不写盘，也不把这一把翻回有效。
+  const undoControl = rowEvent(page.data.recentAttempt);
+  page.undoLatestAttempt(undoControl);
+  assert.equal(page.data.routeCountText, '2 把');
+  const afterUndoBytes = storage.get(ARCHIVE_KEY);
+  page.undoLatestAttempt(undoControl);
+  assert.equal(page.data.routeCountText, '2 把', '连点撤回只减一把');
+  assert.equal(storage.get(ARCHIVE_KEY), afterUndoBytes, '第二次是重复点击，一个字都不写');
+  assert.match(page.data.notice, /已经撤回/);
+  checkOffered('restore');
+  assert.equal(
+    savedAttempts(flow.sessionId, flow.aId).find(item => item.id === thirdId).undoneAt !== undefined,
+    true,
+    '这一把确实处于已撤回'
+  );
+  assert.equal(settledOpsOf().length, 1, '撤回方向只结清一次');
+  assert.equal(page.data.recentAttempt.titleText, '已撤回 · A 线 第 3 把 · 未完成');
+
+  // 方向二：恢复。同样在这个坐标连点两次。
+  const restoreControl = rowEvent(page.data.recentAttempt);
+  page.restoreLatestAttempt(restoreControl);
+  assert.equal(page.data.routeCountText, '3 把');
+  const afterRestoreBytes = storage.get(ARCHIVE_KEY);
+  page.restoreLatestAttempt(restoreControl);
+  assert.equal(page.data.routeCountText, '3 把', '连点恢复只加一把');
+  assert.equal(storage.get(ARCHIVE_KEY), afterRestoreBytes, '第二次是重复点击，一个字都不写');
+  assert.match(page.data.notice, /不用再恢复|已经在本场里/);
+  checkOffered('undo');
+
+  // 同一把的末态：ID、原序号、结果、备注与创建时间都没被连点改掉。
+  const landed = savedAttempts(flow.sessionId, flow.aId).find(item => item.id === thirdId);
+  assert.equal(landed.id, thirdId);
+  assert.equal(landed.seq, original.seq);
+  assert.equal(landed.result, original.result);
+  assert.equal(landed.note, original.note);
+  assert.equal(landed.createdAt, original.createdAt);
+  assert.equal(landed.undoneAt, undefined, '末态是有效');
+  assert.equal(settledOpsOf().length, 2, '撤回与恢复各结清一次，没有多出来的重复写入');
+});
+
+test('T033 写盘被另一个写者抢先（同一份档案、另一个 opId）：不认领这次回执，按盘上状态显示冲突', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  const thirdId = flow.aAttempts[2];
+  switchTo(page, flow.aId);
+  const row = page.data.recentAttempt;
+  const beforeBytes = storage.get(ARCHIVE_KEY);
+  let ourOpId = '';
+
+  // 另一个写者：同一份档案、另一个操作，用它自己的 opId 把这一把撤回。然后本次写盘失败
+  // （页面这一笔一个字都没进去）。盘上于是恰好等于期望状态，但凭据不是这次操作的。
+  armRivalWriterAt(1, (key, incoming) => {
+    ourOpId = (JSON.parse(incoming).pendingUndos || []).find(
+      item => item.attemptId === thirdId
+    ).opId;
+    assert.ok(ourOpId, '这次操作自己的 opId 随第一段写盘交给存储层');
+    const rival = store.undoAttempt(thirdId, {
+      sessionId: row.sessionId,
+      routeId: row.routeId,
+      archiveId: row.archiveId,
+      opId: 'op-of-another-writer'
+    });
+    assert.equal(rival.ok, true, '另一个写者自己落地成功');
+    assert.equal(rival.opId, 'op-of-another-writer');
+  });
+  page.undoLatestAttempt(rowEvent(row));
+
+  const onDisk = JSON.parse(storage.get(ARCHIVE_KEY));
+  const landed = onDisk.attempts.find(item => item.id === thirdId);
+  const settled = (landed.settledOps || []).map(op => op.opId);
+  assert.deepEqual(settled, ['op-of-another-writer'], '盘上只有另一个写者自己的凭据');
+  assert.equal(settled.includes(ourOpId), false, '这次操作其实一个字都没落盘');
+
+  // 状态看起来对了，但那是别人做的：不能说「此前那次已落盘（回执丢失）」。
+  assert.doesNotMatch(page.data.notice, /回执丢失|已经落盘/, '不能认领不属于这次操作的回执');
+  assert.match(page.data.notice, /不是这次撤回写入的/);
+  assert.equal(page.data.storageError, '', '盘上状态是撤回后的有效状态，不是写失败');
+  // 按真实盘上状态显示：把数是 2，这一行换成恢复入口，不留会重复写入的重试入口。
+  assert.equal(page.data.routeCountText, '2 把');
+  assert.equal(page.data.recentAttempt.canUndo, false);
+  assert.equal(page.data.recentAttempt.canRestore, true);
+  assert.equal(page.data.recentAttempt.restoreText, '恢复这一把', '不保留这次撤回的重试入口');
+  assert.notEqual(storage.get(ARCHIVE_KEY), beforeBytes, '盘上换成了另一个写者的结果');
+});
+
+test('T033 写盘被换档抢先（另一份档案复用同样的把次与 opId）：不认领这次回执', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  const thirdId = flow.aAttempts[2];
+  switchTo(page, flow.aId);
+  const row = page.data.recentAttempt;
+  const twinArchiveId = 'archive-of-another-profile';
+  let ourOpId = '';
+
+  // 另一份本机档案（换档/换设备）把把次、场次、线路 ID 乃至**这次操作自己的 opId** 全都
+  // 复用一遍：只比状态、归属与 opId 都会把它认成「这次已落盘」。
+  armRivalWriterAt(1, (key, incoming) => {
+    ourOpId = (JSON.parse(incoming).pendingUndos || []).find(
+      item => item.attemptId === thirdId
+    ).opId;
+    assert.ok(ourOpId, '这次操作自己的 opId 随第一段写盘交给存储层');
+    const twin = JSON.parse(storage.get(ARCHIVE_KEY));
+    twin.archiveId = twinArchiveId;
+    twin.attempts.find(item => item.id === thirdId).note = '另一份档案自己的备注';
+    storage.set(ARCHIVE_KEY, JSON.stringify(twin));
+    const colliding = store.undoAttempt(thirdId, {
+      sessionId: row.sessionId,
+      routeId: row.routeId,
+      archiveId: twinArchiveId,
+      opId: ourOpId
+    });
+    assert.equal(colliding.ok, true, '另一份档案按同一个 opId 也结清了一次');
+  });
+  page.undoLatestAttempt(rowEvent(row));
+
+  const onDisk = JSON.parse(storage.get(ARCHIVE_KEY));
+  assert.equal(onDisk.archiveId, twinArchiveId, '盘上已经是另一份档案');
+  const landed = onDisk.attempts.find(item => item.id === thirdId);
+  assert.equal(landed.note, '另一份档案自己的备注');
+  assert.ok(
+    (landed.settledOps || []).some(op => op.opId === ourOpId),
+    '另一份档案确实带着同样的已结清凭据（只看状态/归属/opId 都会被它骗过）'
+  );
+
+  assert.doesNotMatch(page.data.notice, /回执丢失|已经落盘/, '盘上不是原来那一份档案，不能认领回执');
+  assert.match(page.data.notice, /另一份本机档案/);
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.routeCountText, '2 把', '按真实盘上状态显示');
+  assert.equal(page.data.recentAttempt.canRestore, true);
 });
 
 // ------------------------------------------------------------------ *
