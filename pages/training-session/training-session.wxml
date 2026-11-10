@@ -97,6 +97,209 @@
         </view>
       </view>
 
+      <!--
+        本场线路与加线入口（T030）：常驻首屏。
+        空场首屏直接是「添加第一条线路」；有线时在「本场线路」旁常驻「＋ 加线」。
+        加线面板只有两个来源：本馆已有线路（同一个 routeId 关联进本场并选中）与新建线路
+        （沿用原有的类型/等级校验与本机保存）。打开与取消面板都不写盘。
+      -->
+      <view id="session-routes" class="section session-routes">
+        <view class="route-section-head">
+          <text class="section-title">本场线路</text>
+          <button
+            wx:if="{{routes.length > 0}}"
+            id="add-route"
+            class="text-button add-route-inline"
+            bindtap="openAddRoute"
+          >＋ 加线</button>
+        </view>
+
+        <!-- 本场已有线路：点名字即切为当前记录目标 -->
+        <view wx:if="{{routes.length > 0}}" class="route-list">
+          <view
+            wx:for="{{routes}}"
+            wx:key="id"
+            id="route-{{item.id}}"
+            class="route-item {{item.isSelected ? 'route-selected' : ''}}"
+            data-route-id="{{item.id}}"
+            bindtap="selectRoute"
+          >
+            <view class="route-main">
+              <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+              <view class="route-info">
+                <text class="route-name">{{item.name}}</text>
+                <text class="route-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
+              </view>
+              <text
+                wx:if="{{item.completionText}}"
+                id="route-state-{{item.id}}"
+                class="route-state {{item.isCompleted ? 'route-state-done' : 'route-state-pending'}}"
+              >{{item.completionText}}</text>
+              <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
+            </view>
+          </view>
+        </view>
+
+        <block wx:else>
+          <text class="first-route-hint">本场还没有线路，先加一条再记结果。</text>
+          <button
+            id="add-first-route"
+            class="primary-button add-route-first"
+            bindtap="openAddRoute"
+          >添加第一条线路</button>
+        </block>
+
+        <!-- 已有线关联成功、选中失败：不报成功，在这里留可点的重试入口 -->
+        <view wx:if="{{linkRetry}}" id="add-route-link-retry" class="link-retry-card">
+          <text class="link-retry-text">「{{linkRetry.routeName}}」已加入本场，但还没选中：{{linkRetry.error}}</text>
+          <text class="link-retry-hint">本场只会有一条关联；点下面的按钮按同一条线路重试选中。</text>
+          <button
+            id="add-route-link-retry-button"
+            class="secondary-button link-retry-button"
+            data-route-id="{{linkRetry.routeId}}"
+            bindtap="retryLinkSelection"
+          >重试选中</button>
+        </view>
+
+        <view wx:if="{{addRouteVisible}}" id="add-route-panel" class="card add-route-panel">
+          <text class="card-title">加线</text>
+          <view class="add-route-tabs">
+            <view
+              id="add-route-tab-existing"
+              class="add-route-tab {{addRouteMode === 'existing' ? 'add-route-tab-on' : ''}}"
+              data-mode="existing"
+              bindtap="switchAddRouteMode"
+            >本馆已有</view>
+            <view
+              id="add-route-tab-new"
+              class="add-route-tab {{addRouteMode === 'new' ? 'add-route-tab-on' : ''}}"
+              data-mode="new"
+              bindtap="switchAddRouteMode"
+            >新建线路</view>
+          </view>
+
+          <!-- 本馆已有：本岩馆里还没进本场次的线路，点一条就关联并选中 -->
+          <block wx:if="{{addRouteMode === 'existing'}}">
+            <block wx:if="{{gymRoutes.length > 0}}">
+              <text class="field-label">本馆已有线路（点一条加入本场）</text>
+              <view
+                wx:for="{{gymRoutes}}"
+                wx:key="id"
+                id="gym-route-{{item.id}}"
+                class="gym-route-item"
+                data-route-id="{{item.id}}"
+                bindtap="pickGymRoute"
+              >
+                <text class="gym-route-name">{{item.name}}</text>
+                <text class="gym-route-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
+              </view>
+            </block>
+            <view wx:else id="add-route-no-existing" class="empty-attempts">
+              <text>本馆还没有别的线路可以加入本场，用「新建线路」加一条。</text>
+            </view>
+          </block>
+
+          <block wx:else>
+            <!-- 新建线路：名称、类型、等级在首层；颜色可展开；没有照片也能创建 -->
+            <input
+              id="new-route-name"
+              class="text-input"
+              placeholder="线路名称，例如：蓝色动态线"
+              value="{{newRouteName}}"
+              maxlength="40"
+              bindinput="onNewRouteNameInput"
+            />
+
+            <!-- 攀岩类型在左、等级在右；等级选项随类型重算，失效时显示「请选择等级」 -->
+            <view class="quick-route-row">
+              <picker
+                mode="selector"
+                range="{{newRouteTypes}}"
+                value="{{newRouteTypeIndex}}"
+                bindchange="onNewRouteTypeChange"
+              >
+                <view id="new-route-type" class="picker-value">攀岩类型：{{newRouteType}}</view>
+              </picker>
+              <picker
+                mode="selector"
+                range="{{newRouteGrades}}"
+                value="{{newRouteGradeIndex}}"
+                bindchange="onNewRouteGradeChange"
+              >
+                <view id="new-route-grade" class="picker-value">等级：{{newRouteGradeText}}</view>
+              </picker>
+            </view>
+
+            <!-- 颜色是可选属性：默认收起（按「不指定」保存），展开后才填写 -->
+            <button
+              id="toggle-new-route-color"
+              class="text-button color-toggle"
+              bindtap="toggleNewRouteColor"
+            >{{newRouteColorToggleText}}</button>
+            <view wx:if="{{newRouteColorVisible}}" class="field">
+              <text class="field-label">颜色</text>
+              <picker
+                mode="selector"
+                range="{{newRouteColors}}"
+                range-key="name"
+                value="{{newRouteColorIndex}}"
+                bindchange="onNewRouteColorChange"
+              >
+                <view id="new-route-color" class="picker-value">{{newRouteColorText}}</view>
+              </picker>
+              <button
+                id="new-route-color-clear"
+                class="text-button color-clear"
+                bindtap="clearNewRouteColor"
+              >清除颜色</button>
+            </view>
+
+            <!-- 新建线路可选一张照片；跳过也能创建，照片失败不回滚线路 -->
+            <view class="quick-route-photo">
+              <text class="field-label">线路照片（可选）</text>
+              <view wx:if="{{newRoutePhoto}}" class="quick-photo-preview">
+                <image
+                  id="new-route-photo-preview"
+                  class="photo-preview"
+                  src="{{newRoutePhoto.path}}"
+                  mode="aspectFit"
+                />
+                <text class="photo-status">{{newRoutePhoto.statusText}}</text>
+                <button
+                  id="new-route-photo-cancel"
+                  class="text-button photo-remove"
+                  bindtap="cancelNewRoutePhoto"
+                >取消照片</button>
+              </view>
+              <view wx:else class="photo-source-row">
+                <button
+                  id="new-route-photo-camera"
+                  class="secondary-button photo-source"
+                  data-source="camera"
+                  bindtap="chooseNewRoutePhoto"
+                >拍照</button>
+                <button
+                  id="new-route-photo-album"
+                  class="secondary-button photo-source"
+                  data-source="album"
+                  bindtap="chooseNewRoutePhoto"
+                >从相册选择</button>
+              </view>
+              <text class="photo-hint">不添加照片也能创建线路；保存后还能从当前线路补照片。</text>
+            </view>
+
+            <text wx:if="{{newRouteError}}" id="new-route-error" class="field-error">{{newRouteError}}</text>
+            <button id="create-route" class="secondary-button" bindtap="createRoute">创建并选中</button>
+          </block>
+
+          <button
+            id="cancel-add-route"
+            class="text-button add-route-cancel"
+            bindtap="cancelAddRoute"
+          >取消加线</button>
+        </view>
+      </view>
+
       <!-- 本场记录：已选线路、逐把结果、待保存行与按把更正 -->
       <view wx:if="{{selectedRoute}}" class="section current-route">
         <text class="section-title">本场记录</text>
@@ -630,137 +833,10 @@
         </block>
       </view>
 
-      <!-- 选原线或新建线路 -->
-      <view class="section">
-        <text class="section-title">{{selectedRoute ? '换线路' : '选线路'}}</text>
-
-        <view wx:if="{{routes.length > 0}}" class="route-list">
-          <view
-            wx:for="{{routes}}"
-            wx:key="id"
-            id="route-{{item.id}}"
-            class="route-item {{item.isSelected ? 'route-selected' : ''}}"
-            data-route-id="{{item.id}}"
-            bindtap="selectRoute"
-          >
-            <view class="route-main">
-              <view class="route-swatch" style="background: {{item.colorHex}};"></view>
-              <view class="route-info">
-                <text class="route-name">{{item.name}}</text>
-                <text class="route-meta">{{item.climbType}} {{item.grade}} · {{item.colorName}}</text>
-              </view>
-              <text
-                wx:if="{{item.completionText}}"
-                id="route-state-{{item.id}}"
-                class="route-state {{item.isCompleted ? 'route-state-done' : 'route-state-pending'}}"
-              >{{item.completionText}}</text>
-              <text wx:if="{{item.isSelected}}" class="route-check">已选</text>
-            </view>
-          </view>
-        </view>
-
-        <!-- 选原线：本岩馆里已有、还没进本场次的线路 -->
-        <view wx:if="{{gymRoutes.length > 0}}" class="gym-route-block">
-          <text class="field-label">选原线（本岩馆已有线路）</text>
-          <view
-            wx:for="{{gymRoutes}}"
-            wx:key="id"
-            id="gym-route-{{item.id}}"
-            class="gym-route-item"
-            data-route-id="{{item.id}}"
-            bindtap="pickGymRoute"
-          >
-            <text class="gym-route-name">{{item.name}}</text>
-            <text class="gym-route-meta">{{item.climbType}} {{item.grade}} · {{item.colorName}}</text>
-          </view>
-        </view>
-
-        <button id="toggle-new-route" class="text-button quick-route-toggle" bindtap="toggleNewRouteForm">
-          {{newRouteVisible ? '收起新建线路' : '＋ 新建线路'}}
-        </button>
-
-        <view wx:if="{{newRouteVisible}}" id="new-route-form" class="card quick-route-form">
-          <input
-            id="new-route-name"
-            class="text-input"
-            placeholder="线路名称，例如：蓝色动态线"
-            value="{{newRouteName}}"
-            maxlength="40"
-            bindinput="onNewRouteNameInput"
-          />
-
-          <!-- 新建线路可选一张照片，紧邻名称；跳过也能创建，照片失败不回滚线路 -->
-          <view class="quick-route-photo">
-            <text class="field-label">线路照片（可选）</text>
-            <view wx:if="{{newRoutePhoto}}" class="quick-photo-preview">
-              <image
-                id="new-route-photo-preview"
-                class="photo-preview"
-                src="{{newRoutePhoto.path}}"
-                mode="aspectFit"
-              />
-              <text class="photo-status">{{newRoutePhoto.statusText}}</text>
-              <button
-                id="new-route-photo-cancel"
-                class="text-button photo-remove"
-                bindtap="cancelNewRoutePhoto"
-              >取消照片</button>
-            </view>
-            <view wx:else class="photo-source-row">
-              <button
-                id="new-route-photo-camera"
-                class="secondary-button photo-source"
-                data-source="camera"
-                bindtap="chooseNewRoutePhoto"
-              >拍照</button>
-              <button
-                id="new-route-photo-album"
-                class="secondary-button photo-source"
-                data-source="album"
-                bindtap="chooseNewRoutePhoto"
-              >从相册选择</button>
-            </view>
-            <text class="photo-hint">不添加照片也能创建线路；创建后照片保存到本机。</text>
-          </view>
-
-          <!-- 攀岩类型在左、等级在右；等级选项随类型重算，失效时显示「请选择等级」 -->
-          <view class="quick-route-row">
-            <picker
-              mode="selector"
-              range="{{newRouteTypes}}"
-              value="{{newRouteTypeIndex}}"
-              bindchange="onNewRouteTypeChange"
-            >
-              <view id="new-route-type" class="picker-value">攀岩类型：{{newRouteType}}</view>
-            </picker>
-            <picker
-              mode="selector"
-              range="{{newRouteGrades}}"
-              value="{{newRouteGradeIndex}}"
-              bindchange="onNewRouteGradeChange"
-            >
-              <view id="new-route-grade" class="picker-value">等级：{{newRouteGradeText}}</view>
-            </picker>
-          </view>
-
-          <!-- 颜色是独立属性，与类型和等级无关，切换类型时保持不变 -->
-          <view class="field">
-            <text class="field-label">颜色</text>
-            <picker
-              mode="selector"
-              range="{{newRouteColors}}"
-              range-key="name"
-              value="{{newRouteColorIndex}}"
-              bindchange="onNewRouteColorChange"
-            >
-              <view class="picker-value">{{newRouteColorName}}</view>
-            </picker>
-          </view>
-
-          <text wx:if="{{newRouteError}}" id="new-route-error" class="field-error">{{newRouteError}}</text>
-          <button id="create-route" class="secondary-button" bindtap="createRoute">创建并选中</button>
-        </view>
-      </view>
+      <!--
+        选线路与新建线路的入口已按 T030 移到首屏的「本场线路」区（见上方 session-routes）：
+        这里不再保留第二份列表与第二份新建表单，避免同一入口有两份状态。
+      -->
     </block>
   </block>
 </view>

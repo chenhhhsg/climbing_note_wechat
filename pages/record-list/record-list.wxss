@@ -218,26 +218,29 @@
   font-size: 26rpx;
 }
 
-/* 悬浮按钮 */
+/* 悬浮按钮：写清是「补录旧记录」，不是无文字的加号（T030） */
 .fab {
   position: fixed;
   right: 40rpx;
   bottom: 40rpx;
-  width: 100rpx;
-  height: 100rpx;
+  min-height: 88rpx;
+  padding: 0 32rpx;
+  box-sizing: border-box;
   background-color: #173d32;
-  border-radius: 50%;
+  border-radius: 999rpx;
   display: flex;
   align-items: center;
   justify-content: center;
   box-shadow: none;
   z-index: 100;
+  max-width: 70%;
 }
 
-.fab-icon {
-  font-size: 50rpx;
+.fab-text {
+  font-size: 28rpx;
   color: #fffcf3;
   font-weight: bold;
+  white-space: nowrap;
 }
 
 /* 分区标题（本机训练历史 / 旧记录） */

@@ -69,7 +69,7 @@
     <view wx:elif="{{isEmpty}}" class="empty-state">
       <text class="empty-text">还没有旧记录</text>
       <text class="empty-hint">旧云端汇总为空；本机训练历史不受影响。</text>
-      <button class="btn-add" bindtap="goToAddRecord">添加旧记录</button>
+      <button class="btn-add" bindtap="goToAddRecord">补录旧记录</button>
     </view>
 
     <!-- 记录列表 -->
@@ -151,7 +151,10 @@
   </view>
 </view>
 
-<!-- 悬浮添加按钮（旧添加入口保持可达） -->
+<!--
+  悬浮入口：旧的「补录旧记录」表单保持可达（T030）。
+  写清「补录旧记录」，让新手分得清场内加线与早期记录补录，不再是一个无文字的加号。
+-->
 <view class="fab" bindtap="goToAddRecord">
-  <text class="fab-icon">+</text>
+  <text class="fab-text">＋ 补录旧记录</text>
 </view>
