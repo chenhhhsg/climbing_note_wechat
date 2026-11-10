@@ -99,6 +99,19 @@ const ROUTE_COLORS = [
 // 几百毫秒内发生两次，记两把之间必然隔着一次攀爬和一次落盘。
 const SAME_TAP_WINDOW_MS = 300;
 
+// 主操作区滚入视口（T030 复验）：把结果区顶部对齐到视口下方留一点余量的位置。
+// 这里只是一个「对齐到哪」的偏移量，真正滚到哪由真实布局接口现量（见 revealElement），
+// 不凭换线面板里的旧坐标或固定像素算位置。
+const REVEAL_TOP_OFFSET = 12;
+// 主操作区看的「门」：换线 + 结果按钮这一块。它已经完整可见就不滚（用户不必被抖一下）。
+const MAIN_OPERATION_GATE = '#result-anchor';
+// 主操作区滚的「位」：本场线路（加线）到结果这一整段的顶端。滚到这里，加线、换线、
+// 结果同时落在首屏里，不会为了露出结果按钮把「＋ 加线」挤到屏幕上方之外。
+const MAIN_OPERATION_ANCHOR = '#session-routes';
+// 场次表单锚点：表单常驻在页顶，从页面下方点「开始新场次」时要把表单滚回可见处，
+// 否则表单渲染在当前滚动位置之上，用户看不到自己刚打开的输入框。
+const SESSION_FORM_ANCHOR = '#session-form';
+
 // 颜色是可选属性：没展开、没选过就是「不指定」，不替用户填一个没看到的颜色。
 const UNSET_COLOR_TEXT = '不指定';
 const COLOR_TOGGLE_CLOSED = '＋ 颜色（可选）';
@@ -669,6 +682,81 @@ Page({
     return (archive.sessions || []).find(item => item.id === sessionId) || null;
   },
 
+  // ---------------------------------------------------------------- 视口定位
+
+  /**
+   * 当前视口高度（px）。拿不到就返回 0，当作「不知道」处理。
+   */
+  viewportHeight() {
+    if (typeof wx === 'undefined') return 0;
+    try {
+      if (typeof wx.getWindowInfo === 'function') {
+        const info = wx.getWindowInfo();
+        if (info && info.windowHeight) return info.windowHeight;
+      }
+      if (typeof wx.getSystemInfoSync === 'function') {
+        const info = wx.getSystemInfoSync();
+        if (info && info.windowHeight) return info.windowHeight;
+      }
+    } catch (error) {
+      return 0;
+    }
+    return 0;
+  },
+
+  /**
+   * 把一个已经渲染出来的元素滚进可见位置（T030 复验）。
+   *
+   * 只做两件事：等这一次重绘的布局落定（wx.nextTick）之后，用真实布局接口现量元素的位置
+   * 与当前滚动量，再决定要不要滚——不拿面板里的旧坐标、也不按固定像素猜。
+   *
+   * gateSelector 是「已经看得见就不用动」的那个元素；targetSelector 是真正滚到的位置。
+   * 两者可以在一次查询里一起量：门已经完整可见就什么都不做，所以「已经看得到」的情形
+   * 不会为了报一次成功而抖一下；否则按目标块的现量位置算滚动量
+   * （当前滚动量 + 目标块相对视口的 top - 偏移），因此和滚动位置无关。
+   *
+   * 撤回、恢复、重试保存这些原地动作不调用它：它们只改这一块里的读数，位置本来就不变。
+   */
+  revealElement(gateSelector, topOffset, targetSelector) {
+    if (typeof wx === 'undefined' || typeof wx.createSelectorQuery !== 'function') return;
+    const offset = typeof topOffset === 'number' ? topOffset : REVEAL_TOP_OFFSET;
+    const measure = () => {
+      let query = null;
+      try {
+        query = wx.createSelectorQuery();
+      } catch (error) {
+        return;
+      }
+      if (!query || typeof query.select !== 'function') return;
+      query.select(gateSelector).boundingClientRect();
+      query.select(targetSelector || gateSelector).boundingClientRect();
+      query.selectViewport().scrollOffset();
+      query.exec(result => {
+        const gate = result && result[0];
+        const target = (result && result[1]) || gate;
+        const viewport = result && result[2];
+        if (!gate || !target || !viewport) return;
+        const height = this.viewportHeight();
+        const visible = gate.top >= 0 && (!height || gate.bottom <= height);
+        if (visible) return;
+        const scrollTop = Math.max(0, (viewport.scrollTop || 0) + target.top - offset);
+        if (typeof wx.pageScrollTo === 'function') {
+          wx.pageScrollTo({ scrollTop, duration: 0 });
+        }
+      });
+    };
+    if (typeof wx.nextTick === 'function') wx.nextTick(measure);
+    else measure();
+  },
+
+  /**
+   * 换线与结果这一块滚回可见位置：新建、关联选中、换线、切场次之后都落在这里，用户不必
+   * 自己再往上找一次结果按钮。滚到「本场线路」这一段顶端，所以「＋ 加线」也还在首屏里。
+   */
+  revealResultRegion() {
+    this.revealElement(MAIN_OPERATION_GATE, REVEAL_TOP_OFFSET, MAIN_OPERATION_ANCHOR);
+  },
+
   /**
    * 由当前档案重新推导展示内容；不改动任何已保存数据。
    */
@@ -1070,6 +1158,9 @@ Page({
       sessionDate: store.todayLocalDate(),
       formError: ''
     });
+    // 场次表单常驻页顶（T030 复验把场次标题与日期移到主操作区之后，表单仍在页顶）：
+    // 从页面下方点「开始新场次」时，表单渲染在当前滚动位置之上，这里把它滚回可见处。
+    this.revealElement(SESSION_FORM_ANCHOR);
   },
 
   cancelSessionForm() {
@@ -1133,6 +1224,9 @@ Page({
     this.refreshView();
     // 换场次后当前线路可能不同：按新选中线路读取照片。
     this.loadPhotos();
+    // 「本日场次」入口按 T030 复验排在主操作区之后：切完场次把换线与结果这一块带回
+    // 可见处，用户不用自己往上找回结果按钮。这一步只挪视口，不改任何数据。
+    this.revealResultRegion();
   },
 
   // ---------------------------------------------------------------- 线路
@@ -1142,9 +1236,10 @@ Page({
     const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
     if (!routeId) return;
     // 点的就是当前线（例如在「全部 N 条」里点当前那一行退回结果处）：只收起展示，
-    // 不重复写盘、不改任何数据。
+    // 不重复写盘、不改任何数据；但要把用户带回结果按钮那一块。
     if (routeId === this.archive.activeRouteId) {
       if (this.data.routeSwitchExpanded) this.setData({ routeSwitchExpanded: false });
+      this.revealResultRegion();
       return;
     }
 
@@ -1170,6 +1265,8 @@ Page({
     this.refreshView();
     // 换线路后按新选中线路读取照片（同一线路的照片不重复请求）。
     this.loadPhotos();
+    // 从「全部 N 条」的展开列表里选完线：列表收起、内容上移，把结果按钮带回可见处。
+    this.revealResultRegion();
   },
 
   /**
@@ -1356,6 +1453,8 @@ Page({
     );
     this.refreshView();
     this.loadPhotos();
+    // 关联并选中成功：加线面板收起后内容整体上移，把换线与结果带回可见处。
+    this.revealResultRegion();
   },
 
   /**
@@ -1571,6 +1670,8 @@ Page({
       })
     );
     this.refreshView();
+    // 新建并选中成功：加线面板收起、内容整体上移，把换线与结果带回可见处再读照片。
+    this.revealResultRegion();
 
     // 线路已创建并选中；照片保存失败只影响照片，不回滚线路，也不阻止记把次。
     if (pendingPhotoPath && outcome.route) {
@@ -1906,10 +2007,15 @@ Page({
    * 先按最新档案判定：抱石已完攀（含待确认）时不再新增；同一场次同一线路还有
    * 未落盘的把次时先重试那一把，不生成第二把。然后交给档案层以两段写落盘：
    * 失败不报已保存，这一把留在待保存行，重试沿用同一操作 ID，只会多出一把。
+   *
+   * T030 复验：结果按钮把渲染时在场的场次与线路写进 dataset。切场次或换线之后才送到
+   * 的这一下（旧按钮的迟到点击）如果和当前不一致，整条拒掉——不把新的一把写进别的
+   * 场次，也不写进别的线路。没带 dataset 的调用（数据层与老测试直接驱动）按当前值处理。
    */
   recordAttempt(event) {
     if (this.data.loadError) return;
-    const result = event && event.currentTarget && event.currentTarget.dataset.result;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const result = dataset.result;
     if (result !== 'fail' && result !== 'send') return;
 
     const active = this.data.activeSession;
@@ -1917,7 +2023,29 @@ Page({
       this.setData({ notice: '请先开始一场训练' });
       return;
     }
-    const routeId = this.archive.activeRouteId;
+
+    // 迟到点击：按钮渲染时带的场次与当前场次不同 → 这一下属于上一场，不落到新场次。
+    const boundSessionId = dataset.sessionId || '';
+    if (boundSessionId && boundSessionId !== active.id) {
+      this.setData({
+        notice: '这一下是上一场的按钮，已经切到别的场次，没有记录这一把。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    const currentRouteId = this.archive.activeRouteId;
+    // 迟到点击：按钮渲染时带的线路与当前线路不同 → 这一下属于上一条线，不落到新线路。
+    const boundRouteId = dataset.routeId || '';
+    if (boundRouteId && boundRouteId !== currentRouteId) {
+      this.setData({
+        notice: '这一下是上一条线路的按钮，当前线路已经换了，没有记录这一把。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    const routeId = boundRouteId || currentRouteId;
     if (!routeId) {
       this.setData({ notice: '请先选原线或新建一条线路' });
       return;

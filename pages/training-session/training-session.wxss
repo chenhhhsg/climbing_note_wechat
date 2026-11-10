@@ -639,7 +639,9 @@
 .route-completed-panel,.route-pending-panel { border-left:8rpx solid #315d40; background:#e7eddf; border-radius:4rpx; }
 .route-pending-panel { border-left-color:#b7683d; background:#f3ead7; }
 
-.session-card { background:transparent; padding:0 0 12rpx; }
+/* 场次标题、日期与「本日场次」切换（T030 复验）：排在主操作区之后。上边一条细分割线把它
+   和主操作区分开，但主操作区仍是页顶第一块——首屏从页顶就能换线和记结果。 */
+.session-card { background:transparent; padding:16rpx 0 12rpx; border-top:1px solid #c4c8b9; }
 .session-top { column-gap:12rpx; align-items:flex-start; }
 .session-meta { font-size:24rpx; line-height:1.5; }
 .session-heading .card-title { font-size:34rpx; margin-bottom:4rpx; }
@@ -655,6 +657,14 @@
 /* 状态徽标槽：高度固定，完攀/待确认徽标出现或消失都不改当前线卡片的高度。 */
 .selected-route-state-slot { display:flex; align-items:center; min-height:42rpx; margin-top:6rpx; }
 .selected-route .route-state { margin-top:0; }
+/* 未选中任何一条（T030 复验）：本场有线路、但当前选择已被清空时，这一块取代当前线卡片占住
+   主操作区第一格的位置——不占满整张卡片的高度，所以下面的换线与结果永远还在首屏里；
+   文字只说「先选一条」，不替用户默认记到任意线上。 */
+.route-pick-hint { box-sizing:border-box; padding:16rpx 22rpx 18rpx; margin:0 0 12rpx; background:#f3ead7; border-left:8rpx solid #b7683d; border-radius:8rpx; }
+.route-pick-title { display:block; font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-size:30rpx; font-weight:700; color:#173d32; }
+.route-pick-text { display:block; margin-top:6rpx; font-size:24rpx; line-height:1.5; color:#526157; }
+/* 主操作区「门」（T030 复验）：换线 + 结果这一整块，滚动定位用它判断是否已可见，本身不画东西。 */
+.result-anchor { display:block; }
 /* 结果区固定一行高（96rpx，与两个结果按钮同高）：收起/解锁/待确认都不移动下方控件。 */
 .result-footer { display:flex; gap:12rpx; flex-wrap:wrap; align-items:stretch; min-height:96rpx; box-sizing:border-box; margin:12rpx 0 24rpx; }
 .result-footer .result-button { width:auto; flex:1; min-height:96rpx; padding:20rpx 10rpx; margin:0; border-radius:8rpx; font-size:32rpx; font-weight:700; line-height:1.4; }

@@ -1114,3 +1114,53 @@ test('T033 待保存的一把绑定发起时的档案：换档之后重试不写
   );
   assert.match(page.data.notice, /原来的本机档案/);
 });
+
+test('T033 复验 切到同日另一场（当前选择被清空）时不冒出别的把次，选回原线后撤回目标仍是原把次', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = flow.page;
+  const thirdAttemptId = flow.aAttempts[2];
+
+  // A 的最近一把仍是第 3 把，撤回目标就是它。
+  switchTo(page, flow.aId);
+  assert.equal(page.data.recentAttempt.attemptId, thirdAttemptId);
+  assert.equal(page.data.recentAttempt.canUndo, true);
+
+  // 同日另开一场（走真实「开始新场次」入口），再点回原来的场次：
+  // selectSession 只改归属，当前选择被清空，但本场线路仍在换线名册里。
+  const other = startSessionOnSameDay(page, '石间岩馆');
+  assert.notEqual(other, flow.sessionId);
+  page.switchSession(tapDataset({ sessionId: flow.sessionId }));
+  assert.equal(page.data.activeSession.id, flow.sessionId);
+  assert.equal(page.data.selectedRoute, null, '切场次只改归属：当前选择被清空');
+  assert.ok(page.data.routeSwitchTotal >= 2, '本场线路还在名册里，不必重新加线');
+  assert.equal(
+    page.data.recentAttempt,
+    null,
+    '没有当前线时不显示「最近一把」——不拿别的场次/别的线的把次来占位'
+  );
+
+  // 从名册选回原线：撤回/恢复的目标仍是原来那一把，序号与结果都没变。
+  switchTo(page, flow.aId);
+  assert.equal(page.data.recentAttempt.attemptId, thirdAttemptId);
+  assert.equal(page.data.recentAttempt.canUndo, true);
+  assert.equal(page.data.routeCountText, '3 把');
+
+  // 撤回后恢复目标还在同一把上。
+  page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+  assert.equal(page.data.recentAttempt.attemptId, thirdAttemptId);
+  assert.equal(page.data.recentAttempt.canRestore, true);
+  assert.equal(page.data.recentAttempt.canUndo, false);
+  page.restoreLatestAttempt(rowEvent(page.data.recentAttempt));
+  assert.equal(page.data.recentAttempt.attemptId, thirdAttemptId);
+  assert.equal(page.data.recentAttempt.canUndo, true);
+  assert.equal(page.data.recentAttempt.titleText, '刚才 · A 线 第 3 把 · 未完成');
+});
+
+/** 同日另开一场（走页面上的「开始新场次」入口），返回新场次 ID。 */
+function startSessionOnSameDay(page, gymName) {
+  page.openSessionForm();
+  page.onGymNameInput({ detail: { value: gymName } });
+  page.startSession();
+  assert.equal(page.data.storageError, '');
+  return page.data.activeSession.id;
+}
