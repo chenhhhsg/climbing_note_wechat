@@ -646,14 +646,42 @@ test('V05 根配置排除实验目录，正式路由与 tabBar 相对基线无�
   assert.equal(rootProject.cloudfunctionRoot, 'cloudfunctions/');
 
   const rootApp = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8'));
-  assert.deepEqual(rootApp.pages, [
+  // T017 起新增正式场内记录页；T018/T020 各再增一页。
+  // 不把正式 app.pages 自己当唯一 oracle：用获批页面白名单加源码四件套独立核对。
+  const basePages = [
     'pages/index/index',
     'pages/add-record/add-record',
     'pages/record-list/record-list',
     'pages/record-detail/record-detail',
     'pages/stats/stats',
     'pages/profile/profile'
-  ]);
+  ];
+  const approvedExtraPages = [
+    'pages/training-session/training-session',
+    'pages/training-route/training-route',
+    'pages/fitness-test/fitness-test'
+  ];
+  const approvedPages = new Set([...basePages, ...approvedExtraPages]);
+
+  assert.equal(
+    new Set(rootApp.pages).size,
+    rootApp.pages.length,
+    '正式页面不得重复注册'
+  );
+  for (const page of rootApp.pages) {
+    assert.ok(approvedPages.has(page), `不得注册未批准的正式页面：${page}`);
+    for (const ext of ['js', 'json', 'wxml', 'wxss']) {
+      assert.ok(
+        fs.existsSync(path.join(ROOT, `${page}.${ext}`)),
+        `页面源码四件套缺失：${page}.${ext}`
+      );
+    }
+  }
+  assert.deepEqual(
+    rootApp.pages.filter(page => basePages.includes(page)),
+    basePages,
+    '原六页保留且相对顺序不变'
+  );
   assert.deepEqual(
     rootApp.tabBar.list.map(item => item.pagePath),
     [

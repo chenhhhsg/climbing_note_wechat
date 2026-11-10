@@ -1,0 +1,302 @@
+<!--
+  正式长期线路详情页（T018 回看 / T019 主照片）
+  按长期线路 ID 回看跨日、跨场次的逐把结果与备注；打开只读，只有「当天再记」、按把
+  「改为未完成」与照片的确认保存/移除会在本机写（照片只动本机文件与照片索引），
+  且都由用户明确点按触发。
+-->
+<view class="page">
+  <!-- 本机档案损坏或版本不支持：显示可见错误，保留原数据 -->
+  <view wx:if="{{loadError}}" id="load-error" class="card error-card">
+    <text class="error-title">本机训练档案读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <text class="error-hint">原档案保持原样，没有被改写。</text>
+    <button id="retry-load" class="secondary-button" bindtap="retryLoad">重试读取</button>
+  </view>
+
+  <block wx:else>
+    <view
+      wx:if="{{storageError}}"
+      id="storage-error"
+      class="storage-error"
+      bindtap="dismissStorageError"
+    >
+      <text class="storage-error-text">{{storageError}}</text>
+      <text class="storage-error-hint">当前操作未生效，可重试；点击收起</text>
+    </view>
+
+    <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
+      <text class="notice-text">{{notice}}</text>
+      <text class="notice-hint">点击收起</text>
+    </view>
+
+    <view
+      wx:if="{{photoNotice}}"
+      id="photo-notice"
+      class="notice"
+      bindtap="dismissPhotoNotice"
+    >
+      <text class="notice-text">{{photoNotice}}</text>
+      <text class="notice-hint">点击收起</text>
+    </view>
+
+    <!-- 这条线路不在本机档案里：不猜、不建 -->
+    <view wx:if="{{notFound}}" id="not-found" class="card empty-card">
+      <text class="empty-title">找不到这条线路</text>
+      <text class="empty-hint">本机档案里没有这条长期线路，可能来自旧云记录；旧记录请从「旧记录」入口按原 ID 回看。</text>
+    </view>
+
+    <block wx:elif="{{route}}">
+      <view id="route-header" class="card route-header">
+        <view class="route-title-row">
+          <view class="route-swatch" style="background: {{route.colorHex}};"></view>
+          <view class="route-title-info">
+            <text class="route-grade-display">{{route.grade}}</text>
+            <text class="route-name">{{route.name}}</text>
+            <text class="route-meta">{{route.climbType}}{{route.colorName ? ' · ' + route.colorName : ''}}</text>
+            <text class="route-gym">{{route.gymName}}</text>
+          </view>
+          <text
+            wx:if="{{routeStateText}}"
+            id="route-state"
+            class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
+          >{{routeStateText}}</text>
+        </view>
+        <text id="route-summary" class="route-summary">{{summaryText}} · {{sendCount}} 次完攀</text>
+      </view>
+
+      <!--
+        线路主照片（T019）：保存必须由用户确认；取消预览不改动已保存照片，
+        取消更换后仍显示原来的主图。照片只在本机保存一份。
+      -->
+      <view wx:if="{{routePhoto}}" id="route-photo-card" class="card photo-card">
+        <view class="photo-head">
+          <text class="photo-title">线路照片</text>
+          <text class="photo-note">只保存在本机</text>
+        </view>
+
+        <block wx:if="{{routePhoto.status === 'saved'}}">
+          <image
+            id="route-photo-main"
+            class="photo-main"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+            data-route-id="{{route.id}}"
+            bindtap="previewRoutePhoto"
+          />
+          <text id="route-photo-status" class="photo-status">{{routePhoto.statusText}}</text>
+          <text wx:if="{{routePhoto.bytesText}}" class="photo-meta">{{routePhoto.bytesText}}</text>
+          <text class="photo-hint">点击照片打开完整主图，可双指缩放。</text>
+          <view class="photo-actions">
+            <button
+              id="route-photo-preview"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="previewRoutePhoto"
+            >看大图</button>
+            <button
+              id="route-photo-remove"
+              class="text-button photo-remove"
+              data-route-id="{{route.id}}"
+              bindtap="removeRoutePhoto"
+            >移除</button>
+          </view>
+          <button
+            wx:if="{{!routePhoto.thumbnailAvailable}}"
+            id="route-photo-rebuild-thumb"
+            class="secondary-button photo-action"
+            data-route-id="{{route.id}}"
+            bindtap="rebuildRoutePhoto"
+          >重建缩略图</button>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'preview'}}">
+          <image
+            id="route-photo-preview-image"
+            class="photo-preview"
+            src="{{routePhoto.previewPath}}"
+            mode="aspectFit"
+          />
+          <text id="route-photo-preview-status" class="photo-status">{{routePhoto.statusText}}</text>
+          <view class="photo-actions">
+            <button
+              id="route-photo-cancel"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="cancelRoutePhoto"
+            >取消</button>
+            <button
+              id="route-photo-confirm"
+              class="primary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="confirmRoutePhoto"
+            >确认保存</button>
+          </view>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'saving'}}">
+          <image
+            wx:if="{{routePhoto.mainPath}}"
+            class="photo-thumb"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+          />
+          <text id="route-photo-saving" class="photo-status photo-status-busy">{{routePhoto.statusText}}</text>
+          <text class="photo-hint">照片文件和关联都写入后才提示成功。</text>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'failed'}}">
+          <image
+            wx:if="{{routePhoto.mainPath}}"
+            class="photo-thumb"
+            src="{{routePhoto.mainPath}}"
+            mode="aspectFit"
+            data-route-id="{{route.id}}"
+            bindtap="previewRoutePhoto"
+          />
+          <text id="route-photo-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+          <text class="photo-error-detail">{{routePhoto.errorText}}</text>
+          <view class="photo-actions">
+            <button
+              id="route-photo-retry"
+              class="secondary-button photo-action"
+              data-route-id="{{route.id}}"
+              bindtap="retryRoutePhoto"
+            >{{routePhoto.retryText}}</button>
+            <button
+              id="route-photo-dismiss"
+              class="text-button photo-remove"
+              data-route-id="{{route.id}}"
+              bindtap="dismissRoutePhotoFailure"
+            >收起</button>
+          </view>
+          <button
+            wx:if="{{routePhoto.manageSpaceVisible}}"
+            id="route-photo-space-manage"
+            class="secondary-button photo-action"
+            bindtap="goToClearCache"
+          >去「我的」清除可重建缓存</button>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'missing'}}">
+          <text id="route-photo-missing" class="photo-status photo-status-error">本机照片不可用，可重新添加</text>
+          <text class="photo-hint">照片文件可能已被系统清理；重新添加会替换原关联，历史尝试与备注不变。</text>
+        </block>
+
+        <block wx:elif="{{routePhoto.status === 'error'}}">
+          <text id="route-photo-read-error" class="photo-status photo-status-error">{{routePhoto.statusText}}</text>
+          <button
+            id="route-photo-reload"
+            class="secondary-button photo-action"
+            data-route-id="{{route.id}}"
+            bindtap="reloadRoutePhoto"
+          >重试读取</button>
+        </block>
+
+        <block wx:else>
+          <text id="route-photo-loading" class="photo-status">{{routePhoto.statusText}}</text>
+        </block>
+
+        <view wx:if="{{routePhoto.sourceVisible}}" class="photo-source-row">
+          <button
+            id="route-photo-camera"
+            class="secondary-button photo-source"
+            data-source="camera"
+            data-route-id="{{route.id}}"
+            bindtap="chooseRoutePhoto"
+          >{{routePhoto.cameraText}}</button>
+          <button
+            id="route-photo-album"
+            class="secondary-button photo-source"
+            data-source="album"
+            data-route-id="{{route.id}}"
+            bindtap="chooseRoutePhoto"
+          >{{routePhoto.albumText}}</button>
+        </view>
+      </view>
+
+      <!-- 回看：按本地日期与场次分组，同一天多场各自保留原归属 -->
+      <view class="section">
+        <text class="section-title">本机逐把记录</text>
+
+        <view wx:if="{{!hasAttempts}}" id="history-empty" class="empty-attempts">
+          <text>这条线路在本机还没有逐把记录。点「当天再记」回场内页记第一把。</text>
+        </view>
+
+        <view wx:else>
+          <view
+            wx:for="{{groups}}"
+            wx:key="sessionId"
+            id="history-group-{{item.sessionId}}"
+            class="history-group"
+          >
+            <view class="history-group-head">
+              <text class="history-date">{{item.dateText}}</text>
+              <text class="history-session">{{item.sessionLabel}} · {{item.gymName}}</text>
+              <text class="history-count">{{item.countText}}</text>
+            </view>
+            <view wx:for="{{item.attempts}}" wx:for-item="attempt" wx:key="id" id="attempt-{{attempt.id}}" class="attempt-item">
+              <view class="attempt-main">
+                <text class="attempt-label">{{attempt.label}}</text>
+                <text class="attempt-result {{attempt.isSend ? 'result-send' : 'result-fail'}}">{{attempt.resultText}}</text>
+                <text class="attempt-time">{{attempt.timeText}}</text>
+              </view>
+              <text wx:if="{{attempt.hasNote}}" class="attempt-note">{{attempt.note}}</text>
+            </view>
+          </view>
+        </view>
+      </view>
+
+      <!-- 按把「改为未完成」：每一把各占一行、各带自己的控件，写明日期/场次/第几把 -->
+      <view wx:if="{{correctionRows.length > 0}}" id="route-correction" class="route-correction">
+        <text class="route-correction-title">点错了完攀？</text>
+        <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
+        <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
+        <view wx:for="{{correctionRows}}" wx:key="attemptId" class="route-correction-row">
+          <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}}</text>
+          <view class="route-correction-slot">
+            <button
+              wx:if="{{item.state !== 'corrected'}}"
+              id="correct-{{item.attemptId}}"
+              class="secondary-button route-correct-button"
+              data-attempt-id="{{item.attemptId}}"
+              data-route-id="{{item.routeId}}"
+              data-session-id="{{item.sessionId}}"
+              bindtap="correctSend"
+            >{{item.buttonText}}</button>
+            <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
+          </view>
+        </view>
+      </view>
+
+      <!-- 当天再记：只有用户点这一下才可能新建当日场次 -->
+      <view class="record-again-footer">
+        <block wx:if="{{canRecordAgain}}">
+          <button id="record-again" class="primary-button" bindtap="recordAgain">当天再记</button>
+          <text class="record-again-hint">回场内页在这条线上继续记：当日该岩馆已有场次就直接用，当日多场会先让你选一场。</text>
+        </block>
+        <block wx:else>
+          <view id="route-closed-panel" class="route-completed-panel">
+            <text class="route-completed-title">{{routeStateText || '暂不能新增把次'}}</text>
+            <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次与备注都保留在本机。</text>
+            <text class="route-completed-hint">点错了完攀？在上方「点错了完攀？」里点那一把自己那行改成未完成。</text>
+          </view>
+        </block>
+      </view>
+
+      <!-- 同日多场：先让用户明确选一场，取消不改归属 -->
+      <view wx:if="{{sessionPicker}}" id="session-picker" class="card session-picker">
+        <text class="card-title">当天再记：选一场</text>
+        <text class="session-picker-meta">{{sessionPicker.dateText}} · {{sessionPicker.gymName}} · {{sessionPicker.routeName}}</text>
+        <view
+          wx:for="{{sessionPicker.sessions}}"
+          wx:key="id"
+          id="choose-session-{{item.id}}"
+          class="session-option"
+          data-session-id="{{item.id}}"
+          bindtap="chooseSessionForAgain"
+        >{{item.label}}{{item.isCurrent ? '（当前场次）' : ''}}</view>
+        <button id="cancel-session-picker" class="text-button" bindtap="cancelSessionPicker">取消</button>
+      </view>
+    </block>
+  </block>
+</view>

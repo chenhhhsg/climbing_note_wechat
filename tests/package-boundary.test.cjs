@@ -71,6 +71,53 @@ function runtimeFiles() {
   }));
 }
 
+// 独立推导正式运行时清单期望，用于核对 checker 的项数与条目数：
+// 已知基础项 + 已批准页面四件套 + tabBar 图标 + 已落地正式工具依赖（utils/*.js）。
+// 不读取 checker 输出，也不依赖它生成的候选夹具。已批准页面按源码是否存在就位，
+// 因而同时兼容后续 T018（training-route）与 T020（fitness-test）。
+const BASE_RUNTIME_FILES = ['app.js', 'app.json', 'app.wxss', 'sitemap.json'];
+const APPROVED_PAGE_DIRS = [
+  'pages/index',
+  'pages/training-session',
+  'pages/training-route',
+  'pages/fitness-test',
+  'pages/add-record',
+  'pages/record-list',
+  'pages/record-detail',
+  'pages/stats',
+  'pages/profile'
+];
+const TAB_BAR_ICONS = [
+  'images/home.png',
+  'images/home-active.png',
+  'images/list.png',
+  'images/list-active.png',
+  'images/stats.png',
+  'images/stats-active.png',
+  'images/profile.png',
+  'images/profile-active.png'
+];
+const PAGE_EXTENSIONS = ['.js', '.json', '.wxml', '.wxss'];
+
+function expectedRuntimeNames() {
+  const names = new Set(BASE_RUNTIME_FILES);
+  for (const dir of APPROVED_PAGE_DIRS) {
+    const pagePath = `${dir}/${path.basename(dir)}`;
+    const files = PAGE_EXTENSIONS.map(ext => `${pagePath}${ext}`);
+    if (files.every(name => fs.existsSync(path.join(ROOT, name)))) {
+      for (const name of files) names.add(name);
+    }
+  }
+  for (const icon of TAB_BAR_ICONS) names.add(icon);
+  const utilsDir = path.join(ROOT, 'utils');
+  for (const entry of fs.readdirSync(utilsDir, { withFileTypes: true })) {
+    if (entry.isFile() && entry.name.endsWith('.js')) {
+      names.add(`utils/${entry.name}`);
+    }
+  }
+  return names;
+}
+
 function candidateFiles(overrides = {}, extra = []) {
   const files = runtimeFiles().filter(
     file => !Object.prototype.hasOwnProperty.call(overrides, file.name)
@@ -108,7 +155,9 @@ test('PK03 正常候选结构通过，且不误判编译产物 project.config.js
   assert.equal(result.status, EXIT_OK, result.stdout + result.stderr);
   assert.match(result.stdout, /结果：PASS/);
   assert.match(result.stdout, /INFO 已区分编译产物：project\.config\.json/);
-  assert.match(result.stdout, /应含 39 项/);
+  // T016 起正式运行时含 utils/training-store.js 与 utils/training-rules.js；T017 起加正式场内记录页。
+  // 期望项数由测试独立推导，不取自 checker 输出。
+  assert.match(result.stdout, new RegExp(`应含 ${expectedRuntimeNames().size} 项`));
 });
 
 test('PK03 缺少正式页面文件时退出 4', t => {
@@ -254,6 +303,7 @@ test('PK03 --json 输出包含检查结果与违规项', t => {
   assert.equal(result.status, EXIT_VIOLATION);
   const parsed = JSON.parse(result.stdout);
   assert.equal(parsed.ok, false);
-  assert.equal(parsed.entryCount, 41);
+  // 期望条目数 = 独立推导的正式运行时清单 + 包内一条违规条目 + 编译产物 project.config.json。
+  assert.equal(parsed.entryCount, expectedRuntimeNames().size + 2);
   assert.ok(parsed.violations.some(item => item.includes('docs/note.md')));
 });

@@ -1,0 +1,684 @@
+/**
+ * 场内记录页样式（T017）
+ * 与首页保持同一套配色（#173d32），按钮按拇指可及的高度排版。
+ */
+
+.page {
+  padding: 24rpx;
+  padding-bottom: 60rpx;
+}
+
+.card {
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 30rpx;
+  margin-bottom: 24rpx;
+}
+
+.card-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #173d32;
+  margin-bottom: 16rpx;
+}
+
+.section {
+  margin-bottom: 30rpx;
+}
+
+.section-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #173d32;
+  margin-bottom: 16rpx;
+}
+
+/* 错误与提示 */
+.error-card {
+  background-color: #f7e6db;
+}
+
+.error-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #943a23;
+  margin-bottom: 12rpx;
+}
+
+.error-text {
+  display: block;
+  font-size: 26rpx;
+  color: #813323;
+  margin-bottom: 10rpx;
+}
+
+.error-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #745241;
+  margin-bottom: 16rpx;
+}
+
+.storage-error,
+.notice {
+  border-radius: 12rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 24rpx;
+}
+
+.storage-error {
+  background-color: #f7e6db;
+  color: #943a23;
+}
+
+.notice {
+  background-color: #f3edda;
+  color: #745241;
+}
+
+.storage-error-text,
+.notice-text {
+  display: block;
+  font-size: 26rpx;
+}
+
+.storage-error-hint,
+.notice-hint {
+  display: block;
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.75;
+}
+
+.field-error {
+  display: block;
+  font-size: 24rpx;
+  color: #9c3d22;
+  margin-bottom: 12rpx;
+}
+
+/* 表单 */
+.field {
+  margin-bottom: 20rpx;
+}
+
+.field-label {
+  display: block;
+  font-size: 26rpx;
+  color: #526157;
+  margin-bottom: 10rpx;
+}
+
+.text-input,
+.picker-value {
+  background-color: #f7f4ea;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  font-size: 28rpx;
+  color: #173d32;
+}
+
+.primary-button {
+  background-color: #173d32;
+  color: #fffcf3;
+  border-radius: 12rpx;
+  font-size: 30rpx;
+  padding: 22rpx;
+  border: none;
+}
+
+.primary-button::after,
+.secondary-button::after,
+.text-button::after {
+  border: none;
+}
+
+.secondary-button {
+  background-color: #fffcf3;
+  color: #173d32;
+  border: 2rpx solid #173d32;
+  border-radius: 12rpx;
+  font-size: 28rpx;
+  padding: 18rpx;
+}
+
+.text-button {
+  background-color: transparent;
+  color: #173d32;
+  font-size: 26rpx;
+  padding: 8rpx 0;
+}
+
+.button-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 16rpx;
+}
+
+.button-row .secondary-button,
+.button-row .primary-button {
+  flex: 1;
+  margin: 0 8rpx;
+}
+
+/* 场次 */
+.session-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.session-meta {
+  display: block;
+  font-size: 26rpx;
+  color: #606d61;
+  margin-top: 8rpx;
+}
+
+.session-switch {
+  margin-top: 20rpx;
+}
+
+.chip-row {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+.chip {
+  padding: 10rpx 24rpx;
+  border-radius: 999rpx;
+  background-color: #f7f4ea;
+  color: #526157;
+  font-size: 26rpx;
+  margin: 0 12rpx 12rpx 0;
+}
+
+.chip-active {
+  background-color: #173d32;
+  color: #fffcf3;
+}
+
+/* 线路 */
+.route-swatch {
+  width: 28rpx;
+  height: 28rpx;
+  border-radius: 6rpx;
+  margin-right: 16rpx;
+  border: 2rpx solid #e0e0e0;
+}
+
+.selected-route {
+  display: flex;
+  align-items: center;
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 26rpx;
+  margin-bottom: 20rpx;
+}
+
+.selected-route-info,
+.route-info {
+  flex: 1;
+}
+
+.selected-route-name,
+.route-name {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #173d32;
+}
+
+.selected-route-meta,
+.route-meta {
+  display: block;
+  font-size: 26rpx;
+  color: #606d61;
+  margin-top: 6rpx;
+}
+
+.route-state {
+  font-size: 22rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 8rpx;
+}
+
+.route-state-done {
+  background-color: #e2ebda;
+  color: #2f6248;
+}
+
+.route-state-pending {
+  background-color: #f3edda;
+  color: #f9a825;
+}
+
+.route-list {
+  margin-bottom: 20rpx;
+}
+
+.route-item {
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+}
+
+.route-selected {
+  border: 2rpx solid #173d32;
+}
+
+.route-main {
+  display: flex;
+  align-items: center;
+}
+
+.route-check {
+  font-size: 24rpx;
+  color: #173d32;
+  margin-left: 12rpx;
+}
+
+.gym-route-block {
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+}
+
+.gym-route-item {
+  padding: 18rpx 0;
+  border-bottom: 2rpx solid #f7f4ea;
+}
+
+.gym-route-name {
+  display: block;
+  font-size: 28rpx;
+  color: #173d32;
+}
+
+.gym-route-meta {
+  display: block;
+  font-size: 24rpx;
+  color: #606d61;
+  margin-top: 6rpx;
+}
+
+.quick-route-toggle {
+  display: block;
+  text-align: center;
+}
+
+.quick-route-row {
+  display: flex;
+  justify-content: space-between;
+  margin: 20rpx 0;
+}
+
+.quick-route-row picker {
+  flex: 1;
+  margin: 0 8rpx;
+}
+
+/* 逐把记录 */
+.empty-attempts {
+  font-size: 26rpx;
+  color: #606d61;
+  padding: 24rpx 0;
+}
+
+.attempt-item {
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 16rpx;
+}
+
+.pending-attempt {
+  background-color: #f3edda;
+}
+
+.attempt-main {
+  display: flex;
+  align-items: baseline;
+}
+
+.attempt-label {
+  font-size: 28rpx;
+  font-weight: bold;
+  color: #173d32;
+  margin-right: 20rpx;
+}
+
+.attempt-result {
+  font-size: 28rpx;
+  color: #173d32;
+  margin-right: 20rpx;
+}
+
+.attempt-time {
+  font-size: 24rpx;
+  color: #606d61;
+}
+
+.attempt-note {
+  display: block;
+  font-size: 26rpx;
+  color: #526157;
+  margin-top: 12rpx;
+}
+
+.attempt-note-button,
+.pending-retry {
+  margin-top: 12rpx;
+}
+
+.pending-footer {
+  display: flex;
+  flex-direction: column;
+  margin-top: 12rpx;
+}
+
+.pending-status {
+  font-size: 24rpx;
+  color: #804b27;
+}
+
+.note-editor {
+  margin-bottom: 20rpx;
+}
+
+.note-context {
+  display: block;
+  font-size: 24rpx;
+  color: #606d61;
+  margin-bottom: 12rpx;
+}
+
+.note-input {
+  width: 100%;
+  min-height: 140rpx;
+  background-color: #f7f4ea;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  font-size: 28rpx;
+  box-sizing: border-box;
+}
+
+/* 按把更正 */
+.route-correction {
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+}
+
+.route-correction-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #173d32;
+  margin-bottom: 10rpx;
+}
+
+.route-correction-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #606d61;
+  margin-bottom: 12rpx;
+}
+
+.route-correction-status {
+  display: block;
+  font-size: 24rpx;
+  color: #804b27;
+  margin-bottom: 12rpx;
+}
+
+.route-correction-row {
+  border-top: 2rpx solid #f7f4ea;
+  padding: 16rpx 0;
+}
+
+.route-correction-target {
+  display: block;
+  font-size: 24rpx;
+  color: #526157;
+  margin-bottom: 10rpx;
+}
+
+.route-corrected-text {
+  display: block;
+  font-size: 26rpx;
+  color: #2f6248;
+}
+
+/* 结果按钮 */
+.result-footer {
+  margin-bottom: 30rpx;
+}
+
+.result-lock-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #804b27;
+  margin-bottom: 12rpx;
+}
+
+.result-button {
+  width: 100%;
+  border-radius: 16rpx;
+  font-size: 34rpx;
+  padding: 32rpx;
+  margin-bottom: 16rpx;
+  border: none;
+  color: #fffcf3;
+}
+
+.result-button::after {
+  border: none;
+}
+
+.result-fail {
+  background-color: #8a442e;
+}
+
+.result-send {
+  background-color: #173d32;
+}
+
+.result-button[disabled] {
+  opacity: 0.5;
+}
+
+.route-completed-panel,
+.route-pending-panel {
+  background-color: #fffcf3;
+  border-radius: 16rpx;
+  padding: 26rpx;
+}
+
+.route-completed-title,
+.route-pending-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #173d32;
+  margin-bottom: 10rpx;
+}
+
+.route-completed-hint,
+.route-pending-hint {
+  display: block;
+  font-size: 26rpx;
+  color: #526157;
+  margin-bottom: 8rpx;
+}
+
+/* ---- 线路主照片（T019）：详情展示完整主图，保存必须由用户确认 ---- */
+.photo-card {
+  border: 2rpx dashed #b0bec5;
+}
+
+.photo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.photo-title {
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #173d32;
+}
+
+.photo-note {
+  font-size: 22rpx;
+  color: #606d61;
+}
+
+.photo-main,
+.photo-preview,
+.photo-thumb {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 16rpx;
+  background-color: #f7f4ea;
+  border-radius: 12rpx;
+}
+
+.photo-thumb {
+  height: 300rpx;
+}
+
+.photo-status {
+  display: block;
+  margin-top: 14rpx;
+  font-size: 26rpx;
+  font-weight: bold;
+  color: #173d32;
+}
+
+.photo-status-busy {
+  color: #804b27;
+}
+
+.photo-status-error {
+  color: #943a23;
+}
+
+.photo-meta {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 22rpx;
+  color: #606d61;
+}
+
+.photo-error-detail {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 23rpx;
+  color: #813323;
+  line-height: 1.45;
+}
+
+.photo-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #606d61;
+  line-height: 1.5;
+}
+
+.photo-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.photo-action {
+  flex: 1;
+  min-height: 80rpx;
+  line-height: 80rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-action + .photo-action {
+  margin-left: 14rpx;
+}
+
+.photo-remove {
+  flex: none;
+  margin: 14rpx 0 0 18rpx;
+  color: #943a23;
+}
+
+.photo-source-row {
+  display: flex;
+  margin-top: 10rpx;
+}
+
+.photo-source {
+  flex: 1;
+  min-height: 84rpx;
+  line-height: 84rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-source + .photo-source {
+  margin-left: 14rpx;
+}
+
+.quick-route-photo {
+  margin-top: 20rpx;
+}
+
+.quick-photo-preview {
+  margin-top: 8rpx;
+}
+
+/* 岩馆手册 */
+.page { padding:20rpx 32rpx 55rpx; }
+.section-title,.card-title,.photo-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; line-height:1.35; font-weight:700; }
+.section-title { font-size:39rpx; border-bottom:2rpx solid #173d32; padding:0 0 14rpx; }
+.card,.photo-card,.attempt-item,.history-group,.selected-route { border-radius:8rpx; box-shadow:none; }
+.primary-button,.secondary-button,.text-button { min-height:88rpx; box-sizing:border-box; display:flex; align-items:center; justify-content:center; line-height:1.4; }
+.primary-button,.secondary-button { border-radius:8rpx; }
+.attempt-item { background:transparent; border-bottom:1px solid #cbd0bf; margin:0; padding:20rpx 0; }
+.attempt-label,.history-date { font-weight:700; color:#173d32; }
+.attempt-time,.session-meta,.history-date,.route-summary { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; }
+.attempt-note { border-left:4rpx solid #d2784f; padding:3rpx 0 3rpx 16rpx; margin:12rpx 0; line-height:1.6; }
+.photo-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
+.photo-title { font-size:32rpx; color:#173d32; }
+.photo-thumb,.photo-main { background:#e3e5d7; border-radius:4rpx; }
+.route-title-info,.selected-route-info,.session-heading { min-width:0; }
+.route-name,.selected-route-name,.training-gym,.card-title { word-break:break-all; }
+.route-completed-panel,.route-pending-panel { border-left:8rpx solid #315d40; background:#e7eddf; border-radius:4rpx; }
+.route-pending-panel { border-left-color:#b7683d; background:#f3ead7; }
+
+.session-card { background:transparent; padding:0 0 18rpx; }
+.session-top { column-gap:12rpx; align-items:flex-start; }
+.session-meta { font-size:24rpx; line-height:1.5; }
+.session-heading .card-title { font-size:34rpx; margin-bottom:4rpx; }
+.session-new { margin:0; padding:0 4rpx; font-size:24rpx; min-height:88rpx; }
+.selected-route { position:relative; display:flex; align-items:stretch; padding:0; margin:0 0 12rpx; overflow:hidden; background:#173d32; color:#fffcf3; }
+.selected-route .route-swatch { width:9rpx; height:auto; flex:none; border:0; border-radius:0; margin:0; }
+.selected-route-info { display:flex; flex-direction:column; align-items:flex-start; padding:22rpx 26rpx 24rpx; }
+.selected-route-grade,.route-grade-display { font:italic 700 92rpx/.98 Georgia,"Times New Roman",serif; letter-spacing:-4rpx; }
+.selected-route-grade { color:#ff986c; }
+.selected-route-name { margin:10rpx 0 5rpx; color:#fffcf3; font-size:36rpx; font-family:"Songti SC","SimSun",serif; }
+.selected-route-meta { color:#dbe7d6; font-size:25rpx; line-height:1.5; }
+.selected-route .route-state { margin-top:8rpx; }
+.result-footer { display:flex; gap:12rpx; flex-wrap:wrap; margin:12rpx 0 24rpx; }
+.result-footer .result-button { width:auto; flex:1; min-height:96rpx; padding:20rpx 10rpx; margin:0; border-radius:8rpx; font-size:32rpx; font-weight:700; line-height:1.4; }
+.result-fail { color:#214637; background:#ebeadd; }
+.result-send { color:#1b3128; background:#ff793f; }
+.result-footer .route-completed-panel,.result-footer .route-pending-panel,.result-lock-hint { width:100%; box-sizing:border-box; }
+.field,.picker-value,.text-input { line-height:1.5; }
+.text-input { min-height:88rpx; }

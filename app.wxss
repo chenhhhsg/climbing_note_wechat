@@ -6,8 +6,8 @@
 page {
   font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', Helvetica, 'PingFang SC', 'Microsoft YaHei', Arial, sans-serif;
   font-size: 28rpx;
-  color: #333333;
-  background-color: #f5f5f5;
+  color: #22372f;
+  background-color: #f7f4ea;
   box-sizing: border-box;
 }
 
@@ -19,17 +19,17 @@ page {
 
 /* 卡片样式 */
 .card {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 30rpx;
   margin-bottom: 20rpx;
-  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.05);
+  box-shadow: none;
 }
 
 /* 按钮样式 */
 .btn-primary {
-  background-color: #2c3e50;
-  color: #ffffff;
+  background-color: #173d32;
+  color: #fffcf3;
   border-radius: 12rpx;
   padding: 20rpx 40rpx;
   font-size: 30rpx;
@@ -45,13 +45,13 @@ page {
 .title {
   font-size: 36rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 20rpx;
 }
 
 /* 次要文字 */
 .text-secondary {
-  color: #999999;
+  color: #606d61;
   font-size: 26rpx;
 }
 
@@ -59,7 +59,7 @@ page {
 .empty-state {
   text-align: center;
   padding: 100rpx 0;
-  color: #999999;
+  color: #606d61;
 }
 
 .empty-state image {
@@ -78,21 +78,30 @@ page {
 }
 
 .tag-success {
-  background-color: #e8f5e9;
-  color: #4caf50;
+  background-color: #e2ebda;
+  color: #2f6248;
 }
 
 .tag-warning {
-  background-color: #fff3e0;
-  color: #ff9800;
+  background-color: #f6ead5;
+  color: #934327;
 }
 
 .tag-danger {
-  background-color: #ffebee;
-  color: #f44336;
+  background-color: #f7e6db;
+  color: #9c3d22;
 }
 
 .tag-info {
-  background-color: #e3f2fd;
-  color: #2196f3;
+  background-color: #e4ebdf;
+  color: #355e50;
 }
+
+/* 岩馆手册 */
+page { color: #173d32; background: #f7f4ea; font-family: "PingFang SC","Microsoft YaHei",sans-serif; }
+.container { box-sizing: border-box; padding: 32rpx; }
+.field-section-head { display:flex; align-items:center; gap:14rpx; }
+.field-mark,.field-menu-mark { width:16rpx; height:20rpx; background:#ff793f; border-radius:70% 36% 55% 42%; transform:rotate(25deg); flex:none; }
+.field-section-name,.section-title,.card-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; }
+.field-section-name { font-size:38rpx; }
+button { box-sizing:border-box; }

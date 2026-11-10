@@ -1,12 +1,46 @@
 /**
- * 记录详情页面样式
+ * 旧记录详情页面样式（T018：只读回看）
  */
 
 /* 加载状态 */
 .loading-state {
   text-align: center;
   padding: 100rpx 0;
-  color: #999999;
+  color: #606d61;
+}
+
+/* 读取失败 / 空库 / 无权限 / 云不可用：有区别的状态，都可重试 */
+.error-state {
+  text-align: center;
+  padding: 100rpx 0;
+}
+
+.error-text {
+  font-size: 30rpx;
+  color: #526157;
+  display: block;
+  margin-bottom: 16rpx;
+}
+
+.error-hint {
+  font-size: 24rpx;
+  color: #606d61;
+  display: block;
+  margin-bottom: 30rpx;
+}
+
+.btn-retry {
+  background-color: #173d32;
+  color: #fffcf3;
+  border-radius: 12rpx;
+  padding: 18rpx 60rpx;
+  font-size: 28rpx;
+  display: inline-block;
+  border: none;
+}
+
+.btn-retry::after {
+  border: none;
 }
 
 /* 状态栏 */
@@ -25,36 +59,36 @@
 }
 
 .status-success {
-  background-color: #e8f5e9;
-  color: #4caf50;
+  background-color: #e2ebda;
+  color: #2f6248;
 }
 
 .status-fail {
-  background-color: #ffebee;
-  color: #f44336;
+  background-color: #f7e6db;
+  color: #9c3d22;
 }
 
 .record-date {
   font-size: 30rpx;
-  color: #666666;
+  color: #526157;
 }
 
 /* 卡片 */
 .card {
-  background-color: #ffffff;
+  background-color: #fffcf3;
   border-radius: 16rpx;
   padding: 30rpx;
   margin-bottom: 20rpx;
-  box-shadow: 0 2rpx 8rpx rgba(0, 0, 0, 0.05);
+  box-shadow: none;
 }
 
 .card-title {
   font-size: 30rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
   margin-bottom: 20rpx;
   padding-bottom: 20rpx;
-  border-bottom: 1rpx solid #f0f0f0;
+  border-bottom: 1rpx solid #dcdccc;
 }
 
 /* 信息网格 */
@@ -72,26 +106,63 @@
 
 .info-label {
   font-size: 26rpx;
-  color: #999999;
+  color: #606d61;
   margin-bottom: 8rpx;
 }
 
 .info-value {
   font-size: 30rpx;
-  color: #333333;
+  color: #22372f;
 }
 
 .info-value.grade {
   font-size: 36rpx;
   font-weight: bold;
-  color: #2c3e50;
+  color: #173d32;
 }
 
 /* 备注 */
 .notes-content {
   font-size: 28rpx;
-  color: #666666;
+  color: #526157;
   line-height: 1.6;
+}
+
+/* 历史汇总（一条旧汇总只显示一条） */
+.summary-card {
+  background-color: #f3edda;
+  border-radius: 16rpx;
+  padding: 24rpx;
+  margin-bottom: 20rpx;
+}
+
+.summary-text {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #745241;
+}
+
+.summary-hint,
+.summary-embedded,
+.summary-note {
+  display: block;
+  font-size: 24rpx;
+  color: #745241;
+  margin-top: 8rpx;
+}
+
+/* 只读说明 */
+.read-only-notice {
+  margin-top: 30rpx;
+  padding: 24rpx;
+  background-color: #dcdccc;
+  border-radius: 12rpx;
+}
+
+.read-only-text {
+  font-size: 24rpx;
+  color: #526157;
 }
 
 /* 图片网格 */
@@ -105,31 +176,4 @@
   width: 200rpx;
   height: 200rpx;
   border-radius: 12rpx;
-}
-
-/* 创建时间 */
-.create-time {
-  text-align: center;
-  padding: 30rpx 0;
-  color: #999999;
-  font-size: 26rpx;
-}
-
-/* 操作按钮 */
-.actions {
-  margin-top: 40rpx;
-  padding-bottom: 40rpx;
-}
-
-.btn-delete {
-  background-color: #ffffff;
-  color: #f44336;
-  border: 2rpx solid #f44336;
-  border-radius: 12rpx;
-  padding: 24rpx;
-  font-size: 30rpx;
-}
-
-.btn-delete::after {
-  border: none;
 }
