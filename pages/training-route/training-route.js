@@ -41,6 +41,7 @@ const {
 } = require('../../utils/training-photo-controller.js');
 
 const RECORD_URL = '/pages/training-record/training-record';
+const SESSION_URL = '/pages/training-session/training-session';
 const PROFILE_URL = '/pages/profile/profile';
 
 function pad2(value) {
@@ -67,6 +68,7 @@ Page({
   data: {
     ready: false,
     loadError: '',      // 档案损坏 / 版本不支持 / 读取失败
+    claimError: '',     // 入口带的档案 ID 与本机现在这一份不一致（不展示、不受理写入）
     storageError: '',   // 本次操作未落盘（不报已成功）
     notice: '',         // 说明性提示，不改数据
 
@@ -126,6 +128,10 @@ Page({
 
   onLoad(query) {
     this._routeId = (query && (query.routeId || query.routeid)) || '';
+    // 新入口的明示归属（T037）：场内单线页、小结与想爬清单点资料时都会带上渲染那一页
+    // 所用的 archiveId。旧资料直达只带 routeId（兼容保留：不带就只按 routeId 读）。
+    this._archiveIdClaim = (query && (query.archiveId || query.archiveid)) || '';
+    this._claimBlocked = false;
     // 本实例临时状态，不落盘：
     // _correctedRows 刚改好的那一把（原位只读回读）；_correctionFailures 失败可重试标记。
     this._correctedRows = {};
@@ -197,6 +203,10 @@ Page({
   },
 
   loadRoutePhoto() {
+    if (this._claimBlocked) {
+      this.setData({ routePhoto: null });
+      return Promise.resolve();
+    }
     if (!this._routeId) {
       this.setData({ routePhoto: null });
       return Promise.resolve();
@@ -237,6 +247,8 @@ Page({
   },
 
   photoRouteId(event) {
+    // 入口不属于当前档案：照片与卡点的动作拿不到 routeId，任何写入都不会发生。
+    if (this._claimBlocked) return '';
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     return dataset.routeId || this._routeId || '';
   },
@@ -1055,12 +1067,26 @@ Page({
     const loaded = store.loadState();
     this.archive = loaded.archive;
 
+    // 入口归属核对（T037）：带了 archiveId 的入口在本机档案已经换成另一份之后不再展示、
+    // 也不再受理任何写入——同一份档案里同名的 routeId 不能顶替入口本来那一条线。
+    // 旧资料直达（只带 routeId）不核对，保持原来的兼容行为。
+    this._claimBlocked = Boolean(
+      this._archiveIdClaim &&
+        loaded.archive &&
+        this._archiveIdClaim !== loaded.archive.archiveId
+    );
+
     // 重读页面等于离开编辑：换一个模式序号，上一轮模式里发起的旧点击与旧草稿一并失效。
     this._markModeSeq += 1;
     this.setData(Object.assign(
       {
         ready: true,
         loadError: loaded.error || '',
+        claimError: this._claimBlocked
+          ? '这个入口属于另一份本机档案（' +
+            this._archiveIdClaim +
+            '），未展示任何线路内容，也不接受改动；请从当前的场内页重新打开这条线。'
+          : '',
         storageError: '',
         notice: '',
         route: null,
@@ -1103,6 +1129,11 @@ Page({
    */
   refreshView() {
     if (this.data.loadError) return;
+    // 入口不属于当前档案：不读这条线的历史、照片、清单与更正行，也不受理写入。
+    if (this._claimBlocked) {
+      this.setData({ route: null, notFound: false, routePhoto: null, wishlistState: null, canRecordAgain: false });
+      return;
+    }
 
     if (!this._routeId) {
       this.setData({ notFound: true, route: null, canRecordAgain: false, routePhoto: null, wishlistState: null });
@@ -1345,7 +1376,7 @@ Page({
    * 不静默改归属；抱石已完攀或落盘失败都不离开本页、不改任何数据。
    */
   recordAgain() {
-    if (this.data.loadError || this.data.notFound) return;
+    if (this.data.loadError || this.data.notFound || this._claimBlocked) return;
 
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
@@ -1452,7 +1483,7 @@ Page({
    * 当前长期线路 ID；同一天两场各自保留原归属，不会并到别的场次。
    */
   openRecordFromHistory(event) {
-    if (this.data.loadError || this.data.notFound) return;
+    if (this.data.loadError || this.data.notFound || this._claimBlocked) return;
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const sessionId = dataset.sessionId || '';
     const routeId = dataset.routeId || this._routeId || '';
@@ -1472,6 +1503,25 @@ Page({
    * 不一致的写实现；本页的 _correctedRows / _correctionFailures 由 refreshView 读取。
    */
   correctSend: recordActions.correctSend,
+
+  /**
+   * 回归属不符入口的出口（T037）：这一页不展示任何线路内容，只让用户回到本场线路重开。
+   * 正常路径就是系统返回；没有上一页（直接打开旧入口）时重开正式场内页。
+   */
+  backToList() {
+    if (typeof wx !== 'undefined' && typeof wx.navigateBack === 'function') {
+      wx.navigateBack({
+        delta: 1,
+        fail: () => {
+          if (typeof wx.reLaunch === 'function') wx.reLaunch({ url: SESSION_URL });
+        }
+      });
+      return;
+    }
+    if (typeof wx !== 'undefined' && typeof wx.reLaunch === 'function') {
+      wx.reLaunch({ url: SESSION_URL });
+    }
+  },
 
   dismissNotice() {
     this.setData({ notice: '' });

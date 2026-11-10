@@ -883,7 +883,10 @@ test('R3 独立小结页：只读回看入口能换看别的场次，也能回�
   resetWxLog();
   page.openSummaryRoute(tapDataset({ routeId: boulder.id }));
   assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + boulder.id
+    '/pages/training-route/training-route?archiveId=' +
+      archiveId +
+      '&routeId=' +
+      boulder.id
   ]);
 
   // 从详情页返回本页（onShow 重算）：仍停在所选的昨天那一场。
@@ -1196,7 +1199,7 @@ test('R3 独立小结页 WXML 区块与真实绑定齐全；新页在正式 app.
   );
   assert.match(
     wxml,
-    /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="toggleSummaryPick"/
+    /data-route-id="\{\{item\.routeId\}\}"[\s\S]{0,160}bindtap="toggleSummaryPick"/
   );
   assert.match(
     wxml,
@@ -1272,10 +1275,10 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   // 场内不再铺清单，也不再有当前线路的清单状态与加入/撤下/归档入口。
   const entry = wxml.indexOf('id="summary-entry"');
   const summaryStart = wxml.indexOf('id="session-summary"');
-  const routeSwitch = wxml.indexOf('id="route-switch"');
-  assert.ok(summaryStart !== -1 && entry !== -1 && routeSwitch !== -1);
+  const routeList = wxml.indexOf('id="route-list"');
+  assert.ok(summaryStart !== -1 && entry !== -1 && routeList !== -1);
   assert.ok(entry > summaryStart, '入口在小结区里');
-  assert.ok(summaryStart > routeSwitch, '小结入口在本场线路列表之后');
+  assert.ok(summaryStart > routeList, '小结入口在本场线路列表之后');
   // T036：结果与记录操作在单线记录页，场内页不再内联结果按钮。
   assert.doesNotMatch(wxml, /class="result-button result-fail"/);
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');

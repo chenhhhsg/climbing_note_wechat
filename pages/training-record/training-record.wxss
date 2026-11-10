@@ -1,14 +1,23 @@
 /**
- * 单线记录页样式（T036）
- * 与场内页、线路资料页保持同一套配色；结果按钮与撤回/恢复按拇指可及排版。
+ * 单线记录页样式（T036 / T037 视觉对齐）
+ *
+ * T037：白色内容区 #FFFFFF、浅灰页底 #F2F4F3、深墨标题与正文 #182421、
+ * 墨绿 #1F5948 标主操作、橙色 #FF793F 只标完攀；常用命中区（结果、撤回/恢复、
+ * 明细与资料入口）在 320/390 两个视口下都至少 44×44 逻辑像素，因此这里用 px 兜底。
  */
 
+page {
+  background-color: #F2F4F3;
+}
+
 .page {
-  padding: 20rpx 32rpx 55rpx;
+  padding: 24rpx 24rpx 60rpx;
+  background-color: #F2F4F3;
 }
 
 .card {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
   border-radius: 8rpx;
   padding: 30rpx;
   margin-bottom: 24rpx;
@@ -20,20 +29,20 @@
   line-height: 1.35;
   font-weight: 700;
   font-size: 32rpx;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 16rpx;
 }
 
 /* 错误与提示 */
 .error-card {
-  background-color: #f7e6db;
+  background-color: #F7E6DB;
 }
 
 .error-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #943a23;
+  color: #943A23;
   margin-bottom: 12rpx;
 }
 
@@ -61,12 +70,12 @@
 }
 
 .storage-error {
-  background-color: #f7e6db;
-  color: #943a23;
+  background-color: #F7E6DB;
+  color: #943A23;
 }
 
 .notice {
-  background-color: #f3edda;
+  background-color: #F7F1E2;
   color: #745241;
 }
 
@@ -85,15 +94,15 @@
   opacity: 0.75;
 }
 
-/* 当前线 */
+/* 当前线：与场内统一列表同一套行样式（白内容 + 深字 + 等级槽），不是另一套控件 */
 .record-route {
   position: relative;
   display: flex;
   align-items: stretch;
   margin: 0 0 14rpx;
   overflow: hidden;
-  background: #173d32;
-  color: #fffcf3;
+  background: #FFFFFF;
+  border: 1px solid #D7DED9;
   border-radius: 8rpx;
 }
 
@@ -114,22 +123,35 @@
   padding: 16rpx 22rpx 18rpx;
 }
 
+/* 等级槽：与场内列表行同一个槽（V 级与 YDS 同宽同位，不随位数跳动） */
 .record-route-grade {
-  font: italic 700 76rpx/0.98 Georgia, "Times New Roman", serif;
-  letter-spacing: -4rpx;
-  color: #ff986c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 0 8rpx;
+  border-radius: 6rpx;
+  background: #E9EFEC;
+  color: #1F5948;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 34rpx;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  word-break: break-all;
 }
 
 .record-route-name {
   margin: 8rpx 0 4rpx;
-  color: #fffcf3;
+  color: #182421;
   font-size: 34rpx;
-  font-family: "Songti SC", "SimSun", serif;
+  font-weight: 700;
   word-break: break-all;
 }
 
 .record-route-meta {
-  color: #dbe7d6;
+  color: #53615B;
   font-size: 24rpx;
   line-height: 1.5;
 }
@@ -150,13 +172,13 @@
 }
 
 .route-state-done {
-  background-color: #e2ebda;
-  color: #2f6248;
+  background-color: #E9EFEC;
+  color: #1F5948;
 }
 
 .route-state-pending {
-  background-color: #f3edda;
-  color: #f9a825;
+  background-color: #F7F1E2;
+  color: #8A442E;
 }
 
 .record-session-meta {
@@ -165,7 +187,7 @@
   font-variant-numeric: tabular-nums;
   font-size: 22rpx;
   line-height: 1.5;
-  color: #dbe7d6;
+  color: #53615B;
   word-break: break-all;
 }
 
@@ -175,7 +197,7 @@
   gap: 12rpx;
   flex-wrap: wrap;
   align-items: stretch;
-  min-height: 96rpx;
+  min-height: 48px;
   box-sizing: border-box;
   margin: 12rpx 0 24rpx;
 }
@@ -186,14 +208,14 @@
   box-sizing: border-box;
   font-size: 24rpx;
   line-height: 1.6;
-  color: #804b27;
+  color: #8A442E;
   margin-bottom: 4rpx;
 }
 
 .result-button {
   width: auto;
   flex: 1;
-  min-height: 96rpx;
+  min-height: 48px;
   padding: 20rpx 10rpx;
   margin: 0;
   border: none;
@@ -201,7 +223,7 @@
   font-size: 32rpx;
   font-weight: 700;
   line-height: 1.4;
-  color: #fffcf3;
+  color: #FFFFFF;
 }
 
 .result-button::after {
@@ -209,13 +231,13 @@
 }
 
 .result-fail {
-  color: #214637;
-  background: #ebeadd;
+  color: #1F5948;
+  background: #E9EFEC;
 }
 
 .result-send {
-  color: #1b3128;
-  background: #ff793f;
+  color: #182421;
+  background: #FF793F;
 }
 
 .result-button[disabled] {
@@ -230,16 +252,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 16rpx;
-  min-height: 96rpx;
+  min-height: 48px;
   padding: 14rpx 22rpx;
-  border-left: 8rpx solid #315d40;
+  border-left: 8rpx solid #1F5948;
   border-radius: 4rpx;
-  background: #e7eddf;
+  background: #E9EFEC;
 }
 
 .route-pending-panel {
-  border-left-color: #b7683d;
-  background: #f3ead7;
+  border-left-color: #B7683D;
+  background: #F7F1E2;
 }
 
 .route-completed-title,
@@ -248,7 +270,7 @@
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
 }
 
 .route-completed-hint,
@@ -257,13 +279,13 @@
   min-width: 0;
   display: block;
   font-size: 26rpx;
-  color: #526157;
+  color: #53615B;
   text-align: right;
 }
 
 /* 最近一把：两个并排的交互槽，各占一半、等高；不可用的一边留非交互空位 */
 .recent-attempt {
-  border-top: 1px solid #c4c8b9;
+  border-top: 1px solid #D7DED9;
   padding-top: 14rpx;
   margin: 0 0 24rpx;
 }
@@ -279,20 +301,20 @@
   font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
   font-weight: 700;
   font-size: 28rpx;
-  color: #173d32;
+  color: #182421;
 }
 
 .recent-attempt-note {
   flex: none;
   font-size: 22rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .recent-attempt-row {
   display: flex;
   align-items: stretch;
   gap: 12rpx;
-  min-height: 88rpx;
+  min-height: 44px;
   margin-top: 12rpx;
 }
 
@@ -302,7 +324,7 @@
   min-width: 0;
   display: flex;
   align-items: stretch;
-  min-height: 88rpx;
+  min-height: 44px;
 }
 
 .recent-attempt-action,
@@ -319,16 +341,16 @@
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
-  min-height: 88rpx;
+  min-height: 44px;
   padding: 0 18rpx;
-  border: 2rpx dashed #cbd0bf;
+  border: 2rpx dashed #D7DED9;
   border-radius: 8rpx;
 }
 
 .recent-attempt-idle-text {
   font-size: 24rpx;
   line-height: 1.4;
-  color: #7a8578;
+  color: #53615B;
   text-align: center;
 }
 
@@ -340,7 +362,7 @@
 
 .recent-attempt-text {
   font-size: 28rpx;
-  color: #173d32;
+  color: #182421;
   word-break: break-all;
 }
 
@@ -350,7 +372,7 @@
   font-variant-numeric: tabular-nums;
   font-size: 22rpx;
   line-height: 1.5;
-  color: #606d61;
+  color: #53615B;
 }
 
 .recent-attempt-status {
@@ -358,7 +380,7 @@
   margin-top: 8rpx;
   font-size: 24rpx;
   line-height: 1.6;
-  color: #2f6248;
+  color: #1F5948;
 }
 
 .recent-attempt-hint {
@@ -366,18 +388,18 @@
   margin-top: 8rpx;
   font-size: 22rpx;
   line-height: 1.6;
-  color: #606d61;
+  color: #53615B;
 }
 
 /* 待保存 */
 .attempt-item {
   background: transparent;
-  border-bottom: 1px solid #cbd0bf;
+  border-bottom: 1px solid #D7DED9;
   padding: 20rpx 0;
 }
 
 .pending-attempt {
-  background: #f3edda;
+  background: #F7F1E2;
   border-radius: 8rpx;
   padding: 20rpx;
   margin-bottom: 16rpx;
@@ -391,13 +413,13 @@
 .attempt-label {
   font-size: 28rpx;
   font-weight: 700;
-  color: #173d32;
+  color: #182421;
   margin-right: 20rpx;
 }
 
 .attempt-result {
   font-size: 28rpx;
-  color: #173d32;
+  color: #182421;
   margin-right: 20rpx;
 }
 
@@ -410,7 +432,7 @@
 .pending-status {
   font-size: 24rpx;
   line-height: 1.5;
-  color: #804b27;
+  color: #8A442E;
 }
 
 .pending-retry {
@@ -428,7 +450,7 @@
 .record-link {
   width: 100%;
   box-sizing: border-box;
-  min-height: 88rpx;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -438,7 +460,7 @@
 
 /* 按把更正 */
 .route-correction {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
   border-radius: 8rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
@@ -448,7 +470,7 @@
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 10rpx;
 }
 
@@ -456,19 +478,19 @@
   display: block;
   font-size: 24rpx;
   line-height: 1.6;
-  color: #606d61;
+  color: #53615B;
   margin-bottom: 12rpx;
 }
 
 .route-correction-status {
   display: block;
   font-size: 24rpx;
-  color: #804b27;
+  color: #8A442E;
   margin-bottom: 12rpx;
 }
 
 .route-correction-row {
-  border-top: 2rpx solid #f7f4ea;
+  border-top: 2rpx solid #F2F4F3;
   padding: 16rpx 0;
 }
 
@@ -476,14 +498,14 @@
   display: block;
   font-size: 24rpx;
   line-height: 1.5;
-  color: #526157;
+  color: #53615B;
   margin-bottom: 10rpx;
 }
 
 .route-corrected-text {
   display: block;
   font-size: 26rpx;
-  color: #2f6248;
+  color: #1F5948;
 }
 
 .record-foot-hint {
@@ -491,14 +513,14 @@
   margin-top: 8rpx;
   font-size: 22rpx;
   line-height: 1.6;
-  color: #606d61;
+  color: #53615B;
 }
 
 /* 通用按钮：min-height 保证常用触控目标 */
 .primary-button,
 .secondary-button,
 .text-button {
-  min-height: 88rpx;
+  min-height: 44px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -513,8 +535,8 @@
 }
 
 .primary-button {
-  background-color: #173d32;
-  color: #fffcf3;
+  background-color: #1F5948;
+  color: #FFFFFF;
   border-radius: 8rpx;
   font-size: 30rpx;
   padding: 22rpx;
@@ -522,9 +544,9 @@
 }
 
 .secondary-button {
-  background-color: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #173d32;
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
   border-radius: 8rpx;
   font-size: 28rpx;
   padding: 18rpx;
@@ -532,7 +554,7 @@
 
 .text-button {
   background-color: transparent;
-  color: #173d32;
+  color: #1F5948;
   font-size: 26rpx;
   padding: 8rpx 0;
 }

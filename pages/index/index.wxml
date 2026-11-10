@@ -31,7 +31,7 @@
   </view>
 
   <!--
-    下次想爬（T035）：首页只占一行，显示名称与数量。
+    下次想爬（T035 / T037）：首页只有一行——名称、数量、进入箭头；常态不另放说明。
     整份按岩馆分组的清单在独立页 pages/training-wishlist（点开看分组、状态与空态）。
     0 条时这一行照常可点，点开就是空态；首页本身只读，不写清单、不建场次。
   -->
@@ -43,9 +43,8 @@
         <text class="wishlist-entry-arrow">›</text>
       </view>
     </view>
-    <text wx:if="{{!wishlistError && !hasWishlist}}" id="wishlist-empty-hint" class="wishlist-entry-hint">还没有想爬的线；在岩馆加入清单后，这里按岩馆列出。</text>
-    <text wx:else class="wishlist-entry-hint">按岩馆分组的清单；点开某条线看它的原照片、备注与历史。</text>
 
+    <!-- 只有读不到清单时才多出一行：说明原因，点开可见详情与重试 -->
     <text wx:if="{{wishlistError}}" id="wishlist-error" class="wishlist-entry-error">清单暂不可读：{{wishlistError}}（点开可见原因与重试）</text>
   </view>
 

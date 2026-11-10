@@ -155,8 +155,28 @@ Page({
     this.setData({ storageError: '' });
   },
 
+  /**
+   * 打开某一把的备注编辑器（T037：编辑器就展开在那一行里，长列表也立刻看得见）。
+   *
+   * 写入语义仍完全走共用的 actions.openNoteEditor：目标只认这一行的原 attemptId 与
+   * 归属。本页只补两件展示上的事——标题写明「补备注」还是「改备注」，以及**原地**：
+   * 编辑器紧挨刚点过的那一行出现，不滚动、不挪走刚才点过的坐标；再点同一行不重置
+   * 已经输入的内容（第一次点击的目标没变）。
+   */
+  openNoteEditor(event) {
+    const attemptId = event && event.currentTarget && event.currentTarget.dataset.attemptId;
+    const current = this.data.noteEditor;
+    if (current && attemptId && current.attemptId === attemptId) return;
+
+    const outcome = actions.openNoteEditor.call(this, event);
+    const editor = this.data.noteEditor;
+    if (editor && !editor.hasNote) {
+      this.setData({ 'noteEditor.hasNote': Boolean(editor.text) });
+    }
+    return outcome;
+  },
+
   // 共用事件：目标只认原 attemptId 与归属，保存/取消/失败重试都只影响这一把。
-  openNoteEditor: actions.openNoteEditor,
   onNoteInput: actions.onNoteInput,
   cancelNote: actions.cancelNote,
   saveNote: actions.saveNote

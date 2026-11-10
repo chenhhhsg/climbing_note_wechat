@@ -1,6 +1,6 @@
 /**
  * 长期线路详情页样式（T018）
- * 与首页、场内页同一套配色（#173d32），回看信息为主、操作按钮在下方。
+ * 与首页、场内页同一套配色（#182421），回看信息为主、操作按钮在下方。
  */
 
 .page {
@@ -9,8 +9,9 @@
 }
 
 .card {
-  background-color: #fffcf3;
-  border-radius: 16rpx;
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
   padding: 30rpx;
   margin-bottom: 24rpx;
 }
@@ -19,7 +20,7 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 16rpx;
 }
 
@@ -31,20 +32,20 @@
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 16rpx;
 }
 
 /* 错误与提示 */
 .error-card {
-  background-color: #f7e6db;
+  background-color: #F7E6DB;
 }
 
 .error-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #943a23;
+  color: #943A23;
   margin-bottom: 12rpx;
 }
 
@@ -58,19 +59,19 @@
 .error-hint {
   display: block;
   font-size: 24rpx;
-  color: #777777;
+  color: #53615B;
   margin-bottom: 20rpx;
 }
 
 .storage-error {
-  background-color: #f6ead5;
+  background-color: #F7F1E2;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 20rpx;
 }
 
 .notice {
-  background-color: #e4ebdf;
+  background-color: #E9EFEC;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 20rpx;
@@ -80,20 +81,20 @@
 .notice-text {
   display: block;
   font-size: 26rpx;
-  color: #173d32;
+  color: #182421;
 }
 
 .storage-error-hint,
 .notice-hint {
   display: block;
   font-size: 22rpx;
-  color: #606d61;
+  color: #53615B;
   margin-top: 8rpx;
 }
 
 .primary-button {
-  background-color: #173d32;
-  color: #fffcf3;
+  background-color: #1F5948;
+  color: #FFFFFF;
   border-radius: 12rpx;
   font-size: 30rpx;
 }
@@ -105,25 +106,22 @@
 }
 
 .secondary-button {
-  background-color: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #173d32;
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
   border-radius: 12rpx;
   font-size: 30rpx;
 }
 
 .text-button {
   background-color: transparent;
-  color: #173d32;
+  color: #1F5948;
   font-size: 28rpx;
-  text-decoration: underline;
   margin-top: 12rpx;
 }
 
 /* 线路头部 */
-.route-header {
-  background-color: #fffcf3;
-}
+.route-header { position:relative; overflow:hidden; background:#FFFFFF; border:1px solid #D7DED9; color:#182421; padding:24rpx 26rpx 20rpx; }
 
 .route-title-row {
   display: flex;
@@ -145,20 +143,20 @@
   display: block;
   font-size: 34rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
 }
 
 .route-meta {
   display: block;
   font-size: 26rpx;
-  color: #526157;
+  color: #53615B;
   margin-top: 6rpx;
 }
 
 .route-gym {
   display: block;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
   margin-top: 4rpx;
 }
 
@@ -170,26 +168,27 @@
 }
 
 .route-state-done {
-  background-color: #e2ebda;
-  color: #2b5942;
+  background-color: #E9EFEC;
+  color: #1F5948;
 }
 
 .route-state-pending {
-  background-color: #f6ead5;
-  color: #804b27;
+  background-color: #F7F1E2;
+  color: #8A442E;
 }
 
 .route-summary {
   display: block;
   font-size: 26rpx;
-  color: #173d32;
+  color: #182421;
   margin-top: 16rpx;
 }
 
 /* 跨日分组回看 */
 .history-group {
-  background-color: #fffcf3;
-  border-radius: 16rpx;
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
 }
@@ -202,7 +201,7 @@
 
 /* 分组标题可点：按原 sessionId 回到那一条单线记录（T036）。 */
 .history-group-open {
-  min-height: 88rpx;
+  min-height: 44px;
   box-sizing: border-box;
   padding: 8rpx 0;
 }
@@ -210,35 +209,35 @@
 .history-open-hint {
   flex: none;
   font-size: 22rpx;
-  color: #b7683d;
+  color: #B7683D;
 }
 
 .history-date {
   font-size: 30rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-right: 16rpx;
 }
 
 .history-session {
   flex: 1;
   font-size: 24rpx;
-  color: #526157;
+  color: #53615B;
 }
 
 .history-count {
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .empty-attempts {
   font-size: 26rpx;
-  color: #606d61;
+  color: #53615B;
   padding: 24rpx 0;
 }
 
 .attempt-item {
-  background-color: #f2f0e6;
+  background-color: #F2F4F3;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 12rpx;
@@ -252,7 +251,7 @@
 .attempt-label {
   font-size: 28rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-right: 20rpx;
 }
 
@@ -262,28 +261,28 @@
 }
 
 .result-send {
-  color: #2b5942;
+  color: #1F5948;
 }
 
 .result-fail {
-  color: #943a23;
+  color: #943A23;
 }
 
 .attempt-time {
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .attempt-note {
   display: block;
   font-size: 26rpx;
-  color: #526157;
+  color: #53615B;
   margin-top: 12rpx;
 }
 
 /* 按把更正 */
 .route-correction {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
   border-radius: 16rpx;
   padding: 24rpx;
   margin-bottom: 20rpx;
@@ -293,20 +292,20 @@
   display: block;
   font-size: 28rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
 }
 
 .route-correction-hint {
   display: block;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
   margin-top: 8rpx;
 }
 
 .route-correction-status {
   display: block;
   font-size: 24rpx;
-  color: #804b27;
+  color: #8A442E;
   margin-top: 8rpx;
 }
 
@@ -317,12 +316,12 @@
 .route-correction-target {
   display: block;
   font-size: 24rpx;
-  color: #526157;
+  color: #53615B;
   margin-bottom: 8rpx;
 }
 
 .route-correction-slot {
-  min-height: 72rpx;
+  min-height: 44px;
   display: flex;
   align-items: center;
 }
@@ -333,7 +332,7 @@
 
 .route-corrected-text {
   font-size: 24rpx;
-  color: #2b5942;
+  color: #1F5948;
 }
 
 /* 当天再记 */
@@ -344,12 +343,12 @@
 .record-again-hint {
   display: block;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
   margin-top: 12rpx;
 }
 
 .route-completed-panel {
-  background-color: #e2ebda;
+  background-color: #E9EFEC;
   border-radius: 16rpx;
   padding: 24rpx;
 }
@@ -358,14 +357,14 @@
   display: block;
   font-size: 28rpx;
   font-weight: bold;
-  color: #2b5942;
+  color: #1F5948;
   margin-bottom: 8rpx;
 }
 
 .route-completed-hint {
   display: block;
   font-size: 24rpx;
-  color: #4b6b3f;
+  color: #1F5948;
   margin-top: 4rpx;
 }
 
@@ -373,40 +372,40 @@
 .session-picker-meta {
   display: block;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
   margin-bottom: 12rpx;
 }
 
 .session-option {
-  background-color: #f7f4ea;
+  background-color: #F2F4F3;
   border-radius: 12rpx;
   padding: 20rpx;
   margin-bottom: 12rpx;
   font-size: 28rpx;
-  color: #173d32;
+  color: #182421;
 }
 
 .empty-card {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
 }
 
 .empty-title {
   display: block;
   font-size: 30rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 12rpx;
 }
 
 .empty-hint {
   display: block;
   font-size: 26rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 /* ---- 线路主照片（T019）：详情展示完整主图，保存必须由用户确认 ---- */
 .photo-card {
-  border: 2rpx dashed #b0bec5;
+  border: 2rpx dashed #D7DED9;
 }
 
 .photo-head {
@@ -418,12 +417,12 @@
 .photo-title {
   font-size: 30rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
 }
 
 .photo-note {
   font-size: 22rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .photo-main,
@@ -433,7 +432,7 @@
   width: 100%;
   height: 420rpx;
   margin-top: 16rpx;
-  background-color: #f7f4ea;
+  background-color: #F2F4F3;
   border-radius: 12rpx;
 }
 
@@ -446,22 +445,22 @@
   margin-top: 14rpx;
   font-size: 26rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
 }
 
 .photo-status-busy {
-  color: #804b27;
+  color: #8A442E;
 }
 
 .photo-status-error {
-  color: #943a23;
+  color: #943A23;
 }
 
 .photo-meta {
   display: block;
   margin-top: 4rpx;
   font-size: 22rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .photo-error-detail {
@@ -476,7 +475,7 @@
   display: block;
   margin-top: 8rpx;
   font-size: 22rpx;
-  color: #606d61;
+  color: #53615B;
   line-height: 1.5;
 }
 
@@ -488,7 +487,7 @@
 
 .photo-action {
   flex: 1;
-  min-height: 80rpx;
+  min-height: 44px;
   line-height: 80rpx;
   margin-top: 14rpx;
   font-size: 28rpx;
@@ -501,7 +500,7 @@
 .photo-remove {
   flex: none;
   margin: 14rpx 0 0 18rpx;
-  color: #943a23;
+  color: #943A23;
 }
 
 .photo-source-row {
@@ -511,7 +510,7 @@
 
 .photo-source {
   flex: 1;
-  min-height: 84rpx;
+  min-height: 44px;
   line-height: 84rpx;
   margin-top: 14rpx;
   font-size: 28rpx;
@@ -522,49 +521,53 @@
 }
 
 /* 岩馆手册 */
-.page { padding:20rpx 32rpx 55rpx; }
+page {
+  background-color: #F2F4F3;
+}
+
+.page { padding:20rpx 24rpx 55rpx; background-color: #F2F4F3; }
 .section-title,.card-title,.photo-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; line-height:1.35; font-weight:700; }
-.section-title { font-size:39rpx; border-bottom:2rpx solid #173d32; padding:0 0 14rpx; }
+.section-title { font-size:39rpx; border-bottom:2rpx solid #1F5948; padding:0 0 14rpx; }
 .card,.photo-card,.attempt-item,.history-group,.selected-route { border-radius:8rpx; box-shadow:none; }
-.primary-button,.secondary-button,.text-button { min-height:88rpx; box-sizing:border-box; display:flex; align-items:center; justify-content:center; line-height:1.4; }
+.primary-button,.secondary-button,.text-button { min-height:44px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; line-height:1.4; }
 .primary-button,.secondary-button { border-radius:8rpx; }
-.attempt-item { background:transparent; border-bottom:1px solid #cbd0bf; margin:0; padding:20rpx 0; }
-.attempt-label,.history-date { font-weight:700; color:#173d32; }
+.attempt-item { background:transparent; border-bottom:1px solid #D7DED9; margin:0; padding:20rpx 0; }
+.attempt-label,.history-date { font-weight:700; color:#182421; }
 .attempt-time,.session-meta,.history-date,.route-summary { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; }
-.attempt-note { border-left:4rpx solid #d2784f; padding:3rpx 0 3rpx 16rpx; margin:12rpx 0; line-height:1.6; }
-.photo-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
-.photo-title { font-size:32rpx; color:#173d32; }
-.photo-thumb,.photo-main { background:#e3e5d7; border-radius:4rpx; }
+.attempt-note { border-left:4rpx solid #B7683D; padding:3rpx 0 3rpx 16rpx; margin:12rpx 0; line-height:1.6; }
+.photo-card { background:#F2F4F3; border:1px solid #D7DED9; padding:24rpx; }
+.photo-title { font-size:32rpx; color:#182421; }
+.photo-thumb,.photo-main { background:#E9EFEC; border-radius:4rpx; }
 .route-title-info,.selected-route-info,.session-heading { min-width:0; }
 .route-name,.selected-route-name,.training-gym,.card-title { word-break:break-all; }
-.route-completed-panel,.route-pending-panel { border-left:8rpx solid #315d40; background:#e7eddf; border-radius:4rpx; }
-.route-pending-panel { border-left-color:#b7683d; background:#f3ead7; }
+.route-completed-panel,.route-pending-panel { border-left:8rpx solid #1F5948; background:#E9EFEC; border-radius:4rpx; }
+.route-pending-panel { border-left-color:#B7683D; background:#F7F1E2; }
 
-.route-header { position:relative; overflow:hidden; background:#173d32; color:#fffcf3; padding:29rpx 30rpx 20rpx; }
+.route-header { position:relative; overflow:hidden; background:#FFFFFF; border:1px solid #D7DED9; color:#182421; padding:24rpx 26rpx 20rpx; }
 .route-title-row { align-items:flex-start; flex-wrap:wrap; gap:8rpx 16rpx; }
 .route-title-row .route-swatch { position:absolute; width:9rpx; height:100%; left:0; top:0; margin:0; border:0; border-radius:0; }
-.route-grade-display { display:block; color:#ff986c; font:italic 700 100rpx/1 Georgia,"Times New Roman",serif; letter-spacing:-4rpx; }
-.route-name { margin:12rpx 0 4rpx; color:#fff8e8; font:700 43rpx/1.3 "Songti SC","SimSun",serif; }
-.route-meta,.route-gym { color:#e1e9dc; line-height:1.55; }
-.route-summary { display:block; color:#f0eddd; border-top:1px solid #668173; margin:20rpx 0 0; padding-top:14rpx; line-height:1.5; }
-.history-group { background:transparent; padding:12rpx 0 24rpx; }
+.route-grade-display { display:inline-flex; align-items:center; justify-content:center; min-width:52px; min-height:44px; box-sizing:border-box; padding:0 10rpx; border-radius:6rpx; background:#E9EFEC; color:#1F5948; font:700 36rpx/1.2 "IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; letter-spacing:0; word-break:break-all; }
+.route-name { margin:12rpx 0 4rpx; color:#182421; font:700 40rpx/1.3 "Songti SC","SimSun",serif; word-break:break-all; }
+.route-meta,.route-gym { color:#53615B; line-height:1.55; word-break:break-all; }
+.route-summary { display:block; color:#53615B; border-top:1px solid #D7DED9; margin:20rpx 0 0; padding-top:14rpx; line-height:1.5; }
+.history-group { background:#FFFFFF; border:1px solid #D7DED9; border-radius:8rpx; padding:16rpx 20rpx; margin-bottom:16rpx; }
 .history-group-head { flex-wrap:wrap; gap:6rpx 12rpx; }
-.result-send { background:#dfebd9; color:#204b34; }
-.result-fail { background:#ede6d7; color:#674b39; }
+.result-send { background:#E9EFEC; color:#1F5948; }
+.result-fail { background:#F0EDE3; color:#6B5544; }
 
 /* 下次想爬（T027）：加入、撤下与拆线归档只改清单，线路、照片与把次都不动 */
-.wishlist-card { background:#efece0; border:1px solid #d6d5c6; padding:24rpx; }
+.wishlist-card { background:#F2F4F3; border:1px solid #D7DED9; padding:24rpx; }
 .wishlist-head { display:flex; align-items:center; justify-content:space-between; gap:16rpx; }
-.wishlist-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:32rpx; color:#173d32; }
-.wishlist-state { font-size:24rpx; padding:6rpx 16rpx; border-radius:8rpx; background:#e4ebdf; color:#355e50; }
-.wishlist-state-completed { background:#dfebd9; color:#204b34; }
-.wishlist-state-archived { background:#ede6d7; color:#674b39; }
-.wishlist-state-text { display:block; margin-top:12rpx; font-size:28rpx; color:#173d32; }
-.wishlist-hint, .wishlist-error { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#526157; }
-.wishlist-error { color:#9c3d22; }
+.wishlist-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:32rpx; color:#182421; }
+.wishlist-state { font-size:24rpx; padding:6rpx 16rpx; border-radius:8rpx; background:#E9EFEC; color:#1F5948; }
+.wishlist-state-completed { background:#E9EFEC; color:#1F5948; }
+.wishlist-state-archived { background:#F0EDE3; color:#6B5544; }
+.wishlist-state-text { display:block; margin-top:12rpx; font-size:28rpx; color:#182421; }
+.wishlist-hint, .wishlist-error { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#53615B; }
+.wishlist-error { color:#9C3D22; }
 .wishlist-actions { display:flex; align-items:center; flex-wrap:wrap; gap:16rpx; margin-top:16rpx; }
 .wishlist-actions .wishlist-action { flex:1; min-width:300rpx; }
-.wishlist-archive { color:#9c5222; }
+.wishlist-archive { color:#8A442E; }
 .wishlist-remove { color:#745241; }
 
 /* ---- 照片卡点标记（T028）：只动本机标记记录，图上的点按原图归一化位置复原 ---- */
@@ -574,10 +577,10 @@
   margin-top: 16rpx;
   border-radius: 4rpx;
   overflow: hidden;
-  background: #e3e5d7;
+  background: #E9EFEC;
 }
 .photo-mark-stage .photo-main { margin-top: 0; }
-.photo-mark-stage-active { outline: 4rpx solid #ff793f; outline-offset: -4rpx; }
+.photo-mark-stage-active { outline: 4rpx solid #FF793F; outline-offset: -4rpx; }
 
 .mark-pin {
   position: absolute;
@@ -592,76 +595,76 @@
   font-size: 24rpx;
   line-height: 44rpx;
   text-align: center;
-  color: #fffcf3;
-  background: #173d32;
+  color: #FFFFFF;
+  background: #1F5948;
   box-shadow: 0 2rpx 8rpx rgba(23, 61, 50, 0.35);
 }
 /* 手法与脚法用不同底色，图上不用读字也能区分。 */
-.mark-pin-hand { background: #ff793f; }
-.mark-pin-foot { background: #173d32; }
-.mark-pin-selected { outline: 4rpx solid #ff986c; outline-offset: 2rpx; }
-.mark-pin-draft { background: #b7683d; opacity: 0.9; }
+.mark-pin-hand { background: #FF793F; }
+.mark-pin-foot { background: #1F5948; }
+.mark-pin-selected { outline: 4rpx solid #FF793F; outline-offset: 2rpx; }
+.mark-pin-draft { background: #B7683D; opacity: 0.9; }
 
-.mark-card { background: #efece0; border: 1px solid #d6d5c6; padding: 24rpx; }
+.mark-card { background: #F2F4F3; border: 1px solid #D7DED9; padding: 24rpx; }
 .mark-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
 .mark-title {
   font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
   font-weight: 700;
   font-size: 32rpx;
-  color: #173d32;
+  color: #182421;
 }
-.mark-count { font-size: 24rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: #e4ebdf; color: #355e50; }
+.mark-count { font-size: 24rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: #E9EFEC; color: #1F5948; }
 .mark-hint, .mark-warn, .mark-notice, .mark-error {
   display: block;
   margin-top: 10rpx;
   font-size: 24rpx;
   line-height: 1.6;
-  color: #526157;
+  color: #53615B;
 }
-.mark-warn { color: #9c5222; }
-.mark-notice { color: #355e50; }
-.mark-error { color: #9c3d22; }
+.mark-warn { color: #8A442E; }
+.mark-notice { color: #1F5948; }
+.mark-error { color: #9C3D22; }
 
 .mark-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16rpx; margin-top: 16rpx; }
 .mark-actions .mark-action { flex: 1; min-width: 260rpx; margin: 0; }
 .mark-delete { color: #745241; }
 
-.mark-editor { margin-top: 20rpx; padding-top: 20rpx; border-top: 1px solid #cbd0bf; }
-.mark-editor-title { display: block; font-size: 27rpx; font-weight: 700; color: #173d32; }
+.mark-editor { margin-top: 20rpx; padding-top: 20rpx; border-top: 1px solid #D7DED9; }
+.mark-editor-title { display: block; font-size: 27rpx; font-weight: 700; color: #182421; }
 .mark-kind-row { display: flex; gap: 16rpx; margin-top: 14rpx; }
 .mark-kind {
   flex: 1;
-  min-height: 72rpx;
+  min-height: 44px;
   line-height: 72rpx;
   margin: 0;
   font-size: 27rpx;
   border-radius: 8rpx;
-  background: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #cbd0bf;
+  background: #FFFFFF;
+  color: #182421;
+  border: 2rpx solid #D7DED9;
 }
 .mark-kind::after { border: none; }
-.mark-kind-active { background: #173d32; color: #fffcf3; border-color: #173d32; }
+.mark-kind-active { background: #1F5948; color: #FFFFFF; border-color: #1F5948; }
 .mark-input {
   margin-top: 16rpx;
   padding: 20rpx;
-  min-height: 88rpx;
+  min-height: 44px;
   box-sizing: border-box;
   font-size: 28rpx;
-  color: #173d32;
-  background: #fffcf3;
-  border: 2rpx solid #cbd0bf;
+  color: #182421;
+  background: #FFFFFF;
+  border: 2rpx solid #D7DED9;
   border-radius: 8rpx;
 }
 
 .mark-list { margin-top: 20rpx; }
-.mark-list-title { display: block; font-size: 26rpx; font-weight: 700; color: #173d32; margin-bottom: 8rpx; }
+.mark-list-title { display: block; font-size: 26rpx; font-weight: 700; color: #182421; margin-bottom: 8rpx; }
 .mark-item {
   display: flex;
   align-items: baseline;
   gap: 14rpx;
   padding: 16rpx 0;
-  border-bottom: 1px solid #cbd0bf;
+  border-bottom: 1px solid #D7DED9;
 }
 .mark-item-index {
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -671,8 +674,8 @@
   line-height: 44rpx;
   text-align: center;
   border-radius: 22rpx;
-  color: #fffcf3;
-  background: #173d32;
+  color: #FFFFFF;
+  background: #1F5948;
 }
-.mark-item-kind { font-size: 26rpx; color: #804b27; }
-.mark-item-text { flex: 1; font-size: 27rpx; color: #173d32; word-break: break-all; }
+.mark-item-kind { font-size: 26rpx; color: #8A442E; }
+.mark-item-text { flex: 1; font-size: 27rpx; color: #182421; word-break: break-all; }

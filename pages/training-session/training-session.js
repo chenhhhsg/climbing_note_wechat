@@ -1,8 +1,13 @@
 /**
- * 正式场内页（T017 开场 / T030 首屏加线 / T036 入口收敛到单线页）
+ * 正式场内页（T017 开场 / T030 首屏加线 / T036 入口收敛到单线页 / T037 统一线路列表）
  *
  * 从首页「开始训练」或「继续本场」进入，走通一次真实到馆记录的前半段：
  * 填自己的岩馆开始场次（同日可主动另开）→ 选原线或新建抱石/顶绳/先锋线路。
+ *
+ * T037 把首屏收敛成**一份**统一线路列表：本场每一条线各占一行（名称、等级、类型、
+ * 本场有效把数与适用的文字状态），整行点入单线记录。空场是「添加第一条线路」，
+ * 有线时标题行里有「＋ 加线」；0、1、4 条以上都是同一种行，不再有「近期短列表 +
+ * 全部 N 条」的第二套换线区，页内也没有第二条列表。
  *
  * T036 把「记这一把」的写入、待提交、撤回／恢复、按把备注与按把更正搬到独立页：
  * - 整条本场线路点入 pages/training-record（单线记录，带 archiveId + sessionId + routeId），
@@ -15,8 +20,8 @@
  * - 加线、关联与选线沿用档案层既有接口；加线面板打开与取消都不写盘；
  * - 每次返回本页都按最新档案重算线路行（本场有效把数与完攀状态），行读数与单线页一致。
  *
- * 本页的标识与状态：activeSession / routes / selectedRoute / gymRoutes / addRoute* /
- * newRoute*（类型、等级、颜色；照片改在资料页）/ routeSwitch*（列表展示）/ summaryEntry*。
+ * 本页的标识与状态：activeSession / routes（统一列表行）/ selectedRoute / gymRoutes /
+ * addRoute* / newRoute*（类型、等级、颜色；照片改在资料页）/ summaryEntry*。
  * 页面自己只保存展示状态与正在填写的表单，不承担数据权威。
  */
 const store = require('../../utils/training-store.js');
@@ -78,58 +83,6 @@ function defaultNewRouteForm() {
   };
 }
 
-/**
- * 本场线路列表的「近期」顺序（T031）：从本机档案只读推导，不建立第二套存储。
- * 一条线路在本场的近期程度取「本场最近一次把次时间」与「它在本场的关联时间」中较新者。
- */
-function recentRouteIdsInSession(archive, sessionId, routes) {
-  const lastAttemptAt = new Map();
-  ((archive && archive.attempts) || []).forEach(attempt => {
-    if (attempt.sessionId !== sessionId) return;
-    const at = typeof attempt.createdAt === 'string' ? attempt.createdAt : '';
-    if (!at) return;
-    const current = lastAttemptAt.get(attempt.routeId) || '';
-    if (at > current) lastAttemptAt.set(attempt.routeId, at);
-  });
-  const linkedAt = new Map();
-  ((archive && archive.sessionRoutes) || []).forEach(link => {
-    if (link.sessionId !== sessionId) return;
-    linkedAt.set(link.routeId, typeof link.addedAt === 'string' ? link.addedAt : '');
-  });
-
-  return routes
-    .map((route, index) => {
-      const attemptAt = lastAttemptAt.get(route.id) || '';
-      const linkAt = linkedAt.get(route.id) || '';
-      return { id: route.id, at: attemptAt > linkAt ? attemptAt : linkAt, index };
-    })
-    .sort((left, right) => {
-      if (left.at === right.at) return left.index - right.index;
-      return left.at > right.at ? -1 : 1;
-    })
-    .map(entry => entry.id);
-}
-
-/**
- * 本场线路的短列表：1–3 条时直接列出全部；超过 3 条时只列当前线与最多两条近期线路，
- * 其余由「全部 N 条」展开。只排展示顺序；点任意一条都是打开那条线的单线记录。
- */
-function routeSwitchShortList(routes, activeRouteId, recentIds) {
-  if (routes.length <= 3) return routes.slice();
-  const picked = [];
-  const push = id => {
-    if (!id || picked.some(route => route.id === id)) return;
-    const route = routes.find(item => item.id === id);
-    if (route) picked.push(route);
-  };
-  push(activeRouteId);
-  (recentIds || []).forEach(id => {
-    if (picked.length >= 3) return;
-    push(id);
-  });
-  return picked;
-}
-
 Page({
   data: {
     ready: false,
@@ -149,18 +102,11 @@ Page({
     activeSession: null,
     sameDaySessions: [],
 
-    // 本场线路：一行一条长期线路；整行点入单线记录
+    // 本场线路（T037 统一列表）：一行一条长期线路，整行点入单线记录。
+    // 每行带名称、等级、类型、本场有效把数与适用的文字状态（完攀／完攀待确认）。
     routes: [],
+    routeCountText: '',
     selectedRoute: null,
-
-    // 结果按钮旁的短列表（T031）现在就是「本场线路」列表：1–3 条全列，更多时当前线 +
-    // 最多两条近期线，其余由「全部 N 条」展开。N 就是本场关联数；展开只在本页。
-    routeSwitchRows: [],
-    routeSwitchAllRows: [],
-    routeSwitchTotal: 0,
-    routeSwitchHasMore: false,
-    routeSwitchMoreText: '',
-    routeSwitchExpanded: false,
 
     // 选原线 / 新建线路
     gymRoutes: [],
@@ -198,10 +144,12 @@ Page({
     // 本实例的临时状态，全部不落盘：
     // _formDirty / _newRouteDirty  正在填写的场次表单与新建线路表单（不冲掉输入）；
     // _lastCreateTap  快速重复点击「创建并选中」的窗口，避免连点建出两条线；
+    // _openRecordTap  同一行快速连点的窗口，避免一次点击排出两个单线页；
     // _summarySessionId  小结入口要打开哪一场（只读目标，不写盘）；空表示跟着当前场次。
     this._formDirty = false;
     this._newRouteDirty = false;
     this._lastCreateTap = 0;
+    this._openRecordTap = null;
     // ?sessionId=xxx：小结入口指向另一场（只读回看），不改当前场次。
     this._summarySessionId =
       (query && (query.sessionId || query.sessionid)) || '';
@@ -212,6 +160,8 @@ Page({
 
   onShow() {
     if (!this.data.ready) return;
+    // 回到本场（从单线记录或别的目的地返回）：上一次点击的窗口作废，同一行可以立刻再点。
+    this._openRecordTap = null;
     // 正在填写的场次表单与新建线路表单都不重读重算，避免把输入冲掉；
     // 已经打开的加线面板也保持打开（返回本页不把用户刚打开的面板关掉）。
     const keepForm =
@@ -310,24 +260,32 @@ Page({
         isActive: session.id === activeRaw.id
       }));
 
+      // 统一列表的行：按本场关联顺序固定排列（store.routesForSession 的原顺序）。
+      // 刻意不按「最近记过」重排——记完一把回到本场时，刚才点过的行必须还在原处，
+      // 否则同一坐标会落到另一条线上。当前线用行上的选中态标出，不靠移动行位置。
       routes = store.routesForSession(archive, activeRaw.id).map(route => {
         const completion = store.routeCompletion(archive, route.id);
         const attemptCount = store.attemptsFor(archive, {
           sessionId: activeRaw.id,
           routeId: route.id
         }).length;
+        const stateText = actions.completionText(completion);
         return {
           id: route.id,
           name: route.name,
           // 旧 V 级线路没有 climbType，按抱石读取；只读展示，不回写档案。
           climbType: climbTypeOf(route),
-          grade: route.grade,
+          // 等级原样显示：抱石 V 级与顶绳/先锋 YDS 都按档案里的那一个写法，
+          // 不用表单占位文案（空等级在列表里就是空，不假装「请选择等级」）。
+          grade: route.grade || '',
           colorName: route.colorName || '',
           colorHex: route.colorHex || '#dee2e6',
           isSelected: route.id === archive.activeRouteId,
           isCompleted: Boolean(completion.completed),
           isClosed: Boolean(completion.closed),
-          completionText: actions.completionText(completion),
+          // 适用的文字状态：只在真的适用时才有字（已完攀 / 完攀待确认）。
+          stateText,
+          stateKind: stateText ? (completion.completed ? 'done' : 'pending') : '',
           attemptCount,
           attemptCountText: attemptCount + ' 把'
         };
@@ -353,25 +311,14 @@ Page({
         }));
     }
 
-    // 本场线路列表：只排展示顺序。「全部 N 条」计数就是本场关联数。
-    const routeSwitchAllRows = routes.slice();
-    const routeSwitchRows = routeSwitchShortList(
-      routes,
-      selectedRoute ? selectedRoute.id : '',
-      recentRouteIdsInSession(archive, activeRaw ? activeRaw.id : '', routes)
-    );
-
     this.setData({
       archiveId: (archive && archive.archiveId) || '',
       activeSession,
       sameDaySessions,
       routes,
+      // 计数就是本场关联数：0 条时标题行不写数量（空态自己说「还没有线路」）。
+      routeCountText: routes.length > 0 ? '本场 ' + routes.length + ' 条' : '',
       selectedRoute,
-      routeSwitchRows,
-      routeSwitchAllRows,
-      routeSwitchTotal: routeSwitchAllRows.length,
-      routeSwitchHasMore: routeSwitchAllRows.length > 3,
-      routeSwitchMoreText: '全部 ' + routeSwitchAllRows.length + ' 条',
       gymRoutes
     });
 
@@ -523,7 +470,9 @@ Page({
     this.archive = outcome.archive;
     // 用户自己切场次：小结跟着当前场次走，不再停留在 ?sessionId= 的回看目标上。
     this._summarySessionId = '';
-    this.setData({ storageError: '', notice: '', routeSwitchExpanded: false });
+    // 列表已经换成另一场：上一次点击的窗口作废（同一条长期线路在另一场里是另一次点击）。
+    this._openRecordTap = null;
+    this.setData({ storageError: '', notice: '' });
     this.refreshView();
   },
 
@@ -531,15 +480,14 @@ Page({
 
   /**
    * 只改当前选中线路（不导航、不建线、不产生把次）。
-   * 单线记录页使用入口自己的 routeId；这里保留选中用于列表高亮与资料页的「当前场次」。
+   * 单线记录页使用入口自己的 routeId；这里保留选中用于列表行高亮与资料页的「当前场次」。
    */
   selectRoute(event) {
     if (this.data.loadError) return { ok: false };
     const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
     if (!routeId) return { ok: false };
     if (routeId === this.archive.activeRouteId) {
-      // 点的就是当前线（例如在「全部 N 条」里点当前那一行）：只收起展示，不重复写盘。
-      if (this.data.routeSwitchExpanded) this.setData({ routeSwitchExpanded: false });
+      // 点的就是当前线：不重复写盘（同一行的第二次点击也不再产生第二次选中）。
       return { ok: true };
     }
     const outcome = store.selectRoute(routeId);
@@ -550,13 +498,13 @@ Page({
       return outcome;
     }
     this.archive = outcome.archive;
-    this.setData({ storageError: '', notice: '', linkRetry: null, routeSwitchExpanded: false });
+    this.setData({ storageError: '', notice: '', linkRetry: null });
     this.refreshView();
     return outcome;
   },
 
   /**
-   * 本场线路入口（T036）：整行点入这条线的单线记录页。
+   * 本场线路入口（T036 统一列表的整行点击，T037 也只是这一条路径）：整行点入单线记录页。
    *
    * 点击带下来的归属（archiveId / sessionId / routeId）先与当前页核对：切场次或换档
    * 之后才送到的旧点击不打开页、也不改任何选择。选中与导航都成功才离开本页；
@@ -587,8 +535,9 @@ Page({
     }
     const route = this.data.routes.find(item => item.id === routeId);
     if (!route) {
-      this.setData({ notice: '这条线路已经不在本场，已按最新档案刷新。' });
+      // 先按最新档案刷新，再写提示：loadPage 会重置本页说明文字，顺序反过来会被清掉。
       this.loadPage({ keepForm: true });
+      this.setData({ notice: '这条线路已经不在本场，已按最新档案刷新。' });
       return;
     }
 
@@ -600,8 +549,11 @@ Page({
   },
 
   /**
-   * 打开一条线在本场的单线记录：带齐档案、场次与长期线路 ID。
-   * 导航失败时留在本场列表，可再点同一行重试。
+   * 打开一条线在本场的单线记录：带齐档案、场次与长期线路 ID（归属只来自入口自己）。
+   *
+   * 同一行的快速连点只走一次：这一次点击已经带着原 routeId 去开页了，窗口内的第二次
+   * 不再发出第二个导航（也没机会再写一次选中）。导航失败会立刻把这个窗口作废，所以
+   * 失败后可以马上点同一条重试；从单线页返回本场（onShow）也作废，回来就能再点。
    */
   goToRecord(routeId) {
     const archiveId = this.archive && this.archive.archiveId;
@@ -610,6 +562,17 @@ Page({
       this.setData({ notice: '无法打开单线记录：缺少场次或线路归属，请从本场线路重试。' });
       return;
     }
+    const now = Date.now();
+    const lastTap = this._openRecordTap;
+    if (
+      lastTap &&
+      lastTap.routeId === routeId &&
+      now - lastTap.at < SAME_TAP_WINDOW_MS
+    ) {
+      return;
+    }
+    this._openRecordTap = { routeId, at: now };
+
     const url =
       RECORD_URL +
       '?archiveId=' +
@@ -621,26 +584,11 @@ Page({
     wx.navigateTo({
       url,
       fail: () => {
+        // 没打开就不留窗口：同一行立刻可以再点一次重试。
+        if (this._openRecordTap && this._openRecordTap.at === now) this._openRecordTap = null;
         this.setData({ notice: '单线记录页没有打开，请再点一次这条线路。' });
       }
     });
-  },
-
-  /**
-   * 「全部 N 条」：把本场所有线路都列出来。只切本页展示，不选线路、不写盘。
-   */
-  expandRouteSwitch() {
-    if (this.data.loadError) return;
-    if (this.data.routeSwitchExpanded) return;
-    this.setData({ routeSwitchExpanded: true });
-  },
-
-  /**
-   * 收起全部线路列表，回到短列表。只切展示：当前线、把次与照片都不变。
-   */
-  closeRouteSwitch() {
-    if (!this.data.routeSwitchExpanded) return;
-    this.setData({ routeSwitchExpanded: false });
   },
 
   /**
@@ -782,8 +730,7 @@ Page({
       Object.assign(this.addRouteFormPatch(), {
         storageError: '',
         notice: '',
-        linkRetry: null,
-        routeSwitchExpanded: false
+        linkRetry: null
       })
     );
     this.refreshView();
@@ -985,8 +932,7 @@ Page({
       Object.assign(this.addRouteFormPatch(), {
         storageError: '',
         notice: '',
-        linkRetry: null,
-        routeSwitchExpanded: false
+        linkRetry: null
       })
     );
     this.refreshView();

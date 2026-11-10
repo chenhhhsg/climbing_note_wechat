@@ -445,7 +445,7 @@ test('T030→T031 空档走完一次训练：首屏加两条线、各自记结�
   assert.equal(archiveOf().routes.length, 2);
   assert.equal(linkCount(flow.sessionId, flow.aId), 1);
   assert.equal(linkCount(flow.sessionId, flow.bId), 1);
-  assert.equal(flow.sessionPage.data.routeSwitchTotal, 2, '「全部 N 条」按真实本场关联计数');
+  assert.equal(flow.sessionPage.data.routes.length, 2, '本场线路列表按真实本场关联计数');
 
   switchTo(page, flow.aId);
   assert.equal(page.data.routeCountText, '3 把');
@@ -676,12 +676,16 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   assert.ok(resultSend < recent, '撤回区在结果按钮之后');
   assert.ok(recent < attemptsLink, '撤回区之后才是明细与资料入口');
 
-  // 场内页只有一个「本场线路」列表：整行点入单线记录，不在页内再铺一份结果区。
-  assert.ok(sessionWxml.indexOf('id="session-routes"') < sessionWxml.indexOf('id="route-switch"'));
+  // 场内页只有一个「本场线路」统一列表：整行点入单线记录，不在页内再铺一份结果区。
+  const sessionRoutesAt = sessionWxml.indexOf('id="session-routes"');
+  const routeListAt = sessionWxml.indexOf('id="route-list"');
+  assert.ok(sessionRoutesAt !== -1 && routeListAt !== -1, '场内页有本场线路与统一列表');
+  assert.ok(sessionRoutesAt < routeListAt, '加线入口在统一列表之前');
+  assert.equal(sessionWxml.match(/id="route-list"/g).length, 1, '场内只有这一份线路列表');
+  assert.doesNotMatch(sessionWxml, /id="route-switch"/, '不再有第二套换线区');
   assert.match(sessionWxml, /bindtap="openRecord"/);
   assert.doesNotMatch(sessionWxml, /class="result-button result-fail"/, '场内页不再内联结果按钮');
   assert.doesNotMatch(sessionWxml, /id="recent-attempt"/, '场内页不再内联最近一把');
-  assert.doesNotMatch(sessionWxml, /class="route-list"/);
 
   // 同一行、两个兄弟槽：撤回在前（左槽），恢复在后（右槽）。
   const rowAt = wxml.indexOf('class="recent-attempt-row"');
@@ -731,11 +735,11 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   assert.match(declarationsOf(wxss, '.recent-attempt-row'), /display:\s*flex/, '这一行是 flex 行');
   assert.doesNotMatch(recentCss, /position\s*:\s*(absolute|fixed)/, '这一行不用绝对定位叠放动作');
 
-  // 场内列表的长名最多两行：列表行不会被长名撑得不可读。
+  // 统一列表的长名不截断：换行显示，行宽不随名称长短变化。
   assert.match(
-    declarationsOf(fs.readFileSync(SESSION_WXSS, 'utf8'), '.route-switch-chip-name'),
-    /-webkit-line-clamp:\s*2/,
-    '缩略行的长名称最多两行'
+    declarationsOf(fs.readFileSync(SESSION_WXSS, 'utf8'), '.route-row-name'),
+    /word-break:\s*break-all/,
+    '统一列表的长名称换行显示，不省略、不截断'
   );
 
   // 结果区高度稳定：常规态的两个结果按钮、完攀收起与完攀待确认面板同一高度，所以撤回
@@ -1225,7 +1229,7 @@ test('T033 复验 切到同日另一场（当前选择被清空）时不冒出�
   flow.sessionPage.switchSession(tapDataset({ sessionId: flow.sessionId }));
   assert.equal(flow.sessionPage.data.activeSession.id, flow.sessionId);
   assert.equal(flow.sessionPage.data.selectedRoute, null, '切场次只改归属：当前选择被清空');
-  assert.ok(flow.sessionPage.data.routeSwitchTotal >= 2, '本场线路还在列表里，不必重新加线');
+  assert.ok(flow.sessionPage.data.routes.length >= 2, '本场线路还在列表里，不必重新加线');
   assert.equal(
     flow.sessionPage.data.recentAttempt,
     undefined,

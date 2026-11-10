@@ -1,17 +1,24 @@
 /**
  * 下次想爬独立清单页样式（T035）
  *
- * 与场内页、本次小结同一套配色与排版（墨绿主色 #173d32、橙 #ff793f、粉笔白 #fffcf3），
+ * T037：白色内容区 #FFFFFF、浅灰页底 #F2F4F3、深墨标题与正文 #182421、
+ * 墨绿 #1F5948 标主操作与当前项、橙色 #FF793F 只标完攀，
  * 只保留这一页真正用到的规则：分组标题、线路行（色标 + 状态 + 累计把数 + 最近备注）、
- * 空态与失败重试。触控目标按至少 88rpx（≈44px 逻辑像素）留。
+ * 空态与失败重试。触控目标按至少 44 逻辑像素留（px 兜底，320 视口也够）。
  */
 
+page {
+  background-color: #F2F4F3;
+}
+
 .page {
-  padding: 20rpx 32rpx 55rpx;
+  padding: 24rpx 24rpx 60rpx;
+  background-color: #F2F4F3;
 }
 
 .card {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
   border-radius: 8rpx;
   padding: 30rpx;
   margin-bottom: 24rpx;
@@ -23,7 +30,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 16rpx;
-  border-bottom: 2rpx solid #173d32;
+  border-bottom: 2rpx solid #1F5948;
   padding-bottom: 14rpx;
 }
 
@@ -32,14 +39,14 @@
   font-weight: 700;
   font-size: 39rpx;
   line-height: 1.35;
-  color: #173d32;
+  color: #182421;
 }
 
 .list-total {
   flex: none;
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-size: 26rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .list-hint,
@@ -55,7 +62,20 @@
   margin: 16rpx 0 8rpx;
   font-size: 24rpx;
   line-height: 1.6;
-  color: #526157;
+  color: #53615B;
+}
+
+/* 点到的行属于另一份档案：可见原因，不遮住清单本身 */
+.list-notice {
+  display: block;
+  margin: 12rpx 0 4rpx;
+  padding: 14rpx 18rpx;
+  background: #F7F1E2;
+  border-left: 8rpx solid #B7683D;
+  border-radius: 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
 }
 
 /* 空态：还没有收藏过 */
@@ -66,25 +86,25 @@
 .empty-text {
   font-size: 30rpx;
   font-weight: 700;
-  color: #173d32;
+  color: #182421;
 }
 
 .empty-hint {
   margin-top: 10rpx;
   font-size: 24rpx;
   line-height: 1.6;
-  color: #606d61;
+  color: #53615B;
 }
 
 /* 失败与重试 */
 .error-card {
-  background-color: #f7e6db;
+  background-color: #F7E6DB;
 }
 
 .error-title {
   font-size: 32rpx;
   font-weight: 700;
-  color: #943a23;
+  color: #943A23;
   margin-bottom: 12rpx;
 }
 
@@ -102,12 +122,12 @@
 
 /* 按钮 */
 .secondary-button {
-  background-color: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #173d32;
+  background-color: #FFFFFF;
+  color: #182421;
+  border: 2rpx solid #1F5948;
   border-radius: 8rpx;
   font-size: 28rpx;
-  min-height: 88rpx;
+  min-height: 44px;
   padding: 18rpx;
   box-sizing: border-box;
   display: flex;
@@ -122,7 +142,7 @@
 
 /* 按岩馆分组 */
 .gym-group {
-  background: #fffcf3;
+  background: #FFFFFF;
   border-radius: 8rpx;
   padding: 22rpx 24rpx;
   margin-top: 16rpx;
@@ -133,7 +153,7 @@
   align-items: baseline;
   justify-content: space-between;
   gap: 16rpx;
-  border-bottom: 1px solid #dfe0d2;
+  border-bottom: 1px solid #D7DED9;
   padding-bottom: 12rpx;
 }
 
@@ -141,22 +161,22 @@
   font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
   font-weight: 700;
   font-size: 30rpx;
-  color: #173d32;
+  color: #182421;
 }
 
 .gym-count {
   flex: none;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 /* 线路行：整行可点，按原线路 ID 进资料 */
 .route-row {
   display: flex;
   align-items: flex-start;
-  min-height: 88rpx;
+  min-height: 44px;
   padding: 18rpx 0;
-  border-bottom: 1px solid #f2efe2;
+  border-bottom: 1px solid #D7DED9;
 }
 
 .route-row:last-child {
@@ -169,7 +189,7 @@
   width: 24rpx;
   height: 24rpx;
   border-radius: 6rpx;
-  border: 2rpx solid #e0e0e0;
+  border: 2rpx solid #D7DED9;
   margin: 6rpx 16rpx 0 0;
 }
 
@@ -188,7 +208,7 @@
 .route-name {
   font-size: 29rpx;
   font-weight: 700;
-  color: #173d32;
+  color: #182421;
   word-break: break-all;
 }
 
@@ -196,7 +216,7 @@
   flex: none;
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-size: 26rpx;
-  color: #ff793f;
+  color: #FF793F;
 }
 
 /* 状态一律配文字：想爬 / 已完成 / 已归档（岩馆拆线） */
@@ -205,50 +225,60 @@
   font-size: 22rpx;
   padding: 4rpx 12rpx;
   border-radius: 6rpx;
-  background: #e4ebdf;
-  color: #355e50;
+  background: #E9EFEC;
+  color: #1F5948;
 }
 
 .route-state-completed {
-  background: #dfebd9;
-  color: #204b34;
+  background: #E9EFEC;
+  color: #1F5948;
 }
 
 .route-state-archived {
-  background: #ede6d7;
-  color: #674b39;
+  background: #F0EDE3;
+  color: #6B5544;
 }
 
 .route-meta {
   display: block;
   margin-top: 6rpx;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .route-note {
   display: block;
   margin-top: 6rpx;
   font-size: 24rpx;
-  color: #526157;
-  border-left: 4rpx solid #d2784f;
+  color: #53615B;
+  border-left: 4rpx solid #B7683D;
   padding-left: 14rpx;
   line-height: 1.5;
   word-break: break-all;
 }
 
 .route-note-empty {
-  border-left-color: #cbd0bf;
-  color: #7a8578;
+  border-left-color: #D7DED9;
+  color: #53615B;
 }
 
 .route-open {
   flex: none;
   margin-left: 16rpx;
   font-size: 26rpx;
-  color: #173d32;
+  color: #1F5948;
 }
 
 .back-section {
   margin-top: 24rpx;
+}
+
+@media (max-width: 350px) {
+  .page {
+    padding: 20rpx 16rpx 48rpx;
+  }
+
+  .gym-group {
+    padding: 18rpx 16rpx;
+  }
 }

@@ -125,6 +125,7 @@
                 class="secondary-button summary-pick {{item.checked ? 'summary-pick-on' : ''}}"
                 disabled="{{!item.canPick}}"
                 data-route-id="{{item.routeId}}"
+                data-action="{{item.checked ? 'remove' : 'add'}}"
                 bindtap="toggleSummaryPick"
               >{{item.pickText}}</button>
               <text

@@ -8,7 +8,7 @@
 }
 
 .card {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
   border-radius: 8rpx;
   padding: 30rpx;
   margin-bottom: 24rpx;
@@ -20,19 +20,19 @@
   line-height: 1.35;
   font-weight: 700;
   font-size: 32rpx;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 16rpx;
 }
 
 .error-card {
-  background-color: #f7e6db;
+  background-color: #F7E6DB;
 }
 
 .error-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #943a23;
+  color: #943A23;
   margin-bottom: 12rpx;
 }
 
@@ -60,12 +60,12 @@
 }
 
 .storage-error {
-  background-color: #f7e6db;
-  color: #943a23;
+  background-color: #F7E6DB;
+  color: #943A23;
 }
 
 .notice {
-  background-color: #f3edda;
+  background-color: #F7F1E2;
   color: #745241;
 }
 
@@ -90,8 +90,8 @@
   align-items: stretch;
   margin: 0 0 20rpx;
   overflow: hidden;
-  background: #173d32;
-  color: #fffcf3;
+  background: #FFFFFF;
+  border: 1px solid #D7DED9;
   border-radius: 8rpx;
 }
 
@@ -113,8 +113,8 @@
 
 .attempts-route-name {
   font-size: 32rpx;
-  font-family: "Songti SC", "SimSun", serif;
-  color: #fffcf3;
+  font-weight: 700;
+  color: #182421;
   word-break: break-all;
 }
 
@@ -122,7 +122,7 @@
   margin-top: 6rpx;
   font-size: 24rpx;
   line-height: 1.5;
-  color: #dbe7d6;
+  color: #53615B;
 }
 
 .attempts-session-meta {
@@ -131,7 +131,7 @@
   font-variant-numeric: tabular-nums;
   font-size: 22rpx;
   line-height: 1.5;
-  color: #dbe7d6;
+  color: #53615B;
   word-break: break-all;
 }
 
@@ -139,13 +139,26 @@
 .empty-attempts {
   font-size: 26rpx;
   line-height: 1.6;
-  color: #606d61;
+  color: #53615B;
   padding: 24rpx 0;
 }
 
+/* 明细行：整行可点（点哪一行就在那一行里编辑这一把的备注），命中区至少 44 逻辑像素高 */
 .attempt-item {
   background: transparent;
-  border-bottom: 1px solid #cbd0bf;
+  border-bottom: 1px solid #D7DED9;
+}
+
+.attempt-item:last-child {
+  border-bottom: none;
+}
+
+.attempt-row-tap {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 44px;
+  box-sizing: border-box;
   padding: 20rpx 0;
 }
 
@@ -157,18 +170,18 @@
 .attempt-label {
   font-size: 28rpx;
   font-weight: 700;
-  color: #173d32;
+  color: #182421;
   margin-right: 20rpx;
 }
 
 .attempt-result {
   font-size: 28rpx;
-  color: #173d32;
+  color: #182421;
   margin-right: 20rpx;
 }
 
 .attempt-send {
-  color: #b7532a;
+  color: #B7683D;
   font-weight: 700;
 }
 
@@ -176,46 +189,65 @@
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
+/* 长备注换行，不截断：原文与输入框里看到的是同一段话 */
 .attempt-note {
   display: block;
-  border-left: 4rpx solid #d2784f;
+  border-left: 4rpx solid #B7683D;
   padding: 3rpx 0 3rpx 16rpx;
   margin: 12rpx 0;
   font-size: 26rpx;
   line-height: 1.6;
-  color: #526157;
+  color: #53615B;
+  word-break: break-all;
 }
 
-.attempt-note-button {
-  margin-top: 12rpx;
+/* 行内的备注入口提示：和整行是同一个动作，不再是一个独立的小按钮 */
+.attempt-note-action {
   display: block;
-  text-align: left;
+  margin-top: 8rpx;
+  font-size: 26rpx;
+  line-height: 1.4;
+  color: #1F5948;
 }
 
-/* 备注编辑 */
+/* 备注编辑：就地展开在刚点过的那一行下面（不滚动、不挪坐标） */
 .note-editor {
-  margin-bottom: 20rpx;
+  margin: 4rpx 0 16rpx;
+  padding: 20rpx;
+  background: #F2F4F3;
+  border-left: 8rpx solid #1F5948;
+  border-radius: 8rpx;
+}
+
+.note-title {
+  display: block;
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #182421;
 }
 
 .note-context {
   display: block;
   font-size: 24rpx;
   line-height: 1.5;
-  color: #606d61;
+  color: #53615B;
   margin-bottom: 12rpx;
 }
 
 .note-input {
   width: 100%;
   min-height: 140rpx;
-  background-color: #f7f4ea;
-  border-radius: 12rpx;
+  background-color: #F2F4F3;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
   padding: 20rpx;
   font-size: 28rpx;
+  line-height: 1.6;
   box-sizing: border-box;
+  word-break: break-all;
 }
 
 .button-row {
@@ -235,14 +267,14 @@
   margin-top: 16rpx;
   font-size: 22rpx;
   line-height: 1.6;
-  color: #606d61;
+  color: #53615B;
 }
 
 /* 通用按钮：常用触控目标至少 44×44 逻辑像素（88rpx） */
 .primary-button,
 .secondary-button,
 .text-button {
-  min-height: 88rpx;
+  min-height: 44px;
   box-sizing: border-box;
   display: flex;
   align-items: center;
@@ -257,8 +289,8 @@
 }
 
 .primary-button {
-  background-color: #173d32;
-  color: #fffcf3;
+  background-color: #1F5948;
+  color: #FFFFFF;
   border-radius: 8rpx;
   font-size: 30rpx;
   padding: 22rpx;
@@ -266,9 +298,9 @@
 }
 
 .secondary-button {
-  background-color: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #173d32;
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
   border-radius: 8rpx;
   font-size: 28rpx;
   padding: 18rpx;
@@ -276,7 +308,7 @@
 
 .text-button {
   background-color: transparent;
-  color: #173d32;
+  color: #1F5948;
   font-size: 26rpx;
   padding: 8rpx 0;
 }

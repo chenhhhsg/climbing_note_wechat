@@ -39,8 +39,19 @@
       <text class="notice-hint">点击收起</text>
     </view>
 
+    <!--
+      入口归属不符（T037）：这一下是另一份本机档案渲染时留下的入口，本档里同名的
+      routeId 不能顶替它。只显示原因与返回路径，不展示任何线路内容，也不受理写入。
+    -->
+    <view wx:if="{{claimError}}" id="claim-error" class="card error-card">
+      <text class="error-title">这个入口不属于现在的本机档案</text>
+      <text id="claim-error-text" class="error-text">{{claimError}}</text>
+      <text class="error-hint">原档案与照片都没有被改写；请从当前的场内页重新打开这条线。</text>
+      <button id="claim-back" class="secondary-button" bindtap="backToList">返回本场线路</button>
+    </view>
+
     <!-- 这条线路不在本机档案里：不猜、不建 -->
-    <view wx:if="{{notFound}}" id="not-found" class="card empty-card">
+    <view wx:elif="{{notFound}}" id="not-found" class="card empty-card">
       <text class="empty-title">找不到这条线路</text>
       <text class="empty-hint">本机档案里没有这条长期线路，可能来自旧云记录；旧记录请从「旧记录」入口按原 ID 回看。</text>
     </view>

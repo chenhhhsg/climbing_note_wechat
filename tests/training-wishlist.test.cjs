@@ -1184,9 +1184,12 @@ test('T035 独立清单：按岩馆分组显示想爬/已完成/已归档，带�
   const activeRouteBefore = archiveOf().activeRouteId;
   const linksBefore = archiveOf().sessionRoutes.length;
   resetWxLog();
-  page.openRoute(tapDataset({ routeId: done.id }));
+  page.openRoute(tapDataset({ archiveId: archiveOf().archiveId, routeId: done.id }));
   assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + done.id
+    '/pages/training-route/training-route?archiveId=' +
+      archiveOf().archiveId +
+      '&routeId=' +
+      done.id
   ]);
   assert.equal(rawOf(ARCHIVE_KEY), archiveBefore);
   assert.equal(rawOf(WISHLIST_KEY), wishlistBefore);
@@ -1217,9 +1220,12 @@ test('T035 独立清单：第二馆 B 的线按 B 的原线路 ID 进资料，�
 
   // 点选第二馆 B：进的是 B 那条线的资料（原照片、备注与历史都由原线路 ID 决定）。
   resetWxLog();
-  page.openRoute(tapDataset({ routeId: routeB.id }));
+  page.openRoute(tapDataset({ archiveId: archiveOf().archiveId, routeId: routeB.id }));
   assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + routeB.id
+    '/pages/training-route/training-route?archiveId=' +
+      archiveOf().archiveId +
+      '&routeId=' +
+      routeB.id
   ]);
   const routePage = openRoutePage(routeB.id, { [routeB.id]: savedPhotoView('/tmp/thumb-b.jpg') });
   assert.equal(routePage.data.route.id, routeB.id);

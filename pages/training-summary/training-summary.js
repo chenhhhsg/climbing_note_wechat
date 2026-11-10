@@ -120,8 +120,45 @@ Page({
       return;
     }
 
+    // 入口归属缺项（T037）：小结必须带明示的 archiveId 与 sessionId 才能核对这是哪一份
+    // 档案里的哪一场。缺任一项都只显示原因与返回入口，**不拿当前活动场次顶替**——否则
+    // 会把另一场的内容当成本次要看的小结，也无法判断这一份属于哪一份档案。
+    if (!this._archiveIdClaim || !this._viewSessionId) {
+      this.setData({
+        ready: true,
+        loadError: '',
+        storageError: '',
+        notice: '',
+        summaryRows: [],
+        summaryReady: false,
+        summaryError: this._archiveIdClaim
+          ? '这个入口没有带要看哪一场（sessionId），不拿当前场次顶替；请从本场线路页的小结入口打开。'
+          : '这个入口没有带本机档案归属（archiveId），无法核对这份小结属于哪一份档案；请从本场线路页的小结入口打开。',
+        summarySessionId: '',
+        summaryGymId: '',
+        summaryGymName: '',
+        summaryDate: '',
+        summaryLabel: '',
+        summaryViewingOther: false,
+        summaryCountText: '',
+        summarySendText: '',
+        summaryPendingText: '',
+        summaryWishlistError: '',
+        summaryHintText: '',
+        summaryEmpty: true,
+        hasSummaryRows: false,
+        summarySessionOptions: [],
+        summarySessionPickerVisible: false,
+        summarySessionIndex: -1,
+        summarySessionValue: '',
+        activeSessionId: loaded.archive.activeSessionId || '',
+        activeSessionLabel: ''
+      });
+      return;
+    }
+
     // 串档：入口记下的档案 ID 与本机现在这一份不同 → 不展示任何场次，也不受理勾选。
-    if (this._archiveIdClaim && this._archiveIdClaim !== loaded.archive.archiveId) {
+    if (this._archiveIdClaim !== loaded.archive.archiveId) {
       this.setData({
         ready: true,
         loadError: '',
@@ -209,7 +246,8 @@ Page({
   refreshSummary() {
     const archive = this.archive;
     const activeId = (archive && archive.activeSessionId) || '';
-    const requested = this._viewSessionId || activeId;
+    // 只看入口点名的那一场：没有入口场次时上面已经给出可见原因，这里不再回落到当前场次。
+    const requested = this._viewSessionId;
     const summary = buildSessionSummary(archive, requested);
     const choice = this.summarySessionChoice(archive);
     const activeSession = ((archive && archive.sessions) || []).find(
@@ -371,6 +409,10 @@ Page({
 
     const row = (this.data.summaryRows || []).find(item => item.routeId === routeId);
     if (!row) return;
+    // 事件原意：按钮带下来的是「加入」还是「撤下」。带原意就照原意执行，同一事件重放或
+    // 延迟送达只会把同一个动作再做一次（数据层按 archiveId + routeId 幂等：已加入再说
+    // 加入只回读，不会因为界面上的勾选态被反着执行而把已保存的状态逆转）。
+    const action = dataset.action === 'add' || dataset.action === 'remove' ? dataset.action : '';
     // 已完攀的线不在小结里勾选（按 T027 语义归到「已完成」），点它不产生任何写入。
     if (!row.pickable) return;
     // 清单读不出来（损坏、版本不支持、读取失败）：说明原因并收回写入口，不落盘。
@@ -381,9 +423,12 @@ Page({
       return;
     }
 
-    const outcome = row.checked
-      ? wishlist.removeWishlist(routeId, this.wishlistOwnership())
-      : wishlist.addWishlist(routeId, this.wishlistOwnership());
+    // 没有带原意的旧事件（编译时直开本页、旧渲染）才按这一行当前的勾选态推一次。
+    const intent = action || (row.checked ? 'remove' : 'add');
+    const outcome =
+      intent === 'remove'
+        ? wishlist.removeWishlist(routeId, this.wishlistOwnership())
+        : wishlist.addWishlist(routeId, this.wishlistOwnership());
 
     if (!outcome.ok) {
       const writeFailed = outcome.code === 'write-failed';
@@ -424,11 +469,23 @@ Page({
    * 只读打开，不新建场次、不改当前线路，也不写任何键。
    */
   openSummaryRoute(event) {
+    if (this.data.loadError || !this.data.summaryReady) return;
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const routeId = dataset.routeId;
     if (!routeId) return;
+    // 新入口带明示归属：渲染这一页所用的档案 ID + 长期线路 ID 一起带过去，
+    // 资料页按它核对入口是否还属于本机现在这一份档案；换档后的迟到点击不会打开别的档。
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (!archiveId) {
+      this.setData({ notice: '这份小结没有可用的本机档案归属，暂不打开线路资料。' });
+      return;
+    }
     wx.navigateTo({
-      url: '/pages/training-route/training-route?routeId=' + routeId
+      url:
+        '/pages/training-route/training-route?archiveId=' +
+        encodeURIComponent(archiveId) +
+        '&routeId=' +
+        encodeURIComponent(routeId)
     });
   },
 
