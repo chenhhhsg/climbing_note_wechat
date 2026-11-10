@@ -25,6 +25,7 @@ const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-sess
 const SESSION_WXSS = path.join(ROOT, 'pages', 'training-session', 'training-session.wxss');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
+const SUMMARY_JS = path.join(ROOT, 'utils', 'training-session-summary.js');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 const PHOTO_KEY = 'climbingNote.training.v1.photos';
@@ -107,6 +108,7 @@ process.on('exit', () => {
 const db = require(DB_JS);
 const realGetRecentRecords = db.getRecentRecords;
 const store = require(STORE_JS);
+const { buildSessionSummary } = require(SUMMARY_JS);
 
 // 捕获原生 Page(...) 定义
 function capturePage(jsPath) {
@@ -1220,12 +1222,16 @@ test('T031 重新打开同一场次恢复持久化的当前线，并按原 ID �
   assert.equal(reopened.data.attempts[0].note, 'A 的备注');
   assert.equal(reopened.data.routeCountText, '1 把');
 
-  // 小结与清单同样按原线路 ID 列出这条线。
+  // 小结（T034 起在独立页，按原 sessionId 取数）与清单同样按原线路 ID 列出这条线。
+  const summary = buildSessionSummary(archiveOf(), a.session.id);
   assert.equal(
-    reopened.data.summaryRows.some(row => row.routeId === a.route.id),
+    summary.routes.some(row => row.routeId === a.route.id),
     true,
     '小结按原线路 ID 列出当前线'
   );
+  // 场内页的小结入口按原 sessionId 指向这一场（打开独立小结页时带过去的就是它）。
+  assert.equal(reopened.data.summaryEntrySessionId, a.session.id, '入口指向本场');
+  assert.equal(reopened.data.summaryEntryViewingOther, false);
   assert.equal(
     reopened.data.wishlistWanted.some(row => row.routeId === a.route.id),
     true,

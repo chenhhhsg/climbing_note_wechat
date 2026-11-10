@@ -1,9 +1,10 @@
 /**
- * T029 本次攀爬小结与下次续爬选择回归测试（R1、R2、R3 的离线部分）
+ * T029/T034 本次攀爬小结与下次续爬选择回归测试（R1、R2、R3 的离线部分）
  *
- * 直接加载真实的 utils/training-session-summary.js、utils/training-wishlist.js 与正式
- * 场内页 pages/training-session、底部统计页 pages/stats，用隔离的微信本地存储替身与
- * 写入故障注入驱动真实处理器，并核对 WXML 里的真实按钮绑定。
+ * 直接加载真实的 utils/training-session-summary.js、utils/training-wishlist.js、正式
+ * 场内页 pages/training-session、独立小结页 pages/training-summary 与底部统计页
+ * pages/stats，用隔离的微信本地存储替身与写入故障注入驱动真实处理器，并核对 WXML 里的
+ * 真实按钮绑定。
  *
  * 覆盖任务单的三条验收标准（离线部分）：
  * - 同馆同日两场各自统计：第一场 2 条线 3 把、完攀线路正确，第二场只算它自己那一把；
@@ -12,9 +13,10 @@
  *   待保存操作、旧云汇总与自测成绩都不计入；
  * - 未完成线路勾选进本馆「下次想爬」只出现一次，取消与写失败都显示实际保存状态，
  *   其他收藏不丢失；重开与离线回看仍按原 sessionId、原线路 ID 取数；
- * - 小结区里的只读回看入口：两日三场时能直接从控件里选昨天的原场看整份小结，
- *   回到原线路照片后返回仍停在所选场次，也能选回当前场次；选择只换所看的小结，
- *   不改正在记录的 activeSession、不建场次、不写训练，也不挤占上方首屏结果按钮。
+ * - T034：小结搬到独立页 pages/training-summary，场内只留小结入口。入口传 archiveId 与
+ *   sessionId；小结页按原 sessionId 取数，重显、返回与查看另一场都读指定场次；未知或
+ *   串档的 sessionId 给出可见状态而不展示另一场；只读回看不改档案、不改清单，回看入口
+ *   （日期 · 岩馆 · 第 N 场）可以换看别的场次，也能回到当前场次小结。
  *
  * 刻意不提供 wx.cloud 与本地文件系统：小结与勾选都不得依赖云能力，也不读写照片文件
  * （照片文件本身由 T019/T028 的测试覆盖）。真机触控、手机字体与真实跨日留给负责人整体
@@ -36,6 +38,14 @@ const FITNESS_JS = path.join(ROOT, 'utils', 'fitness-test.js');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
+const SUMMARY_PAGE_JS = path.join(ROOT, 'pages', 'training-summary', 'training-summary.js');
+const SUMMARY_PAGE_WXML = path.join(
+  ROOT,
+  'pages',
+  'training-summary',
+  'training-summary.wxml'
+);
+const APP_JSON = path.join(ROOT, 'app.json');
 const STATS_JS = path.join(ROOT, 'pages', 'stats', 'stats.js');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
@@ -77,12 +87,14 @@ function rawOf(key) {
   return storage.has(key) ? storage.get(key) : '';
 }
 
-const wxLog = { navigations: [], toasts: [], switches: [] };
+const wxLog = { navigations: [], toasts: [], switches: [], backs: [], relaunches: [] };
 
 function resetWxLog() {
   wxLog.navigations = [];
   wxLog.toasts = [];
   wxLog.switches = [];
+  wxLog.backs = [];
+  wxLog.relaunches = [];
 }
 
 // 刻意不带 cloud；小结与勾选也不得碰文件系统（小结只读训练记录）。
@@ -113,6 +125,12 @@ global.wx = {
   navigateTo(options) {
     wxLog.navigations.push(options.url);
   },
+  navigateBack(options) {
+    wxLog.backs.push(options || {});
+  },
+  reLaunch(options) {
+    wxLog.relaunches.push(options.url);
+  },
   switchTab(options) {
     wxLog.switches.push(options.url);
   },
@@ -141,6 +159,7 @@ function capturePage(jsPath) {
 }
 
 const sessionDefinition = capturePage(SESSION_JS);
+const summaryPageDefinition = capturePage(SUMMARY_PAGE_JS);
 const statsDefinition = capturePage(STATS_JS);
 
 /** 页面实例替身：支持 wx 的 setData 数据路径写法。 */
@@ -202,6 +221,24 @@ function openSessionPage(query) {
   page._photoUi = fakePhotoUi();
   page.refreshView();
   return page;
+}
+
+/**
+ * 打开独立小结页（T034）：走真实 onLoad，参数就是场内入口传下来的 archiveId 与 sessionId。
+ * 该页不接照片服务，因此不需要照片替身。
+ */
+function openSummaryPage(query) {
+  const page = createPage(summaryPageDefinition);
+  page.onLoad(query || {});
+  return page;
+}
+
+/** 场内页小结入口的完整导航 URL（场内入口按渲染时的场次与档案 ID 拼出来）。 */
+function summaryEntryUrl(page) {
+  const params = ['sessionId=' + encodeURIComponent(page.data.summaryEntrySessionId)];
+  const archiveId = page.archive && page.archive.archiveId;
+  if (archiveId) params.push('archiveId=' + encodeURIComponent(archiveId));
+  return '/pages/training-summary/training-summary?' + params.join('&');
 }
 
 function openStatsPage() {
@@ -613,14 +650,85 @@ test('R2 旧档案（缺后加字段）兼容读取后小结照常', () => {
 });
 
 // ------------------------------------------------------------------ *
-// R3 页面入口、勾选与只读
+// R3 场内入口、独立小结页、勾选与只读（T034）
 // ------------------------------------------------------------------ *
 
-test('R3 场内页小结显示本场读数与完攀状态，未完成线路可勾进本馆「下次想爬」', () => {
-  const { s1, boulder, rope } = twoSessionsFixture();
-  // 夹具最后 active 是第二场；这里显式只读回看第一场的小结。
-  const page = openSessionPage({ sessionId: s1.id });
+const SUMMARY_PAGE_FILE = 'pages/training-summary/training-summary';
 
+test('R3 场内只留小结入口：跳转带上 archiveId 与 sessionId，打开本身不写任何数据', () => {
+  const { s2 } = twoSessionsFixture();
+  const archiveId = archiveOf().archiveId;
+  const archiveBytes = rawOf(ARCHIVE_KEY);
+  const wishlistBytes = rawOf(WISHLIST_KEY);
+  const archiveWrites = writesOf(ARCHIVE_KEY);
+  const wishlistWrites = writesOf(WISHLIST_KEY);
+
+  const page = openSessionPage();
+  assert.equal(page.data.summaryEntryReady, true);
+  assert.equal(page.data.summaryEntrySessionId, s2.id, '默认入口指向当前场次');
+  assert.equal(page.data.summaryEntryViewingOther, false);
+  assert.match(page.data.summaryEntryLabel, /^2026-11-10 · A 馆 · 第 2 场$/);
+
+  // 入口不读清单、不算把数：场内页不再有小结行与勾选状态。
+  assert.equal(page.data.summaryRows, undefined, '场内页不再持有一份小结行');
+  assert.equal(page.data.summaryCountText, undefined);
+  assert.equal(page.data.summaryWishlistError, undefined);
+
+  resetWxLog();
+  page.openSessionSummary();
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(wxLog.navigations[0], summaryEntryUrl(page));
+  assert.equal(
+    wxLog.navigations[0],
+    '/pages/training-summary/training-summary?sessionId=' +
+      s2.id +
+      '&archiveId=' +
+      archiveId,
+    '入口按渲染时的场次与档案 ID 跳转'
+  );
+
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '打开小结不写档案');
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBytes, '打开小结不写清单');
+  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
+  assert.equal(writesOf(WISHLIST_KEY), wishlistWrites);
+  assert.equal(archiveOf().activeSessionId, s2.id, '打开小结不结束也不新建场次');
+});
+
+test('R3 场内小结入口保留既有入口：?sessionId= 指向另一场，自己切场次后入口回到当前场', () => {
+  const { s1, s2 } = twoSessionsFixture();
+  const s3 = startAt(DAY, GYM_A); // 第三场：空场，用来验证切场后入口跟着走
+  assert.equal(archiveOf().activeSessionId, s3.id);
+
+  const page = openSessionPage({ sessionId: s1.id });
+  assert.equal(page.data.summaryEntryReady, true);
+  assert.equal(page.data.summaryEntrySessionId, s1.id, '?sessionId= 指定入口指向哪一场');
+  assert.equal(page.data.summaryEntryViewingOther, true, '明确标出入口指向另一场');
+  assert.equal(archiveOf().activeSessionId, s3.id, '指定入口本身不改当前场次');
+
+  // 用户显式切场次：入口跟随当前场次，指定目标被清掉。
+  page.switchSession(tapDataset({ sessionId: s2.id }));
+  assert.equal(page.data.summaryEntrySessionId, s2.id);
+  assert.equal(page.data.summaryEntryViewingOther, false);
+
+  // 目标场次已不在档案里时不显示入口（不把不存在的场次带进小结页）。
+  page._summarySessionId = 'session-gone';
+  page.refreshSummaryEntry();
+  assert.equal(page.data.summaryEntryReady, false);
+  assert.equal(page.data.summaryEntrySessionId, '');
+
+  // 同一场次在页面上的既有入口一个不少（同日场次切换继续可用）。
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  assert.equal(typeof sessionDefinition.switchSession, 'function');
+  assert.ok(handlersIn(wxml).includes('switchSession'));
+});
+
+test('R3 独立小结页显示指定场次读数与完攀状态，未完成线路可勾进本馆「下次想爬」', () => {
+  const { s1, s2, boulder, rope } = twoSessionsFixture();
+  // 夹具最后 active 是第二场；小结页按入口传下来的 sessionId 只读回看第一场。
+  const page = openSummaryPage({ sessionId: s1.id, archiveId: archiveOf().archiveId });
+
+  assert.equal(page.data.ready, true);
+  assert.equal(page.data.loadError, '');
   assert.equal(page.data.summaryReady, true);
   assert.equal(page.data.summaryError, '');
   assert.equal(page.data.summarySessionId, s1.id);
@@ -637,6 +745,22 @@ test('R3 场内页小结显示本场读数与完攀状态，未完成线路可�
 
   const ropeRow = page.data.summaryRows.find(row => row.routeId === rope.id);
   assert.equal(ropeRow.pickable, true);
+  assert.equal(ropeRow.attemptCountText, '1 把', '各线分项按本场自己的把数');
+  assert.equal(ropeRow.sendCount, 0);
+
+  // 同日另一场（S2）：读数、线路数与分项都与 S1 各自独立，不串场。
+  const second = openSummaryPage({ sessionId: s2.id, archiveId: archiveOf().archiveId });
+  assert.equal(second.data.summarySessionId, s2.id);
+  assert.equal(second.data.summaryCountText, '1 条线 · 1 把');
+  assert.equal(second.data.summaryRows.length, 1);
+  assert.equal(
+    second.data.summaryRows.some(row => row.routeId === boulder.id),
+    false,
+    'S1 独有的线不出现在 S2'
+  );
+  const secondRope = second.data.summaryRows.find(row => row.routeId === rope.id);
+  assert.equal(secondRope.attemptCountText, '1 把');
+  assert.equal(secondRope.sendCount, 0, 'S1 的完攀不串到 S2');
   assert.equal(ropeRow.canPick, true);
   assert.equal(ropeRow.checked, false);
   assert.equal(ropeRow.pickText, '加入下次想爬');
@@ -653,7 +777,6 @@ test('R3 场内页小结显示本场读数与完攀状态，未完成线路可�
   assert.equal(picked.checked, true);
   assert.equal(picked.pickText, '✓ 已加入下次想爬');
   assert.equal(picked.wishlistStateText, '已在下次想爬');
-  assert.equal(page.data.wishlistWanted.filter(row => row.routeId === rope.id).length, 1);
   assert.equal(page.data.notice, '已加入下次想爬；下次进这家岩馆就能从清单里按原线路 ID 续记。');
 
   // 取消：显示实际保存状态，清单回到空。
@@ -661,9 +784,325 @@ test('R3 场内页小结显示本场读数与完攀状态，未完成线路可�
   assert.equal(page.data.notice, '已撤下这条线的收藏；其他收藏、照片与把次都不变。');
   assert.equal(page.data.summaryRows.find(row => row.routeId === rope.id).checked, false);
   assert.equal(wishlist.listWishlist(archiveOf(), {}).items.length, 0);
+
+  // 重复点击（迟到回调）：同一原 routeId 仍只有一条。
+  page.toggleSummaryPick(tapDataset({ routeId: rope.id })); // 加入
+  page.toggleSummaryPick(tapDataset({ routeId: rope.id })); // 撤下
+  page.toggleSummaryPick(tapDataset({ routeId: rope.id })); // 再加入
+  assert.equal(
+    wishlist.loadWishlist().state.items.filter(item => item.routeId === rope.id).length,
+    1,
+    '同一原 routeId 只出现一条'
+  );
 });
 
-test('R3 重复点击只出现一次，其他收藏不丢失（同馆与别的岩馆都不受影响）', () => {
+test('R3 独立小结页：同日两场与跨天夹具按指定场次取数，重显与返回都读同一场', () => {
+  const { yesterday, todayActive, boulder } = twoDaysFixture();
+  const archiveId = archiveOf().archiveId;
+  const archiveBytes = rawOf(ARCHIVE_KEY);
+  const wishlistBytes = rawOf(WISHLIST_KEY);
+  const archiveWrites = writesOf(ARCHIVE_KEY);
+  const wishlistWrites = writesOf(WISHLIST_KEY);
+  io.fsCalls = [];
+
+  // 打开昨天那一场：入口传下来的场次决定读数，不跟着当前场次走。
+  const page = openSummaryPage({ sessionId: yesterday.id, archiveId });
+  assert.equal(page.data.summarySessionId, yesterday.id);
+  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
+  assert.equal(page.data.summaryDate, YESTERDAY);
+  assert.equal(page.data.summaryLabel, '第 1 场');
+  assert.equal(page.data.summaryViewingOther, true);
+  assert.equal(archiveOf().activeSessionId, todayActive.id, '当前场次没有被改');
+
+  // 重显（onShow）：仍读同一场，读数一致。
+  page.onShow();
+  assert.equal(page.data.summarySessionId, yesterday.id);
+  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
+
+  // 返回后再进来（重开页面）：仍按入口传下来的原 sessionId 取数。
+  const reopened = openSummaryPage({ sessionId: yesterday.id, archiveId });
+  assert.equal(reopened.data.summarySessionId, yesterday.id);
+  assert.equal(reopened.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
+  assert.equal(
+    reopened.data.summaryRows.find(row => row.routeId === boulder.id).stateText,
+    '已完攀'
+  );
+
+  // 单纯打开、重显与返回前后档案与清单逐字节一致，且不碰文件系统。
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '档案逐字节不变');
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBytes, '清单逐字节不变');
+  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
+  assert.equal(writesOf(WISHLIST_KEY), wishlistWrites);
+  assert.equal(io.fsCalls.length, 0, '小结页不碰文件系统');
+});
+
+test('R3 独立小结页：只读回看入口能换看别的场次，也能回到当前场次', () => {
+  const { yesterday, todayFirst, todayActive, boulder } = twoDaysFixture();
+  const archiveId = archiveOf().archiveId;
+  const archiveBytes = rawOf(ARCHIVE_KEY);
+  const archiveWrites = writesOf(ARCHIVE_KEY);
+  const wishlistWrites = writesOf(WISHLIST_KEY);
+
+  const page = openSummaryPage({ sessionId: todayActive.id, archiveId });
+  assert.equal(page.data.summarySessionId, todayActive.id, '默认看入口指定的当前场次');
+  assert.equal(page.data.summaryViewingOther, false);
+  assert.equal(page.data.summaryCountText, '0 条线 · 0 把');
+
+  // 真实可见的只读选择入口：日期 · 岩馆 · 场次序号，当前场次也在选项里（空场也能选回来）。
+  assert.equal(page.data.summarySessionPickerVisible, true);
+  assert.deepEqual(
+    page.data.summarySessionOptions.map(option => option.label),
+    [
+      '2026-11-10 · A 馆 · 第 2 场',
+      '2026-11-10 · A 馆 · 第 1 场',
+      '2026-11-09 · A 馆 · 第 1 场'
+    ],
+    '按日期新在前、同日序号大在前，并写明岩馆与场次序号'
+  );
+  assert.equal(page.data.summarySessionOptions[0].isActive, true);
+  assert.equal(page.data.summarySessionIndex, 0);
+  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 2 场');
+
+  // 从控件里选昨天的原场：读到昨天两线三把的整份小结。
+  const yesterdayIndex = page.data.summarySessionOptions.findIndex(
+    option => option.id === yesterday.id
+  );
+  page.onSummarySessionChange({ detail: { value: String(yesterdayIndex) } });
+  assert.equal(page.data.summarySessionId, yesterday.id);
+  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
+  assert.equal(page.data.summaryViewingOther, true);
+  assert.equal(page.data.summaryLabel, '第 1 场');
+  assert.equal(page.data.summaryDate, YESTERDAY);
+  assert.equal(page.data.summarySessionValue, '2026-11-09 · A 馆 · 第 1 场');
+  const boulderRow = page.data.summaryRows.find(row => row.routeId === boulder.id);
+  assert.equal(boulderRow.stateText, '已完攀');
+  assert.equal(boulderRow.pickable, false, '已完攀的线仍不出勾选入口');
+
+  // 从小结回到昨天那条线的原照片（同一个长期线路 ID）。
+  resetWxLog();
+  page.openSummaryRoute(tapDataset({ routeId: boulder.id }));
+  assert.deepEqual(wxLog.navigations, [
+    '/pages/training-route/training-route?routeId=' + boulder.id
+  ]);
+
+  // 从详情页返回本页（onShow 重算）：仍停在所选的昨天那一场。
+  page.onShow();
+  assert.equal(page.data.summarySessionId, yesterday.id, '返回后仍是所看的场次');
+  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
+
+  // 同一天里的既有场次切换继续可用：选今天第一场。
+  const todayIndex = page.data.summarySessionOptions.findIndex(
+    option => option.id === todayFirst.id
+  );
+  page.onSummarySessionChange({ detail: { value: todayIndex } });
+  assert.equal(page.data.summarySessionId, todayFirst.id);
+  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
+  assert.equal(page.data.summaryViewingOther, true, '与当前场次不同就明确标出');
+
+  // 「回到本场小结」：换回正在记录的那一场，当前场次始终没变。
+  page.returnToActiveSession();
+  assert.equal(page.data.summarySessionId, todayActive.id);
+  assert.equal(page.data.summaryViewingOther, false);
+  assert.equal(page.data.summaryCountText, '0 条线 · 0 把');
+  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 2 场');
+
+  // 选择只换所看的小结：不改当前场次、不建场次、不写训练，也不新建清单条目。
+  assert.equal(archiveOf().activeSessionId, todayActive.id);
+  assert.equal(archiveOf().sessions.length, 3);
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '回看不写档案');
+  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
+  assert.equal(writesOf(WISHLIST_KEY), wishlistWrites);
+});
+
+test('R3 独立小结页回看入口：只有一场可看时不出现；越界或空的选中值不换所看场次', () => {
+  const only = startAt(DAY, GYM_A);
+  record(only, newRoute(only, { name: '蓝色动态线', grade: 'V3' }), 'fail', '只有这一场');
+
+  const page = openSummaryPage({ sessionId: only.id, archiveId: archiveOf().archiveId });
+  assert.equal(page.data.summarySessionOptions.length, 1);
+  assert.equal(page.data.summarySessionPickerVisible, false, '没有别的场次可回看就不显示选择器');
+  assert.equal(page.data.summarySessionIndex, 0);
+  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 1 场');
+
+  const before = rawOf(ARCHIVE_KEY);
+  page.onSummarySessionChange({ detail: { value: '9' } });
+  page.onSummarySessionChange({ detail: {} });
+  assert.equal(page.data.summarySessionId, only.id);
+  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
+  assert.equal(rawOf(ARCHIVE_KEY), before);
+});
+
+test('R3 独立小结页：指定的空场显示空态，已完攀的行不出勾选入口', () => {
+  const empty = startAt(DAY, GYM_A);
+  const emptyPage = openSummaryPage({ sessionId: empty.id, archiveId: archiveOf().archiveId });
+  assert.equal(emptyPage.data.summaryReady, true);
+  assert.equal(emptyPage.data.summarySessionId, empty.id);
+  assert.equal(emptyPage.data.summaryEmpty, true);
+  assert.equal(emptyPage.data.hasSummaryRows, false);
+  assert.equal(emptyPage.data.summaryCountText, '0 条线 · 0 把');
+  assert.equal(emptyPage.data.summaryHintText, '');
+  assert.equal(emptyPage.data.summaryRows.length, 0);
+
+  // 另一场：只完攀一条抱石线，没有可勾选的线，也不提示勾选。
+  const done = startAt(DAY, GYM_A);
+  const boulder = newRoute(done, { name: '蓝色动态线', grade: 'V3' });
+  record(done, boulder, 'send');
+  const page = openSummaryPage({ sessionId: done.id, archiveId: archiveOf().archiveId });
+  assert.equal(page.data.summaryCountText, '1 条线 · 1 把 · 完攀 1 把');
+  assert.equal(page.data.summaryRows[0].pickable, false);
+  assert.equal(page.data.summaryRows[0].canPick, false);
+  assert.equal(page.data.summaryRows[0].stateText, '已完攀');
+  assert.equal(page.data.summaryHintText, '');
+});
+
+test('R3 独立小结页：未知 sessionId 与串档 archiveId 都给出可见状态，不展示另一场', () => {
+  const { s1, rope } = twoSessionsFixture();
+  const archiveId = archiveOf().archiveId;
+
+  // 未知场次（例如本机档案被重置）：显示可见错误，不拿 0 冒充空场。
+  const stale = openSummaryPage({ sessionId: 'session-gone', archiveId });
+  assert.equal(stale.data.ready, true);
+  assert.equal(stale.data.summaryReady, false);
+  assert.match(stale.data.summaryError, /找不到这场训练/);
+  assert.equal(stale.data.summaryRows.length, 0);
+  assert.equal(stale.data.hasSummaryRows, false);
+  assert.equal(stale.data.summaryCountText, '');
+
+  // 串档：入口记下的档案 ID 与本机现在这一份不同 → 不展示任何场次（哪怕同名 ID 就在本档案里）。
+  const crossed = openSummaryPage({ sessionId: s1.id, archiveId: 'archive-other' });
+  assert.equal(crossed.data.summaryReady, false);
+  assert.match(crossed.data.summaryError, /另一份本机档案/);
+  assert.equal(crossed.data.summarySessionId, '', '不把同名场次展示出来');
+  assert.equal(crossed.data.summaryRows.length, 0);
+  assert.equal(crossed.data.hasSummaryRows, false);
+  assert.equal(crossed.data.summaryCountText, '');
+
+  // 串档时勾选也不落盘：没有可点的行。
+  crossed.toggleSummaryPick(tapDataset({ routeId: rope.id }));
+  assert.equal(wishlist.loadWishlist().state.items.length, 0, '串档时不写清单');
+});
+
+test('R3 独立小结页：撤回、恢复与改为未完成后分别对账，待保存把次不计入', () => {
+  const session = startAt(DAY, GYM_A);
+  // 抱石线：只有抱石的已完攀把次能「改为未完成」，因此这段对账用抱石。
+  const route = newRoute(session, { name: '蓝色动态线', climbType: '抱石', grade: 'V4' });
+  const first = record(session, route, 'fail', '第一把没到顶');
+  record(session, route, 'fail', '第二把力竭');
+  const third = record(session, route, 'send', '第三把完攀');
+  const archiveId = archiveOf().archiveId;
+
+  const before = openSummaryPage({ sessionId: session.id, archiveId });
+  assert.equal(before.data.summaryCountText, '1 条线 · 3 把 · 完攀 1 把');
+  assert.equal(before.data.summaryRows[0].attemptCountText, '3 把');
+
+  // 撤回第三把（那一把完攀）：把数、完攀与分项同步减一。
+  const undone = store.undoAttempt(third.id, { routeId: route.id, sessionId: session.id });
+  assert.equal(undone.ok, true, undone.error);
+  const afterUndo = openSummaryPage({ sessionId: session.id, archiveId });
+  assert.equal(afterUndo.data.summaryCountText, '1 条线 · 2 把');
+  assert.equal(afterUndo.data.summaryRows[0].attemptCountText, '2 把');
+  assert.equal(afterUndo.data.summaryRows[0].sendCount, 0);
+  assert.equal(
+    afterUndo.data.summaryRows[0].latestNote,
+    '第二把力竭',
+    '最近有效备注跳过已撤回的那一句'
+  );
+
+  // 恢复：回到撤回前的读数（原 ID、原序号与原备注）。
+  const restored = store.restoreAttempt(third.id, { routeId: route.id, sessionId: session.id });
+  assert.equal(restored.ok, true, restored.error);
+  const afterRestore = openSummaryPage({ sessionId: session.id, archiveId });
+  assert.equal(afterRestore.data.summaryCountText, '1 条线 · 3 把 · 完攀 1 把');
+  assert.equal(afterRestore.data.summaryRows[0].latestNote, '第三把完攀');
+
+  // 把原完攀改为未完成：把数不变，完攀随原记录更新，这条线变回可勾选。
+  const send = archiveOf().attempts.find(
+    item => item.routeId === route.id && item.result === 'send'
+  );
+  const corrected = store.correctAttempt(send.id, { routeId: route.id, sessionId: session.id });
+  assert.equal(corrected.ok, true, corrected.error);
+  const afterCorrect = openSummaryPage({ sessionId: session.id, archiveId });
+  assert.equal(afterCorrect.data.summaryCountText, '1 条线 · 3 把');
+  assert.equal(afterCorrect.data.summarySendText, '');
+  assert.equal(afterCorrect.data.summaryRows[0].sendCount, 0);
+  assert.equal(afterCorrect.data.summaryRows[0].pickable, true, '没有完攀后回到可勾选');
+
+  // 待保存的一把不计入小结，只给一句待保存提示。
+  const extra = newRoute(session, { name: '白色斜壁线', climbType: '顶绳', grade: '5.9' });
+  armSetFailAt(2);
+  const failed = store.saveAttempt({
+    sessionId: session.id,
+    routeId: extra.id,
+    result: 'fail',
+    note: ''
+  });
+  assert.equal(failed.ok, false, '落盘失败不报已保存');
+  const pending = openSummaryPage({ sessionId: session.id, archiveId });
+  assert.equal(pending.data.summaryCountText, '1 条线 · 3 把');
+  assert.equal(pending.data.summaryPendingText, '本场还有 1 把待保存，未计入小结把数。');
+  assert.equal(
+    pending.data.summaryRows.some(row => row.routeId === extra.id),
+    false,
+    '待保存的线不进小结行'
+  );
+  disarmSetFail();
+
+  // 按同一操作重试补齐后才 +1，并且仍然只算一条线路。
+  const retried = store.saveAttempt({
+    opId: failed.opId,
+    sessionId: session.id,
+    routeId: extra.id,
+    result: 'fail',
+    note: ''
+  });
+  assert.equal(retried.ok, true, retried.error);
+  const committed = openSummaryPage({ sessionId: session.id, archiveId });
+  assert.equal(committed.data.summaryCountText, '2 条线 · 4 把');
+  assert.equal(committed.data.summaryPendingText, '');
+  assert.equal(first.id !== third.id, true);
+});
+
+test('R3 独立小结页：勾选写失败显示实际保存状态并可原地重试；清单损坏时收回写入口', () => {
+  const { s1, rope } = twoSessionsFixture();
+  const archiveId = archiveOf().archiveId;
+
+  // 写失败：不报已保存，勾选框显示的是实际保存状态。
+  const page = openSummaryPage({ sessionId: s1.id, archiveId });
+  const before = rawOf(WISHLIST_KEY);
+  armSetFailAt(1);
+  page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
+  assert.equal(page.data.notice, '勾选未保存，可再点一次重试。');
+  assert.match(page.data.storageError, /保存下次想爬清单失败/);
+  assert.equal(rawOf(WISHLIST_KEY), before, '写失败不落盘');
+  assert.equal(
+    page.data.summaryRows.find(row => row.routeId === rope.id).checked,
+    false,
+    '显示的是实际保存状态，不是以为点上了'
+  );
+
+  disarmSetFail();
+  page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.summaryRows.find(row => row.routeId === rope.id).checked, true);
+  assert.equal(wishlist.listWishlist(archiveOf(), {}).items.length, 1);
+
+  // 清单损坏：小结数字照常显示，写入口收回，不改动清单原字节。
+  resetDevice();
+  const { s1: broken1, rope: brokenRope } = twoSessionsFixture();
+  storage.set(WISHLIST_KEY, '{this is not json');
+  const brokenBytes = rawOf(WISHLIST_KEY);
+  const brokenPage = openSummaryPage({ sessionId: broken1.id, archiveId: archiveOf().archiveId });
+  assert.match(brokenPage.data.summaryWishlistError, /下次想爬清单格式损坏/);
+  assert.equal(brokenPage.data.summaryReady, true, '小结数字照常显示');
+  assert.equal(brokenPage.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
+  brokenPage.data.summaryRows.forEach(row => assert.equal(row.canPick, false));
+  brokenPage.toggleSummaryPick(tapDataset({ routeId: brokenRope.id }));
+  assert.equal(rawOf(WISHLIST_KEY), brokenBytes, '原清单保持原样');
+  assert.equal(writesOf(WISHLIST_KEY), 0);
+  assert.match(brokenPage.data.notice, /下次想爬清单格式损坏/);
+});
+
+test('R3 独立小结页：重复点击只出现一次，其他收藏不丢失（同馆与别的岩馆都不受影响）', () => {
   const { s1, rope } = twoSessionsFixture();
   // 先收藏本馆另一条线与另一个岩馆的一条线：勾选小结里的线不能动它们。
   const other = newRoute(s1, { name: '灰色线', climbType: '顶绳', grade: '5.9' });
@@ -672,7 +1111,7 @@ test('R3 重复点击只出现一次，其他收藏不丢失（同馆与别的�
   assert.equal(wishlist.addWishlist(other.id).ok, true);
   assert.equal(wishlist.addWishlist(otherGymRoute.id).ok, true);
 
-  const page = openSessionPage({ sessionId: s1.id });
+  const page = openSummaryPage({ sessionId: s1.id, archiveId: archiveOf().archiveId });
   page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
   assert.equal(wishlist.loadWishlist().state.items.length, 3);
 
@@ -696,254 +1135,47 @@ test('R3 重复点击只出现一次，其他收藏不丢失（同馆与别的�
 
   // 取消只撤下这一条。
   page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
-  assert.equal(page.data.notice, '已撤下这条线的收藏；其他收藏、照片与把次都不变。');
   const left = wishlist.loadWishlist().state.items;
   assert.equal(left.length, 2);
   assert.equal(left.some(item => item.routeId === rope.id), false);
   assert.equal(left.some(item => item.routeId === other.id), true);
 });
 
-test('R3 勾选写失败时显示实际保存状态并可原地重试', () => {
+test('R3 独立小结页只读不依赖云：没有 wx.cloud 也照常显示与勾选', async () => {
   const { s1, rope } = twoSessionsFixture();
-  const page = openSessionPage({ sessionId: s1.id });
-  const before = rawOf(WISHLIST_KEY);
-
-  armSetFailAt(1);
+  assert.equal(typeof global.wx.cloud, 'undefined');
+  const page = openSummaryPage({ sessionId: s1.id, archiveId: archiveOf().archiveId });
+  await flush();
+  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
   page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
-  assert.equal(page.data.notice, '勾选未保存，可再点一次重试。');
-  assert.match(page.data.storageError, /保存下次想爬清单失败/);
-  assert.equal(rawOf(WISHLIST_KEY), before, '写失败不落盘');
-  assert.equal(
-    page.data.summaryRows.find(row => row.routeId === rope.id).checked,
-    false,
-    '显示的是实际保存状态，不是以为点上了'
-  );
-  assert.equal(page.data.wishlistWanted.length, 0);
-
-  disarmSetFail();
-  page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
-  assert.equal(page.data.storageError, '');
-  assert.equal(page.data.summaryRows.find(row => row.routeId === rope.id).checked, true);
   assert.equal(wishlist.listWishlist(archiveOf(), {}).items.length, 1);
+  assert.equal(wxLog.toasts.length, 0, '勾选不依赖云提示');
 });
 
-test('R3 清单损坏时小结显示可见错误、收回写入口，且不改动清单原字节', () => {
-  const { s1, rope } = twoSessionsFixture();
-  storage.set(WISHLIST_KEY, '{this is not json');
-  const broken = rawOf(WISHLIST_KEY);
-  const page = openSessionPage({ sessionId: s1.id });
-
-  assert.match(page.data.summaryWishlistError, /下次想爬清单格式损坏/);
-  assert.equal(page.data.summaryReady, true, '小结数字照常显示');
-  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
-  page.data.summaryRows.forEach(row => assert.equal(row.canPick, false));
-  assert.equal(writesOf(WISHLIST_KEY), 0);
-
-  // 直接调用入口也不落盘：写入口在清单不可读时一律拒绝，并说明原因。
-  page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
-  assert.equal(rawOf(WISHLIST_KEY), broken, '原清单保持原样');
-  assert.equal(writesOf(WISHLIST_KEY), 0);
-  assert.match(page.data.notice, /下次想爬清单格式损坏/);
-});
-
-test('R3 打开、返回与重开小结都只读：不改场次、不改档案与清单，也不碰文件系统', () => {
-  const { s2 } = twoSessionsFixture();
-  const archiveBytes = rawOf(ARCHIVE_KEY);
-  const photosBytes = rawOf(PHOTOS_KEY);
-  const wishlistBytes = rawOf(WISHLIST_KEY);
-  const archiveWrites = writesOf(ARCHIVE_KEY);
-  const wishlistWrites = writesOf(WISHLIST_KEY);
-
-  const page = openSessionPage();
-  assert.equal(page.data.summarySessionId, s2.id, '默认看当前场次');
-  assert.equal(page.data.summaryViewingOther, false);
-  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
-
-  // 场内页既有的照片服务在初始化时会探测本机照片目录（T019 行为，不属于本单）；
-  // 小结与清单自己的重算不得再多碰一次文件系统。
-  const fsAfterOpen = io.fsCalls.length;
-  page.refreshSummary();
-  page.refreshView();
-  assert.equal(io.fsCalls.length, fsAfterOpen, '小结重算不碰文件系统');
-
-  page.onShow();
-  const reopened = openSessionPage();
-  assert.equal(reopened.data.summaryCountText, '1 条线 · 1 把');
-  assert.equal(reopened.data.summarySessionId, s2.id);
-
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '档案逐字节不变');
-  assert.equal(rawOf(PHOTOS_KEY), photosBytes);
-  assert.equal(rawOf(WISHLIST_KEY), wishlistBytes);
-  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites, '打开小结不写档案');
-  assert.equal(writesOf(WISHLIST_KEY), wishlistWrites, '打开小结不写清单');
-  assert.equal(archiveOf().activeSessionId, s2.id, '没有结束也没有新建场次');
-  assert.equal(archiveOf().sessions.length, 2);
-});
-
-test('R3 用 ?sessionId= 只读回看当天另一场，自己切场次后小结跟着当前场次', () => {
-  const { s1, s2 } = twoSessionsFixture();
-  const s3 = startAt(DAY, GYM_A); // 第三场：空场，用来验证切场后小结跟着走
-  const archiveBytes = rawOf(ARCHIVE_KEY);
-  const archiveWrites = writesOf(ARCHIVE_KEY);
-  assert.equal(archiveOf().activeSessionId, s3.id);
-
-  const page = openSessionPage({ sessionId: s1.id });
-  assert.equal(page.data.summarySessionId, s1.id);
-  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
-  assert.equal(page.data.summaryViewingOther, true, '明确标出正在回看另一场');
-  assert.equal(page.data.summaryLabel, '第 1 场');
-  assert.equal(archiveOf().activeSessionId, s3.id, '回看本身不改当前场次');
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '回看不写档案');
-  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
-
-  // 用户显式切场次：小结跟随当前场次，回看目标被清掉。
-  page.switchSession(tapDataset({ sessionId: s2.id }));
-  assert.equal(page.data.summarySessionId, s2.id);
-  assert.equal(page.data.summaryViewingOther, false);
-  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
-
-  const reopened = openSessionPage();
-  assert.equal(reopened.data.summarySessionId, s2.id, '重开后仍指向当前场次');
-  assert.equal(reopened.data.summaryCountText, '1 条线 · 1 把');
-});
-
-test('R3 小结回看入口：两日三场能直接选昨天的原场，返回仍是所选场次，也能切回当前场', () => {
-  const { yesterday, todayFirst, todayActive, boulder } = twoDaysFixture();
-  const page = openSessionPage(); // 进入今天的当前场次
-  assert.equal(page.data.summarySessionId, todayActive.id, '默认看当前场次');
-  assert.equal(page.data.summaryViewingOther, false);
-  assert.equal(page.data.summaryCountText, '0 条线 · 0 把');
-
-  // 真实可见的只读选择入口：日期 · 岩馆 · 场次序号，当前场次也在选项里（空场也能选回来）。
-  assert.equal(page.data.summarySessionPickerVisible, true);
-  assert.deepEqual(
-    page.data.summarySessionOptions.map(option => option.label),
-    [
-      '2026-11-10 · A 馆 · 第 2 场',
-      '2026-11-10 · A 馆 · 第 1 场',
-      '2026-11-09 · A 馆 · 第 1 场'
-    ],
-    '按日期新在前、同日序号大在前，并写明岩馆与场次序号'
-  );
-  assert.equal(page.data.summarySessionOptions[0].isActive, true);
-  assert.equal(page.data.summarySessionIndex, 0);
-  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 2 场');
-
-  const archiveBytes = rawOf(ARCHIVE_KEY);
-  const archiveWrites = writesOf(ARCHIVE_KEY);
-  const wishlistWrites = writesOf(WISHLIST_KEY);
-
-  // 从控件里选昨天的原场：读到昨天两线三把的整份小结。
-  const yesterdayIndex = page.data.summarySessionOptions.findIndex(
-    option => option.id === yesterday.id
-  );
-  page.onSummarySessionChange({ detail: { value: String(yesterdayIndex) } });
-  assert.equal(page.data.summarySessionId, yesterday.id);
-  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
-  assert.equal(page.data.summarySendText, '完攀 1 把');
-  assert.equal(page.data.summaryRows.length, 2);
-  assert.equal(page.data.summaryViewingOther, true);
-  assert.equal(page.data.summaryLabel, '第 1 场');
-  assert.equal(page.data.summaryDate, YESTERDAY);
-  assert.equal(page.data.summarySessionValue, '2026-11-09 · A 馆 · 第 1 场');
-  const boulderRow = page.data.summaryRows.find(row => row.routeId === boulder.id);
-  assert.equal(boulderRow.stateText, '已完攀');
-  assert.equal(boulderRow.pickable, false, '已完攀的线仍不出勾选入口');
-
-  // 选择只换所看的小结：不改当前场次、不建场次、不写训练，也不新建清单条目。
-  assert.equal(archiveOf().activeSessionId, todayActive.id);
-  assert.equal(archiveOf().sessions.length, 3);
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '回看不写档案');
-  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
-  assert.equal(writesOf(WISHLIST_KEY), wishlistWrites);
-
-  // 从小结回到昨天那条线的原照片（同一个长期线路 ID）。
+test('R3 独立小结页：返回本场记录的入口可用（正常返回到场内页）', () => {
+  const { s1 } = twoSessionsFixture();
+  const page = openSummaryPage({ sessionId: s1.id, archiveId: archiveOf().archiveId });
   resetWxLog();
-  page.openSummaryRoute(tapDataset({ routeId: boulder.id }));
-  assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + boulder.id
-  ]);
+  page.goBackToSession();
+  assert.equal(wxLog.backs.length, 1, '返回上一页（场内页）');
+  assert.equal(wxLog.relaunches.length, 0, '有可返回的页面时不重建页面栈');
 
-  // 从详情页返回本页（onShow 重算）：仍停在所选的昨天那一场。
-  page.onShow();
-  assert.equal(page.data.summarySessionId, yesterday.id, '返回后仍是选中的场次');
-  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
-
-  // 同一天里的既有场次切换继续可用：选今天第一场。
-  const todayIndex = page.data.summarySessionOptions.findIndex(
-    option => option.id === todayFirst.id
-  );
-  page.onSummarySessionChange({ detail: { value: todayIndex } });
-  assert.equal(page.data.summarySessionId, todayFirst.id);
-  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
-  assert.equal(page.data.summaryViewingOther, true, '与当前场次不同就明确标出');
-
-  // 可回当前场：选回当前那一场，回看标记消失，当前场次始终没变。
-  const activeIndex = page.data.summarySessionOptions.findIndex(option => option.isActive);
-  page.onSummarySessionChange({ detail: { value: activeIndex } });
-  assert.equal(page.data.summarySessionId, todayActive.id);
-  assert.equal(page.data.summaryViewingOther, false);
-  assert.equal(page.data.summaryCountText, '0 条线 · 0 把');
-  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 2 场');
-  assert.equal(archiveOf().activeSessionId, todayActive.id);
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes, '整个过程一个字节都没写');
-  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
+  const wxml = fs.readFileSync(SUMMARY_PAGE_WXML, 'utf8');
+  assert.match(wxml, /bindtap="goBackToSession"/);
 });
 
-test('R3 小结回看入口：只有一场可看时不出现；选中项无效时不改所看场次', () => {
-  const only = startAt(DAY, GYM_A);
-  record(only, newRoute(only, { name: '蓝色动态线', grade: 'V3' }), 'fail', '只有这一场');
-
-  const page = openSessionPage();
-  assert.equal(page.data.summarySessionOptions.length, 1);
-  assert.equal(page.data.summarySessionPickerVisible, false, '没有别的场次可回看就不显示选择器');
-  assert.equal(page.data.summarySessionIndex, 0);
-  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 1 场');
-
-  // 越界或空的选中值不换场次、不写盘（选择器事件里只会给合法下标）。
-  const before = rawOf(ARCHIVE_KEY);
-  page.onSummarySessionChange({ detail: { value: '9' } });
-  page.onSummarySessionChange({ detail: {} });
-  assert.equal(page.data.summarySessionId, only.id);
-  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
-  assert.equal(rawOf(ARCHIVE_KEY), before);
-});
-
-test('R3 小结回看入口：指定的空场也出现在选择项里，并如实显示正在看哪一场', () => {
-  const empty = startAt(DAY, GYM_A); // 空场：还没有已提交把次
-  const active = startAt(DAY, GYM_A);
-  record(active, newRoute(active, { name: '蓝色动态线', grade: 'V3' }), 'fail', '当前场一把');
-
-  // 用 ?sessionId= 打开空场：选择器里仍如实显示这一场，而不是显示当前场次。
-  const page = openSessionPage({ sessionId: empty.id });
-  assert.equal(page.data.summarySessionId, empty.id);
-  assert.equal(page.data.summaryCountText, '0 条线 · 0 把');
-  assert.deepEqual(
-    page.data.summarySessionOptions.map(option => option.id),
-    [active.id, empty.id]
-  );
-  assert.equal(page.data.summarySessionIndex, 1);
-  assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 1 场');
-
-  // 从控件里选回当前场次：读数跟着换成当前场那一把。
-  page.onSummarySessionChange({ detail: { value: 0 } });
-  assert.equal(page.data.summarySessionId, active.id);
-  assert.equal(page.data.summaryCountText, '1 条线 · 1 把');
-  assert.equal(page.data.summarySessionIndex, 0);
-  assert.equal(page.data.summaryViewingOther, false);
-});
-
-test('R3 小结回看入口接上真实控件：绑定、选项文案与位置都在小结区里', () => {
+test('R3 独立小结页 WXML 区块与真实绑定齐全；新页在正式 app.json 中恰好注册一次', () => {
   const { s1, s2 } = twoSessionsFixture();
-  // ?sessionId= 仍是既有入口；控件只是让用户不必手工拼它。
-  const page = openSessionPage({ sessionId: s1.id });
+  const page = openSummaryPage({ sessionId: s1.id, archiveId: archiveOf().archiveId });
   assert.equal(page.data.summarySessionPickerVisible, true);
-  assert.equal(page.data.summarySessionOptions.length, 2);
-  assert.equal(page.data.summarySessionIndex, 1, '选择器当前值＝正在回看的那一场');
+  assert.equal(page.data.summarySessionIndex, 1, '选择器当前值＝正在看的那一场');
   assert.equal(page.data.summarySessionValue, '2026-11-10 · A 馆 · 第 1 场');
-  assert.equal(page.data.summarySessionOptions[1].id, s1.id);
 
-  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  const wxml = fs.readFileSync(SUMMARY_PAGE_WXML, 'utf8');
+  assert.match(wxml, /id="session-summary"/);
+  assert.match(wxml, /id="summary-count"[\s\S]{0,80}\{\{summaryCountText\}\}/);
+  assert.match(wxml, /id="summary-error"/);
+  assert.match(wxml, /id="summary-empty"/);
   assert.match(wxml, /id="summary-session-picker"/);
   assert.match(wxml, /range="\{\{summarySessionOptions\}\}"/);
   assert.match(wxml, /range-key="label"/);
@@ -957,75 +1189,6 @@ test('R3 小结回看入口接上真实控件：绑定、选项文案与位置�
     /<picker[\s\S]{0,300}bindchange="onSummarySessionChange"/,
     '选择器本身绑定真实处理器（选择事件直接接到读数）'
   );
-  assert.equal(typeof sessionDefinition.onSummarySessionChange, 'function');
-
-  // 位置：在小结区里、首屏结果按钮之后、清单之前，不挤占上方结果按钮。
-  const failButton = wxml.indexOf('class="result-button result-fail"');
-  const picker = wxml.indexOf('id="summary-session-picker"');
-  const summaryStart = wxml.indexOf('id="session-summary"');
-  const wishlistStart = wxml.indexOf('id="wishlist-section"');
-  assert.ok(summaryStart !== -1 && failButton !== -1 && wishlistStart !== -1);
-  assert.ok(picker > summaryStart, '回看入口在小结区里');
-  assert.ok(picker > failButton && picker < wishlistStart, '在结果按钮之后、下次想爬清单之前');
-
-  // 同一场次在页面上的既有入口一个不少（同日场次切换继续可用）。
-  assert.equal(typeof sessionDefinition.switchSession, 'function');
-  assert.ok(handlersIn(wxml).includes('switchSession'));
-  assert.equal(archiveOf().activeSessionId, s2.id, '回看与选择都不改当前场次');
-});
-
-test('R3 空场小结显示空态，已完攀的行不出勾选入口', () => {
-  const empty = startAt(DAY, GYM_A);
-  const emptyPage = openSessionPage();
-  assert.equal(emptyPage.data.summarySessionId, empty.id);
-  assert.equal(emptyPage.data.summaryReady, true);
-  assert.equal(emptyPage.data.summaryEmpty, true);
-  assert.equal(emptyPage.data.hasSummaryRows, false);
-  assert.equal(emptyPage.data.summaryCountText, '0 条线 · 0 把');
-  assert.equal(emptyPage.data.summaryHintText, '');
-  assert.equal(emptyPage.data.summaryRows.length, 0);
-
-  // 另一场：只完攀一条抱石线，没有可勾选的线，也不提示勾选。
-  const done = startAt(DAY, GYM_A);
-  const boulder = newRoute(done, { name: '蓝色动态线', grade: 'V3' });
-  record(done, boulder, 'send');
-  const page = openSessionPage();
-  assert.equal(page.data.summaryCountText, '1 条线 · 1 把 · 完攀 1 把');
-  assert.equal(page.data.summaryRows[0].pickable, false);
-  assert.equal(page.data.summaryRows[0].canPick, false);
-  assert.equal(page.data.summaryRows[0].stateText, '已完攀');
-  assert.equal(page.data.summaryHintText, '');
-
-  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
-  assert.match(
-    wxml,
-    /wx:if="\{\{item\.pickable\}\}"[\s\S]{0,200}id="summary-pick-\{\{item\.routeId\}\}"/
-  );
-});
-
-test('R3 小结回看指向原线路详情；场次已不在时显示可见错误而不是空读数', () => {
-  const { s1, rope } = twoSessionsFixture();
-  const page = openSessionPage({ sessionId: s1.id });
-  page.openSummaryRoute(tapDataset({ routeId: rope.id }));
-  assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + rope.id
-  ]);
-  assert.equal(page.data.loadError, '');
-
-  // 场次 ID 已不在档案里（例如本机档案被重置）：显示可见错误，不拿 0 冒充空场。
-  const stale = openSessionPage({ sessionId: 'session-gone' });
-  assert.equal(stale.data.summaryReady, false);
-  assert.match(stale.data.summaryError, /找不到这场训练/);
-  assert.equal(stale.data.summaryRows.length, 0);
-  assert.equal(stale.data.hasSummaryRows, false);
-});
-
-test('R3 WXML 的小结区块与真实绑定齐全', () => {
-  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
-  assert.match(wxml, /id="session-summary" class="section session-summary"/);
-  assert.match(wxml, /id="summary-count"[\s\S]{0,80}\{\{summaryCountText\}\}/);
-  assert.match(wxml, /id="summary-error"/);
-  assert.match(wxml, /id="summary-empty"/);
   assert.match(
     wxml,
     /id="summary-pick-state-\{\{item\.routeId\}\}"[\s\S]{0,120}\{\{item\.wishlistStateText\}\}/
@@ -1038,24 +1201,84 @@ test('R3 WXML 的小结区块与真实绑定齐全', () => {
     wxml,
     /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="openSummaryRoute"/
   );
+  assert.match(
+    wxml,
+    /wx:if="\{\{item\.pickable\}\}"[\s\S]{0,200}id="summary-pick-\{\{item\.routeId\}\}"/
+  );
 
   const handlers = handlersIn(wxml);
-  assert.ok(handlers.includes('toggleSummaryPick'), '勾选绑定真实处理器');
-  assert.ok(handlers.includes('openSummaryRoute'), '回看绑定真实处理器');
+  ['toggleSummaryPick', 'openSummaryRoute', 'returnToActiveSession', 'goBackToSession'].forEach(
+    name => {
+      assert.ok(handlers.includes(name), '小结页绑定真实处理器：' + name);
+      assert.equal(typeof summaryPageDefinition[name], 'function', name + ' 应为页面方法');
+    }
+  );
+  assert.equal(typeof summaryPageDefinition.onSummarySessionChange, 'function');
 
-  // 小结是加在原有场内页上的：原有入口一个不少。
+  // 正式 app.json：新页恰好注册一次，四件套齐全，原页面与 tabBar 不变。
+  const appJson = JSON.parse(fs.readFileSync(APP_JSON, 'utf8'));
+  assert.equal(
+    appJson.pages.filter(item => item === SUMMARY_PAGE_FILE).length,
+    1,
+    '新页在正式 app.json 中恰好注册一次'
+  );
+  assert.equal(new Set(appJson.pages).size, appJson.pages.length, '正式页面不得重复注册');
+  for (const ext of ['.js', '.json', '.wxml', '.wxss']) {
+    assert.ok(
+      fs.existsSync(path.join(ROOT, SUMMARY_PAGE_FILE + ext)),
+      '缺少小结页文件 ' + SUMMARY_PAGE_FILE + ext
+    );
+  }
+  assert.deepEqual(
+    appJson.tabBar.list.map(item => item.pagePath),
+    [
+      'pages/index/index',
+      'pages/record-list/record-list',
+      'pages/stats/stats',
+      'pages/profile/profile'
+    ],
+    'tabBar 相对基线不变'
+  );
+  assert.equal(archiveOf().activeSessionId, s2.id, '核对注册与绑定都不改当前场次');
+});
+
+test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，且入口排在结果按钮之后、清单之前', () => {
+  const { s1, s2 } = twoSessionsFixture();
+  // ?sessionId= 仍是既有入口；入口只决定打开哪一场小结。
+  const page = openSessionPage({ sessionId: s1.id });
+  assert.equal(page.data.summaryEntrySessionId, s1.id);
+
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  assert.match(wxml, /id="session-summary" class="section session-summary"/);
+  assert.match(wxml, /bindtap="openSessionSummary"/);
+  assert.match(wxml, /id="summary-entry-target"[\s\S]{0,80}\{\{summaryEntryLabel\}\}/);
+
+  // 内联小结整块（读数、行、勾选、回看原线与选择器）已经不在场内页。
+  assert.doesNotMatch(wxml, /id="summary-count"/);
+  assert.doesNotMatch(wxml, /id="summary-pick-/);
+  assert.doesNotMatch(wxml, /id="summary-session-picker"/);
+  assert.doesNotMatch(wxml, /bindtap="toggleSummaryPick"/);
+  assert.doesNotMatch(wxml, /bindtap="openSummaryRoute"/);
+  assert.doesNotMatch(wxml, /bindchange="onSummarySessionChange"/);
+  assert.equal(typeof sessionDefinition.toggleSummaryPick, 'undefined');
+  assert.equal(typeof sessionDefinition.summaryPickNotice, 'undefined');
+  assert.equal(typeof sessionDefinition.openSummaryRoute, 'undefined');
+  assert.equal(typeof sessionDefinition.onSummarySessionChange, 'undefined');
+  assert.equal(typeof sessionDefinition.openSessionSummary, 'function');
+
+  // 位置：在小结区里、首屏结果按钮之后、下次想爬清单之前。
+  const failButton = wxml.indexOf('class="result-button result-fail"');
+  const entry = wxml.indexOf('id="summary-entry"');
+  const summaryStart = wxml.indexOf('id="session-summary"');
+  const wishlistStart = wxml.indexOf('id="wishlist-section"');
+  assert.ok(summaryStart !== -1 && failButton !== -1 && wishlistStart !== -1);
+  assert.ok(entry > summaryStart, '入口在小结区里');
+  assert.ok(entry > failButton && entry < wishlistStart, '在结果按钮之后、下次想爬清单之前');
+
+  // 原有绑定一个不少。
+  const handlers = handlersIn(wxml);
   ['startSession', 'switchSession', 'selectRoute', 'recordAttempt', 'correctSend'].forEach(name => {
     assert.ok(handlers.includes(name), '原有绑定仍在：' + name);
   });
-});
-
-test('R3 小结只读不依赖云：没有 wx.cloud 也照常显示与勾选', async () => {
-  const { s1, rope } = twoSessionsFixture();
-  assert.equal(typeof global.wx.cloud, 'undefined');
-  const page = openSessionPage({ sessionId: s1.id });
-  await flush();
-  assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
-  page.toggleSummaryPick(tapDataset({ routeId: rope.id }));
-  assert.equal(wishlist.listWishlist(archiveOf(), {}).items.length, 1);
-  assert.equal(wxLog.toasts.length, 0, '勾选不依赖云提示');
+  assert.equal(archiveOf().activeSessionId, s2.id, '打开小结与读取入口都不改当前场次');
 });
