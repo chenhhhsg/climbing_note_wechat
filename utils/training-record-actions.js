@@ -133,6 +133,11 @@ function forgetFailedSavesOnRoute(archiveId, sessionId, routeId) {
 
 /**
  * 记下这次没落盘的撤回/恢复意图（第一段写就失败，档案里没有 pendingUndos/Restores）。
+ *
+ * 除了这次操作自己的 opId 与归属，还要留下**发出这次请求时所依据的版本**
+ * （expectedRev）与来源状态：第一段写失败没有留下任何持久凭据，重试时如果拿页面上
+ * 新渲染的版本去配旧 opId，就等于把旧请求偷偷升级成了一次新版本上的新请求——这一把
+ * 此后被别人撤回再恢复过（状态转回原样、版本已经前进），旧请求仍会被结清到新状态上。
  */
 function rememberFailedChange(entry) {
   if (!entry || !hasText(entry.archiveId) || !hasText(entry.opId) || !hasText(entry.attemptId)) {
@@ -146,12 +151,23 @@ function rememberFailedChange(entry) {
     action: entry.action,
     sessionId: entry.sessionId || '',
     routeId: entry.routeId || '',
-    opId: entry.opId
+    opId: entry.opId,
+    // 请求发出时这一把的有效状态版本；旧调用没带确切版本时记 null，只按状态判断。
+    expectedRev:
+      Number.isInteger(entry.expectedRev) && entry.expectedRev >= 0 ? entry.expectedRev : null,
+    // 请求发出时所依据的状态：撤回基于「有效」，恢复基于「已撤回」。
+    expected: entry.action === 'undo' ? 'effective' : 'undone'
   });
 }
 
 /**
- * 最新档案里这一把已经结清这次意图、或已经处在意图的目标状态：内存里这条不再可重试。
+ * 最新档案里这一把已经结清这次意图、已经处在意图的目标状态、或**版本已经前进**：
+ * 内存里这条不再可重试。
+ *
+ * 版本这一项不能省：第一段写失败没有落盘凭据，但这一把此后可能被别的写入推进过
+ * （撤回→恢复走一圈，状态又变回「有效」，只看状态和原来一模一样）。那次失败请求依据
+ * 的是旧版本，重试或重放它就是在改写后来的写入，所以版本一变就整条丢掉。丢掉之后页面
+ * 显示普通的「撤回/恢复」，用户在**当前版本**上明确再点一次才会由档案层生成新 opId。
  */
 function pruneFailedChanges(archive) {
   if (!archive || !hasText(archive.archiveId)) return;
@@ -162,7 +178,15 @@ function pruneFailedChanges(archive) {
     if (!attempt) return true;
     if (store.attemptSettledOp(attempt, entry.opId)) return true;
     const undone = store.isUndoneAttempt(attempt);
-    return entry.action === 'undo' ? undone : !undone;
+    // 已经不在请求发出时的来源状态（撤回基于「有效」、恢复基于「已撤回」）：
+    // 这次意图已由这次或别的写入完成，旧请求不再可重试。
+    const sourceUndone = entry.expected === 'undone';
+    if (undone !== sourceUndone) return true;
+    // 版本已经前进过（哪怕状态又转回来源状态）：旧请求依据的版本已被取代。
+    if (Number.isInteger(entry.expectedRev) && entry.expectedRev !== store.attemptRev(attempt)) {
+      return true;
+    }
+    return false;
   });
 }
 
@@ -188,9 +212,8 @@ function forgetFailedChange(archiveId, attemptId, action) {
 }
 
 /**
- * 撤回/恢复重试要沿用的原 opId：档案里已落盘的 pending 标记优先（两段写只差第二段的
- * 那种），其次是本应用运行期里第一段写就失败的那一次。标记必须属于同一把次、同一场次
- * 与同一线路，否则宁可不用——不能借别的意图的 opId 提交。
+ * 档案里已落盘的 pending 标记带的原 opId：标记必须属于同一把次、同一场次与同一线路，
+ * 否则宁可不用——不能借别的意图的 opId 提交。
  */
 function pendingChangeOpId(archive, attempt, action) {
   if (!archive || !attempt) return '';
@@ -206,11 +229,32 @@ function pendingChangeOpId(archive, attempt, action) {
   return marker ? marker.opId : '';
 }
 
-function retryChangeOpId(archive, attempt, action) {
+/**
+ * 撤回/恢复重试要沿用的原请求：档案里已落盘的 pending 标记优先（两段写只差第二段的
+ * 那种），其次是本应用运行期里第一段写就失败的那一次。标记必须属于同一把次、同一场次
+ * 与同一线路，否则宁可不用——不能借别的意图的 opId 提交。
+ *
+ * 返回 { opId, fromCache, expectedRev }：
+ * - opId 为空表示没有可沿用的原请求（缓存已经过期或被清掉）：页面显示普通按钮，用户
+ *   在当前版本上明确新点一次时由档案层生成新 opId；
+ * - 来自内存缓存的请求带回它**发出时**的 expectedRev，提交时只按这个版本走——不能把
+ *   新渲染出来的版本配给旧 opId（版本对不上的缓存已在 pruneFailedChanges 里丢掉）。
+ */
+function retryChangeSource(archive, attempt, action) {
+  if (!archive || !attempt) return { opId: '', fromCache: false, expectedRev: null };
   const pending = pendingChangeOpId(archive, attempt, action);
-  if (pending) return pending;
+  if (pending) return { opId: pending, fromCache: false, expectedRev: null };
   const failed = failedChangeEntry(archive, attempt.id, action);
-  return failed ? failed.opId : '';
+  if (!failed) return { opId: '', fromCache: false, expectedRev: null };
+  return {
+    opId: failed.opId,
+    fromCache: true,
+    expectedRev: Number.isInteger(failed.expectedRev) ? failed.expectedRev : null
+  };
+}
+
+function retryChangeOpId(archive, attempt, action) {
+  return retryChangeSource(archive, attempt, action).opId;
 }
 
 function pad2(value) {
@@ -871,9 +915,16 @@ function changeRecentAttempt(event, action) {
     return;
   }
 
-  // 重试沿用的原 opId：档案里已落盘的 pending 标记优先，其次是当前应用运行期里
-  // 第一段写就失败的那一次——换了页面实例也还认得同一个请求。
-  const retryOpId = retryChangeOpId(archive, target.attempt, action);
+  // 重试沿用的原请求：档案里已落盘的 pending 标记优先，其次是当前应用运行期里
+  // 第一段写就失败的那一次——换了页面实例也还认得同一个请求。缓存已在这之前按最新
+  // 档案核对过：版本被后来的写入推进过的旧请求不再出现，此处为空即按新动作走。
+  const retry = retryChangeSource(archive, target.attempt, action);
+  const retryOpId = retry.opId;
+  // 渲染时这一把的 rev：与最新持久版本不符时按过期事件拒绝，一个字都不写。
+  const renderedRev = Number.isInteger(dataset.expectedRev) ? dataset.expectedRev : undefined;
+  // 沿用的失败请求只按它**发出时**的版本提交：不拿新渲染的版本把旧 opId 升级成新请求。
+  const requestRev =
+    retry.fromCache && Number.isInteger(retry.expectedRev) ? retry.expectedRev : renderedRev;
   const outcome = (asUndo ? store.undoAttempt : store.restoreAttempt)(attemptId, {
     routeId,
     sessionId,
@@ -886,8 +937,7 @@ function changeRecentAttempt(event, action) {
         : asUndo
           ? 'effective'
           : 'undone',
-    // 渲染时这一把的 rev：与最新持久版本不符时按过期事件拒绝，一个字都不写。
-    expectedRev: Number.isInteger(dataset.expectedRev) ? dataset.expectedRev : undefined,
+    expectedRev: requestRev,
     opId: retryOpId
   });
   if (outcome.archive) this.archive = outcome.archive;
@@ -953,13 +1003,15 @@ function changeRecentAttempt(event, action) {
     }
     // 确实没落盘：保留原动作与同一个 opId 的重试入口。第一段写就失败时档案里没有
     // pending 标记，这条意图留在当前应用运行期，换页回来仍按同一个 opId 重试。
+    // 同时记下这次请求**发出时**依据的版本：重试只能沿用它，不能换成后来渲染的版本。
     rememberFailedChange({
       archiveId: originArchiveId,
       attemptId,
       action,
       sessionId: sessionId || target.attempt.sessionId,
       routeId: routeId || target.attempt.routeId,
-      opId: outcome.opId || retryOpId
+      opId: outcome.opId || retryOpId,
+      expectedRev: Number.isInteger(requestRev) ? requestRev : null
     });
     this.setData({
       storageError: outcome.error,

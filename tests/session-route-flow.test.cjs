@@ -1988,6 +1988,129 @@ for (const action of ['undo', 'restore']) {
   });
 }
 
+// ------------------------------------------------------------------ *
+// QA B08 返工：第一段写失败的内存请求只按它发出时的版本有效
+//
+// 失败请求没有落盘凭据，但这一把此后可能被别的写者推进过：撤回 → 恢复走一圈，
+// 状态又回到「有效」，只比较状态的话这次失败请求看上去完全合法。重开页面后如果
+// 继续显示「重试…」并拿新渲染的 expectedRev 去提交旧 opId，就等于把旧请求升级成
+// 一次新版本上的新请求，会逆转别人后来确认的状态。
+// ------------------------------------------------------------------ *
+
+for (const action of ['undo', 'restore']) {
+  const handler = action === 'undo' ? 'undoLatestAttempt' : 'restoreLatestAttempt';
+  const collection = action === 'undo' ? 'pendingUndos' : 'pendingRestores';
+  const label = action === 'undo' ? '撤回' : '恢复';
+
+  test(`QA B08 ${label}第一段写失败后经外部${label}→反向往返：旧请求不结清到新版本，当前版本上的新动作可用`, () => {
+    const actions = require(path.join(ROOT, 'utils', 'training-record-actions.js'));
+    const flow = trainThroughPages('返工岩馆');
+    let page = openRecordFor(flow.aId, flow.sessionId);
+    const targetId = flow.aAttempts[2];
+    const scope = { routeId: flow.aId, sessionId: flow.sessionId };
+    if (action === 'restore') {
+      tick();
+      page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+      assert.equal(page.data.storageError, '');
+    }
+
+    // 按钮真实渲染出来的点击参数：带渲染时的状态与原版本（WXML 的 data-expected-rev）。
+    const originalEvent = rowEvent(page.data.recentAttempt);
+    const originalRev = originalEvent.currentTarget.dataset.expectedRev;
+    assert.equal(Number.isInteger(originalRev), true, '点击参数带渲染时的 expectedRev');
+    assert.equal(
+      store.attemptRev(archiveOf().attempts.find(item => item.id === targetId)),
+      originalRev
+    );
+
+    // 第一段写「进行中」标记就失败：档案里不留任何凭据，请求只在应用运行期缓存。
+    const issuedOpId = captureFirstStageFailure(collection, entry => entry.attemptId === targetId);
+    tick();
+    page[handler](originalEvent);
+    armSetFailAt(0);
+    const opId = issuedOpId();
+    assert.ok(opId, '页面为这次动作生成了 opId');
+    assert.match(page.data.storageError, /保存本机训练档案失败/);
+    assert.equal(JSON.parse(storage.get(ARCHIVE_KEY))[collection].length, 0, '第一段失败不留进行中标记');
+    // 失败时缓存下来的原请求：opId 与归属；它发出时所依据的版本在重开后核对。
+    const recorded = actions.failedChangeEntry(archiveOf(), targetId, action);
+    assert.equal(recorded.opId, opId);
+
+    // 另一个写者不经本应用缓存，用正式 store API 带自己的 opId 与各自真实版本
+    // 完成同一动作再反向做回来：这一把回到请求发出时的状态，版本前进两次。
+    tick();
+    assert.equal(
+      (action === 'undo' ? store.undoAttempt : store.restoreAttempt)(targetId, {
+        ...scope,
+        opId: 'external-' + action,
+        expectedRev: originalRev
+      }).code,
+      action === 'undo' ? 'undone' : 'restored'
+    );
+    tick();
+    assert.equal(
+      (action === 'undo' ? store.restoreAttempt : store.undoAttempt)(targetId, {
+        ...scope,
+        opId: 'external-opposite-' + action,
+        expectedRev: originalRev + 1
+      }).code,
+      action === 'undo' ? 'restored' : 'undone'
+    );
+    const beforeAttempt = archiveOf().attempts.find(item => item.id === targetId);
+    assert.equal(store.attemptRev(beforeAttempt), originalRev + 2);
+    assert.equal(
+      store.isUndoneAttempt(beforeAttempt),
+      action === 'restore',
+      '往返后回到请求发出时的状态，只看状态已经看不出被取代'
+    );
+
+    // 回列表换线再回这条线：过期缓存不再被当作可重试的原请求，显示普通动作。
+    page = switchTo(page, flow.bId);
+    page = switchTo(page, flow.aId);
+    const row = page.data.recentAttempt;
+    assert.equal(row.attemptId, targetId);
+    assert.equal(row.expectedRev, originalRev + 2, '新渲染带的是当前版本');
+    assert.equal(row.stateText, '', '不再显示「未保存」的重试说明');
+    assert.equal(action === 'undo' ? row.undoText : row.restoreText, label + '这一把');
+    assert.equal(row.canUndo, action === 'undo');
+    assert.equal(row.canRestore, action === 'restore');
+
+    // 用户在当前版本上明确再点一次：旧 opId 不会被配上新版本，这一下由档案层生成
+    // 新 opId，只推进一个版本、只多一条凭据，也不逆转往返后的状态。
+    tick();
+    page[handler](rowEvent(row));
+    assert.equal(page.data.storageError, '');
+    const after = archiveOf().attempts.find(item => item.id === targetId);
+    assert.equal(store.attemptRev(after), originalRev + 3, '新动作只推进一个版本');
+    assert.equal(store.isUndoneAttempt(after), action === 'undo');
+    const settled = after.settledOps || [];
+    assert.equal(
+      settled.some(item => item.opId === opId),
+      false,
+      '过期的原请求 opId 没有被结清到新版本'
+    );
+    assert.equal(
+      settled.length,
+      (beforeAttempt.settledOps || []).length + 1,
+      '新动作只多一条凭据'
+    );
+    assert.equal(store.attemptSettledOp(after, 'external-' + action).undone, action === 'undo');
+
+    // 缓存侧：原请求曾按发出时的版本记下，版本前进后整条清掉（不再有可沿用的 opId）。
+    assert.equal(recorded.expectedRev, originalRev, '缓存保留请求发出时的原版本');
+    assert.equal(
+      actions.failedChangeEntry(archiveOf(), targetId, action),
+      null,
+      '版本前进过的失败请求已从运行期缓存清掉'
+    );
+
+    // 原来那个带旧版本的迟到事件：仍按 dataset 里的原版本拒绝，一个字都不写。
+    const beforeReplay = storage.get(ARCHIVE_KEY);
+    page[handler](originalEvent);
+    assert.equal(storage.get(ARCHIVE_KEY), beforeReplay, '旧版本事件不改档案');
+  });
+}
+
 test('T037 返工 运行期记住的未落盘操作按 archiveId 隔离，不写进另一份档案', () => {
   const flow = trainThroughPages('返工岩馆');
   const page = openRecordFor(flow.aId, flow.sessionId);
