@@ -87,14 +87,28 @@
               <textarea
                 id="note-input"
                 class="note-input"
+                data-attempt-id="{{noteEditor.attemptId}}"
+                data-edit-version="{{noteEditor.version}}"
                 value="{{noteEditor.text}}"
                 placeholder="例如：抓到后向右摆"
                 maxlength="120"
                 bindinput="onNoteInput"
               ></textarea>
               <view class="button-row">
-                <button id="cancel-note" class="secondary-button" bindtap="cancelNote">取消</button>
-                <button id="save-note" class="primary-button" bindtap="saveNote">保存备注</button>
+                <button
+                  id="cancel-note"
+                  class="secondary-button"
+                  data-attempt-id="{{noteEditor.attemptId}}"
+                  data-edit-version="{{noteEditor.version}}"
+                  bindtap="cancelNote"
+                >取消</button>
+                <button
+                  id="save-note"
+                  class="primary-button"
+                  data-attempt-id="{{noteEditor.attemptId}}"
+                  data-edit-version="{{noteEditor.version}}"
+                  bindtap="saveNote"
+                >保存备注</button>
               </view>
             </view>
           </view>

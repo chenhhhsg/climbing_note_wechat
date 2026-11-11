@@ -12,8 +12,8 @@
   background-color: #FFFFFF;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
+  padding: 16px;
+  margin-bottom: 12px;
 }
 
 .card-title {
@@ -25,7 +25,7 @@
 }
 
 .section {
-  margin-bottom: 30rpx;
+  margin-bottom: 16px;
 }
 
 .section-title {
@@ -377,10 +377,14 @@
 }
 
 .session-option {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  box-sizing: border-box;
   background-color: #F2F4F3;
   border-radius: 12rpx;
-  padding: 20rpx;
-  margin-bottom: 12rpx;
+  padding: 8px 16px;
+  margin-bottom: 8px;
   font-size: 28rpx;
   color: #182421;
 }
@@ -525,8 +529,8 @@ page {
   background-color: #F2F4F3;
 }
 
-.page { padding:20rpx 24rpx 55rpx; background-color: #F2F4F3; }
-.section-title,.card-title,.photo-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; line-height:1.35; font-weight:700; }
+.page { padding:12px 12px 28px; background-color: #F2F4F3; }
+.section-title,.card-title,.photo-title { font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei",sans-serif; line-height:1.35; font-weight:700; }
 .section-title { font-size:39rpx; border-bottom:2rpx solid #1F5948; padding:0 0 14rpx; }
 .card,.photo-card,.attempt-item,.history-group,.selected-route { border-radius:8rpx; box-shadow:none; }
 .primary-button,.secondary-button,.text-button { min-height:44px; box-sizing:border-box; display:flex; align-items:center; justify-content:center; line-height:1.4; }
@@ -547,7 +551,7 @@ page {
 .route-title-row { align-items:flex-start; flex-wrap:wrap; gap:8rpx 16rpx; }
 .route-title-row .route-swatch { position:absolute; width:9rpx; height:100%; left:0; top:0; margin:0; border:0; border-radius:0; }
 .route-grade-display { display:inline-flex; align-items:center; justify-content:center; min-width:52px; min-height:44px; box-sizing:border-box; padding:0 10rpx; border-radius:6rpx; background:#E9EFEC; color:#1F5948; font:700 36rpx/1.2 "IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-variant-numeric:tabular-nums; letter-spacing:0; word-break:break-all; }
-.route-name { margin:12rpx 0 4rpx; color:#182421; font:700 40rpx/1.3 "Songti SC","SimSun",serif; word-break:break-all; }
+.route-name { margin:12rpx 0 4rpx; color:#182421; font:700 40rpx/1.3 -apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei",sans-serif; word-break:break-all; }
 .route-meta,.route-gym { color:#53615B; line-height:1.55; word-break:break-all; }
 .route-summary { display:block; color:#53615B; border-top:1px solid #D7DED9; margin:20rpx 0 0; padding-top:14rpx; line-height:1.5; }
 .history-group { background:#FFFFFF; border:1px solid #D7DED9; border-radius:8rpx; padding:16rpx 20rpx; margin-bottom:16rpx; }
@@ -558,7 +562,7 @@ page {
 /* 下次想爬（T027）：加入、撤下与拆线归档只改清单，线路、照片与把次都不动 */
 .wishlist-card { background:#F2F4F3; border:1px solid #D7DED9; padding:24rpx; }
 .wishlist-head { display:flex; align-items:center; justify-content:space-between; gap:16rpx; }
-.wishlist-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:32rpx; color:#182421; }
+.wishlist-title { font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Noto Sans CJK SC","Source Han Sans SC","Microsoft YaHei",sans-serif; font-weight:700; font-size:32rpx; color:#182421; }
 .wishlist-state { font-size:24rpx; padding:6rpx 16rpx; border-radius:8rpx; background:#E9EFEC; color:#1F5948; }
 .wishlist-state-completed { background:#E9EFEC; color:#1F5948; }
 .wishlist-state-archived { background:#F0EDE3; color:#6B5544; }
@@ -608,7 +612,8 @@ page {
 .mark-card { background: #F2F4F3; border: 1px solid #D7DED9; padding: 24rpx; }
 .mark-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
 .mark-title {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   font-weight: 700;
   font-size: 32rpx;
   color: #182421;
@@ -659,11 +664,14 @@ page {
 
 .mark-list { margin-top: 20rpx; }
 .mark-list-title { display: block; font-size: 26rpx; font-weight: 700; color: #182421; margin-bottom: 8rpx; }
+/* 清单行是图片小编号的等效选择入口：整行至少 44px 高，编号本身保持原定位大小 */
 .mark-item {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 14rpx;
-  padding: 16rpx 0;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 8px 0;
   border-bottom: 1px solid #D7DED9;
 }
 .mark-item-index {

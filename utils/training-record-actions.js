@@ -14,14 +14,204 @@
  * 页面需要提供（与 T017 场内页同名）：
  *   this.archive、this.data.loadError、this.data.activeSession、this.data.selectedRoute、
  *   this.data.attempts、this.data.noteEditor、this.refreshView()，
- *   以及本实例临时状态 _lastTap / _failedOps / _correctedRows / _correctionFailures /
- *   _attemptOps / _recentStatus（onLoad 时初始化）。
+ *   以及本实例临时状态 _lastTap / _correctedRows / _correctionFailures /
+ *   _recentStatus（onLoad 时初始化）。跨页面实例要保留的「没落盘的请求」不在页面实例
+ *   上，见本文件里的应用运行期失败操作缓存。
  */
 const store = require('./training-store.js');
 
 // 「同一把按钮的同一结果」在窗口内重复点击视为一次误触：真实一次攀爬不会在
 // 几百毫秒内发生两次，记两把之间必然隔着一次攀爬和一次落盘。
 const SAME_TAP_WINDOW_MS = 300;
+
+function hasText(value) {
+  return typeof value === 'string' && value.trim() !== '';
+}
+
+// ---------------------------------------------------------------- 应用运行期的失败操作
+//
+// 待处理阶段的第一笔写就失败时，档案里没有留下任何标记；页面实例一换（回列表换线、
+// 再点回原来这条线）原请求与原 opId 就只剩内存里那一份。这里只在**当前应用运行期**
+// 留一份最小记录，跨页面实例沿用原 opId 重试：
+// - 只存 opId、归属（archiveId + sessionId + routeId）与这次意图需要的原值，不缓存
+//   整份档案，也不当成持久数据：每次仍先重读最新档案，再决定能不能重试；
+// - 只读打开页面不写这层，更不写档案；
+// - 应用冷启（模块重新加载）时这层为空：还没写成功的那一下就是「未保存」，页面只显示
+//   档案里的真实状态，不伪造「已保存」；
+// - 最新档案里已经有同一 opId 的落盘结果（待保存标记或把次）、或这次意图已由别的操作
+//   完成时清掉，避免旧请求在新数据上再提交一次。
+const APP_OPS_LIMIT = 20;
+const appOps = { saves: [], changes: [] };
+
+function opKey() {
+  return Array.prototype.join.call(arguments, '\u0000');
+}
+
+function dropAppOps(list, predicate) {
+  for (let index = list.length - 1; index >= 0; index -= 1) {
+    if (predicate(list[index])) list.splice(index, 1);
+  }
+}
+
+/** 同 key 只留最新一条；总量有上限，只丢最旧的失败记录，不影响档案。 */
+function pushAppOp(list, entry) {
+  dropAppOps(list, item => item.key === entry.key);
+  list.push(entry);
+  while (list.length > APP_OPS_LIMIT) list.shift();
+}
+
+/**
+ * 记下这一把「没落盘」的保存请求（第一段写就失败，档案里没有待保存标记）。
+ */
+function rememberFailedSave(entry) {
+  if (!entry || !hasText(entry.archiveId) || !hasText(entry.opId)) return;
+  pushAppOp(appOps.saves, {
+    // 同一条线在同一场次里只留一条待重试：再记一把应当先重试上一把，不并列两条。
+    key: opKey(entry.archiveId, entry.sessionId || '', entry.routeId || ''),
+    archiveId: entry.archiveId,
+    opId: entry.opId,
+    sessionId: entry.sessionId || '',
+    routeId: entry.routeId || '',
+    result: entry.result === 'send' ? 'send' : 'fail',
+    note: typeof entry.note === 'string' ? entry.note : ''
+  });
+}
+
+/** 最新档案里这条待保存已经由档案层接手（有标记或已成把次）：内存里这条是多余的。 */
+function pruneFailedSaves(archive) {
+  if (!archive || !hasText(archive.archiveId)) return;
+  const attemptIds = new Set((archive.attempts || []).map(item => item.id));
+  const pendingOpIds = new Set((archive.pendingSaves || []).map(item => item.opId));
+  dropAppOps(
+    appOps.saves,
+    entry =>
+      entry.archiveId === archive.archiveId &&
+      (attemptIds.has(entry.opId) || pendingOpIds.has(entry.opId))
+  );
+}
+
+function failedSaveEntries(archive) {
+  if (!archive || !hasText(archive.archiveId)) return [];
+  pruneFailedSaves(archive);
+  return appOps.saves
+    .filter(entry => entry.archiveId === archive.archiveId)
+    .map(entry => ({
+      archiveId: entry.archiveId,
+      opId: entry.opId,
+      sessionId: entry.sessionId,
+      routeId: entry.routeId,
+      result: entry.result,
+      note: entry.note
+    }));
+}
+
+function failedSaveEntry(archive, opId) {
+  if (!archive || !hasText(opId)) return null;
+  pruneFailedSaves(archive);
+  const found = appOps.saves.find(
+    entry => entry.archiveId === archive.archiveId && entry.opId === opId
+  );
+  return found ? Object.assign({}, found) : null;
+}
+
+function forgetFailedSave(archiveId, opId) {
+  if (!hasText(archiveId) || !hasText(opId)) return;
+  dropAppOps(appOps.saves, entry => entry.archiveId === archiveId && entry.opId === opId);
+}
+
+/** 这条线新记的一把已经落盘：同一条线之前那条没落盘的请求不再可重试。 */
+function forgetFailedSavesOnRoute(archiveId, sessionId, routeId) {
+  if (!hasText(archiveId)) return;
+  dropAppOps(
+    appOps.saves,
+    entry =>
+      entry.archiveId === archiveId &&
+      entry.sessionId === sessionId &&
+      entry.routeId === routeId
+  );
+}
+
+/**
+ * 记下这次没落盘的撤回/恢复意图（第一段写就失败，档案里没有 pendingUndos/Restores）。
+ */
+function rememberFailedChange(entry) {
+  if (!entry || !hasText(entry.archiveId) || !hasText(entry.opId) || !hasText(entry.attemptId)) {
+    return;
+  }
+  if (entry.action !== 'undo' && entry.action !== 'restore') return;
+  pushAppOp(appOps.changes, {
+    key: opKey(entry.archiveId, entry.attemptId, entry.action),
+    archiveId: entry.archiveId,
+    attemptId: entry.attemptId,
+    action: entry.action,
+    sessionId: entry.sessionId || '',
+    routeId: entry.routeId || '',
+    opId: entry.opId
+  });
+}
+
+/**
+ * 最新档案里这一把已经结清这次意图、或已经处在意图的目标状态：内存里这条不再可重试。
+ */
+function pruneFailedChanges(archive) {
+  if (!archive || !hasText(archive.archiveId)) return;
+  const attempts = archive.attempts || [];
+  dropAppOps(appOps.changes, entry => {
+    if (entry.archiveId !== archive.archiveId) return false;
+    const attempt = attempts.find(item => item.id === entry.attemptId);
+    if (!attempt) return true;
+    if (store.attemptSettledOp(attempt, entry.opId)) return true;
+    const undone = store.isUndoneAttempt(attempt);
+    return entry.action === 'undo' ? undone : !undone;
+  });
+}
+
+function failedChangeEntry(archive, attemptId, action) {
+  if (!archive || !hasText(attemptId)) return null;
+  pruneFailedChanges(archive);
+  const found = appOps.changes.find(
+    entry =>
+      entry.archiveId === archive.archiveId &&
+      entry.attemptId === attemptId &&
+      entry.action === action
+  );
+  return found ? Object.assign({}, found) : null;
+}
+
+function forgetFailedChange(archiveId, attemptId, action) {
+  if (!hasText(archiveId) || !hasText(attemptId)) return;
+  dropAppOps(
+    appOps.changes,
+    entry =>
+      entry.archiveId === archiveId && entry.attemptId === attemptId && entry.action === action
+  );
+}
+
+/**
+ * 撤回/恢复重试要沿用的原 opId：档案里已落盘的 pending 标记优先（两段写只差第二段的
+ * 那种），其次是本应用运行期里第一段写就失败的那一次。标记必须属于同一把次、同一场次
+ * 与同一线路，否则宁可不用——不能借别的意图的 opId 提交。
+ */
+function pendingChangeOpId(archive, attempt, action) {
+  if (!archive || !attempt) return '';
+  const markers = action === 'undo' ? archive.pendingUndos : archive.pendingRestores;
+  const marker = (markers || []).find(
+    item =>
+      item &&
+      item.attemptId === attempt.id &&
+      item.sessionId === attempt.sessionId &&
+      item.routeId === attempt.routeId &&
+      hasText(item.opId)
+  );
+  return marker ? marker.opId : '';
+}
+
+function retryChangeOpId(archive, attempt, action) {
+  const pending = pendingChangeOpId(archive, attempt, action);
+  if (pending) return pending;
+  const failed = failedChangeEntry(archive, attempt.id, action);
+  return failed ? failed.opId : '';
+}
 
 function pad2(value) {
   return value < 10 ? '0' + value : String(value);
@@ -110,7 +300,8 @@ function parseRecordQuery(query) {
  * 按入口渲染时的档案、场次与长期线路核对归属（只读，不写盘）。
  *
  * - 档案读不出来：返回档案层错误，页面只显示错误；
- * - 入口带了 archiveId 且与当前档案不同：串档，拒绝展示/写入，不拿同名 ID 顶替；
+ * - archiveId 缺失：无法确认入口属于哪一份本机档案，拒绝展示/写入（同名场次/线路
+ *   不能顶替）；带了 archiveId 且与当前档案不同：串档，同样拒绝；
  * - sessionId / routeId 缺失或不在档案里：可见原因；
  * - 线路不在这一场的关联里、也没有这一场的历史把次：拒绝，避免把把次记到别的场次。
  *
@@ -130,7 +321,19 @@ function loadRecordContext(query) {
     };
   }
   const archive = loaded.archive;
-  if (ids.archiveId && ids.archiveId !== archive.archiveId) {
+  // 新入口（单线记录 / 逐把明细）必须带齐档案归属：只凭 sessionId + routeId 打开时，
+  // 换了本机档案后同名 ID 可以直接指向另一份档案，页面既无法展示也无法拒绝写入。
+  if (!ids.archiveId) {
+    return {
+      ok: false,
+      code: 'missing-archive',
+      error: '缺少档案参数，无法确认这条记录属于哪一份本机档案；未展示也未改动任何记录。',
+      archive,
+      session: null,
+      route: null
+    };
+  }
+  if (ids.archiveId !== archive.archiveId) {
     return {
       ok: false,
       code: 'archive-mismatch',
@@ -224,7 +427,7 @@ function recordQueryString(context) {
  * 档案、场次或线路。没带 dataset 的调用（数据层与老测试直接驱动）按当前值处理。
  */
 function recordAttempt(event) {
-  if (this.data.loadError) return;
+  if (this.data.loadError || this.data.contextError) return;
   const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
   const result = dataset.result;
   if (result !== 'fail' && result !== 'send') return;
@@ -306,7 +509,7 @@ function recordAttempt(event) {
 
   if (outcome.ok) {
     this._lastTap[tapKey] = now;
-    delete this._failedOps[active.id + '\u0000' + routeId];
+    forgetFailedSavesOnRoute(this.archive.archiveId, active.id, routeId);
     this.setData({ storageError: '', notice: '' });
     this.refreshView();
     return;
@@ -321,22 +524,22 @@ function recordAttempt(event) {
 
   // 换档后的迟到请求：档案层已拒绝，不留下可重试记录。
   if (outcome.code === 'archive-mismatch') {
-    delete this._failedOps[active.id + '\u0000' + routeId];
     this.setData({ storageError: '', notice: outcome.error });
     this.refreshView();
     return;
   }
 
   // 落盘失败：记下这一把的操作 ID（含两段写都没落盘的情况）与它属于哪一份档案，
-  // 提示未保存，重试时沿用同一个 opId，只提交一次。
-  this._failedOps[active.id + '\u0000' + routeId] = {
+  // 提示未保存，重试时沿用同一个 opId，只提交一次。第一段写就失败时档案里没有标记，
+  // 这条记录留在当前应用运行期，换页（回列表再进来）也能按原 opId 重试。
+  rememberFailedSave({
     archiveId: this.archive.archiveId,
     opId: outcome.opId,
     sessionId: active.id,
     routeId,
     result,
     note: ''
-  };
+  });
   this.setData({ storageError: outcome.error, notice: '这一把未保存，可在「待保存」行重试。' });
   this.refreshView();
 }
@@ -349,7 +552,7 @@ function recordAttempt(event) {
  * （换档/换了账号之后又点到旧页面），整条不落盘，也不把这一把写进新的档案。
  */
 function retryPendingAttempt(event) {
-  if (this.data.loadError) return;
+  if (this.data.loadError || this.data.contextError) return;
   const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
   const opId = dataset.opId;
   if (!opId) return;
@@ -363,24 +566,63 @@ function retryPendingAttempt(event) {
   const archive = loaded.archive;
   this.archive = archive;
 
-  const fromArchive = (archive.pendingSaves || []).find(op => op.opId === opId) || null;
-  const localKey = Object.keys(this._failedOps).find(
-    key => this._failedOps[key].opId === opId
-  );
-  const source = fromArchive || (localKey ? this._failedOps[localKey] : null);
-  if (!source) {
-    this.setData({ notice: '这条待保存记录已不存在，正在按最新档案刷新。' });
+  // 归属核对必须**先于**任何待保存查找（opId / pendingSaves）：事件来自 A 档页面，
+  // 而盘上已经换成 B 档时，两组 ID 与 opId 可能完全复用，按 opId 在 B 档找到同 ID
+  // 的待保存记录就会把 A 的这一把写进 B。入口带的档案身份与最新档案不符时整条拒绝。
+  const claimArchiveId =
+    (typeof dataset.archiveId === 'string' && dataset.archiveId) ||
+    (this._context && this._context.archiveId) ||
+    (this.data && this.data.archiveId) ||
+    '';
+  if (claimArchiveId && claimArchiveId !== archive.archiveId) {
+    this.setData({
+      storageError: '',
+      notice: '这一把属于原来的本机档案，未做改动；已按当前档案刷新。'
+    });
     this.refreshView();
     return;
   }
 
-  // 待保存记录属于哪一份档案：档案里的「进行中」标记天然属于当前这一份；本实例的
-  // 那一条记着发起时的档案 ID，换档之后不再往新档案里写这一把。
+  const fromArchive = (archive.pendingSaves || []).find(op => op.opId === opId) || null;
+  // 档案里没有标记时，重试的是第一段写就失败、只在当前应用运行期记着的那一条；
+  // 它带着发起时的档案 ID，换档之后不往新档案里写这一把。
+  const source = fromArchive || failedSaveEntry(archive, opId);
+  if (!source) {
+    forgetFailedSave(archive.archiveId, opId);
+    this.setData({ storageError: '', notice: '这条待保存记录已不存在，正在按最新档案刷新。' });
+    this.refreshView();
+    return;
+  }
+
+  // 事件带下来的场次与线路也必须和这条待保存记录一致：同一份档案里换了场次/线路之后，
+  // 旧「待保存」行上的迟到重试不能把这一把提交到别的场次或线路。
+  const claimSessionId =
+    (typeof dataset.sessionId === 'string' && dataset.sessionId) ||
+    (this._context && this._context.sessionId) ||
+    '';
+  const claimRouteId =
+    (typeof dataset.routeId === 'string' && dataset.routeId) ||
+    (this._context && this._context.routeId) ||
+    '';
+  if (
+    (claimSessionId && claimSessionId !== source.sessionId) ||
+    (claimRouteId && claimRouteId !== source.routeId)
+  ) {
+    this.setData({
+      storageError: '',
+      notice: '这条待保存记录属于别的场次或线路，这次重试没有生效；已按最新档案刷新。'
+    });
+    this.refreshView();
+    return;
+  }
+
+  // 待保存记录属于哪一份档案：档案里的「进行中」标记天然属于当前这一份；运行期记着
+  // 的那一条带着发起时的档案 ID，换档之后不再往新档案里写这一把。
   const sourceArchiveId = fromArchive
     ? archive.archiveId
     : source.archiveId || archive.archiveId;
   if (sourceArchiveId !== archive.archiveId) {
-    if (localKey) delete this._failedOps[localKey];
+    forgetFailedSave(sourceArchiveId, opId);
     this.setData({
       storageError: '',
       notice: '这一把属于原来的本机档案，未做改动；已按当前档案刷新。'
@@ -400,7 +642,7 @@ function retryPendingAttempt(event) {
   if (outcome.archive) this.archive = outcome.archive;
 
   if (outcome.ok) {
-    if (localKey) delete this._failedOps[localKey];
+    forgetFailedSave(sourceArchiveId, opId);
     this._lastTap[source.sessionId + '\u0000' + source.routeId + '\u0000' + source.result] = Date.now();
     this.setData({ storageError: '', notice: '' });
     this.refreshView();
@@ -408,31 +650,21 @@ function retryPendingAttempt(event) {
   }
 
   if (outcome.blocked) {
-    if (localKey) delete this._failedOps[localKey];
+    forgetFailedSave(sourceArchiveId, opId);
     this.setData({ storageError: '', notice: outcome.error });
     this.refreshView();
     return;
   }
 
   // 仍然没落盘：保留同一个 opId 与它属于哪一份档案，可再次重试。
-  const keptArchiveId = localKey
-    ? this._failedOps[localKey].archiveId || archive.archiveId
-    : archive.archiveId;
-  if (localKey) {
-    this._failedOps[localKey] = Object.assign({}, this._failedOps[localKey], {
-      archiveId: keptArchiveId,
-      opId: outcome.opId || opId
-    });
-  } else if (outcome.opId) {
-    this._failedOps[source.sessionId + '\u0000' + source.routeId] = {
-      archiveId: keptArchiveId,
-      opId: outcome.opId,
-      sessionId: source.sessionId,
-      routeId: source.routeId,
-      result: source.result,
-      note: typeof source.note === 'string' ? source.note : ''
-    };
-  }
+  rememberFailedSave({
+    archiveId: sourceArchiveId,
+    opId: outcome.opId || opId,
+    sessionId: source.sessionId,
+    routeId: source.routeId,
+    result: source.result,
+    note: typeof source.note === 'string' ? source.note : ''
+  });
   this.setData({ storageError: outcome.error, notice: '这一把仍未保存，可再次重试。' });
   this.refreshView();
 }
@@ -447,6 +679,9 @@ function retryPendingAttempt(event) {
  *   动作的命中矩形在任何状态下都不相交；
  * - 失败（写盘失败）时保留原动作与同一个 opId 的重试文案；成功的那一次在本行下方
  *   写一句确认（只在本页显示，不落盘，重开后以档案里的撤回状态为准）。
+ *
+ * 失败后换页再回来（新页面实例）时，重试文案来自档案里的 pending 标记或当前应用运行期
+ * 记着的那一次失败，仍指向原 opId。
  */
 function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
   if (!activeSession || !selectedRoute) return null;
@@ -465,10 +700,10 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
   const offered = undone ? 'restore' : 'undo';
   const offeredText = undone ? '恢复' : '撤回';
   const madeByText = undone ? '撤回' : '恢复';
-  const retry = this._attemptOps[attempt.id + '\u0000' + offered] || null;
+  const retryOpId = retryChangeOpId(archive, attempt, offered);
 
   let stateText = '';
-  if (retry) {
+  if (retryOpId) {
     stateText = offeredText + '未保存 · 点「重试' + offeredText + '这一把」按同一把重试';
   } else if (
     this._recentStatus &&
@@ -492,6 +727,14 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
     archiveId: archive.archiveId,
     expectedRev: store.attemptRev(attempt),
     expected: undone ? 'undone' : 'effective',
+    // 这一把本身是不是完攀：撤回/恢复完攀时，页面要在原位置保留「改为未完成」那一段的
+    // 空间，撤回后不能因为下方内容缩短而让滚动位置把原按钮换到别的动作上。
+    isSend: attempt.result === 'send',
+    // 与「改为未完成」原行同一套文字（序号、日期、场次、岩馆）：撤回后在原位留的
+    // 惰性行要和原行一样高，原坐标才不会落到结果按钮上。
+    correctionLabel: '第 ' + target.number + ' 把',
+    correctionContextText:
+      activeSession.dateText + ' ' + activeSession.label + ' · ' + activeSession.gymName,
     titleText:
       (undone ? '已撤回 · ' : '刚才 · ') +
       selectedRoute.name +
@@ -503,9 +746,9 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
       '本场 ' + activeSession.label + ' · ' + activeSession.gymName + ' · ' + timeText(attempt.createdAt),
     stateText,
     canUndo: !undone,
-    undoText: retry && !undone ? '重试撤回这一把' : '撤回这一把',
+    undoText: retryOpId && !undone ? '重试撤回这一把' : '撤回这一把',
     canRestore: undone,
-    restoreText: retry && undone ? '重试恢复这一把' : '恢复这一把'
+    restoreText: retryOpId && undone ? '重试恢复这一把' : '恢复这一把'
   };
 }
 
@@ -536,7 +779,7 @@ function restoreLatestAttempt(event) {
  * + rev），不是计时防抖。
  */
 function changeRecentAttempt(event, action) {
-  if (this.data.loadError) return;
+  if (this.data.loadError || this.data.contextError) return;
   const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
   const attemptId = dataset.attemptId;
   if (!attemptId) return;
@@ -554,7 +797,6 @@ function changeRecentAttempt(event, action) {
   const noun = asUndo ? '撤回' : '恢复';
   const sessionId = dataset.sessionId || '';
   const routeId = dataset.routeId || '';
-  const key = attemptId + '\u0000' + action;
   // **原按钮捕获的**档案 ID：写失败后重读比对「盘上这一份还是我原来那一份吗」用的
   // 就是它——不能拿已经被 outcome.archive 覆盖过的 this.archive 顶替。
   const originArchiveId = dataset.archiveId || archive.archiveId;
@@ -565,7 +807,7 @@ function changeRecentAttempt(event, action) {
     dataset.archiveId &&
     dataset.archiveId !== archive.archiveId
   ) {
-    delete this._attemptOps[key];
+    forgetFailedChange(originArchiveId, attemptId, action);
     this.setData({
       storageError: '',
       notice: '这一把属于原来的本机档案，这次' + noun + '没有生效，已按当前档案刷新。'
@@ -585,7 +827,7 @@ function changeRecentAttempt(event, action) {
     (sessionId && sessionId !== pageSessionId) ||
     (routeId && routeId !== pageRouteId)
   ) {
-    delete this._attemptOps[key];
+    forgetFailedChange(archive.archiveId, attemptId, action);
     this.setData({
       storageError: '',
       notice: '已经切到别的场次或线路，这次' + noun + '没有生效，已按最新档案刷新。'
@@ -605,7 +847,7 @@ function changeRecentAttempt(event, action) {
 
   const target = recentAttemptTarget(archive, sessionId, routeId);
   if (!target || target.attempt.id !== attemptId) {
-    delete this._attemptOps[key];
+    forgetFailedChange(archive.archiveId, attemptId, action);
     this.setData({
       storageError: '',
       notice: '最近一把已经变了，已按最新档案刷新；' + noun + '只在最近这一把上生效。'
@@ -617,7 +859,7 @@ function changeRecentAttempt(event, action) {
   // 已经是要的状态（撤回一个已撤回的、恢复一个有效的）：不写盘，只说明下一步。
   const undone = store.isUndoneAttempt(target.attempt);
   if (asUndo === undone) {
-    delete this._attemptOps[key];
+    forgetFailedChange(archive.archiveId, attemptId, action);
     this._recentStatus = { attemptId, undone: asUndo };
     this.setData({
       storageError: '',
@@ -629,7 +871,9 @@ function changeRecentAttempt(event, action) {
     return;
   }
 
-  const previous = this._attemptOps[key];
+  // 重试沿用的原 opId：档案里已落盘的 pending 标记优先，其次是当前应用运行期里
+  // 第一段写就失败的那一次——换了页面实例也还认得同一个请求。
+  const retryOpId = retryChangeOpId(archive, target.attempt, action);
   const outcome = (asUndo ? store.undoAttempt : store.restoreAttempt)(attemptId, {
     routeId,
     sessionId,
@@ -644,12 +888,12 @@ function changeRecentAttempt(event, action) {
           : 'undone',
     // 渲染时这一把的 rev：与最新持久版本不符时按过期事件拒绝，一个字都不写。
     expectedRev: Number.isInteger(dataset.expectedRev) ? dataset.expectedRev : undefined,
-    opId: previous ? previous.opId : ''
+    opId: retryOpId
   });
   if (outcome.archive) this.archive = outcome.archive;
 
   if (outcome.ok) {
-    delete this._attemptOps[key];
+    forgetFailedChange(originArchiveId, attemptId, action);
     this._recentStatus = { attemptId, undone: asUndo };
     this.setData({ storageError: '', notice: '' });
     this.refreshView();
@@ -678,7 +922,7 @@ function changeRecentAttempt(event, action) {
           : null;
       const landedByThisOperation = Boolean(receipt && receipt.undone === asUndo);
       if (stateMatches && landedByThisOperation) {
-        delete this._attemptOps[key];
+        forgetFailedChange(originArchiveId, attemptId, action);
         this._recentStatus = { attemptId, undone: asUndo };
         this.setData({
           storageError: '',
@@ -688,7 +932,7 @@ function changeRecentAttempt(event, action) {
         return;
       }
       if (stateMatches) {
-        delete this._attemptOps[key];
+        forgetFailedChange(originArchiveId, attemptId, action);
         this.setData({
           storageError: '',
           notice: sameArchive
@@ -707,8 +951,16 @@ function changeRecentAttempt(event, action) {
         return;
       }
     }
-    // 确实没落盘：保留原动作与同一个 opId 的重试入口。
-    this._attemptOps[key] = { opId: outcome.opId, error: outcome.error };
+    // 确实没落盘：保留原动作与同一个 opId 的重试入口。第一段写就失败时档案里没有
+    // pending 标记，这条意图留在当前应用运行期，换页回来仍按同一个 opId 重试。
+    rememberFailedChange({
+      archiveId: originArchiveId,
+      attemptId,
+      action,
+      sessionId: sessionId || target.attempt.sessionId,
+      routeId: routeId || target.attempt.routeId,
+      opId: outcome.opId || retryOpId
+    });
     this.setData({
       storageError: outcome.error,
       notice: noun + '未保存，可再点一次「重试' + noun + '这一把」。'
@@ -717,8 +969,8 @@ function changeRecentAttempt(event, action) {
     return;
   }
 
-  // 守卫拒绝、过期的点击或这一把已不存在：不动任何数据。
-  delete this._attemptOps[key];
+  // 守卫拒绝、过期的点击或这一把已不存在：不动任何数据，也不沿用旧 opId。
+  forgetFailedChange(originArchiveId, attemptId, action);
   this.setData({
     storageError: '',
     notice: outcome.error || '这次' + noun + '没有生效，已按最新档案刷新。'
@@ -730,17 +982,22 @@ function changeRecentAttempt(event, action) {
 
 /**
  * 打开某一把的备注编辑：目标来自该行按钮带下来的原把次 ID，只在当前页面的
- * 逐把列表里找这一把；编辑记录同时记下打开时的档案 ID，保存时先核对档案没换。
+ * 逐把列表里找这一把；编辑记录同时记下打开时的档案 ID 与**本次编辑代次**，
+ * 保存、取消与输入都按同一代次核对，旧编辑器的事件不会落到后来的草稿上。
  */
 function openNoteEditor(event) {
+  if (this.data.contextError) return;
   const attemptId = event && event.currentTarget && event.currentTarget.dataset.attemptId;
   if (!attemptId || !this.data.selectedRoute) return;
   const attempt = (this.data.attempts || []).find(item => item.id === attemptId);
   if (!attempt) return;
 
+  this._noteEditorSeq = (this._noteEditorSeq || 0) + 1;
   this.setData({
     noteEditor: {
       attemptId: attempt.id,
+      // 同一把取消后重新打开、或改开另一把都会换号：之前渲染的保存/取消按钮随之失效。
+      version: this._noteEditorSeq,
       routeId: this.data.selectedRoute.id,
       sessionId: this.data.activeSession ? this.data.activeSession.id : '',
       archiveId: (this.archive && this.archive.archiveId) || '',
@@ -752,23 +1009,73 @@ function openNoteEditor(event) {
   });
 }
 
+/**
+ * 事件上的编辑归属：WXML 把打开这一把时的 attemptId 与编辑代次一起带回来。
+ * 没带（数据层与老测试直接驱动）时不额外比对，沿用当前编辑器的行为。
+ */
+function noteEditorBinding(event) {
+  const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+  const attemptId = typeof dataset.attemptId === 'string' ? dataset.attemptId : '';
+  const hasVersion =
+    dataset.editVersion !== undefined &&
+    dataset.editVersion !== null &&
+    dataset.editVersion !== '';
+  return {
+    bound: Boolean(attemptId) || hasVersion,
+    attemptId,
+    version: hasVersion ? String(dataset.editVersion) : ''
+  };
+}
+
+function noteEditorMatches(editor, binding) {
+  if (!editor) return false;
+  if (!binding.bound) return true;
+  if (binding.attemptId && binding.attemptId !== editor.attemptId) return false;
+  if (binding.version && binding.version !== String(editor.version)) return false;
+  return true;
+}
+
 function onNoteInput(event) {
+  const editor = this.data.noteEditor;
+  if (!editor) return;
+  if (!noteEditorMatches(editor, noteEditorBinding(event))) return;
   this.setData({
     'noteEditor.text': (event && event.detail && event.detail.value) || ''
   });
 }
 
-function cancelNote() {
+function cancelNote(event) {
+  const editor = this.data.noteEditor;
+  if (!editor) return;
+  // 旧编辑器上的取消晚到：不清掉后来打开的草稿（另一把或同一把重新打开）。
+  if (!noteEditorMatches(editor, noteEditorBinding(event))) {
+    this.setData({
+      notice: '这次取消来自之前打开的备注编辑，已经失效；当前草稿保留。'
+    });
+    this.refreshView();
+    return;
+  }
   this.setData({ noteEditor: null });
 }
 
 /**
  * 只改这一把的备注：把数、结果、序号、场次与其他把次（含第一把）都不动。
  * 保存前核对这份编辑仍属于当前本机档案；换档后的迟到保存不写进新档案。
+ * 事件带的是打开编辑器时的 attemptId 与代次：旧按钮不能提交后来同把/另把的新草稿。
  */
-function saveNote() {
+function saveNote(event) {
+  if (this.data.contextError) return;
   const editor = this.data.noteEditor;
   if (!editor) return;
+
+  // 旧编辑器上的保存晚到：不写入，也不收起后来那一份草稿。
+  if (!noteEditorMatches(editor, noteEditorBinding(event))) {
+    this.setData({
+      notice: '这次保存来自之前打开的备注编辑，已经失效；当前草稿没有改动。'
+    });
+    this.refreshView();
+    return;
+  }
 
   const loaded = store.loadState();
   if (!loaded.ok) {
@@ -900,6 +1207,10 @@ module.exports = {
   undoLatestAttempt,
   restoreLatestAttempt,
   changeRecentAttempt,
+  // 当前应用运行期的失败操作（只读给待保存行与重试文案，不落盘）
+  failedSaveEntries,
+  failedSaveEntry,
+  failedChangeEntry,
   openNoteEditor,
   onNoteInput,
   cancelNote,

@@ -12,7 +12,7 @@ page {
 }
 
 .page {
-  padding: 24rpx 24rpx 60rpx;
+  padding: 12px 12px 32px;
   background-color: #F2F4F3;
 }
 
@@ -20,8 +20,8 @@ page {
   background-color: #FFFFFF;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
+  padding: 16px;
+  margin-bottom: 12px;
 }
 
 /* 标题与总览 */
@@ -35,7 +35,8 @@ page {
 }
 
 .list-title {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   font-weight: 700;
   font-size: 39rpx;
   line-height: 1.35;
@@ -158,7 +159,8 @@ page {
 }
 
 .gym-name {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   font-weight: 700;
   font-size: 30rpx;
   color: #182421;

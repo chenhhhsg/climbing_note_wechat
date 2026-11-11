@@ -146,10 +146,14 @@ Page({
     // _lastCreateTap  快速重复点击「创建并选中」的窗口，避免连点建出两条线；
     // _openRecordTap  同一行快速连点的窗口，避免一次点击排出两个单线页；
     // _summarySessionId  小结入口要打开哪一场（只读目标，不写盘）；空表示跟着当前场次。
+    // _displaySessionId 本页正在显示的那一场：首次载入钉在当时的当前场次，之后只由
+    //   用户显式「开始新场次 / 切场次」改写。别处（另一页、同步回调）改了活动场次时，
+    //   本页只刷新数据、不跟着换场次，返回本页仍显示原来那一场，也不写回活动场次。
     this._formDirty = false;
     this._newRouteDirty = false;
     this._lastCreateTap = 0;
     this._openRecordTap = null;
+    this._displaySessionId = '';
     // ?sessionId=xxx：小结入口指向另一场（只读回看），不改当前场次。
     this._summarySessionId =
       (query && (query.sessionId || query.sessionid)) || '';
@@ -180,7 +184,15 @@ Page({
     const loaded = store.loadState();
     this.archive = loaded.archive;
 
-    const active = this.findSession(loaded.archive.activeSessionId);
+    // 显示目标：首次载入钉住当时的当前场次；原场次已经不在档案里（或本来就没有）
+    // 时才退回最新活动场次。活动场次被别处改掉的返回不换掉本页显示的那一场。
+    const latestActiveId = (loaded.archive && loaded.archive.activeSessionId) || '';
+    if (!this._displaySessionId) this._displaySessionId = latestActiveId;
+    if (this._displaySessionId && !this.findSession(this._displaySessionId)) {
+      this._displaySessionId = latestActiveId;
+    }
+
+    const active = this.findSession(this._displaySessionId);
     // 空档必须能建立场次；已经有当前场次时只有显式「开始新场次」才展开表单。
     if (!active && !loaded.error) this._formOpen = true;
     const formVisible = !loaded.error && this._formOpen;
@@ -237,7 +249,11 @@ Page({
    */
   refreshView() {
     const archive = this.archive;
-    const activeRaw = this.findSession(archive.activeSessionId);
+    // 本页显示的是钉住的那一场，不一定是档案里的活动场次：别处改了活动场次，
+    // 这里仍按原场次列表渲染，直到用户显式开场或切场次。
+    const displayId = this._displaySessionId || archive.activeSessionId;
+    const activeRaw = this.findSession(displayId);
+    const showingActive = Boolean(activeRaw) && activeRaw.id === archive.activeSessionId;
     let activeSession = null;
     let sameDaySessions = [];
     let routes = [];
@@ -280,7 +296,9 @@ Page({
           grade: route.grade || '',
           colorName: route.colorName || '',
           colorHex: route.colorHex || '#dee2e6',
-          isSelected: route.id === archive.activeRouteId,
+          // 选中态只在「显示的就是活动场次」时才成立：活动场次已被别处改到另一场时，
+          // 它的当前线路不属于本页这一场，不能在列表里冒充本场的选中线。
+          isSelected: showingActive && route.id === archive.activeRouteId,
           isCompleted: Boolean(completion.completed),
           isClosed: Boolean(completion.closed),
           // 适用的文字状态：只在真的适用时才有字（已完攀 / 完攀待确认）。
@@ -291,7 +309,7 @@ Page({
         };
       });
 
-      selectedRoute = routes.find(route => route.id === archive.activeRouteId) || null;
+      selectedRoute = routes.find(route => route.isSelected) || null;
 
       // 选原线：本岩馆里还没有进本场次的线路。
       const linkedIds = new Set(
@@ -327,12 +345,13 @@ Page({
   },
 
   /**
-   * 本次小结入口（T034，只读派生）：指向入口渲染时的场次（默认当前场次）。
+   * 本次小结入口（T034，只读派生）：指向本页正在显示的那一场（默认当前场次）。
+   * 活动场次被别处改掉时，入口仍跟本页显示的原场次一致，不会跳到另一场小结。
    */
   refreshSummaryEntry() {
     const archive = this.archive;
-    const activeId = (archive && archive.activeSessionId) || '';
-    const targetId = this._summarySessionId || activeId;
+    const displayId = (this.data.activeSession && this.data.activeSession.id) || '';
+    const targetId = this._summarySessionId || displayId;
     const session =
       ((archive && archive.sessions) || []).find(item => item.id === targetId) || null;
 
@@ -357,7 +376,7 @@ Page({
         ' · ' +
         store.sessionLabel(archive, session),
       summaryEntryHintText: '只读回看这一场的线路、把数与完攀；不改当前场次。',
-      summaryEntryViewingOther: Boolean(activeId) && session.id !== activeId
+      summaryEntryViewingOther: Boolean(displayId) && session.id !== displayId
     });
   },
 
@@ -447,6 +466,8 @@ Page({
 
     this._formOpen = false;
     this._formDirty = false;
+    // 显式开始新场次：本页显示目标跟着换到刚建立的这一场。
+    this._displaySessionId = outcome.session.id;
     // 开始新场次后小结回到新场次（清掉 ?sessionId= 的回看目标）。
     this._summarySessionId = '';
     this.loadPage();
@@ -454,11 +475,12 @@ Page({
 
   /**
    * 同日场次切换：只改当前归属，不新建场次。
+   * 这是用户显式换场次：本页显示目标一并换到这一场（活动场次写入失败则仍留在原场）。
    */
   switchSession(event) {
     if (this.data.loadError) return;
     const sessionId = event && event.currentTarget && event.currentTarget.dataset.sessionId;
-    if (!sessionId || sessionId === this.archive.activeSessionId) return;
+    if (!sessionId || sessionId === this._displaySessionId) return;
 
     const outcome = store.selectSession(sessionId);
     if (!outcome.ok) {
@@ -468,6 +490,7 @@ Page({
       return;
     }
     this.archive = outcome.archive;
+    this._displaySessionId = sessionId;
     // 用户自己切场次：小结跟着当前场次走，不再停留在 ?sessionId= 的回看目标上。
     this._summarySessionId = '';
     // 列表已经换成另一场：上一次点击的窗口作废（同一条长期线路在另一场里是另一次点击）。
@@ -479,6 +502,38 @@ Page({
   // ---------------------------------------------------------------- 线路
 
   /**
+   * 显式往本页这一场里加线/选线之前，把档案的活动场次对齐到本页显示的那一场。
+   *
+   * 只有用户主动往列表里写数据时才对齐；单纯返回本页、看小结回来都不会写活动场次。
+   * 写失败就留在本页显示原因，不加线也不改其他场次的当前线路。
+   */
+  adoptDisplayedSession() {
+    if (this.isDisplayingActiveSession()) return true;
+    const sessionId = this.data.activeSession && this.data.activeSession.id;
+    if (!sessionId) return false;
+    const outcome = store.selectSession(sessionId);
+    if (!outcome.ok) {
+      this.setData({ storageError: outcome.error, notice: '' });
+      if (outcome.archive) this.archive = outcome.archive;
+      this.refreshView();
+      return false;
+    }
+    this.archive = outcome.archive;
+    return true;
+  },
+
+  /**
+   * 本页显示的是不是档案里的活动场次。
+   * 只有这种情况下才去写全局的「当前线路」；显示的是原场次而活动场次已被别处
+   * 改到另一场时，选中/记一把都只认本页这一场，不改另一场的当前线路。
+   */
+  isDisplayingActiveSession() {
+    const archive = this.archive;
+    const displayId = (this.data.activeSession && this.data.activeSession.id) || this._displaySessionId;
+    return Boolean(archive && displayId && archive.activeSessionId === displayId);
+  },
+
+  /**
    * 只改当前选中线路（不导航、不建线、不产生把次）。
    * 单线记录页使用入口自己的 routeId；这里保留选中用于列表行高亮与资料页的「当前场次」。
    */
@@ -486,6 +541,9 @@ Page({
     if (this.data.loadError) return { ok: false };
     const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
     if (!routeId) return { ok: false };
+    // 显示原场次、活动场次已被别处换到另一场：只把点击当作「打开这一场的这条线」，
+    // 不把另一场的当前线路改成本页的行；返回本页仍按原场次只读显示。
+    if (!this.isDisplayingActiveSession()) return { ok: true };
     if (routeId === this.archive.activeRouteId) {
       // 点的就是当前线：不重复写盘（同一行的第二次点击也不再产生第二次选中）。
       return { ok: true };
@@ -699,6 +757,9 @@ Page({
       return;
     }
 
+    // 用户主动选线：先把活动场次对齐到本页显示的那一场，关联与选中都落在这一场。
+    if (!this.adoptDisplayedSession()) return;
+
     const linked = store.linkRouteToSession(active.id, routeId);
     if (!linked.ok) {
       if (linked.archive) this.archive = linked.archive;
@@ -906,6 +967,12 @@ Page({
       return;
     }
     this._lastCreateTap = now;
+
+    // 用户主动往本场加线：先把活动场次对齐到本页显示的那一场，新线与选中都归这一场。
+    if (!this.adoptDisplayedSession()) {
+      this._lastCreateTap = 0;
+      return;
+    }
 
     const color = ROUTE_COLORS[this.data.newRouteColorIndex] || null;
     const outcome = store.createRoute({

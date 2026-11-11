@@ -136,6 +136,9 @@ Page({
     // _correctedRows 刚改好的那一把（原位只读回读）；_correctionFailures 失败可重试标记。
     this._correctedRows = {};
     this._correctionFailures = {};
+    // 同日选场面板的实例代次：每次打开面板换一个号，随按钮 dataset 一起带回，
+    // 旧面板上的迟到选择不能套用到后来打开的另一个面板。
+    this._sessionPickerSeq = 0;
     this._photoUi = null;
     // 标记：当前照片上的标记内存快照、显示框布局缓存、图片尺寸缓存与各类代次。
     // - _markIdentity 是「档案 + 线路 + 主照片」三者拼出的当前归属；换了任意一项就递增
@@ -1385,10 +1388,19 @@ Page({
     if (outcome.archive && !outcome.ok) this.archive = outcome.archive;
 
     if (outcome.code === 'choose-session') {
+      const pickerArchiveId =
+        (outcome.archive && outcome.archive.archiveId) ||
+        (this.archive && this.archive.archiveId) ||
+        '';
+      this._sessionPickerSeq += 1;
       this.setData({
         storageError: '',
         notice: '',
         sessionPicker: {
+          // 面板的归属与代次：档案、线路、日期与本次打开序号拼成的标识随每个选项
+          // 一起渲染；选择时先按这组原值核对最新档案，再决定是否写场次。
+          archiveId: pickerArchiveId,
+          pickerKey: [pickerArchiveId, routeId, outcome.date, this._sessionPickerSeq].join('|'),
           routeId: routeId,
           routeName: this.data.route.name,
           dateText: outcome.date,
@@ -1421,6 +1433,10 @@ Page({
   /**
    * 同日多场时用户明确选一场：只改当前场次与线路，不动任何把次与备注。
    * 选中的场次必须属于该岩馆当日；落盘失败时保留选择界面与原场次，可重试。
+   *
+   * 真实按钮把渲染那一刻的档案 ID、原线路 ID 与选场面板标识一起带回来（T037 返工）：
+   * 先按这组原值与**最新**档案核对，再看面板里的场次。换了本机档案后复用同一组
+   * sessionId / routeId 的旧面板事件一律不写盘，不能改到另一份档案的活动场次。
    */
   chooseSessionForAgain(event) {
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
@@ -1429,7 +1445,67 @@ Page({
     if (!sessionId || !picker) return;
     if (!picker.sessions.some(item => item.id === sessionId)) return;
 
-    const outcome = store.chooseRouteSession(picker.routeId, sessionId, { date: picker.dateText });
+    const boundArchiveId = typeof dataset.archiveId === 'string' ? dataset.archiveId : '';
+    const boundRouteId = typeof dataset.routeId === 'string' ? dataset.routeId : '';
+    const boundPickerKey = typeof dataset.pickerKey === 'string' ? dataset.pickerKey : '';
+    const pickerArchiveId =
+      picker.archiveId ||
+      this._archiveIdClaim ||
+      (this.archive && this.archive.archiveId) ||
+      '';
+    const pickerRouteId = picker.routeId || '';
+
+    // 事件自带的原档案/原线路/原面板与当前面板不是同一次渲染：整条拒绝，不写盘。
+    const staleEvent =
+      (boundArchiveId && boundArchiveId !== pickerArchiveId) ||
+      (boundArchiveId && this._archiveIdClaim && boundArchiveId !== this._archiveIdClaim) ||
+      (boundRouteId && boundRouteId !== pickerRouteId) ||
+      (boundPickerKey && picker.pickerKey && boundPickerKey !== picker.pickerKey) ||
+      (this.data.route && this.data.route.id !== pickerRouteId);
+    if (staleEvent) {
+      this.setData({
+        storageError: '',
+        notice: '这次选场来自原来的页面，已经失效；没有改动当前场次。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    // 写盘前再读一次最新档案：盘上已经换成另一份档案时，面板连同它的场次/线路整体作废。
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      this.setData({ storageError: loaded.error });
+      this.refreshView();
+      return;
+    }
+    const latestArchiveId = (loaded.archive && loaded.archive.archiveId) || '';
+    if (
+      (pickerArchiveId && pickerArchiveId !== latestArchiveId) ||
+      (boundArchiveId && boundArchiveId !== latestArchiveId)
+    ) {
+      this.archive = loaded.archive;
+      this.setData({
+        storageError: '',
+        notice: '这次选场属于原来的本机档案，未做改动；已按当前档案刷新。'
+      });
+      this.refreshView();
+      return;
+    }
+    if (
+      !pickerRouteId ||
+      !(loaded.archive.routes || []).some(route => route.id === pickerRouteId)
+    ) {
+      this.archive = loaded.archive;
+      this.setData({
+        storageError: '',
+        notice: '这条线路已经不在当前本机档案里，这次选场没有生效。'
+      });
+      this.refreshView();
+      return;
+    }
+    this.archive = loaded.archive;
+
+    const outcome = store.chooseRouteSession(pickerRouteId, sessionId, { date: picker.dateText });
     if (outcome.archive && !outcome.ok) this.archive = outcome.archive;
 
     if (!outcome.ok) {
@@ -1441,7 +1517,7 @@ Page({
     this.archive = outcome.archive;
     this.setData({ storageError: '', notice: '', sessionPicker: null });
     this.refreshView();
-    this.goToRecord(sessionId, picker.routeId);
+    this.goToRecord(sessionId, pickerRouteId);
   },
 
   /**

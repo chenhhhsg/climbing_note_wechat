@@ -3,20 +3,26 @@
  * 与单线记录页同一套配色；备注编辑与原把次行一一对应。
  */
 
+page {
+  background-color: #F2F4F3;
+}
+
 .page {
-  padding: 20rpx 32rpx 55rpx;
+  padding: 12px 16px 28px;
+  background-color: #F2F4F3;
 }
 
 .card {
   background-color: #FFFFFF;
   border-radius: 8rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
+  padding: 16px;
+  margin-bottom: 12px;
 }
 
 .card-title {
   display: block;
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   line-height: 1.35;
   font-weight: 700;
   font-size: 32rpx;
@@ -145,7 +151,7 @@
 
 /* 明细行：整行可点（点哪一行就在那一行里编辑这一把的备注），命中区至少 44 逻辑像素高 */
 .attempt-item {
-  background: transparent;
+  background-color: #FFFFFF;
   border-bottom: 1px solid #D7DED9;
 }
 

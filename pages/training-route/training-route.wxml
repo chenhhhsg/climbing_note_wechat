@@ -498,6 +498,9 @@
           wx:key="id"
           id="choose-session-{{item.id}}"
           class="session-option"
+          data-archive-id="{{sessionPicker.archiveId}}"
+          data-route-id="{{sessionPicker.routeId}}"
+          data-picker-key="{{sessionPicker.pickerKey}}"
           data-session-id="{{item.id}}"
           bindtap="chooseSessionForAgain"
         >{{item.label}}{{item.isCurrent ? '（当前场次）' : ''}}</view>

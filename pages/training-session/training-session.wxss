@@ -15,7 +15,7 @@ page {
 }
 
 .page {
-  padding: 24rpx 24rpx 60rpx;
+  padding: 12px 12px 32px;
   background-color: #F2F4F3;
 }
 
@@ -23,12 +23,14 @@ page {
   background-color: #FFFFFF;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
+  padding: 16px;
+  margin-bottom: 12px;
 }
 
 .card-title {
   display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   font-size: 32rpx;
   font-weight: 700;
   color: #182421;
@@ -36,11 +38,13 @@ page {
 }
 
 .section {
-  margin-bottom: 30rpx;
+  margin-bottom: 16px;
 }
 
 .section-title {
   display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   font-size: 34rpx;
   font-weight: 700;
   color: #182421;
@@ -629,7 +633,11 @@ page {
 
 @media (max-width: 350px) {
   .page {
-    padding: 20rpx 16rpx 48rpx;
+    padding: 8px 8px 20px;
+  }
+
+  .card {
+    padding: 12px;
   }
 
   .route-row {

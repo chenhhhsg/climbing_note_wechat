@@ -159,9 +159,21 @@
             class="recent-attempt-status"
           >{{recentAttempt.stateText}}</text>
           <text class="recent-attempt-hint">原把次的备注、照片与时间都保留；恢复后回到原来的位置。</text>
-          <text wx:if="{{routeCompleted}}" id="route-completed-guidance" class="recent-attempt-hint">
-            要改这一把：用下方「点错了完攀？」里的「改为未完成」。
-          </text>
+          <!-- 固定高度的说明槽：撤回/恢复完攀时下面几行的显隐不会改变本区高度，
+               页面高度与滚动位置保持原样。 -->
+          <view class="recent-attempt-guidance-slot">
+            <text
+              wx:if="{{recentAttempt.canRestore}}"
+              id="recent-attempt-undone-guidance"
+              class="recent-attempt-guidance-text"
+            >撤回的这把不计入本场完攀；要恢复就点右侧「恢复这一把」。</text>
+            <text
+              wx:elif="{{routeCompleted}}"
+              id="route-completed-guidance"
+              class="recent-attempt-guidance-text"
+            >要改这一把：用下方「点错了完攀？」里的「改为未完成」。</text>
+            <text wx:else class="recent-attempt-guidance-text">刚才那一把已计入本场；撤回只减这一把，不改其他把次。</text>
+          </view>
         </view>
 
         <!-- 待保存：重试沿用同一操作 ID，只多出预期的一把 -->
@@ -180,6 +192,9 @@
             <button
               id="retry-{{item.opId}}"
               class="text-button pending-retry"
+              data-archive-id="{{item.archiveId}}"
+              data-session-id="{{item.sessionId}}"
+              data-route-id="{{item.routeId}}"
               data-op-id="{{item.opId}}"
               bindtap="retryPendingAttempt"
             >重试保存</button>
@@ -196,8 +211,14 @@
           </button>
         </view>
 
-        <!-- 按把「改为未完成」：每一把各占一行、各带自己的控件，只列本场这条线 -->
-        <view wx:if="{{correctionRows.length > 0}}" id="route-correction" class="route-correction">
+        <!-- 按把「改为未完成」：每一把各占一行、各带自己的控件，只列本场这条线。
+             刚撤回的完攀在这里留一条同结构的惰性行：撤回/恢复前后本段高度不变，
+             页面高度与滚动位置也就不变，原撤回坐标不会落到别把或结果按钮上。 -->
+        <view
+          wx:if="{{correctionRows.length > 0 || correctionPlaceholder}}"
+          id="route-correction"
+          class="route-correction"
+        >
           <text class="route-correction-title">点错了完攀？</text>
           <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
           <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
@@ -215,6 +236,16 @@
                 bindtap="correctSend"
               >{{item.buttonText}}</button>
               <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
+            </view>
+          </view>
+          <view
+            wx:if="{{correctionPlaceholder}}"
+            id="route-correction-idle"
+            class="route-correction-row route-correction-idle"
+          >
+            <text class="route-correction-target">改正原把次：{{recentAttempt.correctionLabel}} · {{recentAttempt.correctionContextText}}</text>
+            <view class="route-correction-slot">
+              <text class="route-corrected-text">已撤回，暂不可改</text>
             </view>
           </view>
         </view>

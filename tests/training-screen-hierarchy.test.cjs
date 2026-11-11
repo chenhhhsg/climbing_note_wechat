@@ -912,3 +912,67 @@ test('T037 资料页归属不符：不展示、不受理写入，只留回到本
   page.backToList();
   assert.equal(wxLog.backs.length, 1, '正常路径是系统返回');
 });
+
+// ------------------------------------------------------------------ *
+// T037 返工：原生视觉（V01/V02/V03/V05）与 4px 主间距（O01）
+// ------------------------------------------------------------------ *
+
+test('T037 返工 训练页页底/内容区、44px 清单命中、设备黑体与 4px 主间距', () => {
+  const read = file => fs.readFileSync(path.join(ROOT, 'pages', file), 'utf8');
+  const pages = {
+    session: { wxss: read('training-session/training-session.wxss') },
+    record: { wxss: read('training-record/training-record.wxss') },
+    attempts: { wxss: read('training-attempts/training-attempts.wxss') },
+    route: { wxss: read('training-route/training-route.wxss') },
+    summary: { wxss: read('training-summary/training-summary.wxss') },
+    wishlist: { wxss: read('training-wishlist/training-wishlist.wxss') }
+  };
+
+  // V01：六个训练页局部页底浅灰 #F2F4F3；逐把明细的记录行回到白色内容区，
+  // 不再透明露出 app.wxss 的旧米色页底。
+  Object.entries(pages).forEach(([name, page]) => {
+    assert.match(page.wxss, /#F2F4F3/, name + ' 局部页底为 #F2F4F3');
+  });
+  assert.match(
+    pages.attempts.wxss,
+    /\.attempt-item \{[^}]*background-color: #FFFFFF/,
+    '明细行是白色内容区'
+  );
+  assert.match(pages.attempts.wxss, /\.card \{[^}]*background-color: #FFFFFF/);
+
+  // V02：卡点清单行是图片小编号的替代选择入口，行至少 44px；图片编号保持原定位大小。
+  assert.match(pages.route.wxss, /\.mark-item \{[^}]*min-height: 44px/, '清单行 44px');
+  assert.match(pages.route.wxss, /\.mark-item-index \{[^}]*height: 44rpx/, '图片编号仍小');
+  // V03：当天再记的真实选场行至少 44px。
+  assert.match(
+    pages.route.wxss,
+    /\.session-option \{[^}]*min-height: 44px/,
+    '选场行 44px'
+  );
+
+  // V05：训练页标题/计数一律设备中文黑体；app.wxss 的全局规则保持不动。
+  Object.entries(pages).forEach(([name, page]) => {
+    assert.equal(
+      /Songti|SimSun|Noto Serif/.test(page.wxss),
+      false,
+      name + ' 不再显式使用宋体'
+    );
+  });
+  assert.match(pages.session.wxss, /\.card-title \{[^}]*PingFang SC/);
+  assert.match(pages.session.wxss, /\.section-title \{[^}]*PingFang SC/);
+  assert.match(pages.summary.wxss, /\.summary-count \{[^}]*PingFang SC/);
+  assert.match(pages.route.wxss, /\.route-name \{[^}]*PingFang SC/);
+  assert.match(fs.readFileSync(path.join(ROOT, 'app.wxss'), 'utf8'), /Songti SC/);
+
+  // O01：主 page/card 间距用 4px 设计令牌（文本高度与响应式宽不在此列）。
+  assert.match(pages.session.wxss, /\.page \{[^}]*padding: 12px 12px 32px/);
+  assert.match(pages.session.wxss, /\.card \{[^}]*padding: 16px/);
+  assert.match(pages.record.wxss, /\.page \{[^}]*padding: 12px 12px 32px/);
+  assert.match(pages.attempts.wxss, /\.page \{[^}]*padding: 12px 16px 28px/);
+  assert.match(pages.route.wxss, /\.page \{ padding:12px 12px 28px/);
+  assert.match(pages.summary.wxss, /\.page \{ padding: 12px 12px 28px/);
+  assert.match(pages.wishlist.wxss, /\.page \{[^}]*padding: 12px 12px 32px/);
+  Object.entries(pages).forEach(([name, page]) => {
+    assert.match(page.wxss, /\.card \{[^}]*padding: 16px/, name + ' 卡片 16px');
+  });
+});

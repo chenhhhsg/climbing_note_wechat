@@ -11,7 +11,7 @@ page {
 }
 
 .page {
-  padding: 24rpx 24rpx 60rpx;
+  padding: 12px 12px 32px;
   background-color: #F2F4F3;
 }
 
@@ -19,13 +19,14 @@ page {
   background-color: #FFFFFF;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
+  padding: 16px;
+  margin-bottom: 12px;
 }
 
 .section-title,
 .card-title {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   line-height: 1.35;
   font-weight: 700;
   font-size: 32rpx;
@@ -298,7 +299,8 @@ page {
 }
 
 .recent-attempt-title {
-  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
   font-weight: 700;
   font-size: 28rpx;
   color: #182421;
@@ -386,6 +388,19 @@ page {
 .recent-attempt-hint {
   display: block;
   margin-top: 8rpx;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+
+/* 结果状态的固定说明槽：撤回/恢复前后都占同样的高度（32px = 4px 的整数倍） */
+.recent-attempt-guidance-slot {
+  margin-top: 8rpx;
+  min-height: 32px;
+}
+
+.recent-attempt-guidance-text {
+  display: block;
   font-size: 22rpx;
   line-height: 1.6;
   color: #53615B;
@@ -492,6 +507,18 @@ page {
 .route-correction-row {
   border-top: 2rpx solid #F2F4F3;
   padding: 16rpx 0;
+}
+
+/* 每行下半槽固定 44px：按钮、只读回读与撤回后的惰性行占同样的高度 */
+.route-correction-slot {
+  display: flex;
+  align-items: center;
+  min-height: 44px;
+  box-sizing: border-box;
+}
+
+.route-correction-idle .route-corrected-text {
+  color: #53615B;
 }
 
 .route-correction-target {
