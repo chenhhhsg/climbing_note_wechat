@@ -188,15 +188,26 @@ function readVideoIndex() {
 
 function clipFor(read, archiveId, attemptId) {
   if (!read || !read.ok || !hasText(archiveId) || !hasText(attemptId)) return null;
-  return (
-    read.clips.find(
-      clip =>
-        clip &&
-        clip.archiveId === archiveId &&
-        clip.attemptId === attemptId &&
-        hasText(clip.fileId)
-    ) || null
+  const matches = read.clips.filter(
+    clip =>
+      clip &&
+      clip.archiveId === archiveId &&
+      clip.attemptId === attemptId &&
+      hasText(clip.fileId)
   );
+  if (!matches.length) return null;
+  // 同一把只应有一条当前片段。若替换期间索引里短暂残留多条，取版本号最大的一条；
+  // 都没有版本号时取最后写入的一条，避免继续播放被替换掉的旧副本。
+  let chosen = matches[matches.length - 1];
+  let chosenRev = safeNumber(chosen.rev);
+  for (const clip of matches) {
+    const rev = safeNumber(clip.rev);
+    if (rev !== null && (chosenRev === null || rev > chosenRev)) {
+      chosen = clip;
+      chosenRev = rev;
+    }
+  }
+  return chosen;
 }
 
 function linkView(read, archiveId, attemptId) {
@@ -218,6 +229,41 @@ function linkView(read, archiveId, attemptId) {
 /** 单行关联状态：读一次索引即用（视频页与小列表用）。 */
 function videoLinkView(archiveId, attemptId) {
   return linkView(readVideoIndex(), archiveId, attemptId);
+}
+
+/**
+ * 视频页用的关联读取：一次读索引同时给出这一把当前有效的片段与展示状态。
+ * T024 起页面据此拿片段去播放、更换和移除；T026 写入后立即生效。
+ *
+ * 返回 { ok, code, error, clip, state, stateText, entryText }：
+ * - ok 为 false 时索引不可读，clip 为 null；
+ * - clip 只在状态为 saved 时非空（与列表上的「看视频」判定同一份 clipFor）。
+ */
+function videoClipView(archiveId, attemptId) {
+  const read = readVideoIndex();
+  if (!read.ok) {
+    const view = linkView(read, archiveId, attemptId);
+    return {
+      ok: false,
+      code: read.code,
+      error: read.error,
+      clip: null,
+      state: view.state,
+      stateText: view.stateText,
+      entryText: view.entryText
+    };
+  }
+  const clip = clipFor(read, archiveId, attemptId);
+  const view = linkView(read, archiveId, attemptId);
+  return {
+    ok: true,
+    code: clip ? 'saved' : 'none',
+    error: '',
+    clip,
+    state: view.state,
+    stateText: view.stateText,
+    entryText: view.entryText
+  };
 }
 
 /**
@@ -294,6 +340,8 @@ function previewFromChoice(res) {
       sizeText: formatBytes(size),
       durationSeconds: duration,
       durationText: duration !== null && duration > 0 ? duration.toFixed(1) : '',
+      width: width !== null && width > 0 ? width : null,
+      height: height !== null && height > 0 ? height : null,
       dimensionText: width && height && width > 0 && height > 0 ? width + '×' + height : ''
     }
   };
@@ -307,6 +355,7 @@ module.exports = {
   loadVideoContext,
   readVideoIndex,
   videoLinkView,
+  videoClipView,
   videoLinkMap,
   chooseMediaOptions,
   isCancelError,

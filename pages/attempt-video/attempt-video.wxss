@@ -1,6 +1,7 @@
 /**
- * 逐把视频页样式（T023）
- * 与逐把明细、单线记录同一套粉笔白 + 深绿配色；本页只做待确认预览。
+ * 逐把视频页样式（T023 / T024）
+ * 与逐把明细、单线记录同一套粉笔白 + 深绿配色；本页含待确认预览、原生播放器、
+ * 已保存副本与更换/移除操作。
  */
 
 page {
@@ -186,10 +187,66 @@ page {
 
 .video-foot-hint {
   display: block;
-  margin-top: 16rpx;
+  margin-top: 16px;
   font-size: 22rpx;
   line-height: 1.6;
   color: #53615B;
+}
+
+/* 播放器：待确认预览与已保存副本共用，换片时整块重建 */
+.player-card {
+  border-left: 8rpx solid #1F5948;
+}
+
+.video {
+  width: 100%;
+  height: 380rpx;
+  margin-top: 12rpx;
+  background-color: #000000;
+  border-radius: 6rpx;
+}
+
+.player-status {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
+.playback-error {
+  margin-top: 12rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 6rpx;
+  background-color: #F7E6DB;
+}
+
+.op-status {
+  background-color: #E8F0EC;
+}
+
+.store-hint {
+  background-color: #F7F1E2;
+}
+
+/* 已保存副本与更换/移除 */
+.saved-card {
+  border-left: 8rpx solid #B7683D;
+}
+
+.confirm-box {
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 6rpx;
+  background-color: #F7F1E2;
+}
+
+.confirm-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #745241;
+  margin-bottom: 8rpx;
 }
 
 /* 常用触控目标至少 44×44 逻辑像素 */
