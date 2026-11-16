@@ -1219,7 +1219,7 @@ test('T026-8 页面确认保存后切到持久副本，占用与清理入口可�
   assert.equal(page.data.savedVideo.sizeText, '4.0 KB');
   assert.equal(page.data.playerKind, 'saved');
   assert.equal(page.data.playerSrc, USER_DATA_PATH + '/' + savedClip.fileId);
-  assert.match(page.data.notice, /已保存到本机/);
+  assert.match(page.data.notice, /视频已保存到这一把/);
   assert.equal(storage.get(ARCHIVE_KEY), archiveRaw, '保存视频不改训练档案');
   assert.equal(savedClip.bytes, 4096);
 
@@ -1291,7 +1291,7 @@ test('T026-8b 提交后丢回执：页面按读回的索引确认成功并标明
   assert.equal(page.data.opError, '');
   assert.equal(page.data.hasSavedVideo, true);
   assert.equal(page.data.savedVideo.clipId, videoIndex().clips[0].clipId);
-  assert.match(page.data.notice, /已保存到本机/);
+  assert.match(page.data.notice, /视频已保存到这一把/);
   assert.match(page.data.notice, /回执不明确/);
   assert.equal(videoIndex().clips.length, 1);
   assert.equal(filesInRoot(flow.archiveId).length, 1);
@@ -1336,7 +1336,7 @@ test('T026-9 页面取消更换保留旧片；确认更换只清理无引用旧�
   assert.equal(virtual.files.has(oldPath), false, '旧副本已回收');
   assert.equal(filesInRoot(flow.archiveId).length, 1);
   assert.equal(videoIndex().clips.length, 1);
-  assert.match(page.data.notice, /已更换为新的本机副本/);
+  assert.match(page.data.notice, /新副本保存在这台手机微信里的攀笔中/);
 
   // 移除：明确两步；移除后播放器与关联收起，原把次、备注与训练档案都在。
   page.askRemove();
@@ -1350,7 +1350,7 @@ test('T026-9 页面取消更换保留旧片；确认更换只清理无引用旧�
   assert.equal(page.data.hasSavedVideo, false);
   assert.equal(page.data.playerSrc, '');
   assert.equal(page.data.videoInstances.length, 0);
-  assert.match(page.data.notice, /已移除小程序内的本机副本/);
+  assert.match(page.data.notice, /已从这一把的攀笔中移除视频副本/);
   assert.match(page.data.notice, /系统相册里的原片都还在/);
   assert.equal(page.data.attempt.id, flow.attemptB.id);
   assert.equal(page.data.attempt.note, 'B 把的备注');
@@ -1964,7 +1964,7 @@ test('T026-21 相册提示大小与实际字节不一致不否认本次已核实
   assert.equal(committed.bytes, 4096, '索引记录实际物理字节');
   assert.equal(page.data.savedVideo.clipId, committed.clipId);
   assert.equal(page.data.playerSrc, USER_DATA_PATH + '/' + committed.fileId);
-  assert.match(page.data.notice, /已保存到本机/);
+  assert.match(page.data.notice, /视频已保存到这一把/);
   assert.equal(virtual.files.get(USER_DATA_PATH + '/' + committed.fileId).length, 4096);
 });
 
