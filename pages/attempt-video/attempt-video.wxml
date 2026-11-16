@@ -1,0 +1,81 @@
+<!--
+  逐把视频 · 待确认预览（T023）
+  只针对入口带来的那一把：四个 ID 打开时核对；这里只读展示，选片只进入临时预览。
+  确认保存与持久副本在 T026，播放与替换在 T024。
+-->
+<view class="page">
+  <view wx:if="{{loadError}}" id="load-error" class="card error-card">
+    <text class="error-title">本机训练档案读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <text class="error-hint">原档案保持原样，没有被改写。</text>
+    <button id="retry-load" class="secondary-button" bindtap="retryLoad">重试读取</button>
+  </view>
+
+  <block wx:else>
+    <view wx:if="{{contextError}}" id="video-context-error" class="card error-card">
+      <text class="error-title">这个入口不能用来添加视频</text>
+      <text class="error-text">{{contextError}}</text>
+      <text class="error-hint">没有改动任何数据；请从逐把明细或线路历史重新进入这一把。</text>
+      <button id="video-back" class="secondary-button" bindtap="backToList">返回上一页</button>
+    </view>
+
+    <block wx:if="{{ready && !contextError}}">
+      <view wx:if="{{attempt}}" id="video-target" class="card video-target">
+        <text class="video-route">{{selectedRoute.name}}</text>
+        <text class="video-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · {{attempt.label}}</text>
+        <text id="video-attempt-meta" class="video-attempt-meta">{{attempt.resultText}} · {{attempt.timeText}}</text>
+        <text class="video-session-meta">{{activeSession.dateText}} · {{activeSession.gymName}} · {{activeSession.label}}</text>
+        <text wx:if="{{attempt.hasNote}}" class="video-note">{{attempt.note}}</text>
+        <text id="video-state" class="video-state">{{videoStateText}}</text>
+      </view>
+
+      <view
+        wx:if="{{chooseError}}"
+        id="choose-error"
+        class="card error-card choose-error"
+        bindtap="dismissChooseError"
+      >
+        <text class="error-text">{{chooseError}}</text>
+        <text class="error-hint">点击收起；可以重新选择，其他把次与本机档案都不受影响。</text>
+      </view>
+
+      <view wx:if="{{notice}}" id="video-notice" class="notice" bindtap="dismissNotice">
+        <text class="notice-text">{{notice}}</text>
+        <text class="notice-hint">点击收起</text>
+      </view>
+
+      <!-- 没有待确认预览：从相册单选一段 -->
+      <view wx:if="{{!hasPreview}}" id="video-choose" class="card">
+        <text class="card-title">从相册选一段视频</text>
+        <text class="video-hint">只选视频、单选、只从相册取；选中的临时文件只在本页预览，不会写入本机，也不上传。</text>
+        <button
+          id="choose-video"
+          class="primary-button"
+          disabled="{{choosing}}"
+          bindtap="choosePreview"
+        >{{choosing ? '正在打开相册…' : '从相册选择视频'}}</button>
+      </view>
+
+      <!-- 待确认预览：临时路径 + 文件信息；取消不创建副本，可以立刻重选 -->
+      <view wx:if="{{hasPreview}}" id="video-preview" class="card">
+        <text class="card-title">待确认预览</text>
+        <text id="preview-name" class="preview-name">{{preview.fileName}}</text>
+        <text id="preview-size" class="preview-meta">大小 {{preview.sizeText}}</text>
+        <text wx:if="{{preview.durationText}}" id="preview-duration" class="preview-meta">时长 {{preview.durationText}} 秒</text>
+        <text wx:if="{{preview.dimensionText}}" class="preview-meta">{{preview.dimensionText}}</text>
+        <text class="video-hint">这只是相册返回的临时文件，退出小程序后可能失效；保存到本机的功能在后续任务提供。</text>
+        <view class="button-row">
+          <button id="cancel-preview" class="secondary-button" bindtap="cancelPreview">取消预览</button>
+          <button
+            id="reselect-video"
+            class="primary-button"
+            disabled="{{choosing}}"
+            bindtap="choosePreview"
+          >重新选择</button>
+        </view>
+      </view>
+
+      <text class="video-foot-hint">这一页只处理当前这一把的视频；结果、备注与其他把次都在逐把明细里。</text>
+    </block>
+  </block>
+</view>

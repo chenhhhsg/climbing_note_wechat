@@ -3,6 +3,7 @@
   按长期线路 ID 回看跨日、跨场次的逐把结果与备注；打开只读，只有「当天再记」、按把
   「改为未完成」、照片的确认保存/移除，以及卡点标记的新增/移动/改字/删除会在本机写
   （照片只动本机文件与照片索引；卡点只动本机标记记录），且都由用户明确点按触发。
+  T023：跨日历史每一把还有视频关联状态与文字入口，选片在视频页，本页不碰视频文件。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，保留原数据 -->
@@ -446,6 +447,18 @@
                 <text class="attempt-time">{{attempt.timeText}}</text>
               </view>
               <text wx:if="{{attempt.hasNote}}" class="attempt-note">{{attempt.note}}</text>
+              <!-- 逐把视频（T023）：关联状态与文字入口；按这一组的原场次与这一把的原 ID 进入 -->
+              <view class="history-attempt-video">
+                <text id="video-state-{{attempt.id}}" class="history-attempt-video-state">{{attempt.videoStateText}}</text>
+                <text
+                  id="open-video-{{attempt.id}}"
+                  class="history-attempt-video-action {{attempt.hasVideo ? 'history-attempt-video-saved' : ''}}"
+                  data-attempt-id="{{attempt.id}}"
+                  data-session-id="{{item.sessionId}}"
+                  data-route-id="{{route.id}}"
+                  bindtap="openAttemptVideoFromHistory"
+                >{{attempt.videoEntryText}}</text>
+              </view>
             </view>
           </view>
         </view>

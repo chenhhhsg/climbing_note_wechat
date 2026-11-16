@@ -211,12 +211,47 @@ page {
 }
 
 /* 行内的备注入口提示：和整行是同一个动作，不再是一个独立的小按钮 */
+.attempt-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 8rpx;
+}
+
 .attempt-note-action {
   display: block;
-  margin-top: 8rpx;
   font-size: 26rpx;
   line-height: 1.4;
   color: #1F5948;
+}
+
+/* 视频关联状态与文字入口（T023）：入口独立于点整行补备注，写在行尾 */
+.attempt-video-slot {
+  display: flex;
+  align-items: center;
+}
+
+.attempt-video-state {
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #53615B;
+  margin-right: 12rpx;
+}
+
+.attempt-video-action {
+  display: block;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 10rpx 0 10rpx 12rpx;
+  font-size: 26rpx;
+  line-height: 1.4;
+  color: #1F5948;
+}
+
+.attempt-video-saved {
+  color: #B7683D;
+  font-weight: 700;
 }
 
 /* 备注编辑：就地展开在刚点过的那一行下面（不滚动、不挪坐标） */

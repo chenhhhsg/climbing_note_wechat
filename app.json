@@ -7,6 +7,7 @@
     "pages/training-route/training-route",
     "pages/training-record/training-record",
     "pages/training-attempts/training-attempts",
+    "pages/attempt-video/attempt-video",
     "pages/fitness-test/fitness-test",
     "pages/add-record/add-record",
     "pages/record-list/record-list",
