@@ -74,11 +74,12 @@ function runtimeFiles() {
 // 独立推导正式运行时清单期望，用于核对 checker 的项数与条目数：
 // 已知基础项 + 已批准页面四件套 + tabBar 图标 + 已落地正式工具依赖（utils/*.js）。
 // 不读取 checker 输出，也不依赖它生成的候选夹具。已批准页面按源码是否存在就位，
-// 因而同时兼容后续 T018（training-route）与 T020（fitness-test）。
+// 因而同时兼容后续 T018（training-route）、T020（fitness-test）与 T034（training-summary）。
 const BASE_RUNTIME_FILES = ['app.js', 'app.json', 'app.wxss', 'sitemap.json'];
 const APPROVED_PAGE_DIRS = [
   'pages/index',
   'pages/training-session',
+  'pages/training-summary',
   'pages/training-route',
   'pages/fitness-test',
   'pages/add-record',

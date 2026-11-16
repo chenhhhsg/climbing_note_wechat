@@ -1,0 +1,151 @@
+<!--
+  本次小结独立页（T034）
+  从场内页的小结入口按 archiveId + sessionId 进入，只读回看这一次训练：
+  本场线路数、有效把数、完攀把数与各线分项，未完成的线可就地勾进本馆「下次想爬」。
+  只读本机档案：不改当前场次、不结束也不新建场次、不写训练。
+-->
+<view class="page">
+  <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
+  <view wx:if="{{loadError}}" id="load-error" class="card error-card">
+    <text class="error-title">本机训练档案读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <text class="error-hint">原档案保持原样，没有被改写。</text>
+    <button id="back-to-session" class="secondary-button" bindtap="goBackToSession">返回本场记录</button>
+  </view>
+
+  <block wx:else>
+    <!-- 本次写操作未落盘：不报已保存，可原地重试 -->
+    <view
+      wx:if="{{storageError}}"
+      id="storage-error"
+      class="storage-error"
+      bindtap="dismissStorageError"
+    >
+      <text class="storage-error-text">{{storageError}}</text>
+      <text class="storage-error-hint">当前操作未生效，可重试；点击收起</text>
+    </view>
+
+    <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
+      <text class="notice-text">{{notice}}</text>
+      <text class="notice-hint">点击收起</text>
+    </view>
+
+    <view id="session-summary" class="section session-summary">
+      <text class="section-title">本次小结</text>
+
+      <!--
+        找不到这场或这份小结属于另一份档案：给出可见状态，不拿 0 冒充空场，
+        也不展示当前档案里同名的另一场。
+      -->
+      <view wx:if="{{!summaryReady && summaryError}}" id="summary-error" class="summary-error-card">
+        <text class="summary-error-text">{{summaryError}}</text>
+        <text class="summary-error-hint">只读展示，原档案没有被改写。</text>
+        <button
+          wx:if="{{activeSessionId}}"
+          id="summary-error-return-active"
+          class="secondary-button summary-return"
+          bindtap="returnToActiveSession"
+        >回到本场小结</button>
+      </view>
+
+      <block wx:else>
+        <view class="summary-head">
+          <text id="summary-count" class="summary-count">{{summaryCountText}}</text>
+          <text wx:if="{{summarySendText}}" id="summary-send" class="summary-send">{{summarySendText}}</text>
+        </view>
+
+        <!--
+          只读回看入口：直接选要看哪一场的小结（日期 · 岩馆 · 第 N 场）。
+          选择只换所看的小结，不改正在记录的当前场次，也不写训练。
+        -->
+        <view
+          wx:if="{{summarySessionPickerVisible}}"
+          id="summary-session-picker"
+          class="summary-session-picker"
+        >
+          <text class="summary-session-title">回看场次（只读）</text>
+          <picker
+            mode="selector"
+            range="{{summarySessionOptions}}"
+            range-key="label"
+            value="{{summarySessionIndex}}"
+            bindchange="onSummarySessionChange"
+          >
+            <view id="summary-session-value" class="summary-session-value">
+              <text class="summary-session-value-text">{{summarySessionValue}}</text>
+              <text class="summary-session-arrow">切换 ›</text>
+            </view>
+          </picker>
+          <text class="summary-session-hint">只切换看哪一场小结：当前场次与正在记录的线路都不变。</text>
+        </view>
+
+        <text wx:if="{{summaryViewingOther}}" id="summary-other" class="summary-other">
+          正在回看 {{summaryLabel}}（{{summaryGymName}} · {{summaryDate}}）；当前场次不变。
+        </text>
+        <button
+          wx:if="{{summaryViewingOther}}"
+          id="summary-return-active"
+          class="text-button summary-return"
+          bindtap="returnToActiveSession"
+        >回到本场小结（{{activeSessionLabel}}）</button>
+        <text wx:if="{{summaryPendingText}}" id="summary-pending" class="summary-pending">{{summaryPendingText}}</text>
+        <text wx:if="{{summaryWishlistError}}" id="summary-wishlist-error" class="summary-error-text">{{summaryWishlistError}}</text>
+
+        <view wx:if="{{summaryEmpty}}" id="summary-empty" class="empty-attempts">
+          <text>本场还没有已保存的把次；记完一把再回来看小结。</text>
+        </view>
+        <block wx:else>
+          <text class="summary-hint">{{summaryHintText}}</text>
+          <view
+            wx:for="{{summaryRows}}"
+            wx:key="routeId"
+            id="summary-row-{{item.routeId}}"
+            class="summary-row"
+          >
+            <view class="summary-row-main">
+              <view class="route-swatch" style="background: {{item.colorHex}};"></view>
+              <view class="summary-row-info">
+                <view class="summary-row-head">
+                  <text class="summary-name">{{item.name}}</text>
+                  <text class="summary-grade">{{item.grade}}</text>
+                  <text
+                    wx:if="{{item.stateText}}"
+                    id="summary-state-{{item.routeId}}"
+                    class="summary-state {{item.completed ? 'summary-state-done' : 'summary-state-sent'}}"
+                  >{{item.stateText}}</text>
+                </view>
+                <text class="summary-meta">{{item.climbType}}{{item.colorName ? ' · ' + item.colorName : ''}} · 本场 {{item.attemptCountText}}{{item.sendCount > 0 ? ' · 完攀 ' + item.sendCount + ' 把' : ''}}</text>
+                <text wx:if="{{item.hasNote}}" class="summary-note">最近备注：{{item.latestNote}}</text>
+              </view>
+            </view>
+            <view class="summary-actions">
+              <button
+                wx:if="{{item.pickable}}"
+                id="summary-pick-{{item.routeId}}"
+                class="secondary-button summary-pick {{item.checked ? 'summary-pick-on' : ''}}"
+                disabled="{{!item.canPick}}"
+                data-route-id="{{item.routeId}}"
+                bindtap="toggleSummaryPick"
+              >{{item.pickText}}</button>
+              <text
+                wx:if="{{item.wishlistStateText}}"
+                id="summary-pick-state-{{item.routeId}}"
+                class="summary-pick-state"
+              >{{item.wishlistStateText}}</text>
+              <button
+                id="summary-open-{{item.routeId}}"
+                class="text-button summary-open"
+                data-route-id="{{item.routeId}}"
+                bindtap="openSummaryRoute"
+              >回看原线 ›</button>
+            </view>
+          </view>
+        </block>
+      </block>
+    </view>
+
+    <view class="section summary-back-section">
+      <button id="summary-back" class="secondary-button" bindtap="goBackToSession">返回本场记录</button>
+    </view>
+  </block>
+</view>

@@ -646,7 +646,7 @@ test('V05 根配置排除实验目录，正式路由与 tabBar 相对基线无�
   assert.equal(rootProject.cloudfunctionRoot, 'cloudfunctions/');
 
   const rootApp = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8'));
-  // T017 起新增正式场内记录页；T018/T020 各再增一页。
+  // T017 起新增正式场内记录页；T018/T020 各再增一页；T034 再增本次小结独立页。
   // 不把正式 app.pages 自己当唯一 oracle：用获批页面白名单加源码四件套独立核对。
   const basePages = [
     'pages/index/index',
@@ -658,6 +658,7 @@ test('V05 根配置排除实验目录，正式路由与 tabBar 相对基线无�
   ];
   const approvedExtraPages = [
     'pages/training-session/training-session',
+    'pages/training-summary/training-summary',
     'pages/training-route/training-route',
     'pages/fitness-test/fitness-test'
   ];
