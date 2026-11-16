@@ -627,10 +627,11 @@ test('T030 首屏加线区在结果按钮之前：空场是「添加第一条线
   const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
   const routesStart = wxml.indexOf('id="session-routes"');
-  const routeSwitch = wxml.indexOf('id="route-switch"');
+  const routeList = wxml.indexOf('id="route-list"');
+  const addRoute = wxml.indexOf('id="add-route"');
   assert.ok(routesStart !== -1, '场内页应有首屏「本场线路 · 加线」区');
-  assert.ok(routeSwitch !== -1, '场内页应有本场线路列表');
-  assert.ok(routesStart < routeSwitch, '加线入口在列表之前，首屏就能找到');
+  assert.ok(routeList !== -1, '场内页应有统一线路列表');
+  assert.ok(addRoute !== -1 && addRoute < routeList, '加线入口在列表之前，首屏就能找到');
   // T036：结果按钮在单线记录页；场内页整行点入那条线。
   assert.ok(recordWxml.indexOf('class="result-button result-fail"') !== -1);
   assert.match(wxml, /bindtap="openRecord"/);
@@ -1001,35 +1002,34 @@ function sessionRouteIds(sessionId) {
   return store.routesForSession(archiveOf(), sessionId).map(route => route.id);
 }
 
-test('T031 换线区在结果按钮之前：短列表点线路名走原 selectRoute，多线时「全部 N 条」可展开收起', () => {
+test('T031 统一换线列表在结果按钮之前：整行点线路名走原 selectRoute，多线也全列不折叠', () => {
   const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
-  const switchStart = wxml.indexOf('id="route-switch"');
+  const listStart = wxml.indexOf('id="route-list"');
   const routesStart = wxml.indexOf('id="session-routes"');
   const failButton = recordWxml.indexOf('class="result-button result-fail"');
-  assert.ok(switchStart !== -1, '场内页应有本场线路列表');
+  assert.ok(listStart !== -1, '场内页应有统一线路列表');
   assert.ok(failButton !== -1, '单线记录页有结果按钮');
-  assert.ok(routesStart < switchStart, '加线入口在列表之前');
-  // T036：列表整行进入单线记录；结果按钮就在那条线的页面上，不再需要先滚回场内页。
-  assert.match(wxml, /id="route-switch-\{\{item\.id\}\}"[\s\S]{0,400}bindtap="openRecord"/);
-  // 超过 3 条：短列表留「全部 N 条」（N 是真实本场关联数）。
-  assert.match(wxml, /wx:if="\{\{routeSwitchHasMore\}\}"[\s\S]{0,200}id="route-switch-all"/);
-  assert.match(wxml, /id="route-switch-all"[\s\S]{0,200}routeSwitchMoreText/);
-  // 展开后列出本场全部线路，每条仍是同一个入口；收起不改当前线。
+  assert.ok(routesStart < listStart, '加线入口在列表之前');
+  // T036/T037：列表整行进入单线记录；结果按钮就在那条线的页面上，不再需要先滚回场内页。
   assert.match(
     wxml,
-    /wx:if="\{\{routeSwitchExpanded\}\}"[\s\S]{0,400}id="route-switch-row-\{\{item\.id\}\}"[\s\S]{0,300}bindtap="openRecord"/
+    /id="route-row-\{\{item\.id\}\}"[\s\S]{0,400}data-route-id="\{\{item\.id\}\}"[\s\S]{0,200}bindtap="openRecord"/
   );
-  assert.match(wxml, /id="route-switch-close"[\s\S]{0,120}bindtap="closeRouteSwitch"/);
+  // 0、1、4 条以上都是同一份列表：没有「短列表 + 全部 N 条」的第二套换线区。
+  assert.equal(wxml.match(/id="route-list"/g).length, 1, '场内只有这一份线路列表');
+  assert.doesNotMatch(wxml, /id="route-switch"/);
+  assert.doesNotMatch(wxml, /routeSwitch/);
+  assert.match(wxml, /id="routes-count"[\s\S]{0,80}\{\{routeCountText\}\}/);
 
   const handlers = new Set(handlersIn(wxml));
-  for (const required of ['openRecord', 'expandRouteSwitch', 'closeRouteSwitch']) {
-    assert.ok(handlers.has(required), '场内页应绑定：' + required);
-    assert.equal(typeof sessionDefinition[required], 'function', required + ' 必须有页面方法');
-  }
+  assert.ok(handlers.has('openRecord'), '场内页应绑定 openRecord');
+  assert.equal(typeof sessionDefinition.openRecord, 'function', 'openRecord 必须有页面方法');
+  assert.equal(typeof sessionDefinition.expandRouteSwitch, 'undefined', '不再有「全部 N 条」展开');
+  assert.equal(typeof sessionDefinition.closeRouteSwitch, 'undefined', '不再有「全部 N 条」收起');
 });
 
-test('T031 短列表换线：同色同级 A、B 只换当前线，换线不建线不加关联，记一把与备注只落在 B', () => {
+test('T031 统一列表换线：同色同级 A、B 只换当前线，换线不建线不加关联，记一把与备注只落在 B', () => {
   const a = seedTraining({ gymName: '岩馆 A', routeName: 'A 线', colorName: '蓝色' });
   const b = store.createRoute({
     sessionId: a.session.id,
@@ -1054,11 +1054,10 @@ test('T031 短列表换线：同色同级 A、B 只换当前线，换线不建�
   const page = openSessionPage({});
   assert.equal(page.data.selectedRoute.id, b.route.id, '默认选中最后建的 B');
 
-  // 1–3 条：短列表直接列出本场全部线路，当前线带已选态。
-  assert.deepEqual(page.data.routeSwitchRows.map(row => row.id), [a.route.id, b.route.id]);
-  assert.equal(page.data.routeSwitchTotal, 2);
-  assert.equal(page.data.routeSwitchHasMore, false);
-  assert.equal(page.data.routeSwitchRows[1].isSelected, true);
+  // 1–3 条：统一列表直接列出本场全部线路，当前线带已选态。
+  assert.deepEqual(page.data.routes.map(row => row.id), [a.route.id, b.route.id]);
+  assert.equal(page.data.routes.length, 2);
+  assert.equal(page.data.routes[1].isSelected, true);
 
   // 点 A 的线路名（T036 整行进入单线页）：名称、等级、已选态与把数一起切到 A，
   // 且不产生线路/关联/把次。
@@ -1074,8 +1073,8 @@ test('T031 短列表换线：同色同级 A、B 只换当前线，换线不建�
   assert.equal(aRecord.data.routeCountText, '1 把');
   assert.equal(aRecord.data.attempts.length, 1);
   assert.equal(aRecord.data.attempts[0].note, 'A 的备注');
-  assert.equal(page.data.routeSwitchRows[0].isSelected, true);
-  assert.equal(page.data.routeSwitchRows[1].isSelected, false);
+  assert.equal(page.data.routes[0].isSelected, true);
+  assert.equal(page.data.routes[1].isSelected, false);
   assert.equal(archiveOf().routes.length, before.routes, '选线不新建线路');
   assert.equal(archiveOf().sessionRoutes.length, before.links, '选线不新增关联');
   assert.equal(archiveOf().attempts.length, before.attempts, '选线不产生把次');
@@ -1106,7 +1105,7 @@ test('T031 短列表换线：同色同级 A、B 只换当前线，换线不建�
   assert.equal(aAgain.data.attempts[0].note, 'A 的备注');
 });
 
-test('T031 四条以上：短列表 = 当前线 + 最多两条近期线，「全部 N 条」按本场关联计数且别的场次不出现', () => {
+test('T031 四条以上：统一列表四条全列、按本场关联计数且别的场次不出现，记过把也不重排', () => {
   // 四条线各自带明确的本场关联时间（08:30–08:33），把次时间更晚（见下）。
   const started = store.startSession({
     gymName: '岩馆 A',
@@ -1143,7 +1142,7 @@ test('T031 四条以上：短列表 = 当前线 + 最多两条近期线，「全
   });
   assert.equal(otherRoute.ok, true, otherRoute.error);
 
-  // 回到第一场，当前线是最后建的「线 4」；按把次时间为线 2/3/4 排出近期顺序。
+  // 回到第一场，当前线是最后建的「线 4」；给线 2/3/4 记把次。
   store.selectSession(sessionId);
   store.selectRoute(routes[3].id);
   [
@@ -1162,65 +1161,45 @@ test('T031 四条以上：短列表 = 当前线 + 最多两条近期线，「全
 
   const page = openSessionPage({});
   assert.equal(page.data.selectedRoute.id, routes[3].id);
-  assert.equal(page.data.routeSwitchTotal, 4);
-  assert.equal(page.data.routeSwitchMoreText, '全部 4 条');
-  assert.equal(page.data.routeSwitchHasMore, true);
-  assert.equal(page.data.routeSwitchExpanded, false);
-  // 短列表：当前线在首位，另两条是不重复的近期线路（线 3、线 2）。
+  assert.equal(page.data.routes.length, 4, '四条线一线一行，全部列出');
+  assert.equal(page.data.routeCountText, '本场 4 条');
+  // 行序固定按本场关联顺序：记过把的线也不会被挪到前面，同一坐标始终是同一行。
   assert.deepEqual(
-    page.data.routeSwitchRows.map(row => row.id),
-    [routes[3].id, routes[2].id, routes[1].id]
+    page.data.routes.map(row => row.id),
+    sessionRouteIds(sessionId),
+    '列表顺序就是本场关联顺序'
   );
-  assert.equal(page.data.routeSwitchRows[0].isSelected, true);
-  assert.equal(
-    new Set(page.data.routeSwitchAllRows.map(row => row.id)).size,
-    4,
-    '展开后的本场线路不重复'
-  );
+  assert.equal(page.data.routes[3].isSelected, true);
+  assert.equal(page.data.routes.filter(row => row.isSelected).length, 1, '当前线只有一条');
+  assert.equal(new Set(page.data.routes.map(row => row.id)).size, 4, '本场线路不重复');
   assert.deepEqual(
-    page.data.routeSwitchAllRows.map(row => row.id).sort(),
+    page.data.routes.map(row => row.id).sort(),
     sessionRouteIds(sessionId).sort(),
-    '全部 N 条就是真实的本场关联'
+    '列表就是真实的本场关联'
+  );
+  assert.equal(
+    page.data.routes.some(row => row.id === otherRoute.route.id),
+    false,
+    '别的场次独有的线不出现'
   );
 
-  // 展开：本场全部线路都可选，别的场次独有的线不出现；只切展示不写盘。
-  const rawBefore = storage.get(ARCHIVE_KEY);
-  page.expandRouteSwitch();
-  assert.equal(page.data.routeSwitchExpanded, true);
-  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '展开全部线路不写盘');
-  assert.equal(archiveOf().activeRouteId, routes[3].id, '展开不改当前线');
-  const allIds = page.data.routeSwitchAllRows.map(row => row.id);
-  assert.equal(allIds.indexOf(otherRoute.route.id), -1, '别的场次独有的线不出现');
-
-  // 收起：只切展示，当前线不变。
-  page.closeRouteSwitch();
-  assert.equal(page.data.routeSwitchExpanded, false);
-  assert.equal(archiveOf().activeRouteId, routes[3].id, '收起不改当前线');
-  assert.deepEqual(
-    page.data.routeSwitchRows.map(row => row.id),
-    [routes[3].id, routes[2].id, routes[1].id],
-    '收起后仍是包含当前线的短列表'
-  );
-
-  // 在全集里点当前那一行「返回」：只收起列表，不重复写盘、不改当前线。
-  page.expandRouteSwitch();
+  // 点当前那一行：不重复写盘、不改当前线（行位置也不动）。
   const rawAtCurrent = storage.get(ARCHIVE_KEY);
   page.selectRoute(tapDataset({ routeId: routes[3].id }));
-  assert.equal(page.data.routeSwitchExpanded, false, '点当前线回到结果按钮旁');
-  assert.equal(storage.get(ARCHIVE_KEY), rawAtCurrent, '点当前线不写盘');
-  assert.equal(archiveOf().activeRouteId, routes[3].id);
+  assert.equal(storage.get(ARCHIVE_KEY), rawAtCurrent, '点当前线不重复写盘');
+  assert.equal(archiveOf().activeRouteId, routes[3].id, '点当前线不改当前线');
 
-  // 从全集里选一条：换到它并回到短列表；不新建线路、不加关联、不产生把次。
+  // 从列表点另一条（整行进入单线记录）：换到它；不新建线路、不加关联、不产生把次。
   const counts = {
     routes: archiveOf().routes.length,
     links: archiveOf().sessionRoutes.length,
     attempts: archiveOf().attempts.length
   };
-  page.expandRouteSwitch();
-  page.selectRoute(tapDataset({ routeId: routes[0].id }));
+  const recordFirst = openRecordThroughPage(page, routes[0].id);
   assert.equal(page.data.selectedRoute.id, routes[0].id);
-  assert.equal(page.data.routeSwitchExpanded, false, '选完线回到结果按钮旁的短列表');
-  assert.equal(page.data.routeSwitchRows[0].id, routes[0].id, '短列表始终含当前线');
+  assert.equal(recordFirst.data.selectedRoute.id, routes[0].id);
+  assert.equal(page.data.routes[0].isSelected, true, '当前线在原来那一行上标记');
+  assert.equal(page.data.routes[3].isSelected, false);
   assert.equal(archiveOf().routes.length, counts.routes, '选线不新建线路');
   assert.equal(archiveOf().sessionRoutes.length, counts.links, '选线不新增关联');
   assert.equal(archiveOf().attempts.length, counts.attempts, '选线不产生把次');
@@ -1247,7 +1226,7 @@ test('T031 选线落盘失败：报未保存、当前线不变，换线列表保
   assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '失败不写盘');
   assert.equal(page.data.selectedRoute.id, b.route.id);
   assert.equal(
-    page.data.routeSwitchRows.some(row => row.id === a.route.id),
+    page.data.routes.some(row => row.id === a.route.id),
     true,
     '失败后这条线仍在列表里，可以原地再点一次'
   );
@@ -1333,7 +1312,7 @@ test('T031 重新打开同一场次恢复持久化的当前线，并按原 ID �
   );
 });
 
-test('T030 复验 同日两场：切回已有四条线、当前选择被清空的旧场次，换线名册与结果区仍在，不必重新加线', () => {
+test('T030 复验 同日两场：切回已有四条线、当前选择被清空的旧场次，统一线路名册仍在，不必重新加线', () => {
   // 同一天的两场：第一场必须有四条线并把次，第二场是同日另开（用本地今天，跨天不会变味）。
   const todayDate = store.todayLocalDate();
   const seeded = seedTraining({ gymName: '岩馆 A', date: todayDate, routeName: '原线 A' });
@@ -1396,17 +1375,12 @@ test('T030 复验 同日两场：切回已有四条线、当前选择被清空�
   assert.equal(page.data.selectedRoute, null);
   assert.equal(archiveOf().sessions.length, 2, '切换场次不新建场次');
 
-  // 关键：本场明明有四条线，换线名册还在，不是只剩一个「＋ 加线」。
+  // 关键：本场明明有四条线，统一名册还在，不是只剩一个「＋ 加线」。
   assert.equal(page.data.routes.length, 4);
-  assert.equal(page.data.routeSwitchTotal, 4);
-  assert.equal(page.data.routeSwitchAllRows.length, 4);
-  assert.equal(page.data.routeSwitchHasMore, true);
-  assert.equal(page.data.routeSwitchMoreText, '全部 4 条');
-  assert.ok(page.data.routeSwitchRows.length > 0, '没有当前选择时也给本场可选名册');
-  assert.ok(page.data.routeSwitchRows.length <= 3, '短名单最多三条；其余走「全部 N 条」');
-  page.data.routeSwitchRows.forEach(row => assert.equal(row.isSelected, false, '没有当前线时谁都不是已选'));
+  assert.equal(page.data.routeCountText, '本场 4 条');
+  page.data.routes.forEach(row => assert.equal(row.isSelected, false, '没有当前线时谁都不是已选'));
   assert.deepEqual(
-    new Set(page.data.routeSwitchAllRows.map(row => row.id)),
+    new Set(page.data.routes.map(row => row.id)),
     new Set(sessionRouteIds(session1)),
     '本场全部线路都在，别的场次独有的线路不在'
   );
@@ -1452,7 +1426,7 @@ test('T030 复验 空场仍能新建：切到空场次时结果区不冒充已�
   assert.notEqual(page.data.activeSession.id, seeded.session.id);
   assert.equal(page.data.routes.length, 0);
   assert.equal(page.data.selectedRoute, null);
-  assert.equal(page.data.routeSwitchTotal, 0, '空场没有可换的线');
+  assert.equal(page.data.routeCountText, '', '空场没有可换的线');
   assert.equal(page.data.gymRoutes.length, 1, '本馆已有的那条线仍可作为「本馆已有」加入');
 
   // 空场新建第一条：名称、类型、等级在首层，创建即选中，并直达单线页记这一把。
@@ -1462,7 +1436,8 @@ test('T030 复验 空场仍能新建：切到空场次时结果区不冒充已�
   page.createRoute();
   assert.ok(page.data.selectedRoute, '新建即选中');
   assert.equal(page.data.selectedRoute.name, '空场第一条');
-  assert.equal(page.data.routeSwitchTotal, 1);
+  assert.equal(page.data.routes.length, 1);
+  assert.equal(page.data.routeCountText, '本场 1 条');
   const sessionId = page.data.activeSession.id;
   const routeId = page.data.selectedRoute.id;
   const recordPage = openRecordPage();
@@ -1596,21 +1571,21 @@ test('T030 复验 没有当前线路时结果按钮在位但不可用：点了�
   );
 });
 
-test('T030 复验 320 首屏层级：主操作区（加线 / 换线 / 结果）排在训练标题、日期与同日多场之前', () => {
+test('T030 复验 320 首屏层级：主操作区（加线 / 统一线路列表 / 结果）排在训练标题、日期与同日多场之前', () => {
   const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
 
-  // T036：场内页首屏是「本场线路（加线 / 列表）」，点一条线进入单线页；
+  // T036/T037：场内页首屏是「本场线路（加线 / 统一列表）」，点一条线进入单线页；
   // 单线页以结果 + 最近一把为主，明细与资料入口排在它们之后。
   const routesStart = wxml.indexOf('id="session-routes"');
-  const routeSwitch = wxml.indexOf('id="route-switch"');
+  const routeList = wxml.indexOf('id="route-list"');
   const sessionCard = wxml.indexOf('class="card session-card"');
   const summaryStart = wxml.indexOf('id="session-summary"');
-  assert.ok(routesStart !== -1 && routeSwitch !== -1 && sessionCard !== -1 && summaryStart !== -1);
-  assert.ok(routesStart < routeSwitch, '加线在列表之前');
-  assert.ok(routeSwitch < sessionCard, '本场线路列表排在训练标题、日期与同日多场入口之前');
+  assert.ok(routesStart !== -1 && routeList !== -1 && sessionCard !== -1 && summaryStart !== -1);
+  assert.ok(routesStart < routeList, '加线在列表之前');
+  assert.ok(routeList < sessionCard, '本场线路列表排在训练标题、日期与同日多场入口之前');
   assert.ok(sessionCard < summaryStart, '场次信息仍在本次小结之前');
-  assert.ok(wxml.indexOf('id="session-chip-') > routeSwitch, '同日多场的原生入口仍然保留');
+  assert.ok(wxml.indexOf('id="session-chip-') > routeList, '同日多场的原生入口仍然保留');
 
   const resultSend = recordWxml.indexOf('id="record-send"');
   const recentStart = recordWxml.indexOf('id="recent-attempt"');
@@ -2306,11 +2281,11 @@ test('T033 最近一把操作区在结果按钮之后：写线路名、原序号
   const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
   const rowStyle = wxss.match(/\.recent-attempt-row\s*\{[^}]*\}/);
   assert.ok(rowStyle, '样式里应有 .recent-attempt-row');
-  assert.match(rowStyle[0], /min-height:\s*88rpx/, '这一行与文字按钮同高，按钮消失后行高不变');
+  assert.match(rowStyle[0], /min-height:\s*44px/, '这一行与文字按钮同高（44px 逻辑像素），按钮消失后行高不变');
   const buttonRule = wxss.match(
     /\.primary-button,\s*\.secondary-button,\s*\.text-button\s*\{[^}]*\}/
   );
-  assert.ok(buttonRule && /min-height:\s*88rpx/.test(buttonRule[0]), '文字按钮的高度与这一行一致');
+  assert.ok(buttonRule && /min-height:\s*44px/.test(buttonRule[0]), '文字按钮的 44px 底限与这一行一致');
 
   const handlers = new Set(handlersIn(wxml));
   for (const required of ['undoLatestAttempt', 'restoreLatestAttempt']) {

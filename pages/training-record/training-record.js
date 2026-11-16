@@ -52,6 +52,8 @@ Page({
     // 按把「改为未完成」：本场这条线每一把仍可更正的已确认完攀各占一行。
     correctionRows: [],
     correctionStatusText: '',
+    // 刚撤回的完攀：更正区留同高惰性行，撤销/恢复时页面高度与滚动位置不变。
+    correctionPlaceholder: false,
 
     // 最近一把的撤回与恢复：结果按钮下方的固定操作区。null 表示不显示。
     recentAttempt: null
@@ -59,15 +61,13 @@ Page({
 
   onLoad(query) {
     // 本实例的临时状态，全部不落盘（与旧场内页同名，便于沿用事件语义）：
-    // _failedOps 本实例发起但未落盘的把次（按线路分组），重试沿用同一 opId；
     // _lastTap 快速双击窗口；_correctedRows / _correctionFailures 按把更正的只读回读
-    // 与失败重试标记；_attemptOps 本次没落盘的撤回/恢复意图；_recentStatus 刚落盘成功
-    // 的那一次动作带来的状态（只用于本页确认文案）。
-    this._failedOps = {};
+    // 与失败重试标记；_recentStatus 刚落盘成功的那一次动作带来的状态（只用于本页确认
+    // 文案）。没落盘的保存与撤回/恢复请求跨页面实例保留在 actions 的应用运行期缓存里，
+    // 这里不另存一份页面副本。
     this._lastTap = {};
     this._correctedRows = {};
     this._correctionFailures = {};
-    this._attemptOps = {};
     this._recentStatus = null;
     this._context = actions.parseRecordQuery(query);
     this.loadPage();
@@ -174,19 +174,25 @@ Page({
         hasNote: Boolean(attempt.note)
       }));
 
-    // 待保存行：档案里的「进行中」操作 + 本实例发起但完全没落盘的操作。
+    // 待保存行：档案里的「进行中」操作 + 当前应用运行期里第一段写就失败、还没落盘的
+    // 操作（换页回来仍按原 opId 重试；跨档案按 archiveId 隔离）。
     const fromArchive = (archive.pendingSaves || [])
       .filter(op => op.sessionId === session.id && op.routeId === route.id)
       .sort((left, right) => (left.seq || 0) - (right.seq || 0))
       .map(op => ({
         opId: op.opId,
+        // 重试按钮把发起时这一条待保存记录的归属一起带回：换档后同 ID 的旧事件
+        // 在写入前就能被档案层/事件层识别，不会提交到另一份档案的同名场次线路。
+        archiveId: archive.archiveId,
+        sessionId: op.sessionId,
+        routeId: op.routeId,
         label: labels.get(op.opId) || '',
         resultText: actions.attemptResultText(op.result),
         statusText: '未保存 · 点「重试保存」按同一把重试',
         canRetry: true
       }));
-    const localOnly = Object.keys(this._failedOps)
-      .map(key => this._failedOps[key])
+    const localOnly = actions
+      .failedSaveEntries(archive)
       .filter(
         op =>
           op.sessionId === session.id &&
@@ -195,6 +201,9 @@ Page({
       )
       .map(op => ({
         opId: op.opId,
+        archiveId: op.archiveId || archive.archiveId,
+        sessionId: op.sessionId,
+        routeId: op.routeId,
         label: '',
         resultText: actions.attemptResultText(op.result),
         statusText: '未保存 · 点「重试保存」按同一把重试',
@@ -233,6 +242,23 @@ Page({
     const correctionStatusText = correctionRows.some(row => row.state === 'retry')
       ? '更正未保存 · 点「重试改为未完成」按同一把重试'
       : '';
+    const recentAttempt = actions.recentAttemptView.call(
+      this,
+      archive,
+      activeSession,
+      selectedRoute,
+      pendingRows
+    );
+    // 刚撤回的那一把本身就是完攀：它从更正区消失了，但这一段必须留着同样高度。
+    // 否则页面变短、滚动位置被系统夹紧，刚才撤回按钮所在的屏幕坐标会落到结果按钮上。
+    // 只有抱石线有这一段「点错了完攀？」；顶绳/先锋本来就不显示，不能凭空加高。
+    const correctionPlaceholder = Boolean(
+      recentAttempt &&
+        recentAttempt.isSend &&
+        recentAttempt.canRestore &&
+        completion &&
+        !completion.repeatable
+    );
 
     this.setData({
       archiveId: archive.archiveId,
@@ -253,13 +279,8 @@ Page({
         : '',
       correctionRows,
       correctionStatusText,
-      recentAttempt: actions.recentAttemptView.call(
-        this,
-        archive,
-        activeSession,
-        selectedRoute,
-        pendingRows
-      )
+      correctionPlaceholder,
+      recentAttempt
     });
   },
 
@@ -285,13 +306,19 @@ Page({
 
   /**
    * 线路资料：按原长期 routeId 进入照片、卡点、跨天历史与清单操作。
+   * 同时带上渲染这一页时的本机档案 ID：换了档案之后同名的 routeId 不能顶替原线路，
+   * 资料页已有入口归属核验（旧资料直达只带 routeId 的兼容路径不变）。
    */
   openRouteProfile() {
     if (this.data.loadError || this.data.contextError) return;
+    const archiveId = this.archive && this.archive.archiveId;
     const routeId = this._route && this._route.id;
-    if (!routeId) return;
+    if (!archiveId || !routeId) return;
     wx.navigateTo({
-      url: ROUTE_URL + '?routeId=' + encodeURIComponent(routeId)
+      url:
+        ROUTE_URL +
+        '?' +
+        actions.recordQueryString({ archiveId, routeId })
     });
   },
 

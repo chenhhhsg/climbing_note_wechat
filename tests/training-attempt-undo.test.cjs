@@ -1530,3 +1530,75 @@ test('T032 已结清凭据的只读查询：只认这次操作自己的 opId，�
   assert.equal(store.attemptSettledOp({ id: 'legacy' }, 'op-undo-1'), null);
   assert.equal(rawArchive(), bytes, '只读查询不写盘');
 });
+
+// ------------------------------------------------------------------ *
+// T037 返工：撤回/恢复完攀时结果区与最近把次区高度稳定
+// ------------------------------------------------------------------ *
+
+test('T037 返工 撤回/恢复完攀时更正区留同高惰性行：原坐标只落在原动作或空槽', () => {
+  const { session, route } = beginTraining({ now: new Date(2026, 10, 9, 9, 0) });
+  addAttempt(session, route, 'fail', '第一把', new Date(2026, 10, 9, 9, 10));
+  const send = addAttempt(session, route, 'send', '第三把完攀', new Date(2026, 10, 9, 9, 20));
+
+  const page = createPage(recordDefinition);
+  page.onLoad({ archiveId: archiveOf().archiveId, sessionId: session.id, routeId: route.id });
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.correctionRows.length, 1, '完攀时更正区有一行');
+  assert.equal(page.data.correctionPlaceholder, false);
+  assert.equal(page.data.recentAttempt.canUndo, true);
+  assert.equal(page.data.recentAttempt.isSend, true);
+
+  const rowEvent = row => ({
+    currentTarget: {
+      dataset: {
+        attemptId: row.attemptId,
+        routeId: row.routeId,
+        sessionId: row.sessionId,
+        archiveId: row.archiveId,
+        expected: row.expected,
+        expectedRev: row.expectedRev
+      }
+    }
+  });
+
+  // 撤回完攀：更正区原行不在了，但留一条同编号、同日期场次岩馆的惰性行，
+  // 页面高度不缩短；最近一把的撤回半槽变成空槽，恢复半槽才出现按钮。
+  page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.correctionRows.length, 0);
+  assert.equal(page.data.correctionPlaceholder, true, '撤回后留同高惰性行');
+  assert.equal(page.data.recentAttempt.canRestore, true);
+  assert.equal(page.data.recentAttempt.isSend, true);
+  assert.equal(page.data.recentAttempt.correctionLabel, '第 2 把', '与原更正行同一编号');
+  assert.match(page.data.recentAttempt.correctionContextText, /我自己去的岩馆/);
+  assert.equal(page.data.recentAttempt.attemptId, send.id);
+
+  // 恢复：惰性行让位给原来的更正行，高度不变。
+  page.restoreLatestAttempt(rowEvent(page.data.recentAttempt));
+  assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.correctionRows.length, 1);
+  assert.equal(page.data.correctionPlaceholder, false);
+  assert.equal(page.data.correctionRows[0].attemptId, send.id);
+
+  // WXML：惰性行与真实更正行同一结构且没有任何点击绑定；固定槽高由局部样式给出。
+  const wxml = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
+    'utf8'
+  );
+  assert.match(wxml, /correctionRows\.length > 0 \|\| correctionPlaceholder/);
+  const idleStart = wxml.indexOf('id="route-correction-idle"');
+  assert.ok(idleStart > 0, '惰性行在模板里');
+  const idleBlock = wxml.slice(idleStart, idleStart + 700);
+  assert.equal(/bindtap|catchtap/.test(idleBlock), false, '惰性行不可点，不会变成结果按钮');
+  assert.match(idleBlock, /route-correction-row/);
+  assert.match(idleBlock, /已撤回，暂不可改/);
+
+  const wxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
+    'utf8'
+  );
+  assert.match(wxss, /\.route-correction-slot \{[^}]*min-height: 44px/, '半槽 44px 固定');
+  assert.match(wxss, /\.recent-attempt-guidance-slot \{[^}]*min-height: 32px/, '说明槽固定高度');
+  assert.match(wxss, /\.result-button \{[^}]*min-height: 48px/, '结果按钮 48px');
+  assert.match(wxss, /\.route-completed-panel,[\s\S]*?min-height: 48px/, '完攀面板同高');
+});

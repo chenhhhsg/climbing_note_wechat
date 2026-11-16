@@ -33,6 +33,7 @@ const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.j
 const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 const RECORD_WXSS = path.join(ROOT, 'pages', 'training-record', 'training-record.wxss');
 const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.js');
+const ATTEMPTS_WXML = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.wxml');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const LIST_JS = path.join(ROOT, 'pages', 'record-list', 'record-list.js');
 const STATS_JS = path.join(ROOT, 'pages', 'stats', 'stats.js');
@@ -445,7 +446,7 @@ test('T030→T031 空档走完一次训练：首屏加两条线、各自记结�
   assert.equal(archiveOf().routes.length, 2);
   assert.equal(linkCount(flow.sessionId, flow.aId), 1);
   assert.equal(linkCount(flow.sessionId, flow.bId), 1);
-  assert.equal(flow.sessionPage.data.routeSwitchTotal, 2, '「全部 N 条」按真实本场关联计数');
+  assert.equal(flow.sessionPage.data.routes.length, 2, '本场线路列表按真实本场关联计数');
 
   switchTo(page, flow.aId);
   assert.equal(page.data.routeCountText, '3 把');
@@ -676,12 +677,16 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   assert.ok(resultSend < recent, '撤回区在结果按钮之后');
   assert.ok(recent < attemptsLink, '撤回区之后才是明细与资料入口');
 
-  // 场内页只有一个「本场线路」列表：整行点入单线记录，不在页内再铺一份结果区。
-  assert.ok(sessionWxml.indexOf('id="session-routes"') < sessionWxml.indexOf('id="route-switch"'));
+  // 场内页只有一个「本场线路」统一列表：整行点入单线记录，不在页内再铺一份结果区。
+  const sessionRoutesAt = sessionWxml.indexOf('id="session-routes"');
+  const routeListAt = sessionWxml.indexOf('id="route-list"');
+  assert.ok(sessionRoutesAt !== -1 && routeListAt !== -1, '场内页有本场线路与统一列表');
+  assert.ok(sessionRoutesAt < routeListAt, '加线入口在统一列表之前');
+  assert.equal(sessionWxml.match(/id="route-list"/g).length, 1, '场内只有这一份线路列表');
+  assert.doesNotMatch(sessionWxml, /id="route-switch"/, '不再有第二套换线区');
   assert.match(sessionWxml, /bindtap="openRecord"/);
   assert.doesNotMatch(sessionWxml, /class="result-button result-fail"/, '场内页不再内联结果按钮');
   assert.doesNotMatch(sessionWxml, /id="recent-attempt"/, '场内页不再内联最近一把');
-  assert.doesNotMatch(sessionWxml, /class="route-list"/);
 
   // 同一行、两个兄弟槽：撤回在前（左槽），恢复在后（右槽）。
   const rowAt = wxml.indexOf('class="recent-attempt-row"');
@@ -731,11 +736,11 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   assert.match(declarationsOf(wxss, '.recent-attempt-row'), /display:\s*flex/, '这一行是 flex 行');
   assert.doesNotMatch(recentCss, /position\s*:\s*(absolute|fixed)/, '这一行不用绝对定位叠放动作');
 
-  // 场内列表的长名最多两行：列表行不会被长名撑得不可读。
+  // 统一列表的长名不截断：换行显示，行宽不随名称长短变化。
   assert.match(
-    declarationsOf(fs.readFileSync(SESSION_WXSS, 'utf8'), '.route-switch-chip-name'),
-    /-webkit-line-clamp:\s*2/,
-    '缩略行的长名称最多两行'
+    declarationsOf(fs.readFileSync(SESSION_WXSS, 'utf8'), '.route-row-name'),
+    /word-break:\s*break-all/,
+    '统一列表的长名称换行显示，不省略、不截断'
   );
 
   // 结果区高度稳定：常规态的两个结果按钮、完攀收起与完攀待确认面板同一高度，所以撤回
@@ -1225,7 +1230,7 @@ test('T033 复验 切到同日另一场（当前选择被清空）时不冒出�
   flow.sessionPage.switchSession(tapDataset({ sessionId: flow.sessionId }));
   assert.equal(flow.sessionPage.data.activeSession.id, flow.sessionId);
   assert.equal(flow.sessionPage.data.selectedRoute, null, '切场次只改归属：当前选择被清空');
-  assert.ok(flow.sessionPage.data.routeSwitchTotal >= 2, '本场线路还在列表里，不必重新加线');
+  assert.ok(flow.sessionPage.data.routes.length >= 2, '本场线路还在列表里，不必重新加线');
   assert.equal(
     flow.sessionPage.data.recentAttempt,
     undefined,
@@ -1515,4 +1520,763 @@ test('T036 新增两页只注册一次，写入仍只有 training-record-actions
   ]) {
     assert.equal(actionsSource.includes(call), true, call + ' 应在共用模块里');
   }
+});
+
+// ------------------------------------------------------------------ *
+// T034–T037 独立 QA 返工：事件归属与迟到按钮
+// ------------------------------------------------------------------ *
+
+test('T037 返工 原 A 档同 opId 的重试事件不能提交 B 档 pendingSaves', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = openRecordFor(flow.aId, flow.sessionId);
+  tick();
+
+  // 第一段「进行中」标记落盘、第二段提交失败：A 档留下带原 opId 的待保存记录。
+  armSetFailAt(2);
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  assert.equal(page.data.pendingRows.length, 1);
+  const row = page.data.pendingRows[0];
+  assert.equal(row.archiveId, archiveOf().archiveId);
+  assert.equal(row.sessionId, flow.sessionId);
+  assert.equal(row.routeId, flow.aId);
+
+  // 真实重试按钮的 dataset 必须带齐档案与归属（与 WXML 一致）。
+  const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.match(
+    wxml,
+    /id="retry-\{\{item\.opId\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,160}data-session-id="\{\{item\.sessionId\}\}"[\s\S]{0,160}data-route-id="\{\{item\.routeId\}\}"[\s\S]{0,160}data-op-id="\{\{item\.opId\}\}"[\s\S]{0,100}bindtap="retryPendingAttempt"/
+  );
+
+  const aArchive = JSON.parse(storage.get(ARCHIVE_KEY));
+  assert.ok(aArchive.pendingSaves.some(op => op.opId === row.opId), 'A 档仍有这条待保存');
+
+  // 换成 B 档：保持同一组 sessionId / routeId / opId，只改档案 ID 与待存备注。
+  const bArchive = JSON.parse(storage.get(ARCHIVE_KEY));
+  bArchive.archiveId = 'archive-of-another-profile';
+  bArchive.pendingSaves.find(op => op.opId === row.opId).note =
+    '仅第二份档案可以确认这把';
+  const bBytes = JSON.stringify(bArchive);
+  storage.set(ARCHIVE_KEY, bBytes);
+
+  // 旧 A 页上的原重试按钮事件现在才到：按 opId 在 B 档里能找到同一条，但归属先被核对。
+  page.retryPendingAttempt(
+    tapDataset({
+      archiveId: row.archiveId,
+      sessionId: row.sessionId,
+      routeId: row.routeId,
+      opId: row.opId
+    })
+  );
+
+  assert.equal(storage.get(ARCHIVE_KEY), bBytes, 'B 档字节原样保留');
+  const after = JSON.parse(storage.get(ARCHIVE_KEY));
+  assert.equal(after.pendingSaves.length, 1, 'B 的待保存记录没有被确认掉');
+  assert.equal(after.pendingSaves[0].note, '仅第二份档案可以确认这把');
+  assert.equal(
+    after.attempts.some(item => item.id === row.opId),
+    false,
+    '没有把 A 的这一把写进 B 档'
+  );
+  assert.match(page.data.notice, /原来的本机档案/);
+});
+
+test('T037 返工 单线与明细缺 archiveId 时只显示原因并拒绝写入', () => {
+  const started = store.startSession({ gymName: '缺档案岩馆', date: '2026-11-09' });
+  assert.equal(started.ok, true, started.error);
+  const sessionId = started.session.id;
+  const created = store.createRoute({
+    sessionId,
+    name: '缺档案线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(created.ok, true, created.error);
+  const routeId = created.route.id;
+  const saved = store.saveAttempt({ sessionId, routeId, result: 'fail' });
+  assert.equal(saved.ok, true, saved.error);
+
+  // 先制造一条真正落盘的「进行中」标记，用来核对缺参页面的重试写入口也被拒绝。
+  armSetFailAt(2);
+  const pending = store.saveAttempt({ sessionId, routeId, result: 'fail' });
+  armSetFailAt(0);
+  assert.equal(pending.ok, false);
+  const originalRaw = storage.get(ARCHIVE_KEY);
+  assert.equal(JSON.parse(originalRaw).pendingSaves.length, 1);
+
+  const recordPage = createPage(recordDefinition);
+  recordPage.onLoad({ sessionId, routeId });
+  assert.match(recordPage.data.contextError, /缺少档案参数/);
+  assert.equal(recordPage.data.activeSession, null);
+  assert.equal(recordPage.data.attempts.length, 0);
+  recordPage.recordAttempt(tapResult('fail'));
+  recordPage.retryPendingAttempt(
+    tapDataset({ archiveId: '', sessionId, routeId, opId: pending.opId })
+  );
+  assert.equal(storage.get(ARCHIVE_KEY), originalRaw, '单线缺 archiveId 不写盘');
+
+  const attemptsPage = createPage(attemptsDefinition);
+  attemptsPage.onLoad({ sessionId, routeId });
+  assert.match(attemptsPage.data.contextError, /缺少档案参数/);
+  assert.equal(attemptsPage.data.attempts.length, 0);
+  attemptsPage.openNoteEditor(tapDataset({ attemptId: saved.attempt.id }));
+  assert.equal(attemptsPage.data.noteEditor, null, '缺参明细页不打开编辑器');
+  assert.equal(storage.get(ARCHIVE_KEY), originalRaw, '明细缺 archiveId 不写盘');
+
+  // 同一份档案里带齐 archiveId 的两个入口仍照常打开（不是把所有入口一律关掉）。
+  const ready = openRecordFor(routeId, sessionId);
+  assert.equal(ready.data.contextError, '');
+  assert.equal(ready.data.selectedRoute.id, routeId);
+});
+
+test('T036 返工 线路资料入口带原 archiveId：换档后同 routeId 不顶替', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const page = openRecordFor(flow.aId, flow.sessionId);
+  const routeArchiveId = archiveOf().archiveId;
+
+  page.openRouteProfile();
+  const url = wxLog.navigations.at(-1).url;
+  const parsed = new URL(url, 'https://example.invalid');
+  assert.equal(parsed.pathname, '/pages/training-route/training-route');
+  assert.equal(parsed.searchParams.get('archiveId'), routeArchiveId, '资料入口带原档案 ID');
+  assert.equal(parsed.searchParams.get('routeId'), flow.aId);
+
+  // 同一份档案：原资料页正常展示这条线。
+  const query = Object.fromEntries(parsed.searchParams.entries());
+  const profile = createPage(routeDefinition);
+  profile.onLoad(query);
+  assert.equal(profile.data.claimError, '');
+  assert.equal(profile.data.route.id, flow.aId);
+
+  // 换档后同一 routeId 指向另一份档案：资料页按入口带的原档案拒绝展示。
+  const twin = JSON.parse(storage.get(ARCHIVE_KEY));
+  twin.archiveId = 'archive-of-another-profile';
+  storage.set(ARCHIVE_KEY, JSON.stringify(twin));
+  const blocked = createPage(routeDefinition);
+  blocked.onLoad(query);
+  assert.match(blocked.data.claimError, /另一份本机档案/);
+  assert.equal(blocked.data.route, null);
+  assert.match(
+    fs.readFileSync(RECORD_JS, 'utf8'),
+    /openRouteProfile\(\)[\s\S]{0,700}recordQueryString\(\{\s*archiveId,\s*routeId\s*\}\)/,
+    '单线页资料入口用带 archiveId 的查询串'
+  );
+});
+
+test('T036 返工 旧备注保存/取消事件不提交也不清除后来的草稿', () => {
+  const started = store.startSession({ gymName: '备注岩馆', date: '2026-11-09' });
+  assert.equal(started.ok, true, started.error);
+  const sessionId = started.session.id;
+  const created = store.createRoute({
+    sessionId,
+    name: '备注线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(created.ok, true, created.error);
+  const routeId = created.route.id;
+  const saved = ['fail', 'fail', 'fail'].map((result, index) => {
+    const outcome = store.saveAttempt({
+      sessionId,
+      routeId,
+      result,
+      now: new Date(2026, 10, 9, 10, 0 + index)
+    });
+    assert.equal(outcome.ok, true, outcome.error);
+    return outcome.attempt;
+  });
+
+  const page = openAttemptsFor(sessionId, routeId);
+  page.openNoteEditor(tapDataset({ attemptId: saved[0].id }));
+  const firstEditor = page.data.noteEditor;
+  const staleSave = tapDataset({
+    attemptId: firstEditor.attemptId,
+    editVersion: firstEditor.version
+  });
+  const staleCancel = tapDataset({
+    attemptId: firstEditor.attemptId,
+    editVersion: firstEditor.version
+  });
+
+  // 取消第一把的编辑，打开第二把并写新草稿。
+  page.cancelNote(staleCancel);
+  assert.equal(page.data.noteEditor, null);
+  page.openNoteEditor(tapDataset({ attemptId: saved[1].id }));
+  const secondEditor = page.data.noteEditor;
+  assert.notEqual(secondEditor.version, firstEditor.version, '另开一把换编辑代次');
+  page.onNoteInput({
+    detail: { value: '二号新草稿，尚未确认' },
+    currentTarget: {
+      dataset: { attemptId: secondEditor.attemptId, editVersion: secondEditor.version }
+    }
+  });
+
+  const before = storage.get(ARCHIVE_KEY);
+  page.saveNote(staleSave);
+  assert.equal(storage.get(ARCHIVE_KEY), before, '旧保存不写盘');
+  assert.equal(page.data.noteEditor.attemptId, saved[1].id, '旧保存不收新编辑器');
+  assert.equal(page.data.noteEditor.text, '二号新草稿，尚未确认', '新草稿不被旧保存提交');
+  assert.match(page.data.notice, /之前打开的备注编辑/);
+
+  page.cancelNote(staleCancel);
+  assert.equal(page.data.noteEditor.attemptId, saved[1].id, '旧取消不清新编辑器');
+  assert.equal(page.data.noteEditor.text, '二号新草稿，尚未确认');
+
+  page.saveNote(
+    tapDataset({
+      attemptId: page.data.noteEditor.attemptId,
+      editVersion: page.data.noteEditor.version
+    })
+  );
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  const notes = store.attemptsFor(archiveOf(), { sessionId, routeId });
+  assert.equal(notes.find(item => item.id === saved[1].id).note, '二号新草稿，尚未确认');
+  assert.equal(notes.find(item => item.id === saved[0].id).note, '');
+  assert.equal(notes.find(item => item.id === saved[2].id).note, '');
+
+  // 同一把取消后重新打开：旧代次的保存与取消都不能落到新草稿上。
+  page.openNoteEditor(tapDataset({ attemptId: saved[2].id }));
+  const reopenedFirst = page.data.noteEditor;
+  const sameAttemptStaleSave = tapDataset({
+    attemptId: reopenedFirst.attemptId,
+    editVersion: reopenedFirst.version
+  });
+  const sameAttemptStaleCancel = tapDataset({
+    attemptId: reopenedFirst.attemptId,
+    editVersion: reopenedFirst.version
+  });
+  page.cancelNote(sameAttemptStaleCancel);
+  page.openNoteEditor(tapDataset({ attemptId: saved[2].id }));
+  const reopenedSecond = page.data.noteEditor;
+  assert.notEqual(reopenedSecond.version, reopenedFirst.version);
+  page.onNoteInput({ detail: { value: '同一把的新草稿' } });
+
+  const beforeSame = storage.get(ARCHIVE_KEY);
+  page.saveNote(sameAttemptStaleSave);
+  assert.equal(storage.get(ARCHIVE_KEY), beforeSame);
+  assert.equal(page.data.noteEditor.text, '同一把的新草稿');
+  page.cancelNote(sameAttemptStaleCancel);
+  assert.equal(page.data.noteEditor.text, '同一把的新草稿', '旧取消不清同一把的新草稿');
+
+  page.saveNote(
+    tapDataset({
+      attemptId: page.data.noteEditor.attemptId,
+      editVersion: page.data.noteEditor.version
+    })
+  );
+  assert.equal(
+    store.attemptsFor(archiveOf(), { sessionId, routeId }).find(
+      item => item.id === saved[2].id
+    ).note,
+    '同一把的新草稿'
+  );
+
+  // 真实按钮把原 attemptId 与编辑代次一起带回来。
+  const wxml = fs.readFileSync(ATTEMPTS_WXML, 'utf8');
+  assert.match(
+    wxml,
+    /id="cancel-note"[\s\S]{0,260}data-attempt-id="\{\{noteEditor\.attemptId\}\}"[\s\S]{0,160}data-edit-version="\{\{noteEditor\.version\}\}"[\s\S]{0,100}bindtap="cancelNote"/
+  );
+  assert.match(
+    wxml,
+    /id="save-note"[\s\S]{0,260}data-attempt-id="\{\{noteEditor\.attemptId\}\}"[\s\S]{0,160}data-edit-version="\{\{noteEditor\.version\}\}"[\s\S]{0,100}bindtap="saveNote"/
+  );
+});
+
+// ------------------------------------------------------------------ *
+// T034–T037 独立 QA 返工：换页后保留原失败操作与原 opId
+// ------------------------------------------------------------------ *
+
+/**
+ * 让下一次写盘在写前失败（数据一个字没落盘），同时从这次本来要写的档案里读出页面
+ * 生成的原 opId。与 QA H07 用一次性拒绝 setStorageSync 取证的方式一致：失败的那一笔
+ * 只在当前应用运行期留下记录，档案里看不到它。
+ */
+function captureFirstStageFailure(collection, matches) {
+  let issued = '';
+  armRivalWriterAt(1, (key, value) => {
+    const next = JSON.parse(value);
+    const entry = (next[collection] || []).find(matches);
+    if (entry) issued = entry.opId || entry.id || '';
+  });
+  return () => issued;
+}
+
+test('T037 返工 第一笔待保存写入失败后换线再回来，仍按原 opId 补上同一把', () => {
+  const flow = trainThroughPages('返工岩馆');
+  let page = openRecordFor(flow.aId, flow.sessionId);
+  const beforeA = savedAttempts(flow.sessionId, flow.aId).length;
+
+  const issuedOpId = captureFirstStageFailure(
+    'pendingSaves',
+    entry => entry.sessionId === flow.sessionId && entry.routeId === flow.aId
+  );
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  const opId = issuedOpId();
+  assert.ok(opId, '页面为这一把生成了 opId');
+  assert.match(page.data.storageError, /保存本机训练档案失败/);
+  const failed = JSON.parse(storage.get(ARCHIVE_KEY));
+  assert.equal(failed.pendingSaves.length, 0, '第一笔写失败：档案里没有待保存标记');
+  assert.equal(failed.attempts.some(item => item.id === opId), false, '也没有多出一把');
+  assert.equal(page.data.pendingRows.length, 1, '本页仍有可重试的待保存行');
+  assert.equal(page.data.pendingRows[0].opId, opId);
+
+  // 回列表换 B 正常记一把（新页面实例），再回 A：待保存行还在，opId 不变。
+  page = switchTo(page, flow.bId);
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  assert.equal(page.data.storageError, '');
+  page = switchTo(page, flow.aId);
+  const row = page.data.pendingRows.find(item => item.opId === opId);
+  assert.ok(row, '换页回来仍能看到原来那一把待保存');
+  assert.equal(row.archiveId, archiveOf().archiveId);
+  assert.equal(page.data.resultLocked, true, '有未落盘的一把时先重试，不记下一把');
+
+  page.retryPendingAttempt(
+    tapDataset({
+      archiveId: row.archiveId,
+      sessionId: row.sessionId,
+      routeId: row.routeId,
+      opId: row.opId
+    })
+  );
+  const after = savedAttempts(flow.sessionId, flow.aId);
+  assert.equal(after.length, beforeA + 1, '只补上同一把');
+  assert.equal(after.filter(item => item.id === opId).length, 1, '把次 ID 就是原 opId');
+  assert.equal(JSON.parse(storage.get(ARCHIVE_KEY)).pendingSaves.length, 0);
+  assert.equal(page.data.pendingRows.length, 0);
+  assert.equal(page.data.storageError, '');
+});
+for (const action of ['undo', 'restore']) {
+  const handler = action === 'undo' ? 'undoLatestAttempt' : 'restoreLatestAttempt';
+  const collection = action === 'undo' ? 'pendingUndos' : 'pendingRestores';
+  const effectiveAfter = action === 'undo' ? 2 : 3;
+
+  test(`T037 返工 ${action} 第一段写失败后换线再回来，仍按原 opId 结清一次`, () => {
+    const flow = trainThroughPages('返工岩馆');
+    let page = openRecordFor(flow.aId, flow.sessionId);
+    const targetId = flow.aAttempts[2];
+    if (action === 'restore') {
+      tick();
+      page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+      assert.equal(page.data.storageError, '');
+    }
+    // 这一次失败事件的原样快照：结清并做反向动作之后重放它，不得逆转。
+    const originalEvent = rowEvent(page.data.recentAttempt);
+
+    const issuedOpId = captureFirstStageFailure(collection, entry => entry.attemptId === targetId);
+    tick();
+    page[handler](originalEvent);
+    armSetFailAt(0);
+    const opId = issuedOpId();
+    assert.ok(opId, '页面为这次动作生成了 opId');
+    assert.match(page.data.storageError, /保存本机训练档案失败/);
+    const failed = JSON.parse(storage.get(ARCHIVE_KEY));
+    assert.equal(failed.pendingUndos.length, 0, '第一段写失败：没有撤回进行中标记');
+    assert.equal(failed.pendingRestores.length, 0, '第一段写失败：没有恢复进行中标记');
+    const failedAttempt = failed.attempts.find(item => item.id === targetId);
+    assert.equal(
+      (failedAttempt.settledOps || []).some(item => item.opId === opId),
+      false,
+      '档案里没有结清这次操作'
+    );
+    assert.match(page.data.recentAttempt.stateText, /未保存/);
+    assert.match(
+      action === 'undo' ? page.data.recentAttempt.undoText : page.data.recentAttempt.restoreText,
+      /重试/
+    );
+
+    // 回列表换 B 记一把，再回 A：新页面实例仍显示这次动作可显式重试。
+    page = switchTo(page, flow.bId);
+    tick();
+    page.recordAttempt(tapResult('fail'));
+    page = switchTo(page, flow.aId);
+    const row = page.data.recentAttempt;
+    assert.equal(row.attemptId, targetId);
+    assert.match(row.stateText, /未保存/);
+    assert.match(action === 'undo' ? row.undoText : row.restoreText, /重试/);
+
+    tick();
+    page[handler](rowEvent(row));
+    assert.equal(page.data.storageError, '');
+    const settledArchive = JSON.parse(storage.get(ARCHIVE_KEY));
+    const settled = settledArchive.attempts.find(item => item.id === targetId).settledOps || [];
+    assert.equal(
+      settled.filter(item => item.opId === opId && item.undone === (action === 'undo')).length,
+      1,
+      '原 opId 只结清一次'
+    );
+    assert.equal(settledArchive.pendingUndos.length, 0);
+    assert.equal(settledArchive.pendingRestores.length, 0);
+    assert.equal(
+      savedAttempts(flow.sessionId, flow.aId).filter(item => !item.undoneAt).length,
+      effectiveAfter
+    );
+
+    // 先做反向动作，再送回原来那次失败事件：按渲染时的版本拒绝，不逆转。
+    tick();
+    page[action === 'undo' ? 'restoreLatestAttempt' : 'undoLatestAttempt'](
+      rowEvent(page.data.recentAttempt)
+    );
+    const beforeReplay = storage.get(ARCHIVE_KEY);
+    page[handler](originalEvent);
+    assert.equal(storage.get(ARCHIVE_KEY), beforeReplay, '迟到重放不改档案');
+  });
+
+  test(`T037 返工 ${action} 提交阶段失败（待处理已落盘）后换线再回来，重试沿用原 opId`, () => {
+    const flow = trainThroughPages('返工岩馆');
+    let page = openRecordFor(flow.aId, flow.sessionId);
+    const targetId = flow.aAttempts[2];
+    if (action === 'restore') {
+      tick();
+      page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+      assert.equal(page.data.storageError, '');
+    }
+    const originalEvent = rowEvent(page.data.recentAttempt);
+
+    // 第一段「进行中」标记落盘、第二段提交失败：档案里留着原 opId 的待处理项。
+    armSetFailAt(2);
+    tick();
+    page[handler](originalEvent);
+    armSetFailAt(0);
+    assert.match(page.data.storageError, /保存本机训练档案失败/);
+    const staged = JSON.parse(storage.get(ARCHIVE_KEY));
+    const marker = (staged[collection] || []).find(item => item.attemptId === targetId);
+    assert.ok(marker, '待处理阶段已落盘');
+    const opId = marker.opId;
+    assert.match(page.data.recentAttempt.stateText, /未保存/);
+
+    page = switchTo(page, flow.bId);
+    tick();
+    page.recordAttempt(tapResult('fail'));
+    page = switchTo(page, flow.aId);
+    assert.equal(page.data.recentAttempt.attemptId, targetId);
+    assert.match(page.data.recentAttempt.stateText, /未保存/);
+    assert.match(
+      action === 'undo' ? page.data.recentAttempt.undoText : page.data.recentAttempt.restoreText,
+      /重试/
+    );
+
+    tick();
+    page[handler](rowEvent(page.data.recentAttempt));
+    assert.equal(page.data.storageError, '');
+    const settledArchive = JSON.parse(storage.get(ARCHIVE_KEY));
+    assert.equal(settledArchive.pendingUndos.length, 0);
+    assert.equal(settledArchive.pendingRestores.length, 0);
+    const settled = settledArchive.attempts.find(item => item.id === targetId).settledOps || [];
+    assert.equal(
+      settled.filter(item => item.opId === opId && item.undone === (action === 'undo')).length,
+      1,
+      '待处理阶段的原 opId 结清一次'
+    );
+    assert.equal(
+      savedAttempts(flow.sessionId, flow.aId).filter(item => !item.undoneAt).length,
+      effectiveAfter
+    );
+
+    // 旧请求重放：先做反向动作，再送回原来那次失败事件——不得逆转。
+    tick();
+    page[action === 'undo' ? 'restoreLatestAttempt' : 'undoLatestAttempt'](
+      rowEvent(page.data.recentAttempt)
+    );
+    const beforeReplay = storage.get(ARCHIVE_KEY);
+    page[handler](originalEvent);
+    assert.equal(storage.get(ARCHIVE_KEY), beforeReplay, '旧请求重放不得逆转');
+  });
+}
+
+// ------------------------------------------------------------------ *
+// QA B08 返工：第一段写失败的内存请求只按它发出时的版本有效
+//
+// 失败请求没有落盘凭据，但这一把此后可能被别的写者推进过：撤回 → 恢复走一圈，
+// 状态又回到「有效」，只比较状态的话这次失败请求看上去完全合法。重开页面后如果
+// 继续显示「重试…」并拿新渲染的 expectedRev 去提交旧 opId，就等于把旧请求升级成
+// 一次新版本上的新请求，会逆转别人后来确认的状态。
+// ------------------------------------------------------------------ *
+
+for (const action of ['undo', 'restore']) {
+  const handler = action === 'undo' ? 'undoLatestAttempt' : 'restoreLatestAttempt';
+  const collection = action === 'undo' ? 'pendingUndos' : 'pendingRestores';
+  const label = action === 'undo' ? '撤回' : '恢复';
+
+  test(`QA B08 ${label}第一段写失败后经外部${label}→反向往返：旧请求不结清到新版本，当前版本上的新动作可用`, () => {
+    const actions = require(path.join(ROOT, 'utils', 'training-record-actions.js'));
+    const flow = trainThroughPages('返工岩馆');
+    let page = openRecordFor(flow.aId, flow.sessionId);
+    const targetId = flow.aAttempts[2];
+    const scope = { routeId: flow.aId, sessionId: flow.sessionId };
+    if (action === 'restore') {
+      tick();
+      page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+      assert.equal(page.data.storageError, '');
+    }
+
+    // 按钮真实渲染出来的点击参数：带渲染时的状态与原版本（WXML 的 data-expected-rev）。
+    const originalEvent = rowEvent(page.data.recentAttempt);
+    const originalRev = originalEvent.currentTarget.dataset.expectedRev;
+    assert.equal(Number.isInteger(originalRev), true, '点击参数带渲染时的 expectedRev');
+    assert.equal(
+      store.attemptRev(archiveOf().attempts.find(item => item.id === targetId)),
+      originalRev
+    );
+
+    // 第一段写「进行中」标记就失败：档案里不留任何凭据，请求只在应用运行期缓存。
+    const issuedOpId = captureFirstStageFailure(collection, entry => entry.attemptId === targetId);
+    tick();
+    page[handler](originalEvent);
+    armSetFailAt(0);
+    const opId = issuedOpId();
+    assert.ok(opId, '页面为这次动作生成了 opId');
+    assert.match(page.data.storageError, /保存本机训练档案失败/);
+    assert.equal(JSON.parse(storage.get(ARCHIVE_KEY))[collection].length, 0, '第一段失败不留进行中标记');
+    // 失败时缓存下来的原请求：opId 与归属；它发出时所依据的版本在重开后核对。
+    const recorded = actions.failedChangeEntry(archiveOf(), targetId, action);
+    assert.equal(recorded.opId, opId);
+
+    // 另一个写者不经本应用缓存，用正式 store API 带自己的 opId 与各自真实版本
+    // 完成同一动作再反向做回来：这一把回到请求发出时的状态，版本前进两次。
+    tick();
+    assert.equal(
+      (action === 'undo' ? store.undoAttempt : store.restoreAttempt)(targetId, {
+        ...scope,
+        opId: 'external-' + action,
+        expectedRev: originalRev
+      }).code,
+      action === 'undo' ? 'undone' : 'restored'
+    );
+    tick();
+    assert.equal(
+      (action === 'undo' ? store.restoreAttempt : store.undoAttempt)(targetId, {
+        ...scope,
+        opId: 'external-opposite-' + action,
+        expectedRev: originalRev + 1
+      }).code,
+      action === 'undo' ? 'restored' : 'undone'
+    );
+    const beforeAttempt = archiveOf().attempts.find(item => item.id === targetId);
+    assert.equal(store.attemptRev(beforeAttempt), originalRev + 2);
+    assert.equal(
+      store.isUndoneAttempt(beforeAttempt),
+      action === 'restore',
+      '往返后回到请求发出时的状态，只看状态已经看不出被取代'
+    );
+
+    // 回列表换线再回这条线：过期缓存不再被当作可重试的原请求，显示普通动作。
+    page = switchTo(page, flow.bId);
+    page = switchTo(page, flow.aId);
+    const row = page.data.recentAttempt;
+    assert.equal(row.attemptId, targetId);
+    assert.equal(row.expectedRev, originalRev + 2, '新渲染带的是当前版本');
+    assert.equal(row.stateText, '', '不再显示「未保存」的重试说明');
+    assert.equal(action === 'undo' ? row.undoText : row.restoreText, label + '这一把');
+    assert.equal(row.canUndo, action === 'undo');
+    assert.equal(row.canRestore, action === 'restore');
+
+    // 用户在当前版本上明确再点一次：旧 opId 不会被配上新版本，这一下由档案层生成
+    // 新 opId，只推进一个版本、只多一条凭据，也不逆转往返后的状态。
+    tick();
+    page[handler](rowEvent(row));
+    assert.equal(page.data.storageError, '');
+    const after = archiveOf().attempts.find(item => item.id === targetId);
+    assert.equal(store.attemptRev(after), originalRev + 3, '新动作只推进一个版本');
+    assert.equal(store.isUndoneAttempt(after), action === 'undo');
+    const settled = after.settledOps || [];
+    assert.equal(
+      settled.some(item => item.opId === opId),
+      false,
+      '过期的原请求 opId 没有被结清到新版本'
+    );
+    assert.equal(
+      settled.length,
+      (beforeAttempt.settledOps || []).length + 1,
+      '新动作只多一条凭据'
+    );
+    assert.equal(store.attemptSettledOp(after, 'external-' + action).undone, action === 'undo');
+
+    // 缓存侧：原请求曾按发出时的版本记下，版本前进后整条清掉（不再有可沿用的 opId）。
+    assert.equal(recorded.expectedRev, originalRev, '缓存保留请求发出时的原版本');
+    assert.equal(
+      actions.failedChangeEntry(archiveOf(), targetId, action),
+      null,
+      '版本前进过的失败请求已从运行期缓存清掉'
+    );
+
+    // 原来那个带旧版本的迟到事件：仍按 dataset 里的原版本拒绝，一个字都不写。
+    const beforeReplay = storage.get(ARCHIVE_KEY);
+    page[handler](originalEvent);
+    assert.equal(storage.get(ARCHIVE_KEY), beforeReplay, '旧版本事件不改档案');
+  });
+}
+
+test('T037 返工 运行期记住的未落盘操作按 archiveId 隔离，不写进另一份档案', () => {
+  const flow = trainThroughPages('返工岩馆');
+  const page = openRecordFor(flow.aId, flow.sessionId);
+  const issuedOpId = captureFirstStageFailure('pendingSaves', entry => entry.routeId === flow.aId);
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  const opId = issuedOpId();
+  const row = page.data.pendingRows[0];
+  assert.ok(opId && row && row.opId === opId);
+
+  // 盘上换成另一份档案：同名 sessionId / routeId / opId 全部复用。
+  const twin = JSON.parse(storage.get(ARCHIVE_KEY));
+  twin.archiveId = 'twin-archive-of-another-profile';
+  storage.set(ARCHIVE_KEY, JSON.stringify(twin));
+  const twinPage = openRecordFor(flow.aId, flow.sessionId);
+  assert.equal(twinPage.data.contextError, '', '另一份档案按它自己的 ID 正常打开');
+  assert.equal(twinPage.data.pendingRows.length, 0, '不显示 A 档未落盘的待保存');
+
+  const before = storage.get(ARCHIVE_KEY);
+  const event = tapDataset({
+    archiveId: row.archiveId,
+    sessionId: row.sessionId,
+    routeId: row.routeId,
+    opId: row.opId
+  });
+  twinPage.retryPendingAttempt(event);
+  page.retryPendingAttempt(event);
+  assert.equal(storage.get(ARCHIVE_KEY), before, '旧请求不写进另一份档案');
+  assert.equal(
+    JSON.parse(before).attempts.some(item => item.id === opId),
+    false,
+    '没有把 A 的这一把写进新档'
+  );
+});
+
+test('T037 返工 应用冷启后不伪造未落盘操作，只读打开不改档案', () => {
+  const flow = trainThroughPages('返工岩馆');
+  const page = openRecordFor(flow.aId, flow.sessionId);
+  const issuedOpId = captureFirstStageFailure('pendingSaves', entry => entry.routeId === flow.aId);
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  assert.ok(issuedOpId());
+  const bytes = storage.get(ARCHIVE_KEY);
+
+  // 新 App 运行：模块重新加载后没有上一次运行的内存记录，档案里也没有这一把。
+  const actionsPath = require.resolve(path.join(ROOT, 'utils', 'training-record-actions.js'));
+  const cached = require.cache[actionsPath];
+  delete require.cache[actionsPath];
+  try {
+    const fresh = require(actionsPath);
+    const archive = store.loadState().archive;
+    assert.deepEqual(fresh.failedSaveEntries(archive), [], '冷启后没有「待保存」可显示');
+    assert.equal(storage.get(ARCHIVE_KEY), bytes, '只读回读不改档案');
+  } finally {
+    require.cache[actionsPath] = cached;
+  }
+});
+
+// ------------------------------------------------------------------ *
+// T034/T037 返工 Q10/Q11：列表显示目标钉住原场次
+// ------------------------------------------------------------------ *
+
+test('T037 返工 钉住 S1 的列表从小结纯返回仍显示 S1，不写活动场次；点 S1 的线只记回 S1', () => {
+  // 同一岩馆同一天两场：S1 先开（A、B 两条线），S2 同日另开（也关联 B）。
+  const today = store.todayLocalDate();
+  const first = store.startSession({ gymName: '钉住岩馆', date: today });
+  assert.equal(first.ok, true, first.error);
+  const routeA = store.createRoute({
+    sessionId: first.session.id,
+    name: 'A 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  const routeB = store.createRoute({
+    sessionId: first.session.id,
+    name: 'B 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(routeA.ok, true, routeA.error);
+  assert.equal(routeB.ok, true, routeB.error);
+
+  const second = store.startSession({ gymName: '钉住岩馆', date: today });
+  assert.equal(second.ok, true, second.error);
+  assert.equal(store.linkRouteToSession(second.session.id, routeB.route.id).ok, true);
+  const s2Saved = store.saveAttempt({
+    sessionId: second.session.id,
+    routeId: routeB.route.id,
+    result: 'fail',
+    note: 'S2 原备注'
+  });
+  assert.equal(s2Saved.ok, true, s2Saved.error);
+
+  // 从 S1 列表进入：先让 S1 成为当前场次与当前线路（列表第一次显示的就是它）。
+  assert.equal(store.selectSession(first.session.id).ok, true);
+  assert.equal(store.selectRoute(routeA.route.id).ok, true);
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, first.session.id);
+  assert.equal(page.data.selectedRoute.id, routeA.route.id);
+  assert.equal(page.data.summaryEntrySessionId, first.session.id, '小结入口指向本页这一场');
+
+  // 小结打开期间另一处把活动场次改成 S2；纯返回（onShow）仍显示 S1，且一个字节都不写。
+  assert.equal(store.selectSession(second.session.id).ok, true);
+  const afterExternal = storage.get(ARCHIVE_KEY);
+  page.onShow();
+  assert.equal(page.data.activeSession.id, first.session.id, '纯返回仍显示原场次');
+  assert.equal(page.data.summaryEntrySessionId, first.session.id, '小结入口不跟着换场');
+  assert.equal(storage.get(ARCHIVE_KEY), afterExternal, '纯返回不写活动场次');
+
+  // 从 S1 的原行点 B：打开的单线页必须带 S1 的归属，这一把只记回 S1。
+  tick();
+  page.openRecord(
+    tapDataset({
+      archiveId: archiveOf().archiveId,
+      sessionId: first.session.id,
+      routeId: routeB.route.id
+    })
+  );
+  const navigated = wxLog.navigations.at(-1);
+  assert.ok(navigated, '应打开单线记录页');
+  assert.match(navigated.url, new RegExp('sessionId=' + first.session.id));
+  assert.match(navigated.url, new RegExp('routeId=' + routeB.route.id));
+
+  const record = openRecordFor(routeB.route.id, first.session.id);
+  tick();
+  record.recordAttempt(tapResult('fail'));
+  const saved = archiveOf().attempts.filter(
+    attempt => attempt.sessionId === first.session.id && attempt.routeId === routeB.route.id
+  );
+  assert.equal(saved.length, 1, '这一把归 S1');
+  assert.equal(saved[0].result, 'fail');
+  // S2 的原把次与备注保持不动，也没有多出第二把。
+  const s2Attempts = archiveOf().attempts.filter(
+    attempt => attempt.sessionId === second.session.id && attempt.routeId === routeB.route.id
+  );
+  assert.deepEqual(s2Attempts.map(item => [item.id, item.note]), [
+    [s2Saved.attempt.id, 'S2 原备注']
+  ]);
+  assert.equal(archiveOf().activeSessionId, second.session.id, '点行记一把不改活动场次');
+
+  // 纯返回之后仍停在 S1：再显示一次也不跟着外部活动场次走。
+  page.onShow();
+  assert.equal(page.data.activeSession.id, first.session.id);
+});
+
+test('T037 返工 显式切场次会更新列表显示目标，不靠临时回看标记', () => {
+  const today = store.todayLocalDate();
+  const first = store.startSession({ gymName: '切换岩馆', date: today });
+  assert.equal(first.ok, true, first.error);
+  const second = store.startSession({ gymName: '切换岩馆', date: today });
+  assert.equal(second.ok, true, second.error);
+  assert.equal(store.selectSession(first.session.id).ok, true);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, first.session.id);
+
+  // 同一批场次里的显式切换：显示目标与活动场次一起换到 S2。
+  page.switchSession(tapDataset({ sessionId: second.session.id }));
+  assert.equal(page.data.activeSession.id, second.session.id);
+  assert.equal(archiveOf().activeSessionId, second.session.id);
+
+  // 再显式切回 S1：显示目标跟着回来，档案只有一个活动场次。
+  page.switchSession(tapDataset({ sessionId: first.session.id }));
+  assert.equal(page.data.activeSession.id, first.session.id);
+  assert.equal(archiveOf().activeSessionId, first.session.id);
+  assert.equal(archiveOf().sessions.length, 2, '切场次不新建场次');
 });

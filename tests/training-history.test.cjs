@@ -1114,3 +1114,55 @@ test('R5 完全没有 wx.cloud 时：本机历史、线路详情与当天再记�
   assert.equal(detail.data.storageError, '');
   assert.equal(archiveOf().sessions.length, 2, '断网也能当天再记');
 });
+
+// ------------------------------------------------------------------ *
+// T037 返工：同日选场的旧事件不能改另一份档案的活动场次
+// ------------------------------------------------------------------ *
+
+test('T037 返工 原 A 档的旧选场事件不能改 B 档 activeSession', () => {
+  const today = store.todayLocalDate();
+  const sessionA = startAt(today, '同馆岩馆');
+  const route = newRoute(sessionA, { name: '同日选场线' });
+  record(sessionA, route, 'fail', '', today + 'T10:00:00');
+  const sessionB = startAt(today, '同馆岩馆');
+  assert.notEqual(sessionB.id, sessionA.id);
+  store.linkRouteToSession(sessionB.id, route.id);
+  record(sessionB, route, 'fail', '第二场备注', today + 'T11:00:00');
+
+  const page = openRoutePage(route.id);
+  page.recordAgain();
+  const picker = page.data.sessionPicker;
+  assert.ok(picker, '同日两场先让用户明确选一场');
+  assert.ok(picker.archiveId, '选场面板记下原档案 ID');
+  assert.ok(picker.pickerKey, '选场面板有本次打开标识');
+
+  // 真实按钮 dataset：原档案、原线路、原面板标识与目标场次一起带回。
+  const wxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+  assert.match(
+    wxml,
+    /data-archive-id="\{\{sessionPicker\.archiveId\}\}"[\s\S]{0,200}data-route-id="\{\{sessionPicker\.routeId\}\}"[\s\S]{0,200}data-picker-key="\{\{sessionPicker\.pickerKey\}\}"[\s\S]{0,160}data-session-id="\{\{item\.id\}\}"[\s\S]{0,100}bindtap="chooseSessionForAgain"/
+  );
+  const captured = {
+    archiveId: picker.archiveId,
+    routeId: picker.routeId,
+    pickerKey: picker.pickerKey,
+    sessionId: sessionA.id
+  };
+
+  // 换成另一份本机档案：复用同一组场次 / 线路 / 面板 ID，只改档案 ID 与活动场次。
+  const twin = JSON.parse(rawArchive());
+  twin.archiveId = 'archive-of-another-profile';
+  twin.activeSessionId = sessionB.id;
+  twin.activeRouteId = route.id;
+  const twinBytes = JSON.stringify(twin);
+  storage.set(ARCHIVE_KEY, twinBytes);
+
+  page.chooseSessionForAgain(tapDataset(captured));
+
+  assert.equal(storage.get(ARCHIVE_KEY), twinBytes, '旧选场事件不写 B 档');
+  const after = archiveOf();
+  assert.equal(after.activeSessionId, sessionB.id, 'B 档活动场次不变');
+  assert.equal(after.activeRouteId, route.id);
+  assert.equal(after.sessions.length, 2, '不新增场次');
+  assert.match(page.data.notice, /原来的本机档案|原来的页面/);
+});

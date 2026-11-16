@@ -43,6 +43,8 @@
 
     <block wx:else>
       <text class="list-hint">按岩馆分组；点一条线路看它的原照片、备注与跨日历史，再用「当天再记」继续这条线。</text>
+      <!-- 点到的行属于另一份档案（切档后的旧行）：说明原因，不按同名 ID 打开别的线 -->
+      <text wx:if="{{entryNotice}}" id="wishlist-entry-notice" class="list-notice">{{entryNotice}}</text>
       <view wx:for="{{groups}}" wx:key="gymId" id="wishlist-gym-{{item.gymId}}" class="gym-group">
         <view class="gym-head">
           <text class="gym-name">{{item.gymName}}</text>
@@ -54,6 +56,7 @@
           wx:key="routeId"
           id="wishlist-row-{{route.routeId}}"
           class="route-row"
+          data-archive-id="{{archiveId}}"
           data-route-id="{{route.routeId}}"
           bindtap="openRoute"
         >

@@ -41,6 +41,7 @@ const {
 } = require('../../utils/training-photo-controller.js');
 
 const RECORD_URL = '/pages/training-record/training-record';
+const SESSION_URL = '/pages/training-session/training-session';
 const PROFILE_URL = '/pages/profile/profile';
 
 function pad2(value) {
@@ -67,6 +68,7 @@ Page({
   data: {
     ready: false,
     loadError: '',      // 档案损坏 / 版本不支持 / 读取失败
+    claimError: '',     // 入口带的档案 ID 与本机现在这一份不一致（不展示、不受理写入）
     storageError: '',   // 本次操作未落盘（不报已成功）
     notice: '',         // 说明性提示，不改数据
 
@@ -126,10 +128,17 @@ Page({
 
   onLoad(query) {
     this._routeId = (query && (query.routeId || query.routeid)) || '';
+    // 新入口的明示归属（T037）：场内单线页、小结与想爬清单点资料时都会带上渲染那一页
+    // 所用的 archiveId。旧资料直达只带 routeId（兼容保留：不带就只按 routeId 读）。
+    this._archiveIdClaim = (query && (query.archiveId || query.archiveid)) || '';
+    this._claimBlocked = false;
     // 本实例临时状态，不落盘：
     // _correctedRows 刚改好的那一把（原位只读回读）；_correctionFailures 失败可重试标记。
     this._correctedRows = {};
     this._correctionFailures = {};
+    // 同日选场面板的实例代次：每次打开面板换一个号，随按钮 dataset 一起带回，
+    // 旧面板上的迟到选择不能套用到后来打开的另一个面板。
+    this._sessionPickerSeq = 0;
     this._photoUi = null;
     // 标记：当前照片上的标记内存快照、显示框布局缓存、图片尺寸缓存与各类代次。
     // - _markIdentity 是「档案 + 线路 + 主照片」三者拼出的当前归属；换了任意一项就递增
@@ -197,6 +206,10 @@ Page({
   },
 
   loadRoutePhoto() {
+    if (this._claimBlocked) {
+      this.setData({ routePhoto: null });
+      return Promise.resolve();
+    }
     if (!this._routeId) {
       this.setData({ routePhoto: null });
       return Promise.resolve();
@@ -237,6 +250,8 @@ Page({
   },
 
   photoRouteId(event) {
+    // 入口不属于当前档案：照片与卡点的动作拿不到 routeId，任何写入都不会发生。
+    if (this._claimBlocked) return '';
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     return dataset.routeId || this._routeId || '';
   },
@@ -1055,12 +1070,26 @@ Page({
     const loaded = store.loadState();
     this.archive = loaded.archive;
 
+    // 入口归属核对（T037）：带了 archiveId 的入口在本机档案已经换成另一份之后不再展示、
+    // 也不再受理任何写入——同一份档案里同名的 routeId 不能顶替入口本来那一条线。
+    // 旧资料直达（只带 routeId）不核对，保持原来的兼容行为。
+    this._claimBlocked = Boolean(
+      this._archiveIdClaim &&
+        loaded.archive &&
+        this._archiveIdClaim !== loaded.archive.archiveId
+    );
+
     // 重读页面等于离开编辑：换一个模式序号，上一轮模式里发起的旧点击与旧草稿一并失效。
     this._markModeSeq += 1;
     this.setData(Object.assign(
       {
         ready: true,
         loadError: loaded.error || '',
+        claimError: this._claimBlocked
+          ? '这个入口属于另一份本机档案（' +
+            this._archiveIdClaim +
+            '），未展示任何线路内容，也不接受改动；请从当前的场内页重新打开这条线。'
+          : '',
         storageError: '',
         notice: '',
         route: null,
@@ -1103,6 +1132,11 @@ Page({
    */
   refreshView() {
     if (this.data.loadError) return;
+    // 入口不属于当前档案：不读这条线的历史、照片、清单与更正行，也不受理写入。
+    if (this._claimBlocked) {
+      this.setData({ route: null, notFound: false, routePhoto: null, wishlistState: null, canRecordAgain: false });
+      return;
+    }
 
     if (!this._routeId) {
       this.setData({ notFound: true, route: null, canRecordAgain: false, routePhoto: null, wishlistState: null });
@@ -1345,7 +1379,7 @@ Page({
    * 不静默改归属；抱石已完攀或落盘失败都不离开本页、不改任何数据。
    */
   recordAgain() {
-    if (this.data.loadError || this.data.notFound) return;
+    if (this.data.loadError || this.data.notFound || this._claimBlocked) return;
 
     const routeId = this.data.route && this.data.route.id;
     if (!routeId) return;
@@ -1354,10 +1388,19 @@ Page({
     if (outcome.archive && !outcome.ok) this.archive = outcome.archive;
 
     if (outcome.code === 'choose-session') {
+      const pickerArchiveId =
+        (outcome.archive && outcome.archive.archiveId) ||
+        (this.archive && this.archive.archiveId) ||
+        '';
+      this._sessionPickerSeq += 1;
       this.setData({
         storageError: '',
         notice: '',
         sessionPicker: {
+          // 面板的归属与代次：档案、线路、日期与本次打开序号拼成的标识随每个选项
+          // 一起渲染；选择时先按这组原值核对最新档案，再决定是否写场次。
+          archiveId: pickerArchiveId,
+          pickerKey: [pickerArchiveId, routeId, outcome.date, this._sessionPickerSeq].join('|'),
           routeId: routeId,
           routeName: this.data.route.name,
           dateText: outcome.date,
@@ -1390,6 +1433,10 @@ Page({
   /**
    * 同日多场时用户明确选一场：只改当前场次与线路，不动任何把次与备注。
    * 选中的场次必须属于该岩馆当日；落盘失败时保留选择界面与原场次，可重试。
+   *
+   * 真实按钮把渲染那一刻的档案 ID、原线路 ID 与选场面板标识一起带回来（T037 返工）：
+   * 先按这组原值与**最新**档案核对，再看面板里的场次。换了本机档案后复用同一组
+   * sessionId / routeId 的旧面板事件一律不写盘，不能改到另一份档案的活动场次。
    */
   chooseSessionForAgain(event) {
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
@@ -1398,7 +1445,67 @@ Page({
     if (!sessionId || !picker) return;
     if (!picker.sessions.some(item => item.id === sessionId)) return;
 
-    const outcome = store.chooseRouteSession(picker.routeId, sessionId, { date: picker.dateText });
+    const boundArchiveId = typeof dataset.archiveId === 'string' ? dataset.archiveId : '';
+    const boundRouteId = typeof dataset.routeId === 'string' ? dataset.routeId : '';
+    const boundPickerKey = typeof dataset.pickerKey === 'string' ? dataset.pickerKey : '';
+    const pickerArchiveId =
+      picker.archiveId ||
+      this._archiveIdClaim ||
+      (this.archive && this.archive.archiveId) ||
+      '';
+    const pickerRouteId = picker.routeId || '';
+
+    // 事件自带的原档案/原线路/原面板与当前面板不是同一次渲染：整条拒绝，不写盘。
+    const staleEvent =
+      (boundArchiveId && boundArchiveId !== pickerArchiveId) ||
+      (boundArchiveId && this._archiveIdClaim && boundArchiveId !== this._archiveIdClaim) ||
+      (boundRouteId && boundRouteId !== pickerRouteId) ||
+      (boundPickerKey && picker.pickerKey && boundPickerKey !== picker.pickerKey) ||
+      (this.data.route && this.data.route.id !== pickerRouteId);
+    if (staleEvent) {
+      this.setData({
+        storageError: '',
+        notice: '这次选场来自原来的页面，已经失效；没有改动当前场次。'
+      });
+      this.refreshView();
+      return;
+    }
+
+    // 写盘前再读一次最新档案：盘上已经换成另一份档案时，面板连同它的场次/线路整体作废。
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      this.setData({ storageError: loaded.error });
+      this.refreshView();
+      return;
+    }
+    const latestArchiveId = (loaded.archive && loaded.archive.archiveId) || '';
+    if (
+      (pickerArchiveId && pickerArchiveId !== latestArchiveId) ||
+      (boundArchiveId && boundArchiveId !== latestArchiveId)
+    ) {
+      this.archive = loaded.archive;
+      this.setData({
+        storageError: '',
+        notice: '这次选场属于原来的本机档案，未做改动；已按当前档案刷新。'
+      });
+      this.refreshView();
+      return;
+    }
+    if (
+      !pickerRouteId ||
+      !(loaded.archive.routes || []).some(route => route.id === pickerRouteId)
+    ) {
+      this.archive = loaded.archive;
+      this.setData({
+        storageError: '',
+        notice: '这条线路已经不在当前本机档案里，这次选场没有生效。'
+      });
+      this.refreshView();
+      return;
+    }
+    this.archive = loaded.archive;
+
+    const outcome = store.chooseRouteSession(pickerRouteId, sessionId, { date: picker.dateText });
     if (outcome.archive && !outcome.ok) this.archive = outcome.archive;
 
     if (!outcome.ok) {
@@ -1410,7 +1517,7 @@ Page({
     this.archive = outcome.archive;
     this.setData({ storageError: '', notice: '', sessionPicker: null });
     this.refreshView();
-    this.goToRecord(sessionId, picker.routeId);
+    this.goToRecord(sessionId, pickerRouteId);
   },
 
   /**
@@ -1452,7 +1559,7 @@ Page({
    * 当前长期线路 ID；同一天两场各自保留原归属，不会并到别的场次。
    */
   openRecordFromHistory(event) {
-    if (this.data.loadError || this.data.notFound) return;
+    if (this.data.loadError || this.data.notFound || this._claimBlocked) return;
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const sessionId = dataset.sessionId || '';
     const routeId = dataset.routeId || this._routeId || '';
@@ -1472,6 +1579,25 @@ Page({
    * 不一致的写实现；本页的 _correctedRows / _correctionFailures 由 refreshView 读取。
    */
   correctSend: recordActions.correctSend,
+
+  /**
+   * 回归属不符入口的出口（T037）：这一页不展示任何线路内容，只让用户回到本场线路重开。
+   * 正常路径就是系统返回；没有上一页（直接打开旧入口）时重开正式场内页。
+   */
+  backToList() {
+    if (typeof wx !== 'undefined' && typeof wx.navigateBack === 'function') {
+      wx.navigateBack({
+        delta: 1,
+        fail: () => {
+          if (typeof wx.reLaunch === 'function') wx.reLaunch({ url: SESSION_URL });
+        }
+      });
+      return;
+    }
+    if (typeof wx !== 'undefined' && typeof wx.reLaunch === 'function') {
+      wx.reLaunch({ url: SESSION_URL });
+    }
+  },
 
   dismissNotice() {
     this.setData({ notice: '' });

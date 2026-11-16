@@ -1,9 +1,14 @@
 /**
  * 本次小结独立页样式（T034）
  *
- * 与场内页同一套配色与排版（墨绿主色 #173d32、橙 #ff793f、粉笔白 #fffcf3），
+ * T037：白色内容区 #FFFFFF、浅灰页底 #F2F4F3、深墨标题与正文 #182421、
+ * 墨绿 #1F5948 标主操作、橙色 #FF793F 只标完攀；常用命中区至少 44×44 逻辑像素。
  * 只保留这一页真正用到的规则：小结读数、只读回看选择器、各线分项与勾选入口。
  */
+
+page {
+  background-color: #F2F4F3;
+}
 
 .page {
   padding: 24rpx;
@@ -11,34 +16,34 @@
 }
 
 .card {
-  background-color: #fffcf3;
+  background-color: #FFFFFF;
   border-radius: 16rpx;
-  padding: 30rpx;
-  margin-bottom: 24rpx;
+  padding: 16px;
+  margin-bottom: 12px;
 }
 
 .section {
-  margin-bottom: 30rpx;
+  margin-bottom: 16px;
 }
 
 .section-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #173d32;
+  color: #182421;
   margin-bottom: 16rpx;
 }
 
 /* 错误与提示 */
 .error-card {
-  background-color: #f7e6db;
+  background-color: #F7E6DB;
 }
 
 .error-title {
   display: block;
   font-size: 32rpx;
   font-weight: bold;
-  color: #943a23;
+  color: #943A23;
   margin-bottom: 12rpx;
 }
 
@@ -64,12 +69,12 @@
 }
 
 .storage-error {
-  background-color: #f7e6db;
-  color: #943a23;
+  background-color: #F7E6DB;
+  color: #943A23;
 }
 
 .notice {
-  background-color: #f3edda;
+  background-color: #F7F1E2;
   color: #745241;
 }
 
@@ -89,9 +94,9 @@
 
 /* 按钮 */
 .secondary-button {
-  background-color: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #173d32;
+  background-color: #FFFFFF;
+  color: #182421;
+  border: 2rpx solid #1F5948;
   border-radius: 12rpx;
   font-size: 28rpx;
   padding: 18rpx;
@@ -99,7 +104,7 @@
 
 .text-button {
   background-color: transparent;
-  color: #173d32;
+  color: #182421;
   font-size: 26rpx;
   padding: 8rpx 0;
 }
@@ -115,56 +120,56 @@
   height: 28rpx;
   border-radius: 6rpx;
   margin-right: 16rpx;
-  border: 2rpx solid #e0e0e0;
+  border: 2rpx solid #D7DED9;
 }
 
 .empty-attempts {
   font-size: 26rpx;
-  color: #606d61;
+  color: #53615B;
   padding: 24rpx 0;
 }
 
 /* 小结 */
 .session-summary .section-title { margin-bottom: 20rpx; }
-.summary-error-card { background: #f7e6db; border-radius: 12rpx; padding: 20rpx 24rpx; }
-.summary-error-text { display: block; font-size: 26rpx; color: #943a23; }
+.summary-error-card { background: #F7E6DB; border-radius: 12rpx; padding: 20rpx 24rpx; }
+.summary-error-text { display: block; font-size: 26rpx; color: #943A23; }
 .summary-error-hint { display: block; font-size: 22rpx; color: #745241; margin-top: 8rpx; }
 .summary-head { display: flex; align-items: baseline; justify-content: space-between; gap: 16rpx; }
-.summary-count { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; font-weight: 700; font-size: 34rpx; color: #173d32; }
-.summary-send { flex: none; font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 26rpx; color: #ff793f; }
-.summary-other, .summary-pending, .summary-hint { display: block; margin-top: 10rpx; font-size: 24rpx; line-height: 1.6; color: #526157; }
-.summary-pending { color: #9c5222; }
+.summary-count { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif; font-weight: 700; font-size: 34rpx; color: #182421; }
+.summary-send { flex: none; font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 26rpx; color: #FF793F; }
+.summary-other, .summary-pending, .summary-hint { display: block; margin-top: 10rpx; font-size: 24rpx; line-height: 1.6; color: #53615B; }
+.summary-pending { color: #8A442E; }
 .summary-return { margin-top: 16rpx; margin-left: 0; margin-right: 0; }
 
-.summary-session-picker { margin-top: 16rpx; padding: 18rpx 20rpx; background: #f3f1e6; border: 1px solid #d6d5c6; border-radius: 8rpx; }
-.summary-session-title { display: block; font-size: 24rpx; color: #526157; }
-.summary-session-value { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; margin-top: 10rpx; padding: 14rpx 18rpx; background: #fffcf3; border: 1px solid #c9c8b8; border-radius: 8rpx; }
-.summary-session-value-text { flex: 1; min-width: 0; font-size: 28rpx; color: #173d32; word-break: break-all; }
-.summary-session-arrow { flex: none; font-size: 26rpx; color: #d2784f; }
-.summary-session-hint { display: block; margin-top: 10rpx; font-size: 22rpx; line-height: 1.6; color: #606d61; }
-.summary-row { background: #fffcf3; border: 1px solid #d6d5c6; border-radius: 8rpx; padding: 20rpx; margin-top: 12rpx; }
+.summary-session-picker { margin-top: 16rpx; padding: 18rpx 20rpx; background: #F2F4F3; border: 1px solid #D7DED9; border-radius: 8rpx; }
+.summary-session-title { display: block; font-size: 24rpx; color: #53615B; }
+.summary-session-value { display: flex; align-items: center; min-height: 44px; box-sizing: border-box; justify-content: space-between; gap: 16rpx; margin-top: 10rpx; padding: 14rpx 18rpx; background: #FFFFFF; border: 1px solid #D7DED9; border-radius: 8rpx; }
+.summary-session-value-text { flex: 1; min-width: 0; font-size: 28rpx; color: #182421; word-break: break-all; }
+.summary-session-arrow { flex: none; font-size: 26rpx; color: #B7683D; }
+.summary-session-hint { display: block; margin-top: 10rpx; font-size: 22rpx; line-height: 1.6; color: #53615B; }
+.summary-row { background: #FFFFFF; border: 1px solid #D7DED9; border-radius: 8rpx; padding: 20rpx; margin-top: 12rpx; }
 .summary-row-main { display: flex; align-items: flex-start; }
 .summary-row .route-swatch { flex: none; margin-top: 6rpx; }
 .summary-row-info { flex: 1; min-width: 0; }
 .summary-row-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10rpx; }
-.summary-name { font-size: 30rpx; font-weight: 700; color: #173d32; word-break: break-all; }
-.summary-grade { flex: none; font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 26rpx; color: #ff793f; }
-.summary-state { flex: none; font-size: 22rpx; padding: 4rpx 12rpx; border-radius: 8rpx; background: #e4ebdf; color: #355e50; }
-.summary-state-done { background: #dfebd9; color: #204b34; }
-.summary-state-sent { background: #f3e2d4; color: #8a4a24; }
-.summary-meta { display: block; font-size: 24rpx; color: #606d61; margin-top: 6rpx; }
-.summary-note { display: block; font-size: 24rpx; color: #526157; margin-top: 6rpx; border-left: 4rpx solid #d2784f; padding-left: 14rpx; line-height: 1.5; word-break: break-all; }
+.summary-name { font-size: 30rpx; font-weight: 700; color: #182421; word-break: break-all; }
+.summary-grade { flex: none; font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif; font-size: 26rpx; color: #1F5948; }
+.summary-state { flex: none; font-size: 22rpx; padding: 4rpx 12rpx; border-radius: 8rpx; background: #E9EFEC; color: #1F5948; }
+.summary-state-done { background: #E9EFEC; color: #1F5948; }
+.summary-state-sent { background: #F7F1E2; color: #8A442E; }
+.summary-meta { display: block; font-size: 24rpx; color: #53615B; margin-top: 6rpx; }
+.summary-note { display: block; font-size: 24rpx; color: #53615B; margin-top: 6rpx; border-left: 4rpx solid #B7683D; padding-left: 14rpx; line-height: 1.5; word-break: break-all; }
 .summary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16rpx; margin-top: 16rpx; }
 .summary-actions .summary-pick { flex: 1; min-width: 280rpx; margin: 0; }
-.summary-pick-on { background: #e7eddf; color: #204b34; }
-.summary-pick-state { font-size: 24rpx; color: #526157; }
-.summary-actions .summary-open { flex: none; margin: 0; padding: 0 8rpx; font-size: 26rpx; color: #173d32; }
+.summary-pick-on { background: #E9EFEC; color: #1F5948; }
+.summary-pick-state { font-size: 24rpx; color: #53615B; }
+.summary-actions .summary-open { flex: none; margin: 0; padding: 0 8rpx; font-size: 26rpx; color: #1F5948; }
 
 /* 岩馆手册：与场内页共用的字号与触控尺寸（拇指可及至少 88rpx ≈ 44px 逻辑像素） */
-.page { padding: 20rpx 32rpx 55rpx; }
-.section-title, .card-title { font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif; line-height: 1.35; font-weight: 700; }
-.section-title { font-size: 39rpx; border-bottom: 2rpx solid #173d32; padding: 0 0 14rpx; }
+.page { padding: 12px 12px 28px; background-color: #F2F4F3; }
+.section-title, .card-title { font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", "Microsoft YaHei", sans-serif; line-height: 1.35; font-weight: 700; }
+.section-title { font-size: 39rpx; border-bottom: 2rpx solid #1F5948; padding: 0 0 14rpx; }
 .card { border-radius: 8rpx; box-shadow: none; }
-.secondary-button, .text-button { min-height: 88rpx; box-sizing: border-box; display: flex; align-items: center; justify-content: center; line-height: 1.4; }
+.secondary-button, .text-button { min-height: 44px; box-sizing: border-box; display: flex; align-items: center; justify-content: center; line-height: 1.4; }
 .secondary-button { border-radius: 8rpx; }
 .summary-back-section { margin-top: 10rpx; }

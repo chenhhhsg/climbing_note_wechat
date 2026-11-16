@@ -172,10 +172,11 @@
 
 /* 训练入口：开始训练 / 继续本场（只依赖本机档案） */
 .training-entry {
-  background-color: #fffcf3;
-  border-radius: 16rpx;
-  padding: 30rpx;
-  margin-bottom: 30rpx;
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
+  padding: 24rpx 20rpx;
+  margin-bottom: 24rpx;
 }
 
 .training-current-head {
@@ -187,26 +188,28 @@
 
 .training-gym {
   font-size: 34rpx;
-  font-weight: bold;
-  color: #173d32;
+  font-weight: 700;
+  color: #182421;
 }
 
 .training-date {
   font-size: 24rpx;
-  color: #606d61;
+  color: #53615B;
 }
 
 .training-route {
   display: block;
   font-size: 26rpx;
-  color: #526157;
+  line-height: 1.6;
+  color: #53615B;
   margin-bottom: 20rpx;
 }
 
 .training-hint {
   display: block;
   font-size: 26rpx;
-  color: #526157;
+  line-height: 1.6;
+  color: #53615B;
   margin-bottom: 20rpx;
 }
 
@@ -214,12 +217,15 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #173d32;
-  color: #fffcf3;
-  border-radius: 16rpx;
-  padding: 28rpx;
-  font-size: 32rpx;
+  background-color: #1F5948;
+  color: #FFFFFF;
   border: none;
+  border-radius: 8rpx;
+  padding: 20rpx 26rpx;
+  font-size: 32rpx;
+  font-weight: 650;
+  min-height: 44px;
+  box-sizing: border-box;
 }
 
 .btn-training::after {
@@ -230,11 +236,11 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #fffcf3;
-  color: #173d32;
-  border: 2rpx solid #173d32;
-  border-radius: 16rpx;
-  padding: 24rpx;
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
+  border-radius: 8rpx;
+  padding: 18rpx 24rpx;
   font-size: 28rpx;
   margin-top: 16rpx;
 }
@@ -269,18 +275,18 @@
 .field-cover-image { position:absolute; width:100%; height:100%; }
 .field-cover-title { position:absolute; left:30rpx; top:32rpx; color:#ffedc2; font:700 82rpx/1.04 "Songti SC","Noto Serif CJK SC","SimSun",serif; letter-spacing:3rpx; }
 .field-cover-title text { display:block; }
-.training-entry { padding:0; background:transparent; margin:0 0 16rpx; border-radius:0; }
-.field-section-head { border-bottom:2rpx solid #173d32; padding-bottom:15rpx; margin-bottom:22rpx; }
+.training-entry { padding:24rpx 20rpx; background:#FFFFFF; border:1px solid #D7DED9; margin:0 0 16rpx; border-radius:8rpx; }
+.field-section-head { border-bottom:2rpx solid #1F5948; padding-bottom:15rpx; margin-bottom:22rpx; }
 .training-current-head { align-items:center; flex-wrap:wrap; gap:6rpx 18rpx; }
 .training-gym { font-size:34rpx; font-weight:700; color:#173d32; }
 .training-date,.record-date { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; }
 .training-date { font-size:24rpx; }
 .training-route,.training-hint { color:#526157; font-size:27rpx; line-height:1.6; margin-bottom:22rpx; }
-.btn-training,.btn-training-secondary,.btn-add { min-height:88rpx; width:100%; margin-left:0; display:flex; align-items:center; line-height:1.35; }
-.btn-training { background:#173d32; color:#fffcf3; padding:20rpx 26rpx; justify-content:space-between; border-radius:8rpx; font-weight:650; }
-.btn-training::before { content:""; position:absolute; right:30rpx; width:15rpx; height:15rpx; border-right:4rpx solid #ff986c; border-top:4rpx solid #ff986c; transform:rotate(45deg); }
-.btn-training-secondary,.btn-add { background:transparent; color:#173d32; border:0; padding:16rpx 0; justify-content:flex-start; font-size:26rpx; }
-.btn-training-secondary { margin:0; }
+.btn-training,.btn-training-secondary { min-height:44px; box-sizing:border-box; width:100%; margin-left:0; display:flex; align-items:center; line-height:1.35; }
+.btn-training { background:#1F5948; color:#FFFFFF; padding:20rpx 26rpx; justify-content:space-between; border-radius:8rpx; font-weight:650; }
+.btn-training::before { content:""; position:absolute; right:30rpx; width:15rpx; height:15rpx; border-right:4rpx solid #FFFFFF; border-top:4rpx solid #FFFFFF; transform:rotate(45deg); }
+.btn-add { background:transparent; color:#173d32; border:0; padding:16rpx 0; justify-content:flex-start; font-size:26rpx; }
+.btn-training-secondary { margin:0; color:#1F5948; background:#FFFFFF; border:2rpx solid #1F5948; }
 .quick-actions { margin:0 0 32rpx; border-bottom:1px solid #c4c7b6; }
 .btn-icon { font-size:32rpx; color:#944424; margin-right:12rpx; }
 .btn-text { font-size:26rpx; }
@@ -289,7 +295,7 @@
 .record-item { background:transparent; border-radius:0; padding:20rpx 0; margin:0; border-bottom:1px solid #d2d3c4; }
 .record-date,.record-grade { color:#173d32; }
 .cloud-error,.empty-state { background:#edece0; text-align:left; border-radius:6rpx; padding:20rpx 24rpx; }
-.training-entry { padding-bottom:32rpx; margin-bottom:30rpx; border-bottom:1px solid #b5baaa; }
+.training-entry { padding:24rpx 20rpx; margin:0 0 20rpx; border:1px solid #D7DED9; border-radius:8rpx; background:#FFFFFF; }
 .training-actions { display:flex; align-items:stretch; gap:16rpx; }
 .training-entry button.btn-training { width:100%; min-width:0; min-height:44px; margin:0; box-sizing:border-box; }
 .training-actions button.btn-training { flex:1; width:auto; }
@@ -297,12 +303,11 @@
 .quick-actions { margin:6rpx 0 0; border:0; }
 .quick-actions button.btn-add { width:auto; min-height:44px; margin:0; justify-content:flex-start; }
 
-/* 下次想爬（T035）：首页单行入口（标题 + 数量）；整份清单在独立页 */
-.wishlist-entry { display:block; min-height:88rpx; padding:22rpx 0; margin:0 0 16rpx; border-bottom:1px solid #d2d3c4; }
+/* 下次想爬（T035 / T037）：首页只有一行（名称 + 数量 + 进入箭头）；整份清单在独立页 */
+.wishlist-entry { display:block; min-height:44px; box-sizing:border-box; padding:22rpx 0; margin:0 0 16rpx; border-bottom:1px solid #D7DED9; }
 .wishlist-entry-row { display:flex; align-items:baseline; justify-content:space-between; gap:16rpx; }
-.wishlist-entry-title { font-family:"Songti SC","Noto Serif CJK SC","SimSun",serif; font-weight:700; font-size:34rpx; color:#173d32; }
+.wishlist-entry-title { font-weight:700; font-size:34rpx; color:#182421; }
 .wishlist-entry-right { flex:none; display:flex; align-items:baseline; gap:10rpx; }
-.wishlist-entry-count { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size:26rpx; color:#606d61; }
-.wishlist-entry-arrow { font-size:30rpx; color:#d2784f; }
-.wishlist-entry-hint { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#606d61; }
+.wishlist-entry-count { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; font-size:26rpx; color:#53615B; }
+.wishlist-entry-arrow { font-size:30rpx; color:#1F5948; }
 .wishlist-entry-error { display:block; margin-top:8rpx; font-size:24rpx; line-height:1.6; color:#9c3d22; }

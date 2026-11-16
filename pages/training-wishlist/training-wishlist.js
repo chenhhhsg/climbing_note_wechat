@@ -33,6 +33,11 @@ Page({
     loadError: '',   // 本机档案损坏/版本不支持/读取失败的可见报错
     claimError: '',  // 入口带来的档案 ID 与本机档案不一致（换档后不再顶替展示）
     listError: '',   // 清单损坏/版本不受支持/读取失败：显示失败与重试，原清单不动
+    entryNotice: '', // 点到的行不是本页现在这一份档案渲染出来的（切档后留下的旧行）
+
+    // 本页现在渲染的是哪一份本机档案。清单行把这个 ID 一起带进 dataset：点开资料时既核对
+    // 这一行是不是本页渲染出来的（旧行不打开），也把明示归属交给资料页再核对一次。
+    archiveId: '',
 
     // 按岩馆分组的只读清单（口径与小结勾选、线路资料完全一致）
     groups: [],
@@ -114,6 +119,8 @@ Page({
       loadError: '',
       claimError: '',
       listError: '',
+      entryNotice: '',
+      archiveId: loaded.archive.archiveId || '',
       groups,
       itemCount: listed.items.length,
       hasItems: listed.items.length > 0,
@@ -151,10 +158,27 @@ Page({
    * 只是导航：不关联场次、不选线路、不写任何键，「当天再记」仍须在资料页显式选择适用场次。
    */
   openRoute(event) {
-    const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const routeId = dataset.routeId;
     if (!routeId) return;
+
+    // 旧行不打开：这一行带着渲染它时的档案 ID，与现在渲染的这一份不一致（换档前留下的
+    // 行）就只说明原因，不按同名 routeId 打开新档里的另一条线。
+    const current = (this.archive && this.archive.archiveId) || '';
+    const boundArchiveId = dataset.archiveId || '';
+    if (!boundArchiveId || (current && boundArchiveId !== current)) {
+      this.setData({ entryNotice: '这一下是上一份档案的清单行，已经换档，没有打开。' });
+      return;
+    }
+
+    this.setData({ entryNotice: '' });
     wx.navigateTo({
-      url: ROUTE_URL + '?routeId=' + routeId
+      url:
+        ROUTE_URL +
+        '?archiveId=' +
+        encodeURIComponent(boundArchiveId) +
+        '&routeId=' +
+        encodeURIComponent(routeId)
     });
   },
 

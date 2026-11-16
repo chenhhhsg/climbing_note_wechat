@@ -831,8 +831,8 @@ test('T030 复验 同日两场：切回已有照片的旧场次再选回原线�
   const listPage = await openSessionPage();
   assert.equal(listPage.data.activeSession.id, session1);
   assert.equal(listPage.data.selectedRoute, null);
-  assert.equal(listPage.data.routeSwitchTotal, 1, '本场那一条线仍在列表里');
-  assert.equal(listPage.data.routeSwitchAllRows[0].id, aId);
+  assert.equal(listPage.data.routes.length, 1, '本场那一条线仍在列表里');
+  assert.equal(listPage.data.routes[0].id, aId);
 
   // 从列表重开原线：照片、把数与备注一起回到 A（同一个 routeId）。
   const aAgain = await openRoutePage(aId);

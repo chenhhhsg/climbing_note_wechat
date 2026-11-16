@@ -49,6 +49,12 @@
           <text>这一场这一条线还没有已提交把次。回到单线记录页记第一把。</text>
         </view>
 
+        <!--
+          明细行（T037）：点哪一行就在**那一行里**展开备注编辑器（只认这一行的原
+          attemptId）。编辑器就在刚点过的那一行下面，45 条的明细里也不用滚过一屏；
+          打开与保存都不主动滚动，刚才点过的坐标留在原处。
+          编辑器是可点行区的兄弟节点，点输入框、取消与保存不会触发「重新打开」。
+        -->
         <view wx:else id="attempts-list" class="attempts-list">
           <view
             wx:for="{{attempts}}"
@@ -56,36 +62,55 @@
             id="attempt-{{item.id}}"
             class="attempt-item"
           >
-            <view class="attempt-main">
-              <text class="attempt-label">{{item.label}}</text>
-              <text class="attempt-result {{item.isSend ? 'attempt-send' : ''}}">{{item.resultText}}</text>
-              <text class="attempt-time">{{item.timeText}}</text>
-            </view>
-            <text wx:if="{{item.hasNote}}" class="attempt-note">{{item.note}}</text>
-            <button
-              id="note-{{item.id}}"
-              class="text-button attempt-note-button"
+            <view
+              class="attempt-row-tap"
               data-attempt-id="{{item.id}}"
               bindtap="openNoteEditor"
-            >{{item.hasNote ? '改备注' : '补备注'}}</button>
-          </view>
-        </view>
+            >
+              <view class="attempt-main">
+                <text class="attempt-label">{{item.label}}</text>
+                <text class="attempt-result {{item.isSend ? 'attempt-send' : ''}}">{{item.resultText}}</text>
+                <text class="attempt-time">{{item.timeText}}</text>
+              </view>
+              <text wx:if="{{item.hasNote}}" class="attempt-note">{{item.note}}</text>
+              <text class="attempt-note-action">{{item.hasNote ? '改备注 ›' : '补备注 ›'}}</text>
+            </view>
 
-        <!-- 按把备注：只改打开时那一把；取消不写盘，失败保留输入可原地重试 -->
-        <view wx:if="{{noteEditor}}" id="note-editor" class="card note-editor">
-          <text class="card-title">补备注</text>
-          <text class="note-context">{{noteEditor.routeName}} · {{noteEditor.attemptLabel}} · {{noteEditor.resultText}}</text>
-          <textarea
-            id="note-input"
-            class="note-input"
-            value="{{noteEditor.text}}"
-            placeholder="例如：抓到后向右摆"
-            maxlength="120"
-            bindinput="onNoteInput"
-          ></textarea>
-          <view class="button-row">
-            <button id="cancel-note" class="secondary-button" bindtap="cancelNote">取消</button>
-            <button id="save-note" class="primary-button" bindtap="saveNote">保存备注</button>
+            <!-- 这一把的备注编辑器：只改打开时的那一把；取消不写盘，失败保留输入可原地重试 -->
+            <view
+              wx:if="{{noteEditor && noteEditor.attemptId === item.id}}"
+              id="note-editor"
+              class="note-editor"
+            >
+              <text class="note-title">{{noteEditor.hasNote ? '改备注' : '补备注'}}</text>
+              <text class="note-context">{{noteEditor.routeName}} · {{noteEditor.attemptLabel}} · {{noteEditor.resultText}}</text>
+              <textarea
+                id="note-input"
+                class="note-input"
+                data-attempt-id="{{noteEditor.attemptId}}"
+                data-edit-version="{{noteEditor.version}}"
+                value="{{noteEditor.text}}"
+                placeholder="例如：抓到后向右摆"
+                maxlength="120"
+                bindinput="onNoteInput"
+              ></textarea>
+              <view class="button-row">
+                <button
+                  id="cancel-note"
+                  class="secondary-button"
+                  data-attempt-id="{{noteEditor.attemptId}}"
+                  data-edit-version="{{noteEditor.version}}"
+                  bindtap="cancelNote"
+                >取消</button>
+                <button
+                  id="save-note"
+                  class="primary-button"
+                  data-attempt-id="{{noteEditor.attemptId}}"
+                  data-edit-version="{{noteEditor.version}}"
+                  bindtap="saveNote"
+                >保存备注</button>
+              </view>
+            </view>
           </view>
         </view>
 
