@@ -63,6 +63,15 @@ function resetWxLog() {
   wxLog.previews = [];
 }
 
+// 更正确认弹窗（T039）：默认立刻「确认」；队列里可指定 cancel，或 hold 挂起等测试手动回调。
+const modalLog = { calls: [], held: [], queue: [] };
+
+function resetModalLog() {
+  modalLog.calls = [];
+  modalLog.held = [];
+  modalLog.queue = [];
+}
+
 // 刻意不带 cloud：T018 的本机回看与新入口不得依赖云能力。
 global.wx = {
   getStorageSync(key) {
@@ -99,6 +108,15 @@ global.wx = {
   previewImage(options) {
     wxLog.previews.push(options);
   },
+  showModal(options) {
+    modalLog.calls.push(options);
+    const behavior = modalLog.queue.length > 0 ? modalLog.queue.shift() : 'confirm';
+    if (behavior === 'hold') {
+      modalLog.held.push(options);
+      return;
+    }
+    options.success({ confirm: behavior === 'confirm', cancel: behavior === 'cancel' });
+  },
   stopPullDownRefresh() {}
 };
 
@@ -110,6 +128,9 @@ const realDb = {
   deleteImage: db.deleteImage
 };
 const store = require(STORE_JS);
+// 逐把视频索引（只读夹具）：T039 更正前后的视频条目与字节必须原样保留。
+const attemptVideo = require(path.join(ROOT, 'utils', 'attempt-video.js'));
+const VIDEO_INDEX_KEY = attemptVideo.VIDEO_INDEX_KEY;
 
 let deleteCalls = 0;
 
@@ -283,6 +304,7 @@ function writeArchiveFixture(spec) {
 beforeEach(() => {
   resetDevice();
   resetWxLog();
+  resetModalLog();
   deleteCalls = 0;
   db.getRecords = realDb.getRecords;
   db.getRecordById = realDb.getRecordById;
@@ -343,7 +365,8 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
   const routeHandlers = new Set(handlersIn(routeWxml));
   for (const required of [
     'retryLoad',
-    'correctSend',
+    'confirmCorrectSend',
+    'toggleCorrectionArea',
     'recordAgain',
     'chooseSessionForAgain',
     'cancelSessionPicker',
@@ -352,6 +375,9 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
   ]) {
     assert.ok(routeHandlers.has(required), '线路详情页应有绑定：' + required);
   }
+  // T039：界面入口统一经确认弹窗；共用的直接更正动作仍是页面方法（内部与测试用）。
+  assert.equal(typeof routeDefinition.correctSend, 'function', '线路详情页保留共用更正动作');
+  assert.equal(routeWxml.indexOf('bindtap="correctSend"'), -1, '界面不再直接调用无确认的更正');
   for (const handler of routeHandlers) {
     assert.equal(typeof routeDefinition[handler], 'function', '线路详情页绑定缺少处理器：' + handler);
   }
@@ -736,6 +762,482 @@ test('R3 同一坐标双击只改指定把；多条历史完攀时更正另一�
     day1 + 'T10:05:00.000Z',
     '原时间保留'
   );
+});
+
+// ------------------------------------------------------------------ *
+// T039 完攀更正入口合到原把次旁
+// ------------------------------------------------------------------ *
+
+/**
+ * T039 夹具：跨日两场、两条同名线路、一把已撤回的完攀、两把有效未完成/完攀。
+ * route-1 在 session-2 的第二把是本次更正目标；route-2 的同名完攀不能被目标顶替。
+ */
+function writeT039Fixture() {
+  const day1 = '2020-05-01';
+  const day3 = '2020-05-03';
+  writeArchiveFixture({
+    gymName: '跨日岩馆',
+    sessions: [
+      { id: 'session-1', seq: 1, gymId: 'gym-1', date: day1, createdAt: day1 + 'T10:00:00.000Z' },
+      { id: 'session-2', seq: 2, gymId: 'gym-1', date: day3, createdAt: day3 + 'T10:00:00.000Z' }
+    ],
+    routes: [
+      {
+        id: 'route-1',
+        seq: 1,
+        gymId: 'gym-1',
+        name: '同名抱石线',
+        climbType: '抱石',
+        grade: 'V3',
+        colorName: '蓝色',
+        colorHex: '#2f6fe4',
+        createdAt: day1 + 'T10:00:00.000Z'
+      },
+      {
+        id: 'route-2',
+        seq: 2,
+        gymId: 'gym-1',
+        name: '同名抱石线',
+        climbType: '抱石',
+        grade: 'V4',
+        colorName: '红色',
+        colorHex: '#d94841',
+        createdAt: day1 + 'T10:00:00.000Z'
+      }
+    ],
+    attempts: [
+      {
+        id: 'attempt-send-undone',
+        seq: 1,
+        sessionId: 'session-1',
+        routeId: 'route-1',
+        result: 'send',
+        note: '已撤回的完攀',
+        createdAt: day1 + 'T10:05:00.000Z',
+        undoneAt: day1 + 'T10:30:00.000Z'
+      },
+      {
+        id: 'attempt-fail-1',
+        seq: 2,
+        sessionId: 'session-1',
+        routeId: 'route-1',
+        result: 'fail',
+        note: '第一场未完成',
+        createdAt: day1 + 'T10:20:00.000Z'
+      },
+      {
+        id: 'attempt-fail-2',
+        seq: 3,
+        sessionId: 'session-2',
+        routeId: 'route-1',
+        result: 'fail',
+        note: '第二场第一把',
+        createdAt: day3 + 'T10:03:00.000Z'
+      },
+      {
+        id: 'attempt-send-2',
+        seq: 4,
+        sessionId: 'session-2',
+        routeId: 'route-1',
+        result: 'send',
+        note: '第二场完攀',
+        createdAt: day3 + 'T10:05:00.000Z'
+      },
+      {
+        id: 'attempt-other-send',
+        seq: 5,
+        sessionId: 'session-2',
+        routeId: 'route-2',
+        result: 'send',
+        note: '同名另一条线',
+        createdAt: day3 + 'T10:10:00.000Z'
+      }
+    ]
+  });
+  return { day1, day3 };
+}
+
+/** 这一把已关联的本机视频（只读索引夹具，字节固定）。 */
+function seedT039Video() {
+  const clip = {
+    clipId: 'clip-t039',
+    archiveId: 'archive-fixture',
+    sessionId: 'session-2',
+    routeId: 'route-1',
+    attemptId: 'attempt-send-2',
+    rev: 1,
+    fileId: 'attempt-video/v1/archive-fixture/clip-t039.mp4',
+    bytes: 654321
+  };
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify({ version: 1, clips: [clip] }));
+  return storage.get(VIDEO_INDEX_KEY);
+}
+
+function attemptRowOf(page, attemptId) {
+  for (const group of page.data.groups || []) {
+    const attempt = group.attempts.find(item => item.id === attemptId);
+    if (attempt) return { group, attempt };
+  }
+  return null;
+}
+
+/** 真实按钮 dataset：这一行渲染时的档案、场次、线路、把次四个 ID。 */
+function correctionEventOf(page, attemptId) {
+  const found = attemptRowOf(page, attemptId);
+  assert.ok(found, '这一把应在历史分组里：' + attemptId);
+  return tapDataset({
+    attemptId,
+    routeId: page.data.route.id,
+    sessionId: found.group.sessionId,
+    archiveId: found.attempt.archiveId
+  });
+}
+
+test('T039 更正只出现在资格认可的原把次旁；独立更正区默认收起，点开可辨认目标', () => {
+  writeT039Fixture();
+
+  const page = openRoutePage('route-1');
+  assert.equal(page.data.summaryText, '2 天 · 2 场 · 3 把');
+  assert.equal(page.data.sendCount, 1);
+
+  // 已撤回的完攀不在历史里，也不会出现更正入口。
+  assert.equal(attemptRowOf(page, 'attempt-send-undone'), null, '已撤回的完攀不进有效历史');
+
+  const sendRow = attemptRowOf(page, 'attempt-send-2');
+  assert.equal(sendRow.attempt.resultText, '完攀');
+  assert.equal(sendRow.attempt.correctionState, 'ready');
+  assert.equal(sendRow.attempt.correctionButtonText, '更正');
+  assert.equal(sendRow.attempt.correctionStatusText, '');
+
+  const failRow = attemptRowOf(page, 'attempt-fail-1');
+  assert.equal(failRow.attempt.correctionState, '', '未完成的把次没有更正入口');
+
+  // 独立更正区默认收起，但行数据仍可辨认目标（日期、场次、第几把、原结果）。
+  assert.equal(page.data.correctionOpen, false, '独立更正区默认收起');
+  assert.equal(page.data.correctionCountText, '1 把可更正');
+  assert.equal(page.data.correctionRows.length, 1);
+  const row = page.data.correctionRows[0];
+  assert.equal(row.attemptId, 'attempt-send-2');
+  assert.equal(row.label, '第 2 把');
+  assert.match(row.contextText, /2020-05-03/);
+  assert.match(row.contextText, /第 1 场/, '同一天只有一场时就是第 1 场');
+  assert.equal(row.resultText, '完攀');
+
+  // 展开/收起只改展示，不写盘。
+  const rawBefore = rawArchive();
+  page.toggleCorrectionArea();
+  assert.equal(page.data.correctionOpen, true);
+  page.toggleCorrectionArea();
+  assert.equal(page.data.correctionOpen, false);
+  assert.equal(rawArchive(), rawBefore, '展开或收起更正区不写盘');
+
+  // 同名异线：route-2 的完攀属于它自己那条线，不是 route-1 的目标。
+  const other = openRoutePage('route-2');
+  assert.equal(other.data.correctionRows.length, 1);
+  assert.equal(other.data.correctionRows[0].attemptId, 'attempt-other-send');
+  assert.equal(attemptRowOf(other, 'attempt-other-send').attempt.correctionState, 'ready');
+
+  // WXML：入口在原把次行内；独立区只有展开后才渲染行，且仍绑定确认处理器。
+  const wxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+  assert.match(
+    wxml,
+    /id="attempt-\{\{attempt\.id\}\}"[\s\S]{0,2200}id="correct-attempt-\{\{attempt\.id\}\}"[\s\S]{0,700}bindtap="confirmCorrectSend"/
+  );
+  assert.match(
+    wxml,
+    /id="route-correction"[\s\S]{0,600}bindtap="toggleCorrectionArea"[\s\S]{0,1800}wx:if="\{\{correctionOpen\}\}"[\s\S]{0,1400}bindtap="confirmCorrectSend"/
+  );
+  // 确认文案写死在共用实现里：两句话都能被渲染。
+  const routeSource = fs.readFileSync(ROUTE_JS, 'utf8');
+  assert.match(routeSource, /完攀改成未完成/);
+  assert.match(routeSource, /这把还计入总把数，完攀次数减 1/);
+});
+
+test('T039 更正前确认写明日期/场次/原序号/原结果；取消与串档事件都零写入', async () => {
+  writeT039Fixture();
+  const page = openRoutePage('route-1');
+  const rawBefore = rawArchive();
+  const indexBefore = seedT039Video();
+  const rawWithIndex = rawArchive();
+
+  // 取消：一个字节都不写。
+  modalLog.queue.push('cancel');
+  await page.confirmCorrectSend(correctionEventOf(page, 'attempt-send-2'));
+
+  assert.equal(modalLog.calls.length, 1, '点一次只弹一次确认');
+  const content = modalLog.calls[0].content;
+  assert.match(content, /2020-05-03/, '确认前显示原日期');
+  assert.match(content, /2020-05-03 第 1 场/, '确认前显示原场次（日期 + 当日第几场）');
+  assert.match(content, /第 2 把/, '确认前显示原序号');
+  assert.match(content, /原结果：完攀/, '确认前显示原结果');
+  assert.match(content, /完攀改成未完成/);
+  assert.match(content, /这把还计入总把数，完攀次数减 1/);
+
+  assert.equal(rawArchive(), rawWithIndex, '取消不写档案');
+  assert.equal(storage.get(VIDEO_INDEX_KEY), indexBefore, '取消不碰视频索引');
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.resultText, '完攀');
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.correctionState, 'ready');
+
+  // 串档 / 串线 / 冒用另一条同名线的把次：不弹确认、不写盘。
+  const crossLine = attemptRowOf(page, 'attempt-send-2').attempt;
+  page.confirmCorrectSend(
+    tapDataset({
+      attemptId: 'attempt-other-send',
+      routeId: 'route-1',
+      sessionId: 'session-2',
+      archiveId: crossLine.archiveId
+    })
+  );
+  page.confirmCorrectSend(
+    tapDataset({
+      attemptId: 'attempt-send-2',
+      routeId: 'route-2',
+      sessionId: 'session-2',
+      archiveId: crossLine.archiveId
+    })
+  );
+  page.confirmCorrectSend(
+    tapDataset({
+      attemptId: 'attempt-send-2',
+      routeId: 'route-1',
+      sessionId: 'session-1',
+      archiveId: crossLine.archiveId
+    })
+  );
+  page.confirmCorrectSend(
+    tapDataset({
+      attemptId: 'attempt-send-2',
+      routeId: 'route-1',
+      sessionId: 'session-2',
+      archiveId: 'archive-of-another-profile'
+    })
+  );
+  assert.equal(modalLog.calls.length, 1, '对不上的事件不打开确认');
+  assert.equal(rawArchive(), rawWithIndex, '对不上的事件不写盘');
+  assert.match(page.data.notice, /当前没有可更正的完攀/);
+  assert.equal(attemptRowOf(page, 'attempt-other-send'), null, '另一条同名线的完攀不属于本页');
+  assert.equal(attemptsOf('route-2').find(item => item.id === 'attempt-other-send').result, 'send');
+});
+
+test('T039 确认后原位显示未完成：把数不变、完攀减一，原 ID/序号/场次/备注与视频字节都保留', async () => {
+  writeT039Fixture();
+  const indexBefore = seedT039Video();
+  const page = openRoutePage('route-1');
+
+  const before = attemptRowOf(page, 'attempt-send-2').attempt;
+  assert.equal(before.hasVideo, true, '更正前这一把已关联视频');
+  assert.equal(before.videoStateText, '已添加视频');
+
+  modalLog.queue.push('confirm');
+  await page.confirmCorrectSend(correctionEventOf(page, 'attempt-send-2'));
+
+  // 原位显示新结果，并在同一行说明只改了结果。
+  const after = attemptRowOf(page, 'attempt-send-2').attempt;
+  assert.equal(after.resultText, '未完成');
+  assert.equal(after.correctionState, 'corrected');
+  assert.equal(after.correctionButtonText, '');
+  assert.match(after.correctionStatusText, /已改为未完成/);
+  assert.match(after.correctionStatusText, /视频/);
+  assert.equal(after.hasVideo, true, '视频关联状态不变');
+  assert.equal(after.videoStateText, '已添加视频');
+
+  // 汇总口径：总把数不变，完攀次数减一。
+  assert.equal(page.data.summaryText, '2 天 · 2 场 · 3 把');
+  assert.equal(page.data.attemptCount, 3);
+  assert.equal(page.data.sendCount, 0);
+  assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.canRecordAgain, true, '改成未完成后可以再记');
+  assert.equal(page.data.correctionRows[0].state, 'corrected');
+  assert.equal(page.data.correctionCountText, '都已改为未完成');
+
+  // 原把次的 ID、序号、场次、时间与备注都不变；视频索引逐字节不变。
+  const stored = attemptsOf('route-1').find(item => item.id === 'attempt-send-2');
+  assert.equal(stored.id, 'attempt-send-2');
+  assert.equal(stored.seq, 4, '原序号不变');
+  assert.equal(stored.sessionId, 'session-2', '原场次不变');
+  assert.equal(stored.createdAt, '2020-05-03T10:05:00.000Z', '原时间不变');
+  assert.equal(stored.note, '第二场完攀', '原备注不变');
+  assert.equal(stored.result, 'fail');
+  assert.equal(storage.get(VIDEO_INDEX_KEY), indexBefore, '视频索引与字节原样保留');
+  const clip = JSON.parse(storage.get(VIDEO_INDEX_KEY)).clips[0];
+  assert.equal(clip.bytes, 654321, '视频片段字节不变');
+  assert.equal(clip.attemptId, 'attempt-send-2');
+
+  // 其他把次、另一条同名线路都没改。
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-fail-1').result, 'fail');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-fail-2').note, '第二场第一把');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-undone').undoneAt, '2020-05-01T10:30:00.000Z');
+  assert.equal(attemptsOf('route-2').find(item => item.id === 'attempt-other-send').result, 'send');
+  assert.equal(attemptsOf('route-2').find(item => item.id === 'attempt-other-send').note, '同名另一条线');
+});
+
+test('T039 连点同一把只弹一次确认；确认滞后的回调只复用结果，不改别的把次', async () => {
+  writeT039Fixture();
+  seedT039Video();
+  const page = openRoutePage('route-1');
+  const rawBefore = rawArchive();
+
+  modalLog.queue.push('hold');
+  const event = correctionEventOf(page, 'attempt-send-2');
+  const first = page.confirmCorrectSend(event);
+  const second = page.confirmCorrectSend(event);
+  assert.equal(modalLog.calls.length, 1, '连点同一把只打开一次确认');
+  assert.equal(first, second, '连点沿用同一次确认');
+
+  // 确认还开着时，这一把已经被另一条路径改成未完成。
+  page.correctSend(
+    tapDataset({
+      attemptId: 'attempt-send-2',
+      routeId: 'route-1',
+      sessionId: 'session-2',
+      archiveId: 'archive-fixture'
+    })
+  );
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.resultText, '未完成');
+
+  // 迟到的确认只复用既有结果：不再翻回完攀，也不改另一条同名线。
+  modalLog.held[0].success({ confirm: true });
+  await first;
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.resultText, '未完成');
+  assert.match(page.data.notice, /已经是未完成/);
+  assert.equal(page.data.sendCount, 0);
+  assert.equal(attemptsOf('route-2').find(item => item.id === 'attempt-other-send').result, 'send');
+  assert.notEqual(rawArchive(), rawBefore, '只有目标这一把被写过');
+});
+
+test('T039 两行来回切换：各弹各的确认，先确认哪一行就只改哪一行', async () => {
+  const day1 = '2020-05-01';
+  const day2 = '2020-05-02';
+  writeArchiveFixture({
+    gymName: '两行岩馆',
+    sessions: [
+      { id: 'session-1', seq: 1, gymId: 'gym-1', date: day1, createdAt: day1 + 'T10:00:00.000Z' },
+      { id: 'session-2', seq: 2, gymId: 'gym-1', date: day2, createdAt: day2 + 'T10:00:00.000Z' }
+    ],
+    routes: [
+      {
+        id: 'route-1',
+        seq: 1,
+        gymId: 'gym-1',
+        name: '两把完攀线',
+        climbType: '抱石',
+        grade: 'V3',
+        colorName: '蓝色',
+        colorHex: '#2f6fe4',
+        createdAt: day1 + 'T10:00:00.000Z'
+      }
+    ],
+    attempts: [
+      {
+        id: 'attempt-send-a',
+        seq: 1,
+        sessionId: 'session-1',
+        routeId: 'route-1',
+        result: 'send',
+        note: '第一场完攀',
+        createdAt: day1 + 'T10:05:00.000Z'
+      },
+      {
+        id: 'attempt-send-b',
+        seq: 2,
+        sessionId: 'session-2',
+        routeId: 'route-1',
+        result: 'send',
+        note: '第二场完攀',
+        createdAt: day2 + 'T10:05:00.000Z'
+      }
+    ]
+  });
+
+  const page = openRoutePage('route-1');
+  assert.equal(page.data.sendCount, 2);
+
+  modalLog.queue.push('hold', 'hold');
+  const eventA = correctionEventOf(page, 'attempt-send-a');
+  const eventB = correctionEventOf(page, 'attempt-send-b');
+  const promiseA = page.confirmCorrectSend(eventA);
+  const promiseB = page.confirmCorrectSend(eventB);
+  assert.equal(modalLog.calls.length, 2, '不同的两行各弹各的确认');
+  assert.match(modalLog.calls[0].content, /2020-05-01/, 'A 的确认写明 A 的原日期');
+  assert.match(modalLog.calls[1].content, /2020-05-02/, 'B 的确认写明 B 的原日期');
+
+  // 先确认后打开的那一行（B），A 的确认仍旧开着。
+  modalLog.held[1].success({ confirm: true });
+  await promiseB;
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-b').result, 'fail');
+  assert.equal(
+    attemptsOf('route-1').find(item => item.id === 'attempt-send-a').result,
+    'send',
+    'A 未被 B 的确认带动'
+  );
+
+  // 再确认 A：只改 A，B 保持已改好的未完成。
+  modalLog.held[0].success({ confirm: true });
+  await promiseA;
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-a').result, 'fail');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-b').result, 'fail');
+  assert.equal(page.data.sendCount, 0);
+  assert.equal(attemptsOf('route-1').length, 2, '更正不改把数');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-a').note, '第一场完攀');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-b').note, '第二场完攀');
+});
+
+test('T039 确认期间换成另一份档案：不把旧确认写进新档', async () => {
+  writeT039Fixture();
+  const page = openRoutePage('route-1');
+  const event = correctionEventOf(page, 'attempt-send-2');
+
+  modalLog.queue.push('hold');
+  const promise = page.confirmCorrectSend(event);
+  assert.equal(modalLog.calls.length, 1);
+
+  // 换档：同一份数据换成另一个档案 ID（模拟重置后导入的另一份本机档案）。
+  const twin = JSON.parse(rawArchive());
+  twin.archiveId = 'archive-of-another-profile';
+  const twinBytes = JSON.stringify(twin);
+  storage.set(ARCHIVE_KEY, twinBytes);
+
+  modalLog.held[0].success({ confirm: true });
+  await promise;
+
+  assert.equal(storage.get(ARCHIVE_KEY), twinBytes, '旧确认不写另一份档案');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === 'attempt-send-2').result,
+    'send',
+    '另一份档案里的这一把仍是完攀'
+  );
+  assert.match(page.data.notice, /原来的本机档案/);
+});
+
+test('T039 写失败保留同一把的「重试更正」；重试成功后只改这一把', async () => {
+  writeT039Fixture();
+  seedT039Video();
+  const page = openRoutePage('route-1');
+
+  armSetFailAt(1);
+  modalLog.queue.push('confirm');
+  await page.confirmCorrectSend(correctionEventOf(page, 'attempt-send-2'));
+
+  assert.match(page.data.storageError, /保存本机训练档案失败/);
+  const retryRow = attemptRowOf(page, 'attempt-send-2').attempt;
+  assert.equal(retryRow.correctionState, 'retry', '失败后保留可重试入口');
+  assert.equal(retryRow.correctionButtonText, '重试更正');
+  assert.equal(retryRow.resultText, '完攀', '失败时结果不变');
+  assert.equal(page.data.correctionRows[0].state, 'retry');
+  assert.equal(page.data.sendCount, 1);
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-2').result, 'send');
+
+  armSetFailAt(0);
+  page.dismissStorageError();
+  modalLog.queue.push('confirm');
+  await page.confirmCorrectSend(correctionEventOf(page, 'attempt-send-2'));
+
+  assert.equal(page.data.storageError, '');
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.resultText, '未完成');
+  assert.equal(page.data.sendCount, 0);
+  assert.equal(page.data.attemptCount, 3, '重试不改把数');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-2').note, '第二场完攀');
+  assert.equal(attemptsOf('route-2').find(item => item.id === 'attempt-other-send').result, 'send');
 });
 
 test('R3 同日两场保留原归属：当天再记先显式选场，取消或另选都不改已有把次的归属', () => {

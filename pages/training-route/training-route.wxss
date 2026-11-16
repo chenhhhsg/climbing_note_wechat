@@ -311,6 +311,29 @@
   font-weight: 700;
 }
 
+/* 完攀更正（T039）：入口紧跟原场次那一把，命中区至少 44px */
+.history-attempt-correct {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 8rpx;
+}
+
+.history-correct-button {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 0 24rpx;
+  font-size: 26rpx;
+  line-height: 1.4;
+}
+
+.history-corrected-text {
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #1F5948;
+  text-align: right;
+}
+
 /* 按把更正 */
 .route-correction {
   background-color: #FFFFFF;
@@ -319,11 +342,24 @@
   margin-bottom: 20rpx;
 }
 
+.route-correction-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 44px;
+}
+
 .route-correction-title {
   display: block;
   font-size: 28rpx;
   font-weight: bold;
   color: #182421;
+}
+
+.route-correction-toggle {
+  display: block;
+  font-size: 24rpx;
+  color: #1F5948;
 }
 
 .route-correction-hint {

@@ -4,6 +4,7 @@
   「改为未完成」、照片的确认保存/移除，以及卡点标记的新增/移动/改字/删除会在本机写
   （照片只动本机文件与照片索引；卡点只动本机标记记录），且都由用户明确点按触发。
   T023：跨日历史每一把还有视频关联状态与文字入口，选片在视频页，本页不碰视频文件。
+  T039：完攀更正入口就在原场次那一把旁边，确认后才改这一把；下方独立更正区默认收起。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，保留原数据 -->
@@ -459,32 +460,66 @@
                   bindtap="openAttemptVideoFromHistory"
                 >{{attempt.videoEntryText}}</text>
               </view>
+              <!--
+                完攀更正（T039）：入口就在原场次这一把旁边；资格沿用 routeCorrectionRows
+                的既有有效抱石完攀条件。点「更正」先确认日期、场次、原序号与原结果，
+                确认后才按这一行的四个 ID 重新核对并只改这一把。
+              -->
+              <view wx:if="{{attempt.correctionState}}" class="history-attempt-correct">
+                <button
+                  wx:if="{{attempt.correctionState !== 'corrected'}}"
+                  id="correct-attempt-{{attempt.id}}"
+                  class="secondary-button history-correct-button"
+                  data-attempt-id="{{attempt.id}}"
+                  data-route-id="{{route.id}}"
+                  data-session-id="{{item.sessionId}}"
+                  data-archive-id="{{attempt.archiveId}}"
+                  bindtap="confirmCorrectSend"
+                >{{attempt.correctionButtonText}}</button>
+                <text
+                  wx:else
+                  id="corrected-attempt-{{attempt.id}}"
+                  class="history-corrected-text"
+                >{{attempt.correctionStatusText}}</text>
+              </view>
             </view>
           </view>
         </view>
       </view>
 
-      <!-- 按把「改为未完成」：每一把各占一行、各带自己的控件，写明日期/场次/第几把 -->
+      <!--
+        按把「改为未完成」（T039）：入口已放到原场次那一把旁边，这里默认收起，
+        只作为逐行复查的出口；展开后每一把仍各占一行，写明日期/场次/第几把。
+      -->
       <view wx:if="{{correctionRows.length > 0}}" id="route-correction" class="route-correction">
-        <text class="route-correction-title">点错了完攀？</text>
-        <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
-        <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
-        <view wx:for="{{correctionRows}}" wx:key="attemptId" class="route-correction-row">
-          <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}}</text>
-          <view class="route-correction-slot">
-            <button
-              wx:if="{{item.state !== 'corrected'}}"
-              id="correct-{{item.attemptId}}"
-              class="secondary-button route-correct-button"
-              data-attempt-id="{{item.attemptId}}"
-              data-route-id="{{item.routeId}}"
-              data-session-id="{{item.sessionId}}"
-              data-archive-id="{{item.archiveId}}"
-              bindtap="correctSend"
-            >{{item.buttonText}}</button>
-            <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
-          </view>
+        <view
+          id="route-correction-head"
+          class="route-correction-head"
+          bindtap="toggleCorrectionArea"
+        >
+          <text class="route-correction-title">点错了完攀？</text>
+          <text id="route-correction-toggle" class="route-correction-toggle">{{correctionCountText}} · {{correctionOpen ? '收起' : '点开按把查看'}}</text>
         </view>
+        <block wx:if="{{correctionOpen}}">
+          <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
+          <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
+          <view wx:for="{{correctionRows}}" wx:key="attemptId" class="route-correction-row">
+            <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}} · 原结果：{{item.resultText}}</text>
+            <view class="route-correction-slot">
+              <button
+                wx:if="{{item.state !== 'corrected'}}"
+                id="correct-{{item.attemptId}}"
+                class="secondary-button route-correct-button"
+                data-attempt-id="{{item.attemptId}}"
+                data-route-id="{{item.routeId}}"
+                data-session-id="{{item.sessionId}}"
+                data-archive-id="{{item.archiveId}}"
+                bindtap="confirmCorrectSend"
+              >{{item.buttonText}}</button>
+              <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
+            </view>
+          </view>
+        </block>
       </view>
 
       <!-- 当天再记：只有用户点这一下才可能新建当日场次 -->
@@ -497,7 +532,7 @@
           <view id="route-closed-panel" class="route-completed-panel">
             <text class="route-completed-title">{{routeStateText || '暂不能新增把次'}}</text>
             <text class="route-completed-hint">这条抱石线路已完攀，不再新增把次；把次与备注都保留在本机。</text>
-            <text class="route-completed-hint">点错了完攀？在上方「点错了完攀？」里点那一把自己那行改成未完成。</text>
+            <text class="route-completed-hint">点错了完攀？在上方逐把记录里，点那一把旁边的「更正」改成未完成。</text>
           </view>
         </block>
       </view>
