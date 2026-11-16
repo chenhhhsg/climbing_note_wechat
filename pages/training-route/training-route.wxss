@@ -591,6 +591,22 @@
   margin-left: 14rpx;
 }
 
+/* T040：历史只展示可点击缩略图与当前照片版本的标记数量，大图与编辑在二级页 */
+.photo-thumb-link {
+  display: block;
+}
+
+.photo-thumb-tap {
+  margin-top: 16rpx;
+}
+
+.photo-marks-entry {
+  width: 100%;
+  min-height: 44px;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
 /* 岩馆手册 */
 page {
   background-color: #F2F4F3;

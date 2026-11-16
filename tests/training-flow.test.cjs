@@ -29,6 +29,9 @@ const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-sessio
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wxml');
+// T040：有照片时的换图、移除与大图标记都在独立二级页。
+const MARKS_PAGE_JS = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.js');
+const MARKS_PAGE_WXML = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.wxml');
 const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
 const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.js');
@@ -380,6 +383,27 @@ async function openRoutePage(routeId) {
   return page;
 }
 
+/** 当前照片版本（照片索引里这条线的 photoId）：大图页入口带它核对归属。 */
+function currentPhotoIdOf(routeId) {
+  const index = photoIndex();
+  if (!index) return '';
+  const record = (index.routes || []).find(item => item.routeId === routeId);
+  return (record && record.photoId) || '';
+}
+
+/** 打开大图标记页（T040）：带齐档案、线路与当前照片 ID。 */
+async function openMarksPage(routeId) {
+  const page = createPage(marksPageDefinition);
+  const archive = store.loadState().archive;
+  page.onLoad({
+    archiveId: (archive && archive.archiveId) || '',
+    routeId,
+    photoId: currentPhotoIdOf(routeId)
+  });
+  await settle();
+  return page;
+}
+
 async function openProfilePage() {
   const page = createPage(profileDefinition);
   page.onLoad();
@@ -413,6 +437,7 @@ let sessionDefinition = null;
 let recordDefinition = null;
 let attemptsDefinition = null;
 let routeDefinition = null;
+let marksPageDefinition = null;
 let profileDefinition = null;
 
 beforeEach(() => {
@@ -425,6 +450,7 @@ beforeEach(() => {
   recordDefinition = capturePage(RECORD_JS);
   attemptsDefinition = capturePage(ATTEMPTS_JS);
   routeDefinition = capturePage(ROUTE_JS);
+  marksPageDefinition = capturePage(MARKS_PAGE_JS);
   profileDefinition = capturePage(PROFILE_JS);
 });
 
@@ -441,6 +467,7 @@ test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真�
   // T036：照片只在「线路资料」（training-route）里维护；场内页与单线页只提供入口。
   const cases = [
     { name: '线路资料页', definition: routeDefinition, wxml: ROUTE_WXML },
+    { name: '大图标记页', definition: marksPageDefinition, wxml: MARKS_PAGE_WXML },
     { name: '单线记录页', definition: recordDefinition, wxml: RECORD_WXML },
     { name: '个人页', definition: profileDefinition, wxml: PROFILE_WXML }
   ];
@@ -457,19 +484,34 @@ test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真�
     });
   });
 
-  // 照片相关的关键入口在资料页真实可达。
+  // T040：没有照片时资料页仍可直接添加（选图、预览确认、取消）。
   const routeWxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+  ['route-photo-card', 'route-photo-confirm', 'route-photo-cancel', 'route-photo-album'].forEach(id => {
+    assert.ok(routeWxml.indexOf('id="' + id + '"') !== -1, '资料页缺少 ' + id);
+  });
+  // 有照片时资料页只留缩略图与「照片动作标记 · N 个」入口。
+  ['route-photo-thumb-link', 'route-photo-thumb', 'photo-marks-entry'].forEach(id => {
+    assert.ok(routeWxml.indexOf('id="' + id + '"') !== -1, '资料页缺少 ' + id);
+  });
+  assert.ok(routeWxml.indexOf('bindtap="openPhotoMarks"') !== -1);
+  assert.equal(routeWxml.indexOf('id="route-photo-remove"'), -1, '移除入口在大图页');
+  assert.equal(routeWxml.indexOf('bindtap="removeRoutePhoto"'), -1, '移除入口在大图页');
+
+  // 大图页承接主图、换图、移除与重建缩略图。
+  const marksWxml = fs.readFileSync(MARKS_PAGE_WXML, 'utf8');
   [
     'route-photo-card',
     'route-photo-confirm',
     'route-photo-cancel',
     'route-photo-remove',
     'route-photo-album',
-    'route-photo-rebuild-thumb'
+    'route-photo-rebuild-thumb',
+    'route-photo-stage',
+    'mark-card'
   ].forEach(id => {
-    assert.ok(routeWxml.indexOf('id="' + id + '"') !== -1, '资料页缺少 ' + id);
+    assert.ok(marksWxml.indexOf('id="' + id + '"') !== -1, '大图页缺少 ' + id);
   });
-  assert.ok(routeWxml.indexOf('bindtap="rebuildRoutePhoto"') !== -1);
+  assert.ok(marksWxml.indexOf('bindtap="rebuildRoutePhoto"') !== -1);
   // 单线页只提供「线路资料」入口，不铺第二套照片操作。
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
   assert.match(recordWxml, /id="open-route-profile"[\s\S]{0,80}bindtap="openRouteProfile"/);
@@ -668,7 +710,7 @@ test('R2 试选后取消可立即重选，且取消不产生任何文件或索�
 
 test('R2 取消更换后仍显示原来的主图，旧文件与索引不变', async () => {
   const seeded = seedTraining();
-  const page = await openRoutePage(seeded.route.id);
+  const page = await openMarksPage(seeded.route.id);
   await settle();
   // 先经资料页存一张主照片，再验证“取消更换保留原图”。
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
@@ -863,7 +905,7 @@ test('T030 复验 同日两场：切回已有照片的旧场次再选回原线�
 
 test('R5 页面移除照片：索引与文件释放，把次与备注不动', async () => {
   const seeded = seedTraining();
-  const page = await openRoutePage(seeded.route.id);
+  const page = await openMarksPage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
@@ -906,7 +948,7 @@ test('R5 空间不足时页面提示原因并保留旧照片', async () => {
   });
   controllerModule.resetTrainingPhotos();
 
-  const page = await openRoutePage(seeded.route.id);
+  const page = await openMarksPage(seeded.route.id);
   await settle();
   await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
   await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
