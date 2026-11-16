@@ -200,6 +200,19 @@
   margin-bottom: 12rpx;
 }
 
+/* 分组标题可点：按原 sessionId 回到那一条单线记录（T036）。 */
+.history-group-open {
+  min-height: 88rpx;
+  box-sizing: border-box;
+  padding: 8rpx 0;
+}
+
+.history-open-hint {
+  flex: none;
+  font-size: 22rpx;
+  color: #b7683d;
+}
+
 .history-date {
   font-size: 30rpx;
   font-weight: bold;

@@ -38,6 +38,7 @@ const FITNESS_JS = path.join(ROOT, 'utils', 'fitness-test.js');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 const SUMMARY_PAGE_JS = path.join(ROOT, 'pages', 'training-summary', 'training-summary.js');
 const SUMMARY_PAGE_WXML = path.join(
   ROOT,
@@ -1266,15 +1267,21 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   assert.equal(typeof sessionDefinition.onSummarySessionChange, 'undefined');
   assert.equal(typeof sessionDefinition.openSessionSummary, 'function');
 
-  // 位置：在小结区里、首屏结果按钮之后。
+  // 位置：在小结区里、本场线路列表之后。
   // T035 起「下次想爬」整份清单已搬到独立页（pages/training-wishlist），
   // 场内不再铺清单，也不再有当前线路的清单状态与加入/撤下/归档入口。
-  const failButton = wxml.indexOf('class="result-button result-fail"');
   const entry = wxml.indexOf('id="summary-entry"');
   const summaryStart = wxml.indexOf('id="session-summary"');
-  assert.ok(summaryStart !== -1 && failButton !== -1);
+  const routeSwitch = wxml.indexOf('id="route-switch"');
+  assert.ok(summaryStart !== -1 && entry !== -1 && routeSwitch !== -1);
   assert.ok(entry > summaryStart, '入口在小结区里');
-  assert.ok(entry > failButton, '在结果按钮之后');
+  assert.ok(summaryStart > routeSwitch, '小结入口在本场线路列表之后');
+  // T036：结果与记录操作在单线记录页，场内页不再内联结果按钮。
+  assert.doesNotMatch(wxml, /class="result-button result-fail"/);
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.match(recordWxml, /class="result-button result-fail"/);
+  assert.match(recordWxml, /bindtap="recordAttempt"/);
+  assert.match(recordWxml, /bindtap="correctSend"/);
 
   assert.doesNotMatch(wxml, /id="wishlist-section"/);
   assert.doesNotMatch(wxml, /id="selected-wishlist"/);
@@ -1285,10 +1292,16 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   assert.equal(typeof sessionDefinition.removeSelectedFromWishlist, 'undefined');
   assert.equal(typeof sessionDefinition.archiveSelectedWishlist, 'undefined');
 
-  // 原有绑定一个不少。
+  // 场内保留的绑定：开场、切场、本场线路入口与加线、小结。
   const handlers = handlersIn(wxml);
-  ['startSession', 'switchSession', 'selectRoute', 'recordAttempt', 'correctSend'].forEach(name => {
-    assert.ok(handlers.includes(name), '原有绑定仍在：' + name);
+  ['startSession', 'switchSession', 'openRecord', 'createRoute'].forEach(name => {
+    assert.ok(handlers.includes(name), '场内绑定仍在：' + name);
   });
+  // 记录与更正按原目的地迁移到单线页，绑定与处理器都在。
+  assert.equal(typeof sessionDefinition.recordAttempt, 'undefined');
+  assert.equal(typeof sessionDefinition.correctSend, 'undefined');
+  const recordHandlers = handlersIn(recordWxml);
+  ['recordAttempt', 'retryPendingAttempt', 'undoLatestAttempt', 'restoreLatestAttempt', 'correctSend']
+    .forEach(name => assert.ok(recordHandlers.includes(name), '单线页绑定：' + name));
   assert.equal(archiveOf().activeSessionId, s2.id, '打开小结与读取入口都不改当前场次');
 });

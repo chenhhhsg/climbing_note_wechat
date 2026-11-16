@@ -758,3 +758,8 @@
 .route-switch-name { display: block; font-size: 30rpx; line-height: 1.4; color: #173d32; word-break: break-all; }
 .route-switch-meta { display: block; margin-top: 4rpx; font-size: 24rpx; line-height: 1.5; color: #526157; }
 .route-switch-close { display: block; width: 100%; margin-top: 14rpx; text-align: center; color: #745241; }
+/* T036 线路入口：短列表每一条都写明等级、本场把数与适用状态，整块可点进单线记录 */
+.route-switch-chip-info { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; }
+.route-switch-chip-meta { margin-top: 2rpx; font-size: 22rpx; line-height: 1.4; color: #606d61; }
+.route-switch-on .route-switch-chip-meta { color: #dbe7d6; }
+.route-switch-go { flex: none; font-size: 24rpx; color: #b7683d; }

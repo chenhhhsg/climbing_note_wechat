@@ -1,0 +1,282 @@
+/**
+ * 本线逐把明细页样式（T036）
+ * 与单线记录页同一套配色；备注编辑与原把次行一一对应。
+ */
+
+.page {
+  padding: 20rpx 32rpx 55rpx;
+}
+
+.card {
+  background-color: #fffcf3;
+  border-radius: 8rpx;
+  padding: 30rpx;
+  margin-bottom: 24rpx;
+}
+
+.card-title {
+  display: block;
+  font-family: "Songti SC", "Noto Serif CJK SC", "SimSun", serif;
+  line-height: 1.35;
+  font-weight: 700;
+  font-size: 32rpx;
+  color: #173d32;
+  margin-bottom: 16rpx;
+}
+
+.error-card {
+  background-color: #f7e6db;
+}
+
+.error-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #943a23;
+  margin-bottom: 12rpx;
+}
+
+.error-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #813323;
+  margin-bottom: 10rpx;
+}
+
+.error-hint {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
+  margin-bottom: 16rpx;
+}
+
+.storage-error,
+.notice {
+  border-radius: 8rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 24rpx;
+}
+
+.storage-error {
+  background-color: #f7e6db;
+  color: #943a23;
+}
+
+.notice {
+  background-color: #f3edda;
+  color: #745241;
+}
+
+.storage-error-text,
+.notice-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.5;
+}
+
+.storage-error-hint,
+.notice-hint {
+  display: block;
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.75;
+}
+
+/* 当前线与场次 */
+.attempts-route {
+  display: flex;
+  align-items: stretch;
+  margin: 0 0 20rpx;
+  overflow: hidden;
+  background: #173d32;
+  color: #fffcf3;
+  border-radius: 8rpx;
+}
+
+.attempts-route .route-swatch {
+  width: 9rpx;
+  height: auto;
+  flex: none;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+}
+
+.attempts-route-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18rpx 22rpx;
+}
+
+.attempts-route-name {
+  font-size: 32rpx;
+  font-family: "Songti SC", "SimSun", serif;
+  color: #fffcf3;
+  word-break: break-all;
+}
+
+.attempts-route-meta {
+  margin-top: 6rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #dbe7d6;
+}
+
+.attempts-session-meta {
+  margin-top: 4rpx;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #dbe7d6;
+  word-break: break-all;
+}
+
+/* 逐把 */
+.empty-attempts {
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #606d61;
+  padding: 24rpx 0;
+}
+
+.attempt-item {
+  background: transparent;
+  border-bottom: 1px solid #cbd0bf;
+  padding: 20rpx 0;
+}
+
+.attempt-main {
+  display: flex;
+  align-items: baseline;
+}
+
+.attempt-label {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #173d32;
+  margin-right: 20rpx;
+}
+
+.attempt-result {
+  font-size: 28rpx;
+  color: #173d32;
+  margin-right: 20rpx;
+}
+
+.attempt-send {
+  color: #b7532a;
+  font-weight: 700;
+}
+
+.attempt-time {
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 24rpx;
+  color: #606d61;
+}
+
+.attempt-note {
+  display: block;
+  border-left: 4rpx solid #d2784f;
+  padding: 3rpx 0 3rpx 16rpx;
+  margin: 12rpx 0;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #526157;
+}
+
+.attempt-note-button {
+  margin-top: 12rpx;
+  display: block;
+  text-align: left;
+}
+
+/* 备注编辑 */
+.note-editor {
+  margin-bottom: 20rpx;
+}
+
+.note-context {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #606d61;
+  margin-bottom: 12rpx;
+}
+
+.note-input {
+  width: 100%;
+  min-height: 140rpx;
+  background-color: #f7f4ea;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  font-size: 28rpx;
+  box-sizing: border-box;
+}
+
+.button-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 16rpx;
+}
+
+.button-row .secondary-button,
+.button-row .primary-button {
+  flex: 1;
+  margin: 0 8rpx;
+}
+
+.attempts-foot-hint {
+  display: block;
+  margin-top: 16rpx;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #606d61;
+}
+
+/* 通用按钮：常用触控目标至少 44×44 逻辑像素（88rpx） */
+.primary-button,
+.secondary-button,
+.text-button {
+  min-height: 88rpx;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.4;
+}
+
+.primary-button::after,
+.secondary-button::after,
+.text-button::after {
+  border: none;
+}
+
+.primary-button {
+  background-color: #173d32;
+  color: #fffcf3;
+  border-radius: 8rpx;
+  font-size: 30rpx;
+  padding: 22rpx;
+  border: none;
+}
+
+.secondary-button {
+  background-color: #fffcf3;
+  color: #173d32;
+  border: 2rpx solid #173d32;
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  padding: 18rpx;
+}
+
+.text-button {
+  background-color: transparent;
+  color: #173d32;
+  font-size: 26rpx;
+  padding: 8rpx 0;
+}

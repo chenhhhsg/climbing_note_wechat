@@ -29,6 +29,7 @@ const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js')
 const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wxml');
 const ROUTE_JSON = path.join(ROOT, 'pages', 'training-route', 'training-route.json');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
+const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 
@@ -135,6 +136,7 @@ const listDefinition = capturePage(LIST_JS);
 const detailDefinition = capturePage(DETAIL_JS);
 const routeDefinition = capturePage(ROUTE_JS);
 const sessionDefinition = capturePage(SESSION_JS);
+const recordDefinition = capturePage(RECORD_JS);
 
 /**
  * 页面实例替身：支持 wx 的 setData 数据路径写法（如 'noteEditor.text'）。
@@ -195,6 +197,14 @@ async function openDetailPage(id) {
 function openSessionPage(query) {
   const page = createPage(sessionDefinition);
   page.onLoad(query || {});
+  return page;
+}
+
+/** 单线记录页（T036）：按档案 + 场次 + 长期线路 ID 打开。 */
+function openRecordFor(sessionId, routeId) {
+  const page = createPage(recordDefinition);
+  page.onLoad({ archiveId: archiveOf().archiveId, sessionId, routeId });
+  assert.equal(page.data.contextError, '', '单线页应能按原归属打开');
   return page;
 }
 
@@ -473,7 +483,7 @@ test('R3 第二天从历史打开原线，在新场次记完攀：两天两场�
   // 「当天再记」：当日该岩馆还没有场次，才在这里新建一场并回到原线。
   detail.recordAgain();
   assert.equal(detail.data.storageError, '');
-  assert.equal(wxLog.navigations.at(-1).url, '/pages/training-session/training-session');
+  assert.match(wxLog.navigations.at(-1).url, /^\/pages\/training-record\/training-record\?/);
 
   const afterAgain = archiveOf();
   assert.equal(afterAgain.sessions.length, 2, '当天再记新建当日一场');
@@ -484,14 +494,17 @@ test('R3 第二天从历史打开原线，在新场次记完攀：两天两场�
   assert.equal(afterAgain.activeRouteId, routeA.id);
   assert.equal(afterAgain.attempts.length, 3, '当天再记不凭空生成把次');
 
-  // 在新场次记一次完攀
-  const sessionPage = openSessionPage({});
-  assert.equal(sessionPage.data.activeSession.id, todaySession.id);
-  assert.equal(sessionPage.data.selectedRoute.id, routeA.id);
-  sessionPage.recordAttempt(tapResult('send'));
-  assert.equal(sessionPage.data.attempts.length, 1);
-  assert.equal(sessionPage.data.attempts[0].resultText, '完攀');
+  // 在新场次记一次完攀（单线记录页）
+  const recordPage = openRecordFor(todaySession.id, routeA.id);
+  assert.equal(recordPage.data.activeSession.id, todaySession.id);
+  assert.equal(recordPage.data.selectedRoute.id, routeA.id);
+  recordPage.recordAttempt(tapResult('send'));
+  assert.equal(recordPage.data.attempts.length, 1);
+  assert.equal(recordPage.data.attempts[0].resultText, '完攀');
 
+  // 跨天历史按组回到原场次记录：带的是这一组的 sessionId 与当前 routeId。
+  const navBefore = wxLog.navigations.length;
+  const reopenedForHistory = openRoutePage(routeA.id);  reopenedForHistory.openRecordFromHistory(    tapDataset({ sessionId: todaySession.id, routeId: routeA.id })  );  assert.equal(wxLog.navigations.length, navBefore + 1);  assert.match(    wxLog.navigations.at(-1).url,    new RegExp('sessionId=' + todaySession.id + '.*routeId=' + routeA.id)  );
   const reopened = openRoutePage(routeA.id);
   assert.equal(reopened.data.summaryText, '2 天 · 2 场 · 3 把');
   assert.equal(reopened.data.attemptCount, 3);
@@ -569,9 +582,9 @@ test('R3 跨日详情把第三把改为未完成：仍三把零完攀，原时�
   // 再记一次完攀：复用当日已有场次，不新建；四把一完攀。
   reopened.recordAgain();
   assert.equal(reopened.data.storageError, '');
-  const sessionPage = openSessionPage({});
-  assert.equal(sessionPage.data.activeSession.id, session2.id, '当日已有场次直接复用');
-  sessionPage.recordAttempt(tapResult('send'));
+  const recordPage = openRecordFor(session2.id, route.id);
+  assert.equal(recordPage.data.activeSession.id, session2.id, '当日已有场次直接复用');
+  recordPage.recordAttempt(tapResult('send'));
 
   const after = archiveOf();
   assert.equal(after.sessions.length, 2, '再记不再新建场次');
@@ -702,7 +715,7 @@ test('R3 同日两场保留原归属：当天再记先显式选场，取消或�
   page.recordAgain();
   page.chooseSessionForAgain(tapDataset({ sessionId: sessionA.id }));
   assert.equal(page.data.storageError, '');
-  assert.equal(wxLog.navigations.at(-1).url, '/pages/training-session/training-session');
+  assert.match(wxLog.navigations.at(-1).url, /^\/pages\/training-record\/training-record\?/);
 
   const after = archiveOf();
   assert.equal(after.sessions.length, 2, '选场不新增场次');
@@ -737,7 +750,7 @@ test('R3 当天再记落盘失败：不新建场次、不离开本页，重试�
   page.recordAgain();
   assert.equal(page.data.storageError, '');
   assert.equal(archiveOf().sessions.length, 2);
-  assert.equal(wxLog.navigations.at(-1).url, '/pages/training-session/training-session');
+  assert.match(wxLog.navigations.at(-1).url, /^\/pages\/training-record\/training-record\?/);
 });
 
 test('R3 找不到线路、档案损坏与缺少 routeId 时状态可区分，且不改写原数据', () => {

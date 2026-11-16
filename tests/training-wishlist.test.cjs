@@ -37,6 +37,7 @@ const APP_JSON = path.join(ROOT, 'app.json');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 const WISHLIST_JS = path.join(ROOT, 'utils', 'training-wishlist.js');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wxml');
@@ -1430,10 +1431,14 @@ test('T035 首页与场内都不再铺清单：首页只剩一行入口，场内
     assert.equal(typeof sessionDefinition[handler], 'undefined', '场内不应再有：' + handler);
   }
 
-  // 保留的功能一个不少：小结勾选、结果按钮、换线与记录 tab 仍在。
+  // 保留的功能一个不少：小结入口、本场线路入口与记录 tab 仍在；
+  // T036 起结果按钮在单线记录页，不在场内再铺一份。
   assert.match(sessionWxml, /bindtap="openSessionSummary"/);
-  assert.match(sessionWxml, /class="result-button result-fail"/);
-  assert.match(sessionWxml, /bindtap="recordAttempt"/);
+  assert.match(sessionWxml, /bindtap="openRecord"/);
+  assert.doesNotMatch(sessionWxml, /class="result-button result-fail"/);
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.match(recordWxml, /class="result-button result-fail"/);
+  assert.match(recordWxml, /bindtap="recordAttempt"/);
   const appJson = JSON.parse(fs.readFileSync(APP_JSON, 'utf8'));
   assert.deepEqual(
     appJson.tabBar.list.map(item => item.pagePath),

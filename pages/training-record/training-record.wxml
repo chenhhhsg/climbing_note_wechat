@@ -1,0 +1,226 @@
+<!--
+  单线记录页（T036）
+  按 archiveId + sessionId + routeId 进入一条长期线路在某一场的记录：
+  结果按钮、本场把数、最近一把的撤回/恢复、待保存重试与按把更正。
+  照片、卡点与跨天历史在「线路资料」；逐把备注在「逐把明细」。
+-->
+<view class="page">
+  <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
+  <view wx:if="{{loadError}}" id="load-error" class="card error-card">
+    <text class="error-title">本机训练档案读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <text class="error-hint">原档案保持原样，没有被改写。</text>
+    <button id="retry-load" class="secondary-button" bindtap="retryLoad">重试读取</button>
+  </view>
+
+  <block wx:else>
+    <!-- 入口缺参、串档或线路不属于这一场：显示原因与返回路径，不展示别场别线的把次，也不写盘 -->
+    <view wx:if="{{contextError}}" id="record-context-error" class="card error-card">
+      <text class="error-title">这个入口不能用来记录</text>
+      <text class="error-text">{{contextError}}</text>
+      <text class="error-hint">没有改动任何数据；请从本场线路列表重新进入。</text>
+      <button id="record-back-to-list" class="secondary-button" bindtap="backToList">返回本场线路</button>
+    </view>
+
+    <block wx:if="{{ready && !contextError}}">
+      <!-- 本次操作未落盘：不报已保存，重试沿用同一把 -->
+      <view
+        wx:if="{{storageError}}"
+        id="storage-error"
+        class="storage-error"
+        bindtap="dismissStorageError"
+      >
+        <text class="storage-error-text">{{storageError}}</text>
+        <text class="storage-error-hint">当前操作未生效，可重试；点击收起</text>
+      </view>
+
+      <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
+        <text class="notice-text">{{notice}}</text>
+        <text class="notice-hint">点击收起</text>
+      </view>
+
+      <block wx:if="{{activeSession && selectedRoute}}">
+        <!-- 当前线：只服务这一条线，不再提供页内换线列表 -->
+        <view id="record-route" class="record-route">
+          <view class="route-swatch" style="background: {{selectedRoute.colorHex}};"></view>
+          <view class="record-route-info">
+            <text class="record-route-grade">{{selectedRoute.grade}}</text>
+            <text class="record-route-name">{{selectedRoute.name}}</text>
+            <text class="record-route-meta">{{selectedRoute.climbType}} · 本场 {{routeCountText}}</text>
+            <view class="record-route-state-slot">
+              <text
+                wx:if="{{routeStateText}}"
+                id="selected-route-state"
+                class="route-state {{routeCompleted ? 'route-state-done' : 'route-state-pending'}}"
+              >{{routeStateText}}</text>
+            </view>
+            <text id="record-session-meta" class="record-session-meta">{{activeSession.dateText}} · {{activeSession.gymName}} · {{activeSession.label}}</text>
+          </view>
+        </view>
+
+        <!--
+          结果按钮：抱石完攀后收起；有未保存的把次时先重试那一把。
+          按钮把渲染时的档案、场次与线路一并带下来：迟到点击与当前不一致时整条拒掉。
+        -->
+        <view class="result-footer">
+          <block wx:if="{{routeCompleted}}">
+            <view id="route-completed-panel" class="route-completed-panel">
+              <text class="route-completed-title">已完攀</text>
+              <text class="route-completed-hint">不再新增把次</text>
+            </view>
+          </block>
+          <block wx:elif="{{routeClosed}}">
+            <view id="route-pending-panel" class="route-pending-panel">
+              <text class="route-pending-title">完攀待确认</text>
+              <text class="route-pending-hint">先在下方「待保存」行重试保存</text>
+            </view>
+          </block>
+          <block wx:else>
+            <text wx:if="{{resultLocked}}" id="result-locked-hint" class="result-lock-hint">{{resultLockHint}}</text>
+            <button
+              id="record-fail"
+              class="result-button result-fail"
+              data-result="fail"
+              data-archive-id="{{archiveId}}"
+              data-session-id="{{activeSession.id}}"
+              data-route-id="{{selectedRoute.id}}"
+              disabled="{{resultLocked}}"
+              bindtap="recordAttempt"
+            >未完成</button>
+            <button
+              id="record-send"
+              class="result-button result-send"
+              data-result="send"
+              data-archive-id="{{archiveId}}"
+              data-session-id="{{activeSession.id}}"
+              data-route-id="{{selectedRoute.id}}"
+              disabled="{{resultLocked}}"
+              bindtap="recordAttempt"
+            >完攀</button>
+          </block>
+        </view>
+
+        <!--
+          最近一把的撤回与恢复：同一个永久操作区里的两个并排槽——左槽撤回、右槽恢复，
+          各占一半宽度、等高。不可用的动作在自己那一槽里留非交互空位，两个动作的命中
+          矩形在任何状态下都不相交。目标只认这一行带下来的原把次 ID 与归属。
+        -->
+        <view wx:if="{{recentAttempt}}" id="recent-attempt" class="recent-attempt">
+          <view class="recent-attempt-head">
+            <text class="recent-attempt-title">最近一把</text>
+            <text class="recent-attempt-note">撤回只减本场一把</text>
+          </view>
+
+          <view class="recent-attempt-row">
+            <view class="recent-attempt-slot">
+              <button
+                wx:if="{{recentAttempt.canUndo}}"
+                id="undo-attempt-{{recentAttempt.attemptId}}"
+                class="secondary-button recent-attempt-action"
+                data-attempt-id="{{recentAttempt.attemptId}}"
+                data-route-id="{{recentAttempt.routeId}}"
+                data-session-id="{{recentAttempt.sessionId}}"
+                data-archive-id="{{recentAttempt.archiveId}}"
+                data-expected="{{recentAttempt.expected}}"
+                data-expected-rev="{{recentAttempt.expectedRev}}"
+                bindtap="undoLatestAttempt"
+              >{{recentAttempt.undoText}}</button>
+              <view wx:else class="recent-attempt-idle">
+                <text class="recent-attempt-idle-text">已撤回</text>
+              </view>
+            </view>
+
+            <view class="recent-attempt-recovery">
+              <button
+                wx:if="{{recentAttempt.canRestore}}"
+                id="restore-attempt-{{recentAttempt.attemptId}}"
+                class="secondary-button recent-attempt-restore"
+                data-attempt-id="{{recentAttempt.attemptId}}"
+                data-route-id="{{recentAttempt.routeId}}"
+                data-session-id="{{recentAttempt.sessionId}}"
+                data-archive-id="{{recentAttempt.archiveId}}"
+                data-expected="{{recentAttempt.expected}}"
+                data-expected-rev="{{recentAttempt.expectedRev}}"
+                bindtap="restoreLatestAttempt"
+              >{{recentAttempt.restoreText}}</button>
+              <view wx:else class="recent-attempt-idle">
+                <text class="recent-attempt-idle-text">撤回后可恢复</text>
+              </view>
+            </view>
+          </view>
+
+          <view class="recent-attempt-info">
+            <text id="recent-attempt-text" class="recent-attempt-text">{{recentAttempt.titleText}}</text>
+            <text class="recent-attempt-meta">{{recentAttempt.metaText}}</text>
+          </view>
+          <text
+            wx:if="{{recentAttempt.stateText}}"
+            id="recent-attempt-state"
+            class="recent-attempt-status"
+          >{{recentAttempt.stateText}}</text>
+          <text class="recent-attempt-hint">原把次的备注、照片与时间都保留；恢复后回到原来的位置。</text>
+          <text wx:if="{{routeCompleted}}" id="route-completed-guidance" class="recent-attempt-hint">
+            要改这一把：用下方「点错了完攀？」里的「改为未完成」。
+          </text>
+        </view>
+
+        <!-- 待保存：重试沿用同一操作 ID，只多出预期的一把 -->
+        <view
+          wx:for="{{pendingRows}}"
+          wx:key="opId"
+          id="pending-{{item.opId}}"
+          class="attempt-item pending-attempt"
+        >
+          <view class="attempt-main">
+            <text class="attempt-label">{{item.label || '待保存'}}</text>
+            <text class="attempt-result">{{item.resultText}}</text>
+          </view>
+          <view class="pending-footer">
+            <text class="pending-status">{{item.statusText}}</text>
+            <button
+              id="retry-{{item.opId}}"
+              class="text-button pending-retry"
+              data-op-id="{{item.opId}}"
+              bindtap="retryPendingAttempt"
+            >重试保存</button>
+          </view>
+        </view>
+
+        <!-- 明细与资料：各自去往独立目的地，返回仍在原线 -->
+        <view id="record-links" class="record-links">
+          <button id="open-attempts" class="secondary-button record-link" bindtap="openAttempts">
+            逐把明细（本场 {{attempts.length}} 把）›
+          </button>
+          <button id="open-route-profile" class="secondary-button record-link" bindtap="openRouteProfile">
+            线路资料（照片 · 卡点 · 跨天历史）›
+          </button>
+        </view>
+
+        <!-- 按把「改为未完成」：每一把各占一行、各带自己的控件，只列本场这条线 -->
+        <view wx:if="{{correctionRows.length > 0}}" id="route-correction" class="route-correction">
+          <text class="route-correction-title">点错了完攀？</text>
+          <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
+          <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
+          <view wx:for="{{correctionRows}}" wx:key="attemptId" class="route-correction-row">
+            <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}}</text>
+            <view class="route-correction-slot">
+              <button
+                wx:if="{{item.state !== 'corrected'}}"
+                id="correct-{{item.attemptId}}"
+                class="secondary-button route-correct-button"
+                data-attempt-id="{{item.attemptId}}"
+                data-route-id="{{item.routeId}}"
+                data-session-id="{{item.sessionId}}"
+                data-archive-id="{{item.archiveId}}"
+                bindtap="correctSend"
+              >{{item.buttonText}}</button>
+              <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
+            </view>
+          </view>
+        </view>
+
+        <text class="record-foot-hint">照片、卡点与跨天历史在「线路资料」；按把备注在「逐把明细」。</text>
+      </block>
+    </block>
+  </block>
+</view>
