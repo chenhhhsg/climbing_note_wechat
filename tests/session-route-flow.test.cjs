@@ -858,10 +858,12 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
   const page = flow.page;
   const thirdId = flow.aAttempts[2];
 
-  // 把 A 收进「下次想爬」，让清单也参与对账。
+  // 把 A 收进「下次想爬」，让清单也参与对账（T035 起场内不再铺清单，
+  // 加入走同一份清单接口，与线路资料页、小结勾选共用一个入口）。
   switchTo(page, flow.aId);
-  page.addSelectedToWishlist();
-  assert.equal(page.data.selectedWishlist.inList, true);
+  const added = wishlist.addWishlist(flow.aId);
+  assert.equal(added.ok, true, added.error);
+  assert.equal(added.code, 'added');
   const photoBlob = JSON.stringify({ version: 1, photos: [{ routeId: flow.aId }] });
   storage.set(PHOTO_KEY, photoBlob);
 

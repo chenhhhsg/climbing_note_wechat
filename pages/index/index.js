@@ -14,13 +14,18 @@
  *
  * T032：「继续本场」那一行的把数只数**有效把次**（已撤回的那一把不计），与场内、统计、
  * 小结、清单共用档案层的同一份有效集合；首页仍然只读，不参与撤回/恢复本身。
+ *
+ * T035：「下次想爬」在首页收成一行入口（标题 + 数量），整份按馆分组的清单搬到独立页
+ * pages/training-wishlist；首页只算 listWishlist 返回的本档可展示条目数，0 条时入口照常在。
+ * 首页不再铺清单条目，也不再把线路 ID 交给别处的点击；打开独立页时带上渲染这一刻的
+ * archiveId，供清单页核对归属。首页本身仍只读。
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
 const store = require('../../utils/training-store');
 const wishlist = require('../../utils/training-wishlist');
 
-const ROUTE_URL = '/pages/training-route/training-route';
+const WISHLIST_URL = '/pages/training-wishlist/training-wishlist';
 
 Page({
   data: {
@@ -36,9 +41,9 @@ Page({
     hasActiveSession: false,
     activeSession: null,     // { id, gymName, dateText, label, routeName, attemptCountText }
 
-    // 下次想爬（T027）：按岩馆分组的清单概况，只读；点开回原线详情续记
-    wishlistGroups: [],
+    // 下次想爬（T035）：单行入口 + 本档可展示条目数，只读；整份清单在独立页
     wishlistCountText: '',
+    wishlistItemCount: 0,
     hasWishlist: false,
     wishlistError: ''
   },
@@ -160,17 +165,20 @@ Page({
   },
 
   /**
-   * 本机「下次想爬」清单概况（只读）：按岩馆分组，带累计把数与最近一条非空备注。
+   * 「下次想爬」的单行入口（T035，只读）：整份按馆分组的清单已搬到独立页
+   * pages/training-wishlist，首页只算这一行要显示的数量。
    *
-   * 只读清单与本机档案，不写盘、不建场次；清单损坏、版本不支持或档案读取失败时
-   * 显示可见错误、不显示条目，原清单保持原样（清缓存也不会动它）。
+   * 数量就是 listWishlist 返回的**本档可展示条目数**：已归档（岩馆拆线）也照常计入，
+   * 属于别的本机档案、或没注明档案 ID 的旧条目本来就不上屏，因此不计入。0 条时入口
+   * 照常在（点开是空态）。清单损坏、版本不受支持或档案读不出来时给出可见提示，入口仍
+   * 可点——清单页里有失败原因与重试；首页本身不写清单、不重建、不覆盖原数据。
    */
   refreshWishlist() {
     const loaded = store.loadState();
     if (!loaded.ok) {
       this.setData({
-        wishlistGroups: [],
         wishlistCountText: '',
+        wishlistItemCount: 0,
         hasWishlist: false,
         wishlistError: loaded.error
       });
@@ -180,53 +188,36 @@ Page({
     const listed = wishlist.listWishlist(loaded.archive);
     if (!listed.ok) {
       this.setData({
-        wishlistGroups: [],
         wishlistCountText: '',
+        wishlistItemCount: 0,
         hasWishlist: false,
         wishlistError: listed.error
       });
       return;
     }
 
-    const groups = listed.groups.map(group => ({
-      gymId: group.gymId,
-      gymName: group.gymName,
-      countText: group.countText,
-      items: group.items.map(entry => ({
-        routeId: entry.routeId,
-        name: entry.name,
-        climbType: entry.climbType,
-        grade: entry.grade,
-        colorName: entry.colorName,
-        colorHex: entry.colorHex,
-        status: entry.status,
-        statusText: entry.statusText,
-        attemptCountText: entry.attemptCountText,
-        latestNote: entry.latestNote,
-        hasNote: entry.hasNote
-      }))
-    }));
-
+    const count = listed.items.length;
     this.setData({
-      wishlistGroups: groups,
-      hasWishlist: listed.items.length > 0,
-      wishlistCountText: listed.items.length
-        ? listed.items.length + ' 条 · ' + groups.length + ' 家岩馆'
-        : '',
+      wishlistItemCount: count,
+      wishlistCountText: count + ' 条',
+      hasWishlist: count > 0,
       wishlistError: ''
     });
   },
 
   /**
-   * 点开清单里的一条线：回到它的长期线路详情（同一个原线路 ID）。
-   * 那里可以看照片、把次与历史，并用「当天再记」回到原线续记；
-   * 加入、撤下与拆线归档也在详情页里。首页本身不改任何本机数据。
+   * 打开独立清单（T035）：把渲染这一行时用的本机档案 ID 一起带过去，清单页据此核对
+   * 还是同一份档案（换档之后不拿同名线路顶替）。档案还没落盘时谈不上归属，不带参数。
+   * 首页本身不改任何本机数据。
    */
-  openWishlistRoute(e) {
-    const routeId = e && e.currentTarget && e.currentTarget.dataset.routeId;
-    if (!routeId) return;
+  openWishlist() {
+    const loaded = store.loadState();
+    const archiveId =
+      loaded.ok && loaded.present && loaded.archive && loaded.archive.archiveId
+        ? loaded.archive.archiveId
+        : '';
     wx.navigateTo({
-      url: ROUTE_URL + '?routeId=' + routeId
+      url: WISHLIST_URL + (archiveId ? '?archiveId=' + encodeURIComponent(archiveId) : '')
     });
   },
 

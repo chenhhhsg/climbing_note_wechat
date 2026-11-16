@@ -19,10 +19,10 @@
  * 成功后进入预览确认；当前线路也能在照片卡片里更换或移除。照片只动本机文件与正式
  * 照片索引，不写档案里的场次/把次/备注，也不回滚已创建的线路。
  *
- * T027 在本页加上「下次想爬」清单：当前岩馆收藏过的长期线路排在这里，带照片或无图
- * 状态、累计把数与最近一条非空备注；点开就是把那条长期线路关联到本场次并选中
- * （同一个线路 ID，不新建同名线路），直接续记。加入、撤下与拆线归档只改清单这一份
- * 独立记录（utils/training-wishlist.js），不动线路、照片、把次与备注。
+ * T027 曾在本页加入「下次想爬」清单；T035 把整份清单搬到独立页
+ * pages/training-wishlist（首页一行入口进入），本页不再铺清单，也不再显示当前线路的
+ * 清单状态与加入/撤下/归档入口——那些操作留在原线资料页（training-route）与小结勾选里，
+ * 用同一份 utils/training-wishlist.js。本页因此不再读取也不再写入清单。
  *
  * T029 在本页加上「本次小结」；T034 把完整小结移到独立页 pages/training-summary
  * （buildSessionSummary + T027 的清单接口），本页只留一个入口：按入口渲染时的场次与
@@ -63,7 +63,6 @@
  * 待保存的一把不当作已保存可撤回项。
  */
 const store = require('../../utils/training-store.js');
-const wishlist = require('../../utils/training-wishlist.js');
 const {
   createTrainingPhotoController
 } = require('../../utils/training-photo-controller.js');
@@ -355,17 +354,6 @@ Page({
     routePhoto: null,
     photoNotice: '',
 
-    // 下次想爬（T027）：本馆清单按想爬/已完成/已归档分组，照片按 routeId 推导
-    wishlistReady: false,
-    wishlistError: '',
-    wishlistWanted: [],
-    wishlistCompleted: [],
-    wishlistArchived: [],
-    wishlistCountText: '',
-    hasWishlist: false,
-    // 当前选中线路在清单里的状态（加入/撤下/归档入口）
-    selectedWishlist: null,
-
     // 本次小结入口（T034）：完整小结已移到独立页 pages/training-summary。
     // 场内只留一个入口，按原 sessionId 与档案 ID 打开那一场的只读小结；
     // 这里不带把数、不读清单，也不在打开小结时改动任何数据。
@@ -388,7 +376,6 @@ Page({
     // _formDirty / _newRouteDirty  正在填写的场次表单与新建线路表单（不重读、不冲掉输入）；
     // _lastCreateTap  快速重复点击「创建并选中」的窗口，避免连点建出两条线；
     // _photoUi / _newRoutePhotoPath  照片控制器与新建表单里已选的临时照片路径；
-    // _wishlistRows  本馆「下次想爬」的派生条目（不落盘，照片状态叠加在上面）。
     // _summarySessionId  小结入口要打开哪一场（只读目标，不写盘）；空表示跟着当前场次。
     this._failedOps = {};
     this._lastTap = {};
@@ -401,7 +388,6 @@ Page({
     this._newRouteDirty = false;
     this._photoUi = null;
     this._newRoutePhotoPath = '';
-    this._wishlistRows = [];
     // ?sessionId=xxx：小结入口指向这一天/这一家岩馆的另一场（只读回看），不改当前场次；
     // 用户在场内页自己切换场次或开始新场次时清掉它，入口回到当前场次。
     this._summarySessionId =
@@ -447,8 +433,8 @@ Page({
   },
 
   /**
-   * 只读取当前选中线路与「下次想爬」清单行的照片；没有选中线路也没有清单行时
-   * 清空页面上的照片展示（不删除任何文件或索引）。
+   * 只读取当前选中线路的照片；没有选中线路时清空页面上的照片展示
+   * （不删除任何文件或索引）。
    *
    * 每次先过一遍 initPhotoUi：本机档案是在「开始场次」之后才存在的，
    * 刚建好档案的这一次刷新必须让照片服务跟上当前档案 ID。
@@ -457,26 +443,20 @@ Page({
     return Promise.resolve(this.initPhotoUi()).then(() => {
       if (!this._photoUi) return;
       const selectedId = this.data.selectedRoute && this.data.selectedRoute.id;
-      const ids = [];
-      if (selectedId) ids.push(selectedId);
-      (this._wishlistRows || []).forEach(row => {
-        if (row.routeId && ids.indexOf(row.routeId) === -1) ids.push(row.routeId);
-      });
-      if (!ids.length) {
+      if (!selectedId) {
         this._photoUi.clear();
         this.applyPhotoView();
         return;
       }
-      return this._photoUi.load(ids).then(() => this.applyPhotoView());
+      return this._photoUi.load([selectedId]).then(() => this.applyPhotoView());
     });
   },
 
   /**
-   * 照片控制器每次报告状态变化都重算展示：当前线路的照片卡与清单行的照片状态。
+   * 照片控制器每次报告状态变化都重算展示：只有当前线路的照片卡。
    */
   applyPhotoState() {
     this.applyPhotoView();
-    this.applyWishlistPhotos();
   },
 
   applyPhotoView() {
@@ -485,114 +465,6 @@ Page({
     this.setData({
       routePhoto: routeId ? this._photoUi.view(routeId) : null
     });
-  },
-
-  /**
-   * 清单行上的照片状态：只读控制器已经读到的结果，不改照片、不发起保存。
-   * 没有照片或照片文件不可用都照常显示条目，并写明「无图 / 照片不可用」。
-   */
-  wishlistPhotoView(routeId) {
-    const view = this._photoUi ? this._photoUi.view(routeId) : null;
-    const hasPhoto = Boolean(view && view.hasPhoto);
-    const missing = Boolean(view && view.missing);
-    return {
-      hasPhoto,
-      thumbnailPath: hasPhoto ? view.thumbnailPath || view.mainPath || '' : '',
-      photoStatusText: hasPhoto ? '有照片' : missing ? '照片不可用' : '无图'
-    };
-  },
-
-  /**
-   * 把清单条目（数据层派生）与照片状态合成到页面展示；只重算展示，不写盘。
-   */
-  wishlistView(entries) {
-    const rows = (entries || []).map(entry =>
-      Object.assign({}, entry, this.wishlistPhotoView(entry.routeId))
-    );
-    const wanted = rows.filter(row => row.status === 'wanted');
-    const completed = rows.filter(row => row.status === 'completed');
-    const archived = rows.filter(row => row.status === 'archived');
-    const parts = [];
-    if (wanted.length) parts.push(wanted.length + ' 条想爬');
-    if (completed.length) parts.push(completed.length + ' 条已完成');
-    if (archived.length) parts.push(archived.length + ' 条已归档');
-    return {
-      wishlistWanted: wanted,
-      wishlistCompleted: completed,
-      wishlistArchived: archived,
-      hasWishlist: rows.length > 0,
-      wishlistCountText: parts.length ? parts.join(' · ') : ''
-    };
-  },
-
-  /**
-   * 只重算清单行上的照片状态（照片控制器报告变化时调用，不重读清单）。
-   */
-  applyWishlistPhotos() {
-    if (!this.data.wishlistReady || !this._wishlistRows.length) return;
-    this.setData(this.wishlistView(this._wishlistRows));
-  },
-
-  /**
-   * 本馆「下次想爬」清单（只读）：按当前场次所属岩馆读清单并按状态分组。
-   * 没有当前场次时清空展示；清单损坏、版本不支持或读取失败时显示可见错误、
-   * 收回写入口，保留原清单，本场记录与照片不受影响。
-   */
-  refreshWishlist() {
-    const session = this.data.activeSession;
-    if (!session) {
-      this._wishlistRows = [];
-      this.setData({
-        wishlistReady: false,
-        wishlistError: '',
-        wishlistWanted: [],
-        wishlistCompleted: [],
-        wishlistArchived: [],
-        wishlistCountText: '',
-        hasWishlist: false,
-        selectedWishlist: null
-      });
-      return;
-    }
-
-    const listed = wishlist.listWishlist(this.archive, { gymId: session.gymId });
-    this._wishlistRows = listed.ok ? listed.items : [];
-    this.setData(
-      Object.assign(
-        {
-          wishlistReady: listed.ok,
-          wishlistError: listed.ok ? '' : listed.error,
-          selectedWishlist: this.selectedWishlistView()
-        },
-        listed.ok
-          ? this.wishlistView(listed.items)
-          : {
-              wishlistWanted: [],
-              wishlistCompleted: [],
-              wishlistArchived: [],
-              wishlistCountText: '',
-              hasWishlist: false
-            }
-      )
-    );
-  },
-
-  /**
-   * 当前选中线路在清单里的状态（只读）：加入、撤下与归档入口据此显示，
-   * 与线路详情页共用数据层的同一份判定文案。
-   */
-  selectedWishlistView() {
-    const routeId = this.data.selectedRoute && this.data.selectedRoute.id;
-    if (!routeId || !this.archive) return null;
-    const listed = wishlist.wishlistEntry(this.archive, routeId);
-    if (!listed.ok) {
-      return Object.assign(wishlist.wishlistActionView(null), {
-        error: listed.error,
-        canAdd: false,
-        stateText: ''
-      });
-    }
-    return Object.assign({ error: '' }, wishlist.wishlistActionView(listed.entry));
   },
 
   /**
@@ -937,8 +809,6 @@ Page({
         : null
     });
 
-    // 本馆「下次想爬」清单：只读清单与档案派生，不写盘。
-    this.refreshWishlist();
     // 本次小结入口：只算入口目标与文案，不读清单、不算把数；完整小结在独立页。
     this.refreshSummaryEntry();
   },
@@ -1564,101 +1434,6 @@ Page({
         .then(() => this.loadPhotos());
     }
     return this.loadPhotos();
-  },
-
-  // ---------------------------------------------------------------- 下次想爬
-
-  /**
-   * 清单写入口的原归属：本页渲染时用的档案 ID。数据层据此核对这条操作是不是还落在
-   * 同一份档案上——换档之后（例如档案被重置或换成另一份）的迟到点击会被拒绝，
-   * 不会把另一份档案里同名线路 ID 的收藏改掉。
-   */
-  wishlistOwnership() {
-    const archiveId = this.archive && this.archive.archiveId;
-    return archiveId ? { archiveId: archiveId } : undefined;
-  },
-
-  /**
-   * 从「下次想爬」清单继续原线：关联并选中同一条长期线路，接着在它上面记把次。
-   */
-  continueWishlistRoute(event) {
-    const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
-    return this.resumeRouteInSession(routeId);
-  },
-
-  /**
-   * 已完攀或已归档的条目：回到线路详情按原线路 ID 回看照片、把次与历史。
-   * 只读打开，不新建场次、不改当前线路。
-   */
-  openWishlistRoute(event) {
-    const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
-    if (!routeId) return;
-    wx.navigateTo({
-      url: '/pages/training-route/training-route?routeId=' + routeId
-    });
-  },
-
-  /**
-   * 加入、撤下与拆线归档共用这一条落盘路径：只改清单这一份独立记录，线路、照片、
-   * 把次与备注都不动。失败不报已保存，可原地重试；重复点击幂等，不产生第二条，
-   * 并明确说明这条线现在的状态（已在清单里 / 本来不在 / 已经归档）。
-   */
-  applyWishlistAction(outcome, label, doneText, repeatText) {
-    if (!outcome.ok) {
-      this.setData({
-        storageError: outcome.code === 'write-failed' ? outcome.error : '',
-        notice: outcome.code === 'write-failed' ? label + '未保存，可再点一次重试。' : outcome.error
-      });
-    } else {
-      this.setData({
-        storageError: '',
-        notice: outcome.duplicate ? repeatText || '' : doneText
-      });
-    }
-    this.refreshView();
-    this.loadPhotos();
-  },
-
-  addSelectedToWishlist() {
-    if (this.data.loadError) return;
-    const routeId = this.data.selectedRoute && this.data.selectedRoute.id;
-    if (!routeId) return;
-    const outcome = wishlist.addWishlist(routeId, this.wishlistOwnership());
-    this.applyWishlistAction(
-      outcome,
-      '收藏',
-      outcome.code === 'reactivated' ? '已重新加入下次想爬。' : '已加入下次想爬。',
-      '这条线路已经在下次想爬清单里。'
-    );
-  },
-
-  removeSelectedFromWishlist() {
-    if (this.data.loadError) return;
-    const routeId = this.data.selectedRoute && this.data.selectedRoute.id;
-    if (!routeId) return;
-    const outcome = wishlist.removeWishlist(routeId, this.wishlistOwnership());
-    this.applyWishlistAction(
-      outcome,
-      '撤下',
-      '已从下次想爬撤下；线路、照片与把次都不变。',
-      '这条线路本来就不在清单里。'
-    );
-  },
-
-  /**
-   * 拆线归档：岩馆把这条线拆了，把它从活跃清单移到已归档；照片、把次与历史都保留。
-   */
-  archiveSelectedWishlist() {
-    if (this.data.loadError) return;
-    const routeId = this.data.selectedRoute && this.data.selectedRoute.id;
-    if (!routeId) return;
-    const outcome = wishlist.archiveWishlist(routeId, this.wishlistOwnership());
-    this.applyWishlistAction(
-      outcome,
-      '归档',
-      '已归档；照片、把次与历史都保留，仍可按原线路 ID 回看。',
-      '这条线路已经归档。'
-    );
   },
 
   // ---------------------------------------------------------------- 线路照片

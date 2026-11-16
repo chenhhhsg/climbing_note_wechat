@@ -1,20 +1,24 @@
 /**
  * T027「下次想爬」按岩馆保存线路清单回归测试（R3、R6 的离线部分）
  *
- * 直接加载真实的 utils/training-wishlist.js 与三个正式页面
- * （pages/training-session、pages/training-route、pages/index），用隔离的微信本地存储
+ * 直接加载真实的 utils/training-wishlist.js 与正式页面
+ * （pages/training-wishlist、pages/training-route、pages/index），用隔离的微信本地存储
  * 替身与写入故障注入驱动真实处理器，并核对 WXML 里的真实按钮绑定。
+ *
+ * T035 起整份清单在独立页 pages/training-wishlist：首页只留一行入口（标题 + 数量 = listWishlist
+ * 的本档条目数），场内页不再铺清单，加入／撤下／归档留在原线资料页与小结勾选里。
  *
  * 覆盖：同一线路只收藏一条、按岩馆分组不串馆、累计把数与最近一条非空备注、
  * 关注的抱石首次完攀进入已完成（改成未完成后回到想爬）、顶绳先锋完攀后照常续记、
  * 拆线归档与撤下收藏只影响清单、旧档案首次读取兼容、清单损坏与版本不支持的可判别
  * 报错、写入失败重试与迟到重复点击幂等、普通清缓存不动清单，以及收藏前后训练档案
- * 与照片索引的原始字节一致。
+ * 与照片索引的原始字节一致；独立清单的按馆分组／状态／空态、失败与重试、只读打开
+ * （含点开原线与重试）都不写盘。
  *
  * 串档修复：清单按「档案 ID + 长期线路 ID」共同定位（两份档案可以各有一条 route-1）。
  * 因此还覆盖：换成另一份档案后看不到、也动不了原来那份档案的收藏（含小结的批量勾选
- * 口径与场内页显示），切回原档案收藏仍在；换档前打开的页面上的迟到点击按原归属被拒绝；
- * 没有注明档案 ID 的旧条目不归属于任何档案（不上屏、也不被增删改，原字节保留）。
+ * 口径与独立清单显示），切回原档案收藏仍在；入口带着换档前的 archiveId 时不展示任何
+ * 条目；没有注明档案 ID 的旧条目不归属于任何档案（不上屏、也不被增删改，原字节保留）。
  *
  * 刻意不提供 wx.cloud 与本地文件系统：本机清单、清单展示与「继续原线」都不得依赖
  * 云能力；照片只验证「有照片 / 无图 / 照片不可用」三种展示分支，照片文件本身的读写
@@ -29,6 +33,7 @@ const path = require('node:path');
 const { test, beforeEach } = require('node:test');
 
 const ROOT = path.resolve(__dirname, '..');
+const APP_JSON = path.join(ROOT, 'app.json');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 const WISHLIST_JS = path.join(ROOT, 'utils', 'training-wishlist.js');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
@@ -37,6 +42,8 @@ const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js')
 const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wxml');
 const INDEX_JS = path.join(ROOT, 'pages', 'index', 'index.js');
 const INDEX_WXML = path.join(ROOT, 'pages', 'index', 'index.wxml');
+const WISHLIST_PAGE_JS = path.join(ROOT, 'pages', 'training-wishlist', 'training-wishlist.js');
+const WISHLIST_PAGE_WXML = path.join(ROOT, 'pages', 'training-wishlist', 'training-wishlist.wxml');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 const PHOTO_KEY = 'climbingNote.training.v1.photos';
@@ -130,6 +137,7 @@ function capturePage(jsPath) {
 const sessionDefinition = capturePage(SESSION_JS);
 const routeDefinition = capturePage(ROUTE_JS);
 const indexDefinition = capturePage(INDEX_JS);
+const wishlistPageDefinition = capturePage(WISHLIST_PAGE_JS);
 
 /** 页面实例替身：支持 wx 的 setData 数据路径写法。 */
 function createPage(definition) {
@@ -1008,55 +1016,57 @@ test('T027 没有注明档案 ID 的旧条目不归属任何档案：不上屏�
   assert.deepEqual(wishlist.listWishlist(archiveOf()).items.map(item => item.routeId), [route.id]);
 });
 
-test('T027 场内页：换档后清单显示为空，换档前的迟到点击按原归属被拒绝', () => {
+test('T035 换档后不串档：独立清单只列本档条目，带旧档案 ID 的迟到操作按原归属被拒绝', () => {
   const sessionA = startAt('2026-11-09', 'A 馆');
   const routeA = newRoute(sessionA, { name: '蓝色动态线', grade: 'V3' });
   favorite(routeA.id);
+  const archiveIdA = archiveOf().archiveId;
+  const archiveARaw = rawOf(ARCHIVE_KEY);
+  assert.equal(routeA.id, 'route-1');
 
-  // 页面在 A 档案里渲染过一次：它记住的是 A 的档案 ID。
-  const pageA = openSessionPage();
-  assert.equal(pageA.data.hasWishlist, true);
-  assert.deepEqual(pageA.data.wishlistWanted.map(item => item.routeId), [routeA.id]);
-  assert.equal(pageA.data.selectedWishlist.inList, true);
+  // 独立清单在 A 档案里渲染过一次：列出 A 的那条线。
+  const pageA = openWishlistPage({ archiveId: archiveIdA });
+  assert.equal(pageA.data.claimError, '');
+  assert.equal(pageA.data.itemCount, 1);
+  assert.deepEqual(pageA.data.groups[0].items.map(item => item.routeId), [routeA.id]);
 
   // 换成另一份档案 B：它里面也有一条 route-1，但那是另一条线。
-  const archiveARaw = rawOf(ARCHIVE_KEY);
   storage.set(ARCHIVE_KEY, otherArchiveRaw('archive-b-1', 'QA 岩馆 A'));
   const wishlistBefore = rawOf(WISHLIST_KEY);
 
-  // B 的页面：清单为空（A 的收藏不乱入），当前线路也没有被画成已收藏。
-  const pageB = openSessionPage();
+  // B 的清单页：只按 B 的档案 ID 取条目，A 的收藏不上屏。
+  const pageB = openWishlistPage({ archiveId: 'archive-b-1' });
   assert.equal(pageB.data.loadError, '');
-  assert.equal(pageB.data.hasWishlist, false);
-  assert.deepEqual(pageB.data.wishlistWanted, []);
-  assert.equal(pageB.data.selectedWishlist.inList, false);
-  assert.equal(pageB.data.selectedWishlist.canAdd, true);
+  assert.equal(pageB.data.listError, '');
+  assert.equal(pageB.data.itemCount, 0);
+  assert.deepEqual(pageB.data.groups, []);
 
-  // pageA 是换档前那份档案上的实例：它的迟到点击按原归属被拒绝，不落盘、不改 B。
-  pageA.removeSelectedFromWishlist();
-  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore, '迟到点击不得改写清单');
-  assert.match(pageA.data.notice, /属于原来的本机档案/);
-  assert.equal(
-    wishlist.listWishlist(archiveOf()).items.length,
-    0,
-    'B 的清单仍然为空'
-  );
+  // A 那个页面实例：入口带的是 A 的档案 ID，现在只给可见状态，不拿 B 的线顶替。
+  pageA.onShow();
+  assert.match(pageA.data.claimError, /另一份本机档案/);
+  assert.equal(pageA.data.itemCount, 0);
+  assert.deepEqual(pageA.data.groups, []);
 
-  // B 的页面加入写的是 B 自己的那一条；A 的收藏原样留着。
-  pageB.addSelectedToWishlist();
-  assert.equal(pageB.data.notice, '已加入下次想爬。');
+  // 换档前的迟到操作（渲染时用的 archiveId 还是 A）：按原归属被拒绝，一个字都不写。
+  const late = wishlist.addWishlist(routeA.id, { archiveId: archiveIdA });
+  assert.equal(late.ok, false);
+  assert.equal(late.code, 'archive-mismatch');
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore, '迟到操作不得改写清单');
+
+  // B 自己加入写的是 B 那一条；A 的收藏原样留着。
+  const addedInB = wishlist.addWishlist('route-1', { archiveId: 'archive-b-1' });
+  assert.equal(addedInB.ok, true, addedInB.error);
   const items = wishlist.loadWishlist().state.items;
   assert.equal(items.length, 2, '两份档案各一条，同名的 route-1 不互相覆盖');
   assert.equal(items.filter(item => item.archiveId === 'archive-b-1').length, 1);
-  assert.equal(items.filter(item => item.routeId === routeA.id).length, 2);
+  assert.equal(items.filter(item => item.archiveId === archiveIdA).length, 1);
 
-  // 切回 A：那条收藏还在，页面上显示的仍是 A 自己的那条线。
+  // 切回 A：那条收藏还在，独立清单显示的仍是 A 自己的那条线。
   storage.set(ARCHIVE_KEY, archiveARaw);
-  const backInA = openSessionPage();
-  assert.equal(backInA.data.hasWishlist, true);
-  assert.deepEqual(backInA.data.wishlistWanted.map(item => item.routeId), [routeA.id]);
-  assert.equal(backInA.data.wishlistWanted[0].name, '蓝色动态线');
-  assert.equal(backInA.data.selectedWishlist.inList, true);
+  const backInA = openWishlistPage({ archiveId: archiveIdA });
+  assert.equal(backInA.data.claimError, '');
+  assert.equal(backInA.data.itemCount, 1);
+  assert.equal(backInA.data.groups[0].items[0].name, '蓝色动态线');
 });
 
 test('T027 收藏、撤下与归档不改训练档案与照片索引的原始字节', () => {
@@ -1100,26 +1110,26 @@ test('T027 加入、撤下与归档的判定只有一份：wishlistActionView �
 });
 
 // ------------------------------------------------------------------ *
-// 场内页：本馆清单、照片/把数/备注与「继续原线」
+// 独立清单页（T035）：按馆分组、状态、空态与失败重试
 // ------------------------------------------------------------------ *
 
-function openSessionPage(query, photoViews) {
-  const page = createPage(sessionDefinition);
+/** 独立清单页：query 是首页带过来的入口参数（archiveId 用于核对归属）。 */
+function openWishlistPage(query) {
+  const page = createPage(wishlistPageDefinition);
   page.onLoad(query || {});
-  // 照片控制器替身：只验证展示分支，不读写任何照片文件或索引。
+  return page;
+}
+
+/** 线路资料页：按原长期线路 ID 打开；照片只验证展示分支，不读写文件或索引。 */
+function openRoutePage(routeId, photoViews) {
+  const page = createPage(routeDefinition);
+  page.onLoad({ routeId });
   page._photoUi = fakePhotoUi(photoViews);
   page.refreshView();
   return page;
 }
 
-function openRoutePage(routeId) {
-  const page = createPage(routeDefinition);
-  page.onLoad({ routeId });
-  page._photoUi = fakePhotoUi();
-  page.refreshView();
-  return page;
-}
-
+/** 首页：旧云读取在测试里不接云，等一次 flush 让本机与云状态都落定。 */
 async function openIndexPage() {
   const page = createPage(indexDefinition);
   page.onLoad();
@@ -1127,196 +1137,314 @@ async function openIndexPage() {
   return page;
 }
 
-test('T027 场内页：新进本馆看到清单（照片或无图、累计把数、最近备注），点开用同一线路 ID 续记', async () => {
-  const day1 = startAt('2026-11-09', 'A 馆');
-  const route = newRoute(day1, { name: '蓝色动态线', grade: 'V3' });
-  const other = newRoute(day1, { name: '没有照片的线', grade: 'V4' });
-  favorite(route.id);
-  favorite(other.id);
-  record(day1, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
-  record(day1, route, 'fail', '', '2026-11-09T10:10:00');
-  record(day1, route, 'fail', '抓到后向左摆', '2026-11-09T10:20:00');
+test('T035 独立清单：按岩馆分组显示想爬/已完成/已归档，带累计把数与最近备注，点开按原线路 ID 进资料', () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const wanted = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
+  record(session, wanted, 'fail', '起步用右脚', '2026-11-09T10:00:00');
+  record(session, wanted, 'fail', '', '2026-11-09T10:05:00');
+  const done = newRoute(session, { name: '已完攀的线', grade: 'V4' });
+  record(session, done, 'send', '这次成了', '2026-11-09T10:10:00');
+  const broken = newRoute(session, { name: '拆掉的线', grade: 'V5' });
+  favorite(wanted.id);
+  favorite(done.id);
+  favorite(broken.id);
+  assert.equal(wishlist.archiveWishlist(broken.id).ok, true);
 
-  // 下次进馆＝同一岩馆的另一个场次。
-  const day2 = startAt('2026-11-10', 'A 馆');
-  const routesBefore = archiveOf().routes.length;
+  const page = openWishlistPage();
+  assert.equal(page.data.loadError, '');
+  assert.equal(page.data.claimError, '');
+  assert.equal(page.data.listError, '');
+  assert.equal(page.data.hasItems, true);
+  assert.equal(page.data.itemCount, 3);
+  assert.match(page.data.countText, /共 3 条 · 1 家岩馆/);
 
-  const page = openSessionPage(
-    {},
-    { [route.id]: savedPhotoView('/tmp/thumb-a.jpg'), [other.id]: missingPhotoView() }
+  const gym = page.data.groups[0];
+  assert.equal(gym.gymId, session.gymId);
+  assert.equal(gym.gymName, 'A 馆');
+  assert.equal(gym.countText, '3 条');
+  assert.deepEqual(
+    gym.items.map(item => item.routeId),
+    [wanted.id, done.id, broken.id],
+    '馆内先想爬、再已完成、最后已归档'
   );
+  assert.deepEqual(gym.items.map(item => item.statusText), ['想爬', '已完成', '已归档']);
+  assert.equal(gym.items[0].attemptCountText, '2 把', '累计把数来自档案里的全部场次');
+  assert.equal(gym.items[0].latestNote, '起步用右脚', '最近一条非空备注');
+  assert.equal(gym.items[0].grade, 'V3');
+  assert.equal(gym.items[0].climbType, '抱石');
+  assert.equal(gym.items[2].status, 'archived');
+  // 页面数量与既有口径同源：就是 listWishlist 的本档可展示条目数。
+  assert.equal(page.data.itemCount, wishlist.listWishlist(archiveOf()).items.length);
 
-  assert.equal(page.data.wishlistError, '');
-  assert.equal(page.data.hasWishlist, true);
-  assert.equal(page.data.wishlistWanted.length, 2);
-  assert.match(page.data.wishlistCountText, /2 条想爬/);
+  // 点开某一条：按原长期线路 ID 进资料回看，导航本身不写任何键、也不会创建任何关联。
+  const archiveBefore = rawOf(ARCHIVE_KEY);
+  const wishlistBefore = rawOf(WISHLIST_KEY);
+  const photoBefore = rawOf(PHOTO_KEY);
+  const activeRouteBefore = archiveOf().activeRouteId;
+  const linksBefore = archiveOf().sessionRoutes.length;
+  resetWxLog();
+  page.openRoute(tapDataset({ routeId: done.id }));
+  assert.deepEqual(wxLog.navigations, [
+    '/pages/training-route/training-route?routeId=' + done.id
+  ]);
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBefore);
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore);
+  assert.equal(rawOf(PHOTO_KEY), photoBefore);
+  assert.equal(archiveOf().activeRouteId, activeRouteBefore, '单纯导航不换当前线路');
+  assert.equal(archiveOf().sessionRoutes.length, linksBefore, '单纯导航不创建关联');
 
-  const withPhoto = page.data.wishlistWanted.find(item => item.routeId === route.id);
-  assert.equal(withPhoto.hasPhoto, true, '有主照片的条目显示照片');
-  assert.equal(withPhoto.thumbnailPath, '/tmp/thumb-a.jpg');
-  assert.equal(withPhoto.photoStatusText, '有照片');
-  assert.equal(withPhoto.attemptCountText, '3 把', '累计把数来自档案里的全部场次');
-  assert.equal(withPhoto.latestNote, '抓到后向左摆', '最近一条非空备注');
-  assert.equal(withPhoto.grade, 'V3');
-  assert.equal(withPhoto.climbType, '抱石');
-
-  const noPhoto = page.data.wishlistWanted.find(item => item.routeId === other.id);
-  assert.equal(noPhoto.hasPhoto, false);
-  assert.equal(noPhoto.photoStatusText, '照片不可用', '照片文件缺失时明确写出状态');
-  assert.equal(noPhoto.attemptCountText, '0 把');
-  assert.equal(noPhoto.hasNote, false);
-
-  // 点开＝把同一条长期线路关联到本场次并选中，用的就是清单上的那个 ID。
-  await page.continueWishlistRoute(tapDataset({ routeId: route.id }));
-
-  const archiveAfter = archiveOf();
-  assert.equal(archiveAfter.activeRouteId, route.id, '选中的是清单上那条线');
-  assert.equal(page.data.selectedRoute.id, route.id);
-  assert.equal(archiveAfter.routes.length, routesBefore, '续记不新建线路');
-  assert.ok(
-    archiveAfter.sessionRoutes.some(
-      link => link.sessionId === day2.id && link.routeId === route.id
-    ),
-    '原线关联到当前场次'
-  );
-  assert.ok(
-    page.data.routes.some(item => item.id === route.id),
-    '本场线路列表里出现同一条线'
-  );
-
-  // 是否有照片不影响续记：没有照片的那条也能选中并续记。
-  await page.continueWishlistRoute(tapDataset({ routeId: other.id }));
-  assert.equal(archiveOf().activeRouteId, other.id);
+  // 已有的显式「继续这条线」操作仍可到达：进资料后按「当天再记」显式选择场次。
+  const routePage = openRoutePage(wanted.id);
+  assert.equal(routePage.data.canRecordAgain, true);
+  assert.equal(typeof routePage.recordAgain, 'function');
 });
 
-test('T027 场内页：只显示本馆清单，别的岩馆的线不出现也不串馆', () => {
-  const sessionA = startAt('2026-11-09', 'A 馆');
-  const routeA = newRoute(sessionA, { name: '蓝色动态线', grade: 'V3' });
+test('T035 独立清单：第二馆 B 的线按 B 的原线路 ID 进资料，返回后活动场次不变', () => {
+  const { sessionA, routeA, sessionB, routeB } = twoGymsFixture();
   favorite(routeA.id);
-
-  const sessionB = startAt('2026-11-10', 'B 馆');
-  const routeB = newRoute(sessionB, { name: '蓝色动态线', grade: 'V3' });
   favorite(routeB.id);
-  record(sessionB, routeB, 'fail', 'B 馆的线', '2026-11-10T10:00:00');
+  record(sessionB, routeB, 'fail', 'B 馆的线', '2026-11-09T11:00:00');
 
-  // 当前场次在 B 馆：清单里只有 B 馆那条，A 馆的不出现。
-  const pageB = openSessionPage();
-  assert.equal(pageB.data.activeSession.gymName, 'B 馆');
-  assert.deepEqual(pageB.data.wishlistWanted.map(item => item.routeId), [routeB.id]);
-
-  store.selectSession(sessionA.id);
-  const pageA = openSessionPage();
-  assert.equal(pageA.data.activeSession.gymName, 'A 馆');
-  assert.deepEqual(pageA.data.wishlistWanted.map(item => item.routeId), [routeA.id]);
-  assert.equal(
-    pageA.data.wishlistWanted[0].latestNote,
-    '',
-    'A 馆那条的备注不借用 B 馆同名线的备注'
+  const activeBefore = archiveOf().activeSessionId;
+  const page = openWishlistPage();
+  assert.equal(page.data.itemCount, 2);
+  assert.deepEqual(
+    page.data.groups.map(group => group.gymName),
+    ['A 馆', 'B 馆'],
+    '按岩馆分组、按岩馆名排序'
   );
+
+  // 点选第二馆 B：进的是 B 那条线的资料（原照片、备注与历史都由原线路 ID 决定）。
+  resetWxLog();
+  page.openRoute(tapDataset({ routeId: routeB.id }));
+  assert.deepEqual(wxLog.navigations, [
+    '/pages/training-route/training-route?routeId=' + routeB.id
+  ]);
+  const routePage = openRoutePage(routeB.id, { [routeB.id]: savedPhotoView('/tmp/thumb-b.jpg') });
+  assert.equal(routePage.data.route.id, routeB.id);
+  assert.equal(routePage.data.route.name, '蓝色动态线');
+  assert.equal(routePage.data.attemptCountText, '1 把');
+  assert.equal(routePage.data.groups.length, 1);
+  assert.equal(routePage.data.groups[0].attempts.length, 1);
+  assert.equal(routePage.data.groups[0].attempts[0].note, 'B 馆的线', '资料显示的是 B 自己的备注');
+  assert.equal(routePage.data.wishlistState.status, 'wanted');
+  assert.equal(routePage.data.routePhoto.hasPhoto, true, '按原线路 ID 显示 B 自己的照片');
+  assert.equal(routePage.data.routePhoto.thumbnailPath, '/tmp/thumb-b.jpg');
+
+  // A 馆那条线没有被共用同一个 routeId 的 B 顶替（这里是同一档案里的两个馆）。
+  const routePageA = openRoutePage(routeA.id);
+  assert.equal(routePageA.data.route.id, routeA.id);
+  assert.equal(routePageA.data.attemptCountText, '0 把');
+  assert.equal(routePageA.data.routePhoto.hasPhoto, false, 'A 那条没有照片，不借用 B 的');
+
+  // 返回清单再回首页：活动场次、当前线路与清单数量都不变。
+  page.onShow();
+  assert.equal(page.data.itemCount, 2);
+  assert.deepEqual(page.data.groups.map(group => group.gymName), ['A 馆', 'B 馆']);
+  assert.equal(archiveOf().activeSessionId, activeBefore, '点开清单不改活动场次');
 });
 
-test('T027 场内页：加入、撤下与拆线归档只改清单；写失败不报成功', async () => {
+test('T035 独立清单只读：打开、重试与点开都不写档案、清单与照片索引', () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
-  record(session, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
-
-  const page = openSessionPage();
-  assert.equal(page.data.selectedWishlist.inList, false);
-  assert.equal(page.data.selectedWishlist.canAdd, true);
-  const archiveBefore = rawOf(ARCHIVE_KEY);
-
-  // 加入：清单写一条，训练档案一个字节都不动。
-  page.addSelectedToWishlist();
-  assert.equal(entriesFor().items.length, 1);
-  assert.equal(page.data.selectedWishlist.inList, true);
-  assert.equal(page.data.selectedWishlist.canArchive, true);
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBefore);
-  assert.match(page.data.notice, /已加入下次想爬/);
-
-  // 重复点击：幂等，不产生第二条。
-  page.addSelectedToWishlist();
-  page.addSelectedToWishlist();
-  assert.equal(entriesFor().items.length, 1);
-  assert.match(page.data.notice, /已经在下次想爬清单里/);
-
-  // 拆线归档：只改清单，把次与历史留在档案里。
-  page.archiveSelectedWishlist();
-  assert.equal(entriesFor().items[0].status, 'archived');
-  assert.equal(store.routeHistory(archiveOf(), route.id).attemptCount, 1);
-  assert.equal(page.data.selectedWishlist.archived, true);
-  assert.equal(page.data.selectedWishlist.canAdd, true, '已归档后可重新加入');
-
-  // 撤下：只影响清单。
-  page.removeSelectedFromWishlist();
-  assert.deepEqual(entriesFor().items, []);
-  assert.equal(page.data.selectedWishlist.inList, false);
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBefore, '撤下收藏不动训练档案');
-  assert.equal(store.routeHistory(archiveOf(), route.id).attemptCount, 1);
-
-  // 写失败：不报已保存，清单保持原样；故障解除后重试成功。
-  armSetFailAt(1);
-  page.addSelectedToWishlist();
-  assert.equal(entriesFor().items.length, 0, '写失败后清单里没有半条记录');
-  assert.match(page.data.notice, /收藏未保存/);
-  assert.match(page.data.storageError, /保存下次想爬清单失败/);
-  disarmSetFail();
-
-  page.addSelectedToWishlist();
-  assert.equal(entriesFor().items.length, 1);
-  assert.equal(page.data.storageError, '');
-});
-
-test('T027 场内页：清单损坏时显示可见错误、收回写入口，原清单与档案不变', () => {
-  const session = startAt('2026-11-09', 'A 馆');
-  const route = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
-  record(session, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
-  const broken = JSON.stringify({ version: 99, items: [] });
-  storage.set(WISHLIST_KEY, broken);
-  const archiveBefore = rawOf(ARCHIVE_KEY);
-
-  const page = openSessionPage();
-  assert.equal(page.data.wishlistReady, false);
-  assert.match(page.data.wishlistError, /版本不受支持/);
-  assert.deepEqual(page.data.wishlistWanted, []);
-  assert.equal(page.data.hasWishlist, false);
-  assert.equal(page.data.selectedWishlist.canAdd, false, '清单不可读时不提供写入口');
-  assert.equal(page.data.selectedWishlist.canRemove, false);
-  assert.match(page.data.selectedWishlist.error, /版本不受支持/);
-
-  // 即使被误调用也拒绝落盘，原清单与训练档案都不变。
-  page.addSelectedToWishlist();
-  page.archiveSelectedWishlist();
-  assert.equal(rawOf(WISHLIST_KEY), broken);
-  assert.equal(rawOf(ARCHIVE_KEY), archiveBefore);
-
-  // 本场记录不受影响。
-  assert.equal(page.data.hasAttempts, true);
-  assert.equal(page.data.routeCountText, '1 把');
-});
-
-test('T027 场内页：已完攀与已归档的条目回看原线详情（同一个线路 ID）', () => {
-  const session = startAt('2026-11-09', 'A 馆');
-  const route = newRoute(session, { name: '蓝色动态线', climbType: '抱石', grade: 'V3' });
   favorite(route.id);
-  record(session, route, 'send', '这次成了', '2026-11-09T10:00:00');
-  assert.equal(entriesFor().items[0].status, 'completed');
+  record(session, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
+  const photoBlob = JSON.stringify({ version: 1, photos: [{ routeId: route.id }] });
+  storage.set(PHOTO_KEY, photoBlob);
 
-  const page = openSessionPage();
-  assert.equal(page.data.wishlistCompleted.length, 1);
-  assert.equal(page.data.wishlistCompleted[0].routeId, route.id);
+  const archiveBefore = rawOf(ARCHIVE_KEY);
+  const wishlistBefore = rawOf(WISHLIST_KEY);
+  const archiveWrites = writesOf(ARCHIVE_KEY);
+  const wishlistWrites = writesOf(WISHLIST_KEY);
+  const photoWrites = writesOf(PHOTO_KEY);
+
+  const page = openWishlistPage({ archiveId: archiveOf().archiveId });
+  assert.equal(page.data.itemCount, 1);
+  page.retryLoad();
+  page.onShow();
+  page.openRoute(tapDataset({ routeId: route.id }));
+
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBefore, '档案逐字节不变');
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore, '清单逐字节不变');
+  assert.equal(rawOf(PHOTO_KEY), photoBlob, '照片索引逐字节不变');
+  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites, '打开本页不多写一次档案');
+  assert.equal(writesOf(WISHLIST_KEY), wishlistWrites, '打开本页不多写一次清单');
+  assert.equal(writesOf(PHOTO_KEY), photoWrites, '打开本页不写照片索引');
+  // 本页没有任何写入口：数据层之外不存在第二个清单实现。
+  for (const name of ['addWishlist', 'removeWishlist', 'archiveWishlist']) {
+    assert.equal(typeof wishlistPageDefinition[name], 'undefined', '本页不应有：' + name);
+  }
+});
+
+test('T035 旧档没有清单键：独立清单是空态、首页仍是可点的 0 条入口', async () => {
+  startAt('2026-11-09', 'A 馆');
+  assert.equal(rawOf(WISHLIST_KEY), '', '夹具本身没有清单键');
+
+  const page = openWishlistPage();
+  assert.equal(page.data.listError, '');
+  assert.equal(page.data.claimError, '');
+  assert.equal(page.data.hasItems, false);
+  assert.equal(page.data.itemCount, 0);
+  assert.deepEqual(page.data.groups, []);
+  assert.equal(page.data.countText, '0 条', '空清单的数量就是 0');
+  assert.equal(rawOf(WISHLIST_KEY), '', '只读打开不会新建清单键');
+
+  const home = await openIndexPage();
+  assert.equal(home.data.wishlistItemCount, 0);
+  assert.equal(home.data.wishlistCountText, '0 条', '空清单显示 0');
+  assert.equal(home.data.hasWishlist, false);
+  assert.equal(home.data.wishlistError, '');
 
   resetWxLog();
-  page.openWishlistRoute(tapDataset({ routeId: route.id }));
+  home.openWishlist();
   assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + route.id
+    '/pages/training-wishlist/training-wishlist?archiveId=' + archiveOf().archiveId
   ]);
+  assert.equal(rawOf(WISHLIST_KEY), '', '首页入口不写清单');
+});
 
-  // 归档后同样能按原线路 ID 回看历史。
-  wishlist.archiveWishlist(route.id);
-  page.refreshView();
-  assert.equal(page.data.wishlistArchived.length, 1);
-  assert.equal(page.data.wishlistArchived[0].routeId, route.id);
-  assert.equal(store.routeHistory(archiveOf(), route.id).attemptCount, 1);
+test('T035 清单损坏或版本不受支持：独立清单显示失败与重试，原键逐字节保留；首页入口仍在', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
+  favorite(route.id);
+  const good = rawOf(WISHLIST_KEY);
+  const archiveBefore = rawOf(ARCHIVE_KEY);
+
+  // 1) JSON 解析不了：可见「损坏」。
+  storage.set(WISHLIST_KEY, '{ not-json');
+  const brokenJson = rawOf(WISHLIST_KEY);
+  const pageJson = openWishlistPage();
+  assert.match(pageJson.data.listError, /损坏/);
+  assert.equal(pageJson.data.hasItems, false);
+  assert.deepEqual(pageJson.data.groups, []);
+  assert.equal(pageJson.data.itemCount, 0, '不拿 0 冒充「还没收藏」之外的结果');
+  pageJson.retryLoad();
+  assert.match(pageJson.data.listError, /损坏/);
+  assert.equal(rawOf(WISHLIST_KEY), brokenJson, '重试不覆盖损坏的原数据');
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBefore);
+
+  // 2) 版本不受支持：可见报错，写入口不存在，原键不动。
+  const unsupported = JSON.stringify({ version: 99, items: [] });
+  storage.set(WISHLIST_KEY, unsupported);
+  const pageVersion = openWishlistPage();
+  assert.match(pageVersion.data.listError, /版本不受支持/);
+  assert.equal(pageVersion.data.itemCount, 0);
+  pageVersion.retryLoad();
+  assert.equal(rawOf(WISHLIST_KEY), unsupported);
+
+  // 3) 修回原清单后重试：在同一页上按修复后的清单显示（只读，不写盘）。
+  storage.set(WISHLIST_KEY, good);
+  pageVersion.retryLoad();
+  assert.equal(pageVersion.data.listError, '');
+  assert.equal(pageVersion.data.itemCount, 1);
+  assert.equal(rawOf(WISHLIST_KEY), good);
+
+  // 首页入口照常在：显示可见提示，点开仍能进独立清单看原因与重试。
+  storage.set(WISHLIST_KEY, brokenJson);
+  const home = await openIndexPage();
+  assert.equal(home.data.wishlistCountText, '');
+  assert.equal(home.data.hasWishlist, false);
+  assert.match(home.data.wishlistError, /损坏/);
+  resetWxLog();
+  home.openWishlist();
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(rawOf(WISHLIST_KEY), brokenJson, '首页与入口都不覆盖损坏的原清单');
+});
+
+test('T035 跨档碰撞：两份档案各有一条 route-1，只列本档那一条；入口带旧档案 ID 时不顶替', () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const routeA = newRoute(session, { name: '本档的线', grade: 'V3' });
+  favorite(routeA.id);
+  const archiveIdA = archiveOf().archiveId;
+  const rawA = rawOf(ARCHIVE_KEY);
+  assert.equal(routeA.id, 'route-1');
+
+  // 换成另一份档案：里面也有一条 route-1，并且也收藏了它（同一份清单文件、档案 ID 不同）。
+  swapArchive(otherArchiveRaw('archive-b', 'B 馆'));
+  assert.equal(archiveOf().archiveId, 'archive-b');
+  assert.equal(wishlist.addWishlist('route-1').ok, true);
+  assert.equal(wishlist.loadWishlist().state.items.length, 2, '清单里留着两份档案的收藏');
+
+  // 独立清单只列本档（B）那一条：不显示、也不拿 A 的收藏顶上来。
+  const pageB = openWishlistPage();
+  assert.equal(pageB.data.claimError, '');
+  assert.equal(pageB.data.listError, '');
+  assert.equal(pageB.data.itemCount, 1);
+  assert.deepEqual(pageB.data.groups.map(group => group.gymName), ['B 馆']);
+  assert.deepEqual(pageB.data.groups[0].items.map(item => item.routeId), ['route-1']);
+  assert.equal(pageB.data.groups[0].items[0].name, '另一份档案里的线路');
+  assert.equal(pageB.data.groups[0].items[0].attemptCountText, '0 把');
+
+  // 首页数量同样只数本档：与 listWishlist 口径一致（这里是 1 条，不是 2 条）。
+  assert.equal(
+    wishlist.listWishlist(archiveOf()).items.length,
+    pageB.data.itemCount,
+    '数量口径与 listWishlist 一致'
+  );
+
+  // 入口带的是换档前那一份档案的 ID：不展示任何条目，也不写入任何一份档案。
+  const wishlistBefore = rawOf(WISHLIST_KEY);
+  const pageStale = openWishlistPage({ archiveId: archiveIdA });
+  assert.match(pageStale.data.claimError, /另一份本机档案/);
+  assert.equal(pageStale.data.listError, '');
+  assert.deepEqual(pageStale.data.groups, []);
+  assert.equal(pageStale.data.itemCount, 0);
+  assert.equal(rawOf(WISHLIST_KEY), wishlistBefore);
+
+  // 切回 A 档案：A 的收藏仍在，显示的是 A 自己那条线。
+  swapArchive(rawA);
+  const pageA = openWishlistPage({ archiveId: archiveIdA });
+  assert.equal(pageA.data.claimError, '');
+  assert.deepEqual(pageA.data.groups.map(group => group.gymName), ['A 馆']);
+  assert.deepEqual(pageA.data.groups[0].items.map(item => item.routeId), [routeA.id]);
+  assert.equal(pageA.data.groups[0].items[0].name, '本档的线');
+});
+
+test('T035 首页与场内都不再铺清单：首页只剩一行入口，场内没有清单展示与写入口', () => {
+  const indexWxml = fs.readFileSync(INDEX_WXML, 'utf8');
+  const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
+
+  // 首页：一行入口（标题 + 数量），没有清单条目、也没有按条目的线路 ID。
+  assert.match(indexWxml, /id="wishlist-entry"[\s\S]{0,200}bindtap="openWishlist"/);
+  assert.match(indexWxml, /id="wishlist-count"/);
+  assert.doesNotMatch(indexWxml, /id="wishlist-gym-/);
+  assert.doesNotMatch(indexWxml, /id="wishlist-\{\{/);
+  assert.doesNotMatch(indexWxml, /bindtap="openWishlistRoute"/);
+  assert.equal(typeof indexDefinition.openWishlistRoute, 'undefined');
+  assert.equal(typeof indexDefinition.data.wishlistGroups, 'undefined');
+
+  // 场内：整块清单展示（分组行与当前线路的清单卡）都不在，写入口也没有留在场内。
+  assert.doesNotMatch(sessionWxml, /id="wishlist-section"/);
+  assert.doesNotMatch(sessionWxml, /id="selected-wishlist"/);
+  assert.doesNotMatch(sessionWxml, /id="wishlist-row-/);
+  for (const handler of [
+    'refreshWishlist',
+    'wishlistView',
+    'selectedWishlistView',
+    'continueWishlistRoute',
+    'openWishlistRoute',
+    'addSelectedToWishlist',
+    'removeSelectedFromWishlist',
+    'archiveSelectedWishlist'
+  ]) {
+    assert.equal(typeof sessionDefinition[handler], 'undefined', '场内不应再有：' + handler);
+  }
+
+  // 保留的功能一个不少：小结勾选、结果按钮、换线与记录 tab 仍在。
+  assert.match(sessionWxml, /bindtap="openSessionSummary"/);
+  assert.match(sessionWxml, /class="result-button result-fail"/);
+  assert.match(sessionWxml, /bindtap="recordAttempt"/);
+  const appJson = JSON.parse(fs.readFileSync(APP_JSON, 'utf8'));
+  assert.deepEqual(
+    appJson.tabBar.list.map(item => item.pagePath),
+    [
+      'pages/index/index',
+      'pages/record-list/record-list',
+      'pages/stats/stats',
+      'pages/profile/profile'
+    ],
+    'tabBar 路由不变'
+  );
 });
 
 // ------------------------------------------------------------------ *
@@ -1402,11 +1530,31 @@ test('T027 线路详情页：清单损坏时显示可见错误并收回写入口
   assert.equal(page.data.hasAttempts, true);
 });
 
-test('T027 首页：按岩馆分组显示想爬清单概况，点开回原线详情，且不写任何本机数据', async () => {
+test('T027 线路详情页：加入、撤下与拆线归档也改独立清单页看到的那一条（同一份清单）', () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
+  record(session, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
+
+  const routePage = openRoutePage(route.id);
+  routePage.addToWishlist();
+
+  // 资料页加入的那一条，正好就是独立清单页列出的那一条。
+  const listPage = openWishlistPage();
+  assert.equal(listPage.data.itemCount, 1);
+  assert.deepEqual(listPage.data.groups[0].items.map(item => item.routeId), [route.id]);
+
+  // 资料页撤下后，独立清单页按最新清单重算为空态（同一份记录，没有第二份）。
+  routePage.removeFromWishlist();
+  listPage.onShow();
+  assert.equal(listPage.data.itemCount, 0);
+  assert.equal(listPage.data.hasItems, false);
+  assert.deepEqual(entriesFor().items, []);
+});
+
+test('T035 首页单行入口：数量就是 listWishlist 的本档条目数，点击进独立清单且不写盘', async () => {
   const sessionA = startAt('2026-11-09', 'A 馆');
   const routeA = newRoute(sessionA, { name: '蓝色动态线', grade: 'V3' });
   record(sessionA, routeA, 'fail', '起步用右脚', '2026-11-09T10:00:00');
-  record(sessionA, routeA, 'fail', '', '2026-11-09T10:05:00');
   const done = newRoute(sessionA, { name: '已完攀的线', grade: 'V4' });
   record(sessionA, done, 'send', '', '2026-11-09T10:10:00');
 
@@ -1415,90 +1563,94 @@ test('T027 首页：按岩馆分组显示想爬清单概况，点开回原线详
   favorite(routeA.id);
   favorite(done.id);
   favorite(routeB.id);
+  const archived = newRoute(sessionB, { name: 'B 馆拆掉的线', grade: 'V2' });
+  favorite(archived.id);
+  assert.equal(wishlist.archiveWishlist(archived.id).ok, true);
 
   const archiveBefore = rawOf(ARCHIVE_KEY);
   const wishlistBefore = rawOf(WISHLIST_KEY);
+  const listed = wishlist.listWishlist(archiveOf());
 
   const page = await openIndexPage();
   assert.equal(page.data.wishlistError, '');
+  assert.equal(page.data.wishlistItemCount, listed.items.length, '首页数量 = listWishlist 的条目数');
+  assert.equal(page.data.wishlistItemCount, 4, '已归档也照常计入');
+  assert.equal(page.data.wishlistCountText, '4 条');
   assert.equal(page.data.hasWishlist, true);
-  assert.match(page.data.wishlistCountText, /3 条 · 2 家岩馆/);
-  assert.deepEqual(
-    page.data.wishlistGroups.map(group => group.gymName),
-    ['A 馆', 'B 馆'],
-    '按岩馆分组，岩馆名排序'
-  );
 
-  const groupA = page.data.wishlistGroups.find(group => group.gymName === 'A 馆');
-  assert.equal(groupA.countText, '2 条');
-  assert.deepEqual(
-    groupA.items.map(item => item.routeId),
-    [routeA.id, done.id],
-    '馆内先想爬、再已完成'
-  );
-  const rowA = groupA.items[0];
-  assert.equal(rowA.attemptCountText, '2 把', '首页带累计把数与最近备注');
-  assert.equal(rowA.latestNote, '起步用右脚');
-  assert.equal(rowA.statusText, '想爬');
-  assert.equal(groupA.items[1].statusText, '已完成');
-  assert.equal(groupA.items[1].grade, 'V4');
-
-  const groupB = page.data.wishlistGroups.find(group => group.gymName === 'B 馆');
-  assert.deepEqual(groupB.items.map(item => item.routeId), [routeB.id]);
-
-  // 点开某一条：回到它的长期线路详情（同一个线路 ID）。
+  // 点这一行：打开独立清单（带上渲染这一刻的档案 ID 供核对）。
   resetWxLog();
-  page.openWishlistRoute(tapDataset({ routeId: routeA.id }));
+  page.openWishlist();
   assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?routeId=' + routeA.id
+    '/pages/training-wishlist/training-wishlist?archiveId=' + archiveOf().archiveId
   ]);
 
   // 首页只读：打开与点开都不写本机档案与清单。
   assert.equal(rawOf(ARCHIVE_KEY), archiveBefore);
   assert.equal(rawOf(WISHLIST_KEY), wishlistBefore);
+
+  // 资料页移除一条后回首页：数量据实刷新。
+  const routePage = openRoutePage(routeA.id);
+  routePage.removeFromWishlist();
+  const again = await openIndexPage();
+  assert.equal(again.data.wishlistItemCount, 3);
+  assert.equal(again.data.wishlistCountText, '3 条');
 });
 
-test('T027 首页：清单损坏时显示可见错误，不显示任何条目', async () => {
-  const { routeA } = twoGymsFixture();
-  favorite(routeA.id);
-  storage.set(WISHLIST_KEY, '{ not-json');
-  const broken = rawOf(WISHLIST_KEY);
+test('T035 首页单行入口在小结勾选后按最新清单刷新数量', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session, { name: '蓝色动态线', grade: 'V3' });
+  record(session, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
 
-  const page = await openIndexPage();
-  assert.match(page.data.wishlistError, /损坏/);
-  assert.equal(page.data.hasWishlist, false);
-  assert.deepEqual(page.data.wishlistGroups, []);
-  assert.equal(rawOf(WISHLIST_KEY), broken);
+  const before = await openIndexPage();
+  assert.equal(before.data.wishlistItemCount, 0);
+  assert.equal(before.data.wishlistCountText, '0 条');
+
+  // 小结勾选走的就是这一份清单接口（场内页只留小结入口，不再有场内清单）。
+  const added = wishlist.addWishlist(route.id);
+  assert.equal(added.ok, true, added.error);
+
+  const after = await openIndexPage();
+  assert.equal(after.data.wishlistItemCount, 1);
+  assert.equal(after.data.wishlistCountText, '1 条');
 });
 
-test('T027 WXML 绑定核对：清单入口绑定真实处理函数，导航目标是同一条原线', () => {
-  const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
-  const routeWxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+// ------------------------------------------------------------------ *
+// 绑定与实现只有一份
+// ------------------------------------------------------------------ *
+
+test('T035 WXML 绑定核对：首页单行入口与独立清单都绑定真实处理函数', () => {
   const indexWxml = fs.readFileSync(INDEX_WXML, 'utf8');
+  const wishlistWxml = fs.readFileSync(WISHLIST_PAGE_WXML, 'utf8');
+  const routeWxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+  const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
 
-  for (const handler of [
-    'continueWishlistRoute',
-    'openWishlistRoute',
-    'addSelectedToWishlist',
-    'removeSelectedFromWishlist',
-    'archiveSelectedWishlist'
-  ]) {
-    assert.ok(handlersIn(sessionWxml).includes(handler), '场内页应绑定：' + handler);
-    assert.equal(typeof sessionDefinition[handler], 'function');
+  assert.ok(handlersIn(indexWxml).includes('openWishlist'), '首页应绑定：openWishlist');
+  assert.equal(typeof indexDefinition.openWishlist, 'function');
+
+  for (const handler of ['openRoute', 'goHome']) {
+    assert.ok(handlersIn(wishlistWxml).includes(handler), '独立清单应绑定：' + handler);
+    assert.equal(typeof wishlistPageDefinition[handler], 'function');
   }
+  assert.ok(handlersIn(wishlistWxml).includes('retryLoad'), '独立清单应绑定重试入口');
+  assert.equal(typeof wishlistPageDefinition.retryLoad, 'function');
+
+  // 独立清单每一条都带真实线路 ID，点开用的是同一个 ID。
+  assert.match(wishlistWxml, /data-route-id="\{\{route\.routeId\}\}"/);
+
+  // 线路详情页仍是加入、撤下与拆线归档的唯一入口。
   for (const handler of ['addToWishlist', 'removeFromWishlist', 'archiveWishlistItem']) {
     assert.ok(handlersIn(routeWxml).includes(handler), '线路详情页应绑定：' + handler);
     assert.equal(typeof routeDefinition[handler], 'function');
   }
-  assert.ok(handlersIn(indexWxml).includes('openWishlistRoute'), '首页应绑定：openWishlistRoute');
-  assert.equal(typeof indexDefinition.openWishlistRoute, 'function');
+  // 场内不再有清单绑定。
+  for (const handler of ['continueWishlistRoute', 'openWishlistRoute', 'addSelectedToWishlist']) {
+    assert.equal(handlersIn(sessionWxml).includes(handler), false, '场内不应再绑定：' + handler);
+  }
 
-  // 场内页的清单条目带真实线路 ID，点开用的是同一个 ID。
-  assert.match(sessionWxml, /data-route-id="\{\{item\.routeId\}\}"/);
-
-  // 三个页面都走 utils/training-wishlist.js：加入、撤下与归档只有一份实现。
+  // 三页都走 utils/training-wishlist.js：加入、撤下与归档只有一份实现。
   assert.match(fs.readFileSync(ROUTE_JS, 'utf8'), /utils\/training-wishlist/);
-  assert.match(fs.readFileSync(SESSION_JS, 'utf8'), /utils\/training-wishlist/);
+  assert.match(fs.readFileSync(WISHLIST_PAGE_JS, 'utf8'), /utils\/training-wishlist/);
   assert.match(fs.readFileSync(INDEX_JS, 'utf8'), /utils\/training-wishlist/);
 });
 
@@ -1509,7 +1661,12 @@ test('T027 清单层不接云、不读旧记录：只读写正式本机命名空
   assert.ok(!/climbing_records/.test(text), '清单层不应触及旧集合');
   assert.match(text, /store\.NAMESPACE \+ 'wishlist'/, '清单键在正式本机命名空间内');
   assert.equal(wishlist.WISHLIST_KEY, 'climbingNote.training.v1.wishlist');
-  for (const page of [SESSION_JS, ROUTE_JS, INDEX_JS]) {
+  for (const page of [SESSION_JS, ROUTE_JS, INDEX_JS, WISHLIST_PAGE_JS]) {
     assert.ok(!/wx\.cloud/.test(fs.readFileSync(page, 'utf8')), page + ' 不应直接用 wx.cloud');
   }
+  // 独立清单页只读：只有导航与重试，没有清单写接口。
+  const listPageText = fs.readFileSync(WISHLIST_PAGE_JS, 'utf8');
+  ['addWishlist', 'removeWishlist', 'archiveWishlist', 'saveWishlist'].forEach(name => {
+    assert.ok(!new RegExp('wishlist\\.' + name).test(listPageText), name + ' 不应出现在独立清单页');
+  });
 });

@@ -1202,16 +1202,20 @@ test('T031 重新打开同一场次恢复持久化的当前线，并按原 ID �
   });
   assert.equal(bAttempt.ok, true, bAttempt.error);
 
-  // 换到 A，并把 A 加入下次想爬：换线只改当前选择，清单是另一份记录。
+  // 换到 A。T035 起场内不再铺「下次想爬」清单，加入走同一份清单接口
+  // （线路资料页与小结勾选共用），这里直接用数据层核对清单口径。
   store.selectRoute(a.route.id);
   const first = openSessionPage({});
   assert.equal(first.data.selectedRoute.id, a.route.id);
-  first.addSelectedToWishlist();
 
   // 重新打开同一场次：当前线是持久化的那一条。
   const reopened = openSessionPage({});
   assert.equal(reopened.data.selectedRoute.id, a.route.id, '重开恢复持久化的当前线');
   assert.equal(reopened.data.selectedRoute.name, 'A 线');
+  // 场内不再有清单展示与清单写入口（T035）。
+  assert.equal(typeof reopened.refreshWishlist, 'undefined');
+  assert.equal(typeof reopened.addSelectedToWishlist, 'undefined');
+  assert.equal(typeof reopened.data.selectedWishlist, 'undefined');
 
   // 逐把记录按原把次 ID 读回，且只读当前线的。
   const expected = store.attemptsFor(archiveOf(), {
@@ -1232,11 +1236,6 @@ test('T031 重新打开同一场次恢复持久化的当前线，并按原 ID �
   // 场内页的小结入口按原 sessionId 指向这一场（打开独立小结页时带过去的就是它）。
   assert.equal(reopened.data.summaryEntrySessionId, a.session.id, '入口指向本场');
   assert.equal(reopened.data.summaryEntryViewingOther, false);
-  assert.equal(
-    reopened.data.wishlistWanted.some(row => row.routeId === a.route.id),
-    true,
-    '清单按原线路 ID 列出当前线'
-  );
   // B 的记录没有被 A 的换线或重开改动。
   assert.equal(
     store.attemptsFor(archiveOf(), { sessionId: a.session.id, routeId: b.route.id }).length,

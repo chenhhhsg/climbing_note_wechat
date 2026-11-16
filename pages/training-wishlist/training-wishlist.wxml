@@ -1,0 +1,83 @@
+<!--
+  下次想爬独立清单页（T035）
+  按岩馆分组、按状态排序列出收藏过的长期线路（想爬 / 已完成 / 已归档），
+  点开某一条按原长期线路 ID 进线路资料看照片、备注与跨日历史。
+  只读本机档案与清单：本页没有写入口，不建场次、不关联线路、不写任何键。
+-->
+<view class="page">
+  <!-- 本机档案损坏或版本不支持：显示可见失败与重试，不覆盖原数据 -->
+  <view wx:if="{{loadError}}" id="load-error" class="card error-card">
+    <text class="error-title">本机训练档案读取失败</text>
+    <text class="error-text">{{loadError}}</text>
+    <text class="error-hint">原档案保持原样，没有被改写。</text>
+    <button id="load-retry" class="secondary-button" bindtap="retryLoad">重试读取</button>
+  </view>
+
+  <!-- 换档：入口那一份档案已经不是本机现在这一份，不拿同名线路顶替 -->
+  <view wx:elif="{{claimError}}" id="claim-error" class="card error-card">
+    <text class="error-title">清单暂不可展示</text>
+    <text id="claim-error-text" class="error-text">{{claimError}}</text>
+    <text class="error-hint">只读展示：原档案与清单都没有被改写。</text>
+    <button id="claim-back" class="secondary-button" bindtap="goHome">返回首页</button>
+  </view>
+
+  <block wx:else>
+    <view class="list-head">
+      <text class="list-title">下次想爬</text>
+      <text wx:if="{{hasItems}}" id="wishlist-total" class="list-total">{{countText}}</text>
+    </view>
+
+    <!-- 清单损坏、版本不受支持或读取失败：给出失败与重试，不假装「还没收藏」 -->
+    <view wx:if="{{listError}}" id="list-error" class="card error-card">
+      <text class="error-title">下次想爬清单暂不可读</text>
+      <text id="list-error-text" class="error-text">{{listError}}</text>
+      <text class="error-hint">原清单与照片索引保持原样，没有被改写。</text>
+      <button id="list-retry" class="secondary-button" bindtap="retryLoad">重试读取</button>
+    </view>
+
+    <!-- 空态：还没有收藏过（与本机没有清单键是同一件事） -->
+    <view wx:elif="{{!hasItems}}" id="list-empty" class="empty-list">
+      <text class="empty-text">还没有想爬的线</text>
+      <text class="empty-hint">在岩馆把想继续的线加入清单后，这里按岩馆分组列出；点开按原线路 ID 看照片、把次与历史。</text>
+    </view>
+
+    <block wx:else>
+      <text class="list-hint">按岩馆分组；点一条线路看它的原照片、备注与跨日历史，再用「当天再记」继续这条线。</text>
+      <view wx:for="{{groups}}" wx:key="gymId" id="wishlist-gym-{{item.gymId}}" class="gym-group">
+        <view class="gym-head">
+          <text class="gym-name">{{item.gymName}}</text>
+          <text class="gym-count">{{item.countText}}</text>
+        </view>
+        <view
+          wx:for="{{item.items}}"
+          wx:for-item="route"
+          wx:key="routeId"
+          id="wishlist-row-{{route.routeId}}"
+          class="route-row"
+          data-route-id="{{route.routeId}}"
+          bindtap="openRoute"
+        >
+          <view class="route-swatch" style="background: {{route.colorHex}};"></view>
+          <view class="route-info">
+            <view class="route-head">
+              <text class="route-name">{{route.name}}</text>
+              <text class="route-grade">{{route.grade}}</text>
+              <text
+                id="wishlist-state-{{route.routeId}}"
+                class="route-state route-state-{{route.status}}"
+              >{{route.statusText}}</text>
+            </view>
+            <text class="route-meta">{{route.climbType}}{{route.colorName ? ' · ' + route.colorName : ''}} · 累计 {{route.attemptCountText}}</text>
+            <text wx:if="{{route.hasNote}}" class="route-note">最近备注：{{route.latestNote}}</text>
+            <text wx:else class="route-note route-note-empty">还没有备注</text>
+          </view>
+          <text class="route-open">看资料 ›</text>
+        </view>
+      </view>
+    </block>
+
+    <view class="back-section">
+      <button id="back-home" class="secondary-button" bindtap="goHome">返回首页</button>
+    </view>
+  </block>
+</view>

@@ -31,55 +31,22 @@
   </view>
 
   <!--
-    下次想爬（T027）：按岩馆分组的收藏清单，只读。
-    点开某一条回到它的长期线路详情，按原线路 ID 看照片、把次与历史并继续记。
+    下次想爬（T035）：首页只占一行，显示名称与数量。
+    整份按岩馆分组的清单在独立页 pages/training-wishlist（点开看分组、状态与空态）。
+    0 条时这一行照常可点，点开就是空态；首页本身只读，不写清单、不建场次。
   -->
-  <view id="wishlist-entry" class="section wishlist-entry">
-    <view class="section-header">
-      <text class="section-title">下次想爬</text>
-      <text wx:if="{{wishlistCountText}}" id="wishlist-count" class="section-more">{{wishlistCountText}}</text>
-    </view>
-
-    <view wx:if="{{wishlistError}}" id="wishlist-error" class="cloud-error">
-      <text class="cloud-error-text">下次想爬暂不可读：{{wishlistError}}</text>
-      <text class="empty-hint">原清单与训练记录保持原样；先开始或继续一场训练不受影响。</text>
-    </view>
-
-    <view wx:elif="{{!hasWishlist}}" id="wishlist-empty" class="empty-state wishlist-empty">
-      <text class="empty-text">还没有想爬的线</text>
-      <text class="empty-hint">在岩馆把想继续的线加入清单后，下次进馆从这里直接找到原线。</text>
-    </view>
-
-    <block wx:else>
-      <view wx:for="{{wishlistGroups}}" wx:key="gymId" id="wishlist-gym-{{item.gymId}}" class="wishlist-gym">
-        <view class="wishlist-gym-head">
-          <text class="wishlist-gym-name">{{item.gymName}}</text>
-          <text class="wishlist-gym-count">{{item.countText}}</text>
-        </view>
-        <view
-          wx:for="{{item.items}}"
-          wx:for-item="route"
-          wx:key="routeId"
-          id="wishlist-{{route.routeId}}"
-          class="wishlist-line"
-          data-route-id="{{route.routeId}}"
-          bindtap="openWishlistRoute"
-        >
-          <view class="route-swatch" style="background: {{route.colorHex}};"></view>
-          <view class="wishlist-line-info">
-            <view class="wishlist-line-head">
-              <text class="wishlist-line-name">{{route.name}}</text>
-              <text
-                id="wishlist-state-{{route.routeId}}"
-                class="wishlist-line-state wishlist-line-state-{{route.status}}"
-              >{{route.statusText}}</text>
-            </view>
-            <text class="wishlist-line-meta">{{route.climbType}} {{route.grade}}{{route.colorName ? ' · ' + route.colorName : ''}} · 累计 {{route.attemptCountText}}</text>
-            <text wx:if="{{route.hasNote}}" class="wishlist-line-note">最近备注：{{route.latestNote}}</text>
-          </view>
-        </view>
+  <view id="wishlist-entry" class="section wishlist-entry" bindtap="openWishlist">
+    <view class="wishlist-entry-row">
+      <text class="wishlist-entry-title">下次想爬</text>
+      <view class="wishlist-entry-right">
+        <text wx:if="{{wishlistCountText}}" id="wishlist-count" class="wishlist-entry-count">{{wishlistCountText}}</text>
+        <text class="wishlist-entry-arrow">›</text>
       </view>
-    </block>
+    </view>
+    <text wx:if="{{!wishlistError && !hasWishlist}}" id="wishlist-empty-hint" class="wishlist-entry-hint">还没有想爬的线；在岩馆加入清单后，这里按岩馆列出。</text>
+    <text wx:else class="wishlist-entry-hint">按岩馆分组的清单；点开某条线看它的原照片、备注与历史。</text>
+
+    <text wx:if="{{wishlistError}}" id="wishlist-error" class="wishlist-entry-error">清单暂不可读：{{wishlistError}}（点开可见原因与重试）</text>
   </view>
 
   <!-- 旧记录区域（云端旧汇总，只读回看；与本机训练分开） -->
