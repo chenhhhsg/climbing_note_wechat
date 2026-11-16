@@ -366,7 +366,6 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
   for (const required of [
     'retryLoad',
     'confirmCorrectSend',
-    'toggleCorrectionArea',
     'recordAgain',
     'chooseSessionForAgain',
     'cancelSessionPicker',
@@ -400,10 +399,10 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
   assert.match(fs.readFileSync(LIST_JS, 'utf8'), /\/pages\/record-detail\/record-detail\?id=/);
   assert.match(listWxml, /data-route-id="\{\{item\.id\}\}"/);
   assert.match(listWxml, /data-id="\{\{item\._id\}\}"/);
-  // 跨日回看按场次分组，更正控件逐把带自己的原把次与归属
+  // 跨日回看按场次分组，历史里原把次旁的更正控件带自己的原把次与归属
   assert.match(routeWxml, /id="history-group-\{\{item\.sessionId\}\}"/);
-  assert.match(routeWxml, /data-attempt-id="\{\{item\.attemptId\}\}"/);
-  assert.match(routeWxml, /data-route-id="\{\{item\.routeId\}\}"/);
+  assert.match(routeWxml, /data-attempt-id="\{\{attempt\.id\}\}"/);
+  assert.match(routeWxml, /data-route-id="\{\{route\.id\}\}"/);
   assert.match(routeWxml, /data-session-id="\{\{item\.sessionId\}\}"/);
 
   const routeJson = JSON.parse(fs.readFileSync(ROUTE_JSON, 'utf8'));
@@ -912,9 +911,7 @@ test('T039 更正只出现在资格认可的原把次旁；独立更正区默认
   const failRow = attemptRowOf(page, 'attempt-fail-1');
   assert.equal(failRow.attempt.correctionState, '', '未完成的把次没有更正入口');
 
-  // 独立更正区默认收起，但行数据仍可辨认目标（日期、场次、第几把、原结果）。
-  assert.equal(page.data.correctionOpen, false, '独立更正区默认收起');
-  assert.equal(page.data.correctionCountText, '1 把可更正');
+  // 行数据仍可辨认目标（日期、场次、第几把、原结果），但不再有独立区的展开状态。
   assert.equal(page.data.correctionRows.length, 1);
   const row = page.data.correctionRows[0];
   assert.equal(row.attemptId, 'attempt-send-2');
@@ -922,14 +919,9 @@ test('T039 更正只出现在资格认可的原把次旁；独立更正区默认
   assert.match(row.contextText, /2020-05-03/);
   assert.match(row.contextText, /第 1 场/, '同一天只有一场时就是第 1 场');
   assert.equal(row.resultText, '完攀');
-
-  // 展开/收起只改展示，不写盘。
-  const rawBefore = rawArchive();
-  page.toggleCorrectionArea();
-  assert.equal(page.data.correctionOpen, true);
-  page.toggleCorrectionArea();
-  assert.equal(page.data.correctionOpen, false);
-  assert.equal(rawArchive(), rawBefore, '展开或收起更正区不写盘');
+  assert.equal('correctionOpen' in page.data, false, '不再保留独立区的展开状态');
+  assert.equal('correctionStatusText' in page.data, false, '不再保留独立区的状态文案');
+  assert.equal(typeof page.toggleCorrectionArea, 'undefined', '不再有独立区的折叠切换');
 
   // 同名异线：route-2 的完攀属于它自己那条线，不是 route-1 的目标。
   const other = openRoutePage('route-2');
@@ -937,20 +929,75 @@ test('T039 更正只出现在资格认可的原把次旁；独立更正区默认
   assert.equal(other.data.correctionRows[0].attemptId, 'attempt-other-send');
   assert.equal(attemptRowOf(other, 'attempt-other-send').attempt.correctionState, 'ready');
 
-  // WXML：入口在原把次行内；独立区只有展开后才渲染行，且仍绑定确认处理器。
+  // WXML：历史里只有原把次行内这一处入口，不再渲染独立更正区。
   const wxml = fs.readFileSync(ROUTE_WXML, 'utf8');
   assert.match(
     wxml,
     /id="attempt-\{\{attempt\.id\}\}"[\s\S]{0,2200}id="correct-attempt-\{\{attempt\.id\}\}"[\s\S]{0,700}bindtap="confirmCorrectSend"/
   );
-  assert.match(
-    wxml,
-    /id="route-correction"[\s\S]{0,600}bindtap="toggleCorrectionArea"[\s\S]{0,1800}wx:if="\{\{correctionOpen\}\}"[\s\S]{0,1400}bindtap="confirmCorrectSend"/
+  assert.equal(
+    [...wxml.matchAll(/bindtap="confirmCorrectSend"/g)].length,
+    1,
+    '确认入口只有原把次旁一处'
   );
+  assert.equal(wxml.indexOf('id="route-correction"'), -1, '不再有独立更正区');
+  assert.equal(wxml.indexOf('toggleCorrectionArea'), -1, '不再有独立区的折叠切换');
+
   // 确认文案写死在共用实现里：两句话都能被渲染。
   const routeSource = fs.readFileSync(ROUTE_JS, 'utf8');
   assert.match(routeSource, /完攀改成未完成/);
   assert.match(routeSource, /这把还计入总把数，完攀次数减 1/);
+});
+
+test('T039 从未完成到跨日完攀再更正：只有原行一处可点，相邻与跨日把次不受影响', async () => {
+  writeT039Fixture();
+  const page = openRoutePage('route-1');
+
+  // 第一场未完成、第二场先未完成再完攀：只有完攀那一把带入口，相邻把次没有。
+  const clickable = [];
+  for (const group of page.data.groups) {
+    for (const attempt of group.attempts) {
+      if (attempt.correctionState) clickable.push(attempt.id);
+    }
+  }
+  assert.deepEqual(clickable, ['attempt-send-2'], '历史里只有原行一处可点');
+  assert.equal(attemptRowOf(page, 'attempt-fail-2').attempt.correctionState, '', '相邻未完成把次没有入口');
+  assert.equal(attemptRowOf(page, 'attempt-fail-1').attempt.correctionState, '', '跨日未完成把次没有入口');
+
+  const wxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+  assert.equal([...wxml.matchAll(/bindtap="confirmCorrectSend"/g)].length, 1, '界面只有原行一处入口');
+  assert.equal(wxml.indexOf('id="route-correction"'), -1);
+  assert.equal(wxml.indexOf('toggleCorrectionArea'), -1);
+
+  // 取消：确认写明原日期/原序号，且仍有「完攀改成未完成」，一个字节都不写。
+  const rawBefore = rawArchive();
+  modalLog.queue.push('cancel');
+  await page.confirmCorrectSend(correctionEventOf(page, 'attempt-send-2'));
+  assert.equal(modalLog.calls.length, 1);
+  assert.match(modalLog.calls[0].content, /2020-05-03/, '跨日更正写明原日期');
+  assert.match(modalLog.calls[0].content, /第 2 把/, '写明原序号');
+  assert.match(modalLog.calls[0].content, /完攀改成未完成/);
+  assert.equal(rawArchive(), rawBefore, '取消不写盘');
+
+  // 确认后只有原行变成未完成；相邻与跨日的未完成把次原样保留。
+  modalLog.queue.push('confirm');
+  await page.confirmCorrectSend(correctionEventOf(page, 'attempt-send-2'));
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.resultText, '未完成');
+  assert.equal(attemptRowOf(page, 'attempt-send-2').attempt.correctionState, 'corrected');
+  assert.equal(attemptRowOf(page, 'attempt-fail-2').attempt.resultText, '未完成');
+  assert.equal(attemptRowOf(page, 'attempt-fail-1').attempt.resultText, '未完成');
+  const remaining = [];
+  for (const group of page.data.groups) {
+    for (const attempt of group.attempts) {
+      if (attempt.correctionState === 'ready' || attempt.correctionState === 'retry') {
+        remaining.push(attempt.id);
+      }
+    }
+  }
+  assert.deepEqual(remaining, [], '改完后历史里没有第二处可点的更正');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-send-2').note, '第二场完攀');
+  assert.equal(attemptsOf('route-1').find(item => item.id === 'attempt-fail-2').note, '第二场第一把');
+  assert.equal(attemptsOf('route-2').find(item => item.id === 'attempt-other-send').result, 'send');
 });
 
 test('T039 更正前确认写明日期/场次/原序号/原结果；取消与串档事件都零写入', async () => {
@@ -1048,7 +1095,7 @@ test('T039 确认后原位显示未完成：把数不变、完攀减一，原 ID
   assert.equal(page.data.routeCompleted, false);
   assert.equal(page.data.canRecordAgain, true, '改成未完成后可以再记');
   assert.equal(page.data.correctionRows[0].state, 'corrected');
-  assert.equal(page.data.correctionCountText, '都已改为未完成');
+  assert.equal('correctionStatusText' in page.data, false, '不再有独立区的重试提示文案');
 
   // 原把次的 ID、序号、场次、时间与备注都不变；视频索引逐字节不变。
   const stored = attemptsOf('route-1').find(item => item.id === 'attempt-send-2');

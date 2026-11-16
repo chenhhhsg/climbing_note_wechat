@@ -31,8 +31,8 @@
  * 的抱石已确认完攀），「更正」就显示在原场次分组里的那一把行上；点它先弹出确认，
  * 写明日期、场次、原序号、原结果和「完攀改成未完成；这把还计入总把数，完攀次数减 1」。
  * 确认后才按该行捕获的档案、场次、线路、把次四个 ID 在**最新**档案上重新核对并调用
- * 同一份 correctSend；取消不写盘，写失败保留同一把的「重试更正」。原来独立的
- * 「点错了完攀？」区默认收起，只作为逐行复查的出口，不另开一套写实现。
+ * 同一份 correctSend；取消不写盘，写失败保留同一把的「重试更正」。本页不再另设独立的
+ * 「点错了完攀？」区，历史里只有原把次旁的这一处入口，也不另开一套写实现。
  *
  * T023 在跨日历史的每一把上加视频关联状态与文字入口：按这一组的**原场次**、当前
  * 长期线路与这一把的原 attemptId 进入视频页；关联状态只读视频索引，选片与待确认
@@ -114,13 +114,9 @@ Page({
     canRecordAgain: false,
     routeStateText: '',
 
-    // 按把「改为未完成」：每一把各占一行、各带自己的控件
+    // 按把「改为未完成」（T039）：内部的行数据只用来核对目标与原场次那一把；
+    // 界面入口只有历史里原把次旁的那一处，不再渲染独立更正区。
     correctionRows: [],
-    correctionStatusText: '',
-    routeCorrectable: false,
-    // 独立更正区默认收起（T039）：入口已经在原场次那一把旁边，这里只做逐行复查。
-    correctionOpen: false,
-    correctionCountText: '',
 
     // 同日多场：先让用户明确选一场
     sessionPicker: null
@@ -411,10 +407,6 @@ Page({
       canRecordAgain: false,
       routeStateText: '',
       correctionRows: [],
-      correctionStatusText: '',
-      routeCorrectable: false,
-      correctionOpen: false,
-      correctionCountText: '',
       sessionPicker: keepPicker ? this.data.sessionPicker : null
     });
 
@@ -477,9 +469,6 @@ Page({
         canRecordAgain: false,
         routeStateText: '',
         correctionRows: [],
-        correctionStatusText: '',
-        routeCorrectable: false,
-        correctionCountText: '',
         photoMarkCount: 0,
         photoMarkCountText: '',
         photoMarksError: ''
@@ -493,7 +482,7 @@ Page({
     // 逐把更正行：这条抱石线的每一把仍可更正的完攀各占一行；本实例刚改好的那一把
     // 留在原位置变成只读回读行，行与行之间不塌陷，同一坐标不会被另一把接手。
     // T039：行里补上这一把的**原结果**（确认弹窗要显示），并把行按 attemptId 挂回
-    // 原场次分组里的那一把，让「更正」出现在原把次旁边而不是另一块区域。
+    // 原场次分组里的那一把；行数据只用于核对目标，界面上只在原把次旁显示一处「更正」。
     const attemptById = new Map((this.archive.attempts || []).map(item => [item.id, item]));
     const correctionRows = store
       .routeCorrectionRows(this.archive, route.id, Object.keys(this._correctedRows))
@@ -533,7 +522,6 @@ Page({
         };
       });
     const correctionById = new Map(correctionRows.map(row => [row.attemptId, row]));
-    const correctableCount = correctionRows.filter(row => row.state !== 'corrected').length;
 
     // 逐把视频（T023）：关联状态只读视频索引，跨日历史按分组里的原场次与原把次进入。
     const videoLinks = attemptVideo.videoLinkMap(
@@ -609,13 +597,7 @@ Page({
       routeClosed: Boolean(completion && completion.closed),
       canRecordAgain: Boolean(completion && completion.canRecord),
       routeStateText: completionText(completion),
-      correctionRows,
-      correctionCountText:
-        correctableCount > 0 ? correctableCount + ' 把可更正' : '都已改为未完成',
-      correctionStatusText: correctionRows.some(row => row.state === 'retry')
-        ? '更正未保存 · 点「重试改为未完成」按同一把重试'
-        : '',
-      routeCorrectable: correctableCount > 0
+      correctionRows
     });
   },
 
@@ -1079,11 +1061,6 @@ Page({
         }
       }
     });
-  },
-
-  /** 展开/收起独立更正区（默认收起）；只改展示状态，不写盘。 */
-  toggleCorrectionArea() {
-    this.setData({ correctionOpen: !this.data.correctionOpen });
   },
 
   /**

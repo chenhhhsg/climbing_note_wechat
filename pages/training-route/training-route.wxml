@@ -5,7 +5,7 @@
   有照片时本页只展示可点击缩略图与「照片动作标记 · N 个」；大图、换图、移除与标记的
   新增/移动/改字/删除都在二级页 pages/training-photo-marks，本页不铺第二套编辑。
   T023：跨日历史每一把还有视频关联状态与文字入口，选片在视频页，本页不碰视频文件。
-  T039：完攀更正入口就在原场次那一把旁边，确认后才改这一把；下方独立更正区默认收起。
+  T039：完攀更正入口只在原场次那一把旁边，确认后才改这一把；不再另设独立更正区。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，保留原数据 -->
@@ -360,41 +360,6 @@
             </view>
           </view>
         </view>
-      </view>
-
-      <!--
-        按把「改为未完成」（T039）：入口已放到原场次那一把旁边，这里默认收起，
-        只作为逐行复查的出口；展开后每一把仍各占一行，写明日期/场次/第几把。
-      -->
-      <view wx:if="{{correctionRows.length > 0}}" id="route-correction" class="route-correction">
-        <view
-          id="route-correction-head"
-          class="route-correction-head"
-          bindtap="toggleCorrectionArea"
-        >
-          <text class="route-correction-title">点错了完攀？</text>
-          <text id="route-correction-toggle" class="route-correction-toggle">{{correctionCountText}} · {{correctionOpen ? '收起' : '点开按把查看'}}</text>
-        </view>
-        <block wx:if="{{correctionOpen}}">
-          <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
-          <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
-          <view wx:for="{{correctionRows}}" wx:key="attemptId" class="route-correction-row">
-            <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}} · 原结果：{{item.resultText}}</text>
-            <view class="route-correction-slot">
-              <button
-                wx:if="{{item.state !== 'corrected'}}"
-                id="correct-{{item.attemptId}}"
-                class="secondary-button route-correct-button"
-                data-attempt-id="{{item.attemptId}}"
-                data-route-id="{{item.routeId}}"
-                data-session-id="{{item.sessionId}}"
-                data-archive-id="{{item.archiveId}}"
-                bindtap="confirmCorrectSend"
-              >{{item.buttonText}}</button>
-              <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
-            </view>
-          </view>
-        </block>
       </view>
 
       <!-- 当天再记：只有用户点这一下才可能新建当日场次 -->
