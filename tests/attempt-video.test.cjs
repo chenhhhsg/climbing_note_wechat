@@ -875,6 +875,8 @@ test('T023-12 WXML 入口绑定真实处理器，状态与四个 ID 都来自渲
 
 test('T023-13 视频索引只读：T026 写入后列表与视频页自动显示已关联，损坏时不阻塞列表', () => {
   const flow = seedTwoAttempts();
+  // 夹具修正：只有落在本档案视频根目录、且文件名就是该片段标识的条目才算已关联；
+  // 用合法文件名伪装其他位置（旧夹具 video/v1/...）不再被当成有效所有权。
   const clip = {
     clipId: 'clip-0001',
     archiveId: flow.archiveId,
@@ -882,7 +884,7 @@ test('T023-13 视频索引只读：T026 写入后列表与视频页自动显示�
     routeId: flow.route.id,
     attemptId: flow.attemptB.id,
     rev: 1,
-    fileId: 'video/v1/attempt-video/clip-0001.mp4',
+    fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-0001.mp4',
     bytes: 123456
   };
   writeVideoIndex([clip]);

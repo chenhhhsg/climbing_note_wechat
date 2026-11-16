@@ -116,6 +116,8 @@ Page({
     this._previewBaseClip = null;
     this._savedClip = null;
     this._playerClip = null;
+    // 移除确认框固定发起时的原把与片段版本（外部刷新不得把它改绑到新片）。
+    this._removeTarget = null;
     this._videoContext = null;
     this._videoContextDomId = '';
     this.archive = null;
@@ -216,6 +218,7 @@ Page({
       Object.assign(patch, this.emptyExtras());
       this._savedClip = null;
       this._playerClip = null;
+      this._removeTarget = null;
       this._videoContext = null;
       this._videoContextDomId = '';
     }
@@ -324,6 +327,7 @@ Page({
     this._contextToken = '';
     this._savedClip = null;
     this._playerClip = null;
+    this._removeTarget = null;
     this._videoContext = null;
     this._videoContextDomId = '';
     this._videoService = null;
@@ -421,6 +425,10 @@ Page({
         const detail = [];
         detail.push((result.clipCount || 0) + ' 段本机视频');
         detail.push('文件 ' + (result.fileCount || 0) + ' 个');
+        // 视频预算在各档案之间共用：存在其他档案的副本时按实际字节一并说明。
+        if (result.otherArchiveBytes > 0) {
+          detail.push('含其他档案 ' + videoFiles.formatBytes(result.otherArchiveBytes));
+        }
         if (result.orphanBytes > 0) {
           detail.push('无引用 ' + videoFiles.formatBytes(result.orphanBytes));
         }
@@ -713,27 +721,40 @@ Page({
   /** 移除前先明确问一次，不直接删。 */
   askRemove() {
     if (this.data.busy) return;
-    if (!this._savedClip) {
-      this.setData({ confirmRemove: false, opError: '当前没有已保存的本机副本可以移除。' });
-      return;
-    }
-    this.setData({ confirmRemove: true, opError: '', notice: '' });
-  },
-
-  cancelRemove() {
-    if (this.data.busy) return;
-    this.setData({ confirmRemove: false });
-  },
-
-  /** 确认移除：只回收小程序内的副本，原把次与相册原片保留。 */
-  confirmRemove() {
-    if (this.data.busy) return;
     const clip = this._savedClip;
     if (!clip) {
       this.setData({ confirmRemove: false, opError: '当前没有已保存的本机副本可以移除。' });
       return;
     }
-    this.startOperation(playback.METHOD_REMOVE, { beforeClip: clip });
+    // 固定发起时的原把与片段版本：期间另一页换了片、本页 onShow 刷新之后，
+    // 这个确认框也不得改绑到新片。延迟确认继续用原片段 ID/版本，由服务拒绝过期操作。
+    this._removeTarget = {
+      clipId: clip.clipId || '',
+      rev: clip.rev,
+      fileId: clip.fileId || '',
+      bytes: clip.bytes,
+      archiveId: this.data.archiveId || '',
+      attemptId: this.data.attempt ? this.data.attempt.id : ''
+    };
+    this.setData({ confirmRemove: true, opError: '', notice: '' });
+  },
+
+  cancelRemove() {
+    if (this.data.busy) return;
+    this._removeTarget = null;
+    this.setData({ confirmRemove: false });
+  },
+
+  /** 确认移除：只回收发起确认时那一版小程序内的副本，原把次与相册原片保留。 */
+  confirmRemove() {
+    if (this.data.busy) return;
+    const target = this._removeTarget;
+    if (!target || !target.clipId) {
+      this._removeTarget = null;
+      this.setData({ confirmRemove: false, opError: '当前没有已保存的本机副本可以移除。' });
+      return;
+    }
+    this.startOperation(playback.METHOD_REMOVE, { beforeClip: target });
   },
 
   /**
@@ -743,6 +764,7 @@ Page({
   startOperation(kind, input) {
     if (this.data.busy) return;
     if (!playback.videoStoreAvailable()) {
+      this._removeTarget = null;
       this.setData({
         confirmRemove: false,
         opKind: '',
@@ -761,6 +783,8 @@ Page({
     this._opSeq = opSeq;
     const op = {
       seq: opSeq,
+      // 操作标识写进索引条目：读回时据此区分本次提交与他页刚更新的版本。
+      opId: playback.makeOperationId(),
       kind,
       contextToken: this._contextToken,
       previewSeq: this._previewSeq,
@@ -777,7 +801,8 @@ Page({
         attemptSeq: context.attempt.seq
       },
       op.beforeClip,
-      op.preview
+      op.preview,
+      op.opId
     );
 
     this.setData({
@@ -828,15 +853,26 @@ Page({
     }
 
     const read = attemptVideo.videoClipView(context.archive.archiveId, context.attempt.id);
-    const outcome = playback.evaluateOperation(op.kind, op.beforeClip, receipt, read);
+    const outcome = playback.evaluateOperation(op.kind, op.beforeClip, receipt, read, {
+      opId: op.opId,
+      // 本次预览的实际字节必须与索引里本次条目一致，避免把别的文件当成这次结果。
+      expectedBytes:
+        op.kind === playback.METHOD_REMOVE || !op.preview
+          ? null
+          : op.preview.sizeBytes
+    });
     if (!outcome.ok) {
+      this._removeTarget = null;
       this.setData({
         busy: false,
         opKind: '',
         opStatus: '',
-        opError: outcome.error
+        opError: outcome.error,
+        confirmRemove: false
       });
-      // 失败可能留下无引用副本（例如索引写失败后的清理也失败），按实际文件刷新占用。
+      // 失败可能留下无引用副本（例如索引写失败后的清理也失败），按实际文件刷新占用；
+      // 另一页已经换了片时，这里也按读回刷新展示，但不把对方的版本报成本次成功。
+      this.applyClipState(read);
       this.refreshSpaceUsage();
       return;
     }
@@ -846,6 +882,7 @@ Page({
   /** 读回确认成功后，按已提交的关联切换页面与播放器。 */
   applyCommittedOperation(op, outcome) {
     const clip = outcome.clip || null;
+    this._removeTarget = null;
     this.invalidatePreview();
     this._selectionSeq += 1;
     const patch = {

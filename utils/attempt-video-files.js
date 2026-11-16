@@ -13,16 +13,29 @@
  * - 移除先核对当前片段版本，再解除关联，最后回收小程序内的副本。原把次、备注与
  *   系统相册里的原片都不在本模块的处理范围内。
  *
- * 失败与恢复：
- * - 写文件失败、索引写失败都返回 `ok:false`，并尽量撤销这次新写下的无引用文件；
- *   旧索引与旧副本保持原样；
- * - 提交回执是否明确由页面按读回的索引判断（见 attempt-video-playback.js），本模块
- *   只保证「索引已经落盘才返回成功」；
- * - 冷启动恢复 / 打开页面时的 recover() 只清理**能确认由本功能创建**（clip-* 命名）、
- *   不被当前索引引用、也没有在途写入的文件；索引不可读时一个文件也不删。
+ * 所有权证据（QA 返工）：
+ * - 目录里出现 `clip-*` 命名本身**不算**所有权证据。真正写文件之前，先在索引里
+ *   持久一条「本功能正在创建这个相对文件标识」的待清理记录（pending）；只有被
+ *   索引引用、或出现在待清理记录里的文件才会被本模块删除或覆盖；
+ * - 索引里出现过的片段（clips）同样是可证实的所有权来源：更换/移除后回收旧副本
+ *   属于本功能自己写下的文件；
+ * - 未知的、仅名字合法的 `clip-*` 文件一律保留，只计入实际占用，不自动清理；
+ * - 冷启动 recover() 只清理：索引可读、有本功能待清理/索引记录、当前无引用、
+ *   也没有在途写入的文件。目录读取或索引读取失败时不做破坏性操作。
+ *
+ * 回执与重启恢复（QA 返工）：
+ * - 索引写入抛错不等于没有落盘：先读回索引判断。读回显示本次片段/本次解除关联
+ *   已经生效时按成功处理（receiptLost）；明确显示没有引用本次新文件时才删除它；
+ *   读回失败时保留存疑的新旧副本与待清理记录，等后续可证实处置；
+ * - 文件服务最后一次异步等待之后、同步写索引之前，按四个原 ID 与当前有效把次
+ *   再核对一次归属；已经离页/换档/撤回的操作不提交。提交后才离页的保留成功结果，
+ *   只回收本次操作创建且可证明无引用的临时副本；
+ * - 每次操作带操作标识（opId）并写入索引条目，页面据此区分「本次提交」与
+ *   「另一页刚更新的版本」。
  *
  * 空间：
- * - 按目录里的实际文件字节计量，包含失败操作留下的无引用文件；
+ * - 按各档案视频目录里的实际文件字节计量（包含失败操作留下的无引用文件与
+ *   其他档案的副本），总视频预算在小程序内各档案之间共用；
  * - 单片、视频总量与更换期间新旧副本并存的峰值都要通过预检；视频预算之外另有
  *   照片保留量，避免把共用设备空间吃满；
  * - 真实配额失败（复制时系统报空间不足）同样按空间不足返回可见原因，并保留旧片。
@@ -38,16 +51,16 @@ const VIDEO_INDEX_KEY = attemptVideo.VIDEO_INDEX_KEY;
 const INDEX_VERSION = 1;
 
 // 档案 ID 会成为目录名，只接受本机档案层生成的字符集合。
-const ARCHIVE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
-const CLIP_ID_PATTERN = /^clip-[A-Za-z0-9_-]+$/;
+const ARCHIVE_ID_PATTERN = attemptVideo.ARCHIVE_ID_PATTERN;
+const CLIP_ID_PATTERN = attemptVideo.CLIP_ID_PATTERN;
 // 只接手本功能自己创建的片段文件；其他文件既不计入视频占用，也绝不删除。
-const CLIP_FILE_PATTERN = /^(clip-[A-Za-z0-9_-]+)\.([A-Za-z0-9]{1,5})$/i;
+const CLIP_FILE_PATTERN = attemptVideo.CLIP_FILE_PATTERN;
 
 const MIB = 1024 * 1024;
 
 /**
  * 视频预算（应用自设上限，不是微信或设备可用空间的保证）：
- * - budgetBytes：本机逐把视频的总预算；
+ * - budgetBytes：本机逐把视频的总预算（各档案共用）；
  * - photoReserveBytes：从总预算里留给线路照片共用空间的余量，视频实际可用
  *   usableBytes = budgetBytes - photoReserveBytes；
  * - reserveBytes：更换时新旧副本并存的峰值余量；
@@ -64,7 +77,7 @@ const VIDEO_SPACE_POLICY = Object.freeze({
 /**
  * 同一 JS 运行期内真实执行中的写入/删除路径（仅内存）。
  * recover()/cleanupOrphans() 在删除前据此跳过正在写的文件；小程序重启后登记随
- * 模块一起消失，因此旧运行期留下的半成品可以被安全回收。
+ * 模块一起消失，因此旧运行期留下的半成品可以由持久待清理记录安全回收。
  */
 const RUNTIME_WRITES = new Set();
 const RUNTIME_WRITE_BYTES = new Map();
@@ -97,16 +110,8 @@ function isSafeClipId(value) {
   return typeof value === 'string' && CLIP_ID_PATTERN.test(value);
 }
 
-/**
- * 索引里的文件标识必须是本机用户目录内的相对路径：不接受协议前缀、盘符、
- * 根路径与 `..`，避免删除或播放指到视频目录之外。
- */
 function isSafeVideoFileId(value) {
-  if (!hasText(value)) return false;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return false;
-  const text = value.replace(/\\/g, '/');
-  if (text.charAt(0) === '/') return false;
-  return text.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+  return attemptVideo.isSafeVideoFileId(value);
 }
 
 function normalizePath(value) {
@@ -218,7 +223,7 @@ function usableBytesOf(policy) {
 /**
  * 单片、总量与峰值的唯一判定：
  * - 新片本身不得超过单片上限；
- * - 当前实际占用 + 本次新增 + 更换余量不得超过视频可用总量。
+ * - 各档案当前实际占用 + 本次新增 + 更换余量不得超过视频可用总量。
  * 更换时旧副本尚未删除，占用天然包含新旧并存，不提前删旧片制造空间。
  */
 function checkClipSpace(usedBytes, newBytes, policy) {
@@ -260,7 +265,7 @@ function checkClipSpace(usedBytes, newBytes, policy) {
       message:
         '预计峰值 ' +
         formatBytes(peakBytes) +
-        '（当前占用 ' +
+        '（各档案当前占用 ' +
         formatBytes(used) +
         ' + 新视频 ' +
         formatBytes(adding) +
@@ -294,7 +299,7 @@ function checkClipSpace(usedBytes, newBytes, policy) {
 // ------------------------------------------------------------------ *
 
 function createEmptyIndex() {
-  return { version: INDEX_VERSION, nextClipSeq: 1, clips: [] };
+  return { version: INDEX_VERSION, nextClipSeq: 1, clips: [], pending: [] };
 }
 
 function clipSeqOf(clipId) {
@@ -321,15 +326,19 @@ function optionalNumber(value) {
 }
 
 /**
- * 只接受结构完整的索引条目。缺档案、场次、线路、把次、片段或文件标识的条目
- * 会让整份索引按损坏处理：宁可拒绝写入，也不把已保存视频的归属猜错。
+ * 索引条目至少要带齐档案、场次、线路、把次、片段与文件标识；缺任何一个都让整份
+ * 索引按损坏处理：宁可拒绝写入，也不把已保存视频的归属猜错。
+ *
+ * 文件标识本身**不在这里**做命名空间强制：损坏索引里的普通相对路径、旧绝对路径
+ * 或别的档案目录会保留在索引里（不丢用户数据），但所有播放、更换与回收都经
+ * attemptVideo.isClipFileIdFor / pathForClip 严格解析，不会指向目录之外。
  */
 function normalizeClip(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
   if (!isSafeArchiveId(raw.archiveId)) return null;
   if (!hasText(raw.sessionId) || !hasText(raw.routeId) || !hasText(raw.attemptId)) return null;
   if (!isSafeClipId(raw.clipId)) return null;
-  if (!isSafeVideoFileId(raw.fileId)) return null;
+  if (!hasText(raw.fileId)) return null;
   const bytes = safeNumber(raw.bytes);
   if (bytes !== null && bytes < 0) return null;
   const durationSeconds = optionalNumber(raw.durationSeconds);
@@ -349,6 +358,26 @@ function normalizeClip(raw) {
     width: width !== null && width > 0 ? Math.floor(width) : null,
     height: height !== null && height > 0 ? Math.floor(height) : null,
     fileName: hasText(raw.fileName) ? raw.fileName : '',
+    opId: hasText(raw.opId) ? raw.opId : '',
+    createdAt: hasText(raw.createdAt) ? raw.createdAt : ''
+  };
+}
+
+/**
+ * 待清理记录：本功能某次操作**创建**了这个相对文件标识，但还没有提交为引用。
+ * 只有这里记录过（或索引曾经引用过）的文件才算可证实的所有权；记录本身写不进
+ * 索引时不写文件，因此重启后不会把未知的合法命名文件当成自己的副本。
+ */
+function normalizePending(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (!isSafeArchiveId(raw.archiveId)) return null;
+  if (!isSafeClipId(raw.clipId)) return null;
+  if (!attemptVideo.isClipFileIdFor(raw.archiveId, raw.clipId, raw.fileId)) return null;
+  return {
+    archiveId: raw.archiveId,
+    clipId: raw.clipId,
+    fileId: raw.fileId,
+    opId: hasText(raw.opId) ? raw.opId : '',
     createdAt: hasText(raw.createdAt) ? raw.createdAt : ''
   };
 }
@@ -367,24 +396,46 @@ function normalizeIndex(raw) {
     maxSeq = Math.max(maxSeq, clipSeqOf(clip.clipId));
   }
 
+  const pending = [];
+  const seenPending = new Set();
+  for (const entry of Array.isArray(raw.pending) ? raw.pending : []) {
+    const record = normalizePending(entry);
+    if (!record || seenPending.has(record.fileId)) continue;
+    seenPending.add(record.fileId);
+    pending.push(record);
+  }
+
   const requested = safeNumber(raw.nextClipSeq);
   const nextClipSeq =
     requested !== null && Number.isInteger(requested) && requested > maxSeq
       ? requested
       : maxSeq + 1;
-  return { version: INDEX_VERSION, nextClipSeq, clips };
+  return { version: INDEX_VERSION, nextClipSeq, clips, pending };
+}
+
+/** 可播放/可回收的条目：文件标识严格落在当前档案视频目录且是同一片段文件。 */
+function usableClip(clip) {
+  return Boolean(
+    clip &&
+      attemptVideo.isClipFileIdFor(clip.archiveId, clip.clipId, clip.fileId)
+  );
 }
 
 function clipsFor(index, archiveId, attemptId) {
   if (!index || !Array.isArray(index.clips)) return [];
   return index.clips.filter(
-    clip => clip.archiveId === archiveId && clip.attemptId === attemptId
+    clip =>
+      clip.archiveId === archiveId &&
+      clip.attemptId === attemptId &&
+      usableClip(clip)
   );
 }
 
 /**
  * 这一把当前有效的片段：同一把只应有一条；若历史数据里残留多条，取版本号
  * 最大的一条（版本相同取后写入的），与列表上的「看视频」判定一致。
+ * 文件标识不符合当前档案视频命名空间的条目不算当前片段，避免把损坏索引里的
+ * 普通相对路径或旧绝对路径传给播放器。
  */
 function currentClipFor(index, archiveId, attemptId) {
   const matches = clipsFor(index, archiveId, attemptId);
@@ -455,6 +506,13 @@ function createWxAttemptVideoFiles(options) {
     normalizePath(config.rootDir) ||
     (safeArchiveId && hasText(userDataPath)
       ? joinPath(userDataPath, VIDEO_ROOT_DIRNAME, 'v' + VIDEO_FILES_VERSION, archiveId)
+      : '');
+  // 各档案共用的视频根目录（只用于只读统计与跨档案副本识别）。
+  const rootBaseDir =
+    normalizePath(config.rootBaseDir) ||
+    (hasText(rootDir) && safeArchiveId &&
+    rootDir.slice(-(archiveId.length + 1)) === '/' + archiveId
+      ? rootDir.slice(0, -(archiveId.length + 1))
       : '');
 
   let readyPromise = null;
@@ -564,51 +622,106 @@ function createWxAttemptVideoFiles(options) {
     return joinPath(rootDir, clipId + '.' + suffix);
   }
 
-  /** 索引里的相对文件标识：相对小程序用户目录，播放器用 USER_DATA_PATH 拼回。 */
+  /**
+   * 索引里的相对文件标识：必须是本功能的标准命名空间位置
+   *   attempt-video/v1/<本档案>/<clipId>.<ext>
+   * 否则返回空（不写索引、不播放、不删除）。以实际写入路径反推，避免自定义
+   * 文件根与索引里的位置不一致。
+   */
   function fileIdOf(clipId, ext) {
     const target = videoPath(clipId, ext);
     if (!hasText(target) || !hasText(userDataPath)) return '';
     const base = normalizePath(userDataPath) + '/';
     if (target.indexOf(base) !== 0) return '';
-    return target.slice(base.length);
+    const fileId = target.slice(base.length);
+    return attemptVideo.isClipFileIdFor(archiveId, clipId, fileId) ? fileId : '';
   }
 
-  /** 只接受落在本档案视频目录里的相对文件标识，其他位置一律拒绝。 */
+  /**
+   * 把索引条目严格解析成当前档案视频目录里的真实路径：
+   * - 档案必须是本适配器的档案；
+   * - 文件标识必须是本档案里的同一片段文件；
+   * - 最终路径由本档案 rootDir + 片段文件名拼出，不接受 fileId 里的其他目录。
+   */
+  function pathForClip(clip) {
+    if (!clip || clip.archiveId !== archiveId) return '';
+    if (!attemptVideo.isClipFileIdFor(archiveId, clip.clipId, clip.fileId)) return '';
+    const parsed = attemptVideo.parseVideoFileId(clip.fileId);
+    if (!parsed) return '';
+    return videoPath(clip.clipId, parsed.ext);
+  }
+
+  /** 只接受本档案标准命名空间里的相对文件标识。 */
   function pathForFileId(fileId) {
-    if (!isSafeVideoFileId(fileId) || !hasText(rootDir) || !hasText(userDataPath)) return '';
-    const full = joinPath(userDataPath, fileId);
-    const prefix = normalizePath(rootDir) + '/';
-    if (full.indexOf(prefix) !== 0) return '';
-    if (!CLIP_FILE_PATTERN.test(fileNameOf(full))) return '';
-    return full;
+    const parsed = attemptVideo.parseVideoFileId(fileId);
+    if (!parsed || parsed.archiveId !== archiveId) return '';
+    return videoPath(parsed.clipId, parsed.ext);
   }
 
-  async function readDir() {
-    const invalid = requireRoot();
-    if (invalid) return invalid;
+  /**
+   * 读一个目录里的受管片段文件。fileId 一律按目标档案 + 片段 + 扩展名重新生成，
+   * 不信任目录里已有的路径文本。
+   */
+  async function readClipDir(dirPath, targetArchiveId) {
     const fs = fileSystem();
     if (!fs) return { ok: false, error: '文件系统不可用' };
-    const result = await toPromiseApi(fs, 'readdir', { dirPath: rootDir });
+    if (!hasText(dirPath)) return { ok: true, files: [] };
+    const result = await toPromiseApi(fs, 'readdir', { dirPath });
     if (!result.ok) {
       if (isMissingPathError(result.error)) return { ok: true, files: [] };
       return { ok: false, error: '读取视频目录失败：' + result.error };
     }
     const names = Array.isArray(result.result.files) ? result.result.files : [];
     const files = [];
-    const base = hasText(userDataPath) ? normalizePath(userDataPath) + '/' : '';
     for (const name of names) {
       const match = CLIP_FILE_PATTERN.exec(name);
       if (!match) continue;
-      const full = joinPath(rootDir, name);
+      const clipId = match[1];
+      const ext = match[2];
+      const fileId = attemptVideo.clipFileIdOf(targetArchiveId, clipId, ext);
+      if (!fileId) continue;
       files.push({
         name,
-        path: full,
-        clipId: match[1],
-        fileId:
-          hasText(base) && full.indexOf(base) === 0 ? full.slice(base.length) : ''
+        path: joinPath(dirPath, name),
+        clipId,
+        fileId
       });
     }
     return { ok: true, files };
+  }
+
+  /** 本档案视频目录里的受管文件（回收/占用统计用）。 */
+  function listClips() {
+    const invalid = requireRoot();
+    if (invalid) return Promise.resolve(invalid);
+    return readClipDir(rootDir, archiveId);
+  }
+
+  /** 共用视频根目录下实际存在的档案目录名（只读；读不到时返回空列表）。 */
+  async function listArchives() {
+    if (!hasText(rootBaseDir)) return { ok: true, archives: [] };
+    const fs = fileSystem();
+    if (!fs) return { ok: false, error: '文件系统不可用' };
+    const result = await toPromiseApi(fs, 'readdir', { dirPath: rootBaseDir });
+    if (!result.ok) {
+      if (isMissingPathError(result.error)) return { ok: true, archives: [] };
+      return { ok: false, error: '读取视频根目录失败：' + result.error };
+    }
+    const names = Array.isArray(result.result.files) ? result.result.files : [];
+    return {
+      ok: true,
+      archives: names.filter(name => isSafeArchiveId(name))
+    };
+  }
+
+  /** 任意档案目录里的受管文件（只读；用于总占用统计，绝不据此删除别的档案）。 */
+  async function listArchiveClips(targetArchiveId) {
+    if (!isSafeArchiveId(targetArchiveId)) {
+      return { ok: false, error: '缺少有效的本机档案标识，无法统计视频文件' };
+    }
+    if (targetArchiveId === archiveId) return listClips();
+    if (!hasText(rootBaseDir)) return { ok: true, files: [] };
+    return readClipDir(joinPath(rootBaseDir, targetArchiveId), targetArchiveId);
   }
 
   return {
@@ -616,15 +729,19 @@ function createWxAttemptVideoFiles(options) {
     archiveId,
     userDataPath,
     rootDir,
+    rootBaseDir,
     videoPath,
     fileIdOf,
+    pathForClip,
     pathForFileId,
     ensureReady,
     stat,
     access,
     copyFile,
     remove,
-    listClips: readDir
+    listClips,
+    listArchives,
+    listArchiveClips
   };
 }
 
@@ -642,6 +759,12 @@ function createWxStorage(wxApi) {
     set(key, value) {
       if (!api) throw new Error('微信存储不可用');
       return api.setStorageSync(key, value);
+    },
+    remove(key) {
+      if (!api || typeof api.removeStorageSync !== 'function') {
+        throw new Error('微信存储不可用');
+      }
+      return api.removeStorageSync(key);
     }
   };
 }
@@ -706,6 +829,69 @@ function fail(code, detail) {
   };
 }
 
+/**
+ * 生产默认核对：当前本机档案必须还是请求带来的那一份。
+ * 换档之后的迟到写入在这里被拒绝，不写文件、不改索引。
+ */
+function defaultVerifyArchive(archiveId) {
+  try {
+    const store = require('./training-store.js');
+    const loaded = store.loadState();
+    return Boolean(loaded.ok && loaded.archive.archiveId === archiveId);
+  } catch (error) {
+    return false;
+  }
+}
+
+/**
+ * 生产默认归属核对：四个原 ID 仍指向当前档案里的同一场、同一线、同一把，
+ * 并且这一把仍然有效（未撤回）。文件服务最后一次异步等待之后、同步写索引之前
+ * 调用，迟到的复制不会提交到已退出/无效的上下文。
+ */
+function defaultVerifyContext(request) {
+  const input = request || {};
+  let store;
+  let loaded;
+  try {
+    store = require('./training-store.js');
+    loaded = store.loadState();
+  } catch (error) {
+    return fail('archive-mismatch', '读取本机训练档案失败，这次视频操作没有提交；原视频仍可用');
+  }
+  if (!loaded.ok) {
+    return fail('context-invalid', '本机训练档案暂时读不出来，这次视频操作没有提交；原视频仍可用');
+  }
+  const archive = loaded.archive;
+  if (archive.archiveId !== input.archiveId) {
+    return fail(
+      'archive-mismatch',
+      '本机档案已经更换，这次迟到的视频操作没有提交；请重新打开这一把再试'
+    );
+  }
+  const session = (archive.sessions || []).find(item => item.id === input.sessionId);
+  const route = (archive.routes || []).find(item => item.id === input.routeId);
+  const attempt = (archive.attempts || []).find(item => item.id === input.attemptId);
+  if (!session || !route || !attempt) {
+    return fail(
+      'context-invalid',
+      '这一把已经不在本机档案里，这次视频操作没有提交；原视频仍可用'
+    );
+  }
+  if (attempt.sessionId !== session.id || attempt.routeId !== route.id) {
+    return fail(
+      'context-invalid',
+      '这一把的归属已经变化，这次视频操作没有提交；原视频仍可用'
+    );
+  }
+  if (!store.isEffectiveAttempt(attempt)) {
+    return fail(
+      'context-invalid',
+      '这一把已经撤回，这次视频操作没有提交；恢复之后可以重新选择原片'
+    );
+  }
+  return null;
+}
+
 function createAttemptVideoStore(options) {
   const config = options || {};
   const archiveId = isSafeArchiveId(config.archiveId) ? config.archiveId : '';
@@ -716,7 +902,13 @@ function createAttemptVideoStore(options) {
   const policy = resolveVideoSpacePolicy(config.space);
   // 可选的本机档案核对：换档之后到达的写入在这里被挡住，一个字节都不写。
   const verifyArchive =
-    typeof config.verifyArchive === 'function' ? config.verifyArchive : null;
+    typeof config.verifyArchive === 'function' ? config.verifyArchive : defaultVerifyArchive;
+  const verifyContext =
+    config.verifyContext === null
+      ? null
+      : typeof config.verifyContext === 'function'
+        ? config.verifyContext
+        : defaultVerifyContext;
   const instanceId =
     'video-svc-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 
@@ -727,6 +919,32 @@ function createAttemptVideoStore(options) {
     } catch (error) {
       return false;
     }
+  }
+
+  /**
+   * 当前归属与有效把次核对。返回 null 表示通过，否则是一个可展示的失败结果。
+   * 这是同步的（storage 读），文件服务最后一次异步等待之后、写索引之前调用。
+   */
+  function verifyOwnership(request) {
+    if (!archiveIsCurrent()) {
+      return fail(
+        'archive-mismatch',
+        '本机档案已经更换，这次迟到的视频操作没有提交；请重新打开这一把再试'
+      );
+    }
+    if (!verifyContext) return null;
+    let result;
+    try {
+      result = verifyContext(request);
+    } catch (error) {
+      return fail(
+        'context-invalid',
+        '无法核对这一把的归属，这次视频操作没有提交；原视频仍可用'
+      );
+    }
+    if (!result || result === true || result.ok === true) return null;
+    if (typeof result === 'object' && result.ok === false) return result;
+    return fail('context-invalid', '这一把的归属已经变化，这次视频操作没有提交；原视频仍可用');
   }
 
   function validateBase(request) {
@@ -761,54 +979,172 @@ function createAttemptVideoStore(options) {
     return null;
   }
 
+  // ---------------------------------------------------------------- *
+  // 待清理记录
+  // ---------------------------------------------------------------- *
+
+  function pendingOf(index, fileId) {
+    if (!index || !Array.isArray(index.pending)) return null;
+    return index.pending.find(entry => entry.fileId === fileId) || null;
+  }
+
+  function pendingRecord(clipId, fileId, opId, createdAt) {
+    return {
+      archiveId,
+      clipId,
+      fileId,
+      opId: hasText(opId) ? opId : '',
+      createdAt: createdAt || now()
+    };
+  }
+
+  /** 写真实文件前先落一条所有权记录；写不进去就不写文件。 */
+  function rememberPending(record) {
+    const fresh = readIndex(storage);
+    if (!fresh.ok) return fresh;
+    fresh.index.pending = (fresh.index.pending || []).filter(
+      entry => entry.fileId !== record.fileId
+    );
+    fresh.index.pending.push(record);
+    const saved = saveIndex(storage, fresh.index);
+    if (!saved.ok) return saved;
+    return { ok: true };
+  }
+
+  /** 清掉一条待清理记录；清不掉时记录留在索引里，后续恢复可继续处理。 */
+  function forgetPending(fileId) {
+    const fresh = readIndex(storage);
+    if (!fresh.ok) return fresh;
+    if (!pendingOf(fresh.index, fileId)) return { ok: true };
+    fresh.index.pending = fresh.index.pending.filter(entry => entry.fileId !== fileId);
+    // 失败后回到完全没有视频资料的状态时不留下空索引键（等价于从未创建）。
+    if (
+      fresh.index.clips.length === 0 &&
+      fresh.index.pending.length === 0 &&
+      typeof storage.remove === 'function'
+    ) {
+      try {
+        storage.remove(VIDEO_INDEX_KEY);
+        return { ok: true };
+      } catch (error) {
+        return {
+          ok: false,
+          code: 'index-write-failed',
+          error: '本机视频索引清理失败：' + errorText(error)
+        };
+      }
+    }
+    return saveIndex(storage, fresh.index);
+  }
+
+  function rememberCleanup(records) {
+    if (!records || !records.length) return { ok: true };
+    const fresh = readIndex(storage);
+    if (!fresh.ok) return fresh;
+    let changed = false;
+    for (const record of records) {
+      if (pendingOf(fresh.index, record.fileId)) continue;
+      fresh.index.pending.push(record);
+      changed = true;
+    }
+    if (!changed) return { ok: true };
+    return saveIndex(storage, fresh.index);
+  }
+
+  // ---------------------------------------------------------------- *
+  // 占用统计（含各档案副本）
+  // ---------------------------------------------------------------- *
+
   /**
-   * 逐项统计本档案视频目录里的受管文件实际字节（含无引用文件）。
-   * index 可选：传入时同时给出哪些文件仍被索引引用。
+   * 统计本小程序内可保留的视频副本实际字节：当前档案 + 索引/待清理记录里出现过的
+   * 其他档案 + 共用视频根目录里实际存在的档案目录。只读，绝不删除别的档案。
    */
   async function measure(index) {
     if (!files) {
       return { ok: false, code: 'space-measure-failed', error: '缺少视频文件适配器，无法统计视频占用' };
     }
-    const listed = await files.listClips();
-    if (!listed.ok) {
-      return {
-        ok: false,
-        code: 'space-measure-failed',
-        error: '读取视频文件清单失败：' + (listed.error || '未知错误')
-      };
+    const archiveIds = new Set();
+    if (archiveId) archiveIds.add(archiveId);
+    if (index && Array.isArray(index.clips)) {
+      index.clips.forEach(clip => {
+        if (isSafeArchiveId(clip.archiveId)) archiveIds.add(clip.archiveId);
+      });
     }
-    const referenced = new Set(
-      index && Array.isArray(index.clips) ? index.clips.map(clip => clip.fileId) : []
-    );
-    const entries = [];
-    let totalBytes = 0;
-    let orphanBytes = 0;
-    for (const file of listed.files) {
-      const statResult = await files.stat(file.path);
-      if (!statResult.ok) {
+    if (index && Array.isArray(index.pending)) {
+      index.pending.forEach(entry => {
+        if (isSafeArchiveId(entry.archiveId)) archiveIds.add(entry.archiveId);
+      });
+    }
+    if (typeof files.listArchives === 'function') {
+      const known = await files.listArchives();
+      if (!known.ok) {
         return {
           ok: false,
           code: 'space-measure-failed',
-          error: '读取视频文件大小失败：' + (statResult.error || '未知错误')
+          error: '读取视频根目录失败：' + (known.error || '未知错误')
         };
       }
-      if (!statResult.exists || !(statResult.bytes > 0)) continue;
-      const isReferenced = referenced.has(file.fileId);
-      if (!isReferenced) orphanBytes += statResult.bytes;
-      totalBytes += statResult.bytes;
-      entries.push({
-        name: file.name,
-        fileId: file.fileId,
-        clipId: file.clipId,
-        path: file.path,
-        bytes: statResult.bytes,
-        referenced: isReferenced
-      });
+      (known.archives || []).forEach(id => archiveIds.add(id));
+    }
+
+    const referenced = new Set(
+      index && Array.isArray(index.clips) ? index.clips.map(clip => clip.fileId) : []
+    );
+    const owned = new Set(
+      index && Array.isArray(index.pending) ? index.pending.map(entry => entry.fileId) : []
+    );
+
+    const entries = [];
+    let totalBytes = 0;
+    let archiveBytes = 0;
+    let orphanBytes = 0;
+    for (const targetArchiveId of archiveIds) {
+      const listed =
+        typeof files.listArchiveClips === 'function'
+          ? await files.listArchiveClips(targetArchiveId)
+          : targetArchiveId === archiveId
+            ? await files.listClips()
+            : { ok: true, files: [] };
+      if (!listed.ok) {
+        return {
+          ok: false,
+          code: 'space-measure-failed',
+          error: '读取视频文件清单失败：' + (listed.error || '未知错误')
+        };
+      }
+      for (const file of listed.files) {
+        const statResult = await files.stat(file.path);
+        if (!statResult.ok) {
+          return {
+            ok: false,
+            code: 'space-measure-failed',
+            error: '读取视频文件大小失败：' + (statResult.error || '未知错误')
+          };
+        }
+        if (!statResult.exists || !(statResult.bytes > 0)) continue;
+        const isReferenced = referenced.has(file.fileId);
+        const isOwned = owned.has(file.fileId);
+        if (!isReferenced && isOwned) orphanBytes += statResult.bytes;
+        totalBytes += statResult.bytes;
+        if (targetArchiveId === archiveId) archiveBytes += statResult.bytes;
+        entries.push({
+          archiveId: targetArchiveId,
+          name: file.name,
+          fileId: file.fileId,
+          clipId: file.clipId,
+          path: file.path,
+          bytes: statResult.bytes,
+          referenced: isReferenced,
+          pending: isOwned
+        });
+      }
     }
     const usableBytes = usableBytesOf(policy);
     return {
       ok: true,
       totalBytes,
+      archiveBytes,
+      otherArchiveBytes: Math.max(0, totalBytes - archiveBytes),
       orphanBytes,
       entries,
       fileCount: entries.length,
@@ -849,31 +1185,41 @@ function createAttemptVideoStore(options) {
   }
 
   /**
-   * 写新副本并核对：目录就绪、目标可写、复制成功、目标存在且字节真实有效、
-   * 与来源字节一致（来源能读到大小时）。返回的 bytes 就是索引要记录的实际字节。
+   * 选一个当前目录里不存在的目标位置。随机后缀冲突时换一个后缀，绝不删除/覆盖
+   * 目录里已有的文件（那个文件没有本次操作的所有权记录）。
+   */
+  async function chooseTarget(seq, ext) {
+    let lastError = '';
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const clipId = makeClipId(seq);
+      const targetPath = files.videoPath(clipId, ext);
+      const fileId = files.fileIdOf(clipId, ext);
+      if (!hasText(targetPath) || !hasText(fileId)) {
+        return fail('file-write-failed', '无法定位本档案的视频目录，未写入任何文件');
+      }
+      const existing = await files.stat(targetPath);
+      if (!existing.ok) {
+        return fail('file-write-failed', existing.error);
+      }
+      if (!existing.exists) {
+        return { ok: true, clipId, seq, ext, path: targetPath, fileId };
+      }
+      lastError = '目标位置已有其他文件';
+    }
+    return fail(
+      'file-write-failed',
+      '没有找到可用的视频文件名（' + lastError + '），未写入任何文件；可以重试'
+    );
+  }
+
+  /**
+   * 写新副本并核对：目录就绪、复制成功、目标存在且字节真实有效、与来源字节一致
+   * （来源能读到大小时）。返回的 bytes 就是索引要记录的实际字节。
+   * 目标位置只由 chooseTarget 选出的空位置；失败时只撤销本次复制写下的文件。
    */
   async function writeCopy(targetPath, sourcePath, expectedBytes) {
     const ready = await files.ensureReady();
     if (!ready.ok) return { ok: false, code: 'file-write-failed', error: ready.error };
-
-    const existing = await files.stat(targetPath);
-    if (!existing.ok) {
-      return { ok: false, code: 'file-write-failed', error: existing.error };
-    }
-    if (existing.exists) {
-      // 同序号目标只可能是上次崩溃留下的无引用半成品；有在途写入时宁可失败。
-      if (RUNTIME_WRITES.has(targetPath)) {
-        return {
-          ok: false,
-          code: 'operation-in-progress',
-          error: '同一位置的视频副本正在写入，请稍后重试'
-        };
-      }
-      const removed = await files.remove(targetPath);
-      if (!removed.ok) {
-        return { ok: false, code: 'file-write-failed', error: removed.error };
-      }
-    }
 
     const copied = await files.copyFile(sourcePath, targetPath);
     if (!copied.ok) {
@@ -962,8 +1308,75 @@ function createAttemptVideoStore(options) {
   }
 
   /**
+   * 删除本次操作自己写下、且读回索引确认没有任何引用的新副本。
+   * 读回失败时**不删**：保留文件与已有的待清理记录，等后续可证实处置。
+   */
+  async function discardOwnCopy(index, target) {
+    if (!index || !Array.isArray(index.clips)) {
+      return { ok: false, error: '无法读回索引确认无引用，已保留本次新副本' };
+    }
+    if (index.clips.some(entry => entry.fileId === target.fileId)) {
+      return { ok: false, error: '索引仍引用本次文件，未删除' };
+    }
+    const removed = await files.remove(target.path);
+    if (!removed.ok) {
+      return { ok: false, error: removed.error || '本次新副本清理失败' };
+    }
+    await forgetPending(target.fileId);
+    return { ok: true };
+  }
+
+  /** 索引写抛错后读回：返回 null（读回失败）或 {index, clip(本次条目或 null)}。 */
+  function readbackFor(clip) {
+    const read = readIndex(storage);
+    if (!read.ok) return null;
+    const match = read.index.clips.find(
+      entry =>
+        entry.archiveId === clip.archiveId &&
+        entry.attemptId === clip.attemptId &&
+        entry.clipId === clip.clipId &&
+        entry.fileId === clip.fileId
+    );
+    return { index: read.index, clip: match || null };
+  }
+
+  /**
+   * 提交成功后回收旧副本：只回收索引曾经引用过、现在已无引用的文件。
+   * 删除失败时写一条持久待清理记录，重启后可安全重试。
+   */
+  async function reclaimCopies(index, previous) {
+    const referenced = new Set(
+      index && Array.isArray(index.clips) ? index.clips.map(entry => entry.fileId) : []
+    );
+    const failed = [];
+    let cleanupError = '';
+    for (const entry of previous || []) {
+      if (!hasText(entry.fileId) || referenced.has(entry.fileId)) continue;
+      const targetPath = files.pathForClip(entry);
+      if (!hasText(targetPath)) {
+        cleanupError = '旧副本位置不属于本档案视频目录，未删除';
+        continue;
+      }
+      const removed = await files.remove(targetPath);
+      if (!removed.ok) {
+        cleanupError = removed.error;
+        failed.push(pendingRecord(entry.clipId, entry.fileId, 'cleanup', now()));
+      }
+    }
+    if (failed.length) {
+      const remembered = rememberCleanup(failed);
+      if (!remembered.ok && !cleanupError) cleanupError = remembered.error;
+    }
+    return cleanupError;
+  }
+
+  /**
    * 首次保存。重复确认（同一次操作的重试、另一个页面的迟到点击）不会产生
    * 第二份副本：这一把已经有片段时直接按已有片段返回，不写文件、不改索引。
+   *
+   * 写文件前先落待清理记录；提交前读回索引并重新核对四个 ID 与有效把次。
+   * 索引写抛错时按读回判断：本次条目已经落盘算成功（receiptLost），明确没有
+   * 引用本次文件才撤销副本，读不回来则保留存疑副本与记录。
    */
   async function commit(request) {
     const input = request || {};
@@ -985,14 +1398,9 @@ function createAttemptVideoStore(options) {
     const source = await sourceBytesOf(input);
     if (!source.ok) return source;
 
-    const seq = loaded.index.nextClipSeq;
-    const clipId = makeClipId(seq);
-    const ext = extensionOf(input.tempFilePath);
-    const targetPath = files.videoPath(clipId, ext);
-    if (!hasText(targetPath)) {
-      return fail('file-write-failed', '无法定位本档案的视频目录，未写入任何文件');
-    }
-    if (!claimWrite(targetPath, source.bytes)) {
+    const target = await chooseTarget(loaded.index.nextClipSeq, extensionOf(input.tempFilePath));
+    if (!target.ok) return target;
+    if (!claimWrite(target.path, source.bytes)) {
       return fail(
         'operation-in-progress',
         '同一段视频正在保存，请稍候再试；没有产生第二份副本'
@@ -1002,71 +1410,102 @@ function createAttemptVideoStore(options) {
       const used = await measure(loaded.index);
       if (!used.ok) return used;
       const spaceCheck = checkClipSpace(
-        used.totalBytes + reservedBytesExcept(targetPath),
+        used.totalBytes + reservedBytesExcept(target.path),
         source.bytes,
         policy
       );
       if (!spaceCheck.ok) return spaceFailure(spaceCheck);
 
-      const written = await writeCopy(targetPath, input.tempFilePath, source.bytes);
-      if (!written.ok) return written;
+      const claimed = rememberPending(
+        pendingRecord(target.clipId, target.fileId, input.opId, now())
+      );
+      if (!claimed.ok) return claimed;
+
+      const written = await writeCopy(target.path, input.tempFilePath, source.bytes);
+      if (!written.ok) {
+        // writeCopy 只撤销本次复制写下的文件；再清掉所有权记录。
+        await forgetPending(target.fileId);
+        return written;
+      }
 
       // 提交前重读索引：等待期间这一把可能被另一个页面写入，或索引被改坏。
       const fresh = readIndex(storage);
       if (!fresh.ok) {
-        await files.remove(targetPath);
-        return fresh;
+        return Object.assign({}, fresh, { keptCopy: true, cleanupError: '' });
       }
       const won = currentClipFor(fresh.index, archiveId, input.attemptId);
       if (won) {
-        await files.remove(targetPath);
+        const discarded = await discardOwnCopy(fresh.index, target);
         return {
           ok: true,
           duplicate: true,
           clip: cloneClip(won),
-          cleanupError: ''
+          cleanupError: discarded.ok ? '' : discarded.error || ''
         };
       }
 
+      // 文件服务最后一次异步等待之后、同步写索引之前：按四个原 ID 与有效把次再核对。
+      const lost = verifyOwnership(input);
+      if (lost) {
+        const discarded = await discardOwnCopy(fresh.index, target);
+        return Object.assign({}, lost, {
+          cleanupError: discarded.ok ? '' : discarded.error || ''
+        });
+      }
+
       const clip = {
-        clipId,
+        clipId: target.clipId,
         archiveId,
         sessionId: input.sessionId,
         routeId: input.routeId,
         attemptId: input.attemptId,
         attemptSeq: safeNumber(input.attemptSeq),
         rev: 1,
-        fileId: files.fileIdOf(clipId, ext),
+        fileId: target.fileId,
         bytes: written.bytes,
         durationSeconds: safeNumber(input.durationSeconds),
         width: safeNumber(input.width),
         height: safeNumber(input.height),
         fileName: hasText(input.fileName) ? input.fileName : fileNameOf(input.tempFilePath),
+        opId: hasText(input.opId) ? input.opId : '',
         createdAt: now()
       };
-      if (!hasText(clip.fileId)) {
-        await files.remove(targetPath);
-        return fail('file-write-failed', '视频文件位置不在小程序用户目录内，未提交索引');
-      }
+      fresh.index.pending = (fresh.index.pending || []).filter(
+        entry => entry.fileId !== target.fileId
+      );
       fresh.index.clips.push(clip);
       // 等待写入期间另一个页面可能已经用掉更大的序号：向上取整，绝不把计数写小。
-      fresh.index.nextClipSeq = Math.max(fresh.index.nextClipSeq, seq + 1);
+      fresh.index.nextClipSeq = Math.max(fresh.index.nextClipSeq, target.seq + 1);
       const saved = saveIndex(storage, fresh.index);
-      if (!saved.ok) {
-        // 索引没写成：这次写下的副本不能留在目录里冒充已保存。
-        const cleaned = await files.remove(targetPath);
-        return Object.assign({}, saved, {
-          cleanupError: cleaned.ok ? '' : cleaned.error || '新副本清理失败'
-        });
+      if (saved.ok) {
+        return {
+          ok: true,
+          duplicate: false,
+          clip: cloneClip(clip),
+          cleanupError: ''
+        };
       }
-      return {
-        ok: true,
-        duplicate: false,
-        clip: cloneClip(clip),
-        cleanupError: ''
-      };
+
+      // 索引写入抛错：回执不明确，先读回再决定。
+      const readback = readbackFor(clip);
+      if (!readback) {
+        return Object.assign({}, saved, { keptCopy: true, cleanupError: '' });
+      }
+      if (readback.clip) {
+        return {
+          ok: true,
+          duplicate: false,
+          receiptLost: true,
+          clip: cloneClip(readback.clip),
+          cleanupError: ''
+        };
+      }
+      const discarded = await discardOwnCopy(readback.index, target);
+      return Object.assign({}, saved, {
+        cleanupError: discarded.ok ? '' : discarded.error || ''
+      });
     } finally {
-      releaseWrite(targetPath);
+      releaseWrite(target.path);
     }
   }
 
@@ -1098,14 +1537,9 @@ function createAttemptVideoStore(options) {
     const source = await sourceBytesOf(input);
     if (!source.ok) return source;
 
-    const seq = loaded.index.nextClipSeq;
-    const clipId = makeClipId(seq);
-    const ext = extensionOf(input.tempFilePath);
-    const targetPath = files.videoPath(clipId, ext);
-    if (!hasText(targetPath)) {
-      return fail('file-write-failed', '无法定位本档案的视频目录，未写入任何文件');
-    }
-    if (!claimWrite(targetPath, source.bytes)) {
+    const target = await chooseTarget(loaded.index.nextClipSeq, extensionOf(input.tempFilePath));
+    if (!target.ok) return target;
+    if (!claimWrite(target.path, source.bytes)) {
       return fail(
         'operation-in-progress',
         '同一段视频正在写入，请稍候再试；原视频仍可用'
@@ -1115,91 +1549,115 @@ function createAttemptVideoStore(options) {
       const used = await measure(loaded.index);
       if (!used.ok) return used;
       const spaceCheck = checkClipSpace(
-        used.totalBytes + reservedBytesExcept(targetPath),
+        used.totalBytes + reservedBytesExcept(target.path),
         source.bytes,
         policy
       );
       if (!spaceCheck.ok) return spaceFailure(spaceCheck);
 
-      const written = await writeCopy(targetPath, input.tempFilePath, source.bytes);
-      if (!written.ok) return written;
+      const claimed = rememberPending(
+        pendingRecord(target.clipId, target.fileId, input.opId, now())
+      );
+      if (!claimed.ok) return claimed;
+
+      const written = await writeCopy(target.path, input.tempFilePath, source.bytes);
+      if (!written.ok) {
+        await forgetPending(target.fileId);
+        return written;
+      }
 
       const fresh = readIndex(storage);
       if (!fresh.ok) {
-        await files.remove(targetPath);
-        return fresh;
+        return Object.assign({}, fresh, { keptCopy: true, cleanupError: '' });
       }
       const stillCurrent = currentClipFor(fresh.index, archiveId, input.attemptId);
       if (!sameClipIdentity(stillCurrent, input) || stillCurrent.clipId !== current.clipId) {
-        await files.remove(targetPath);
-        return fail(
-          'stale-operation',
-          '提交前发现这一把的视频关联已经变化，这次更换没有提交；原视频仍可用'
+        const discarded = await discardOwnCopy(fresh.index, target);
+        return Object.assign(
+          fail(
+            'stale-operation',
+            '提交前发现这一把的视频关联已经变化，这次更换没有提交；原视频仍可用'
+          ),
+          { cleanupError: discarded.ok ? '' : discarded.error || '' }
         );
+      }
+
+      // 文件服务最后一次异步等待之后、同步写索引之前：按四个原 ID 与有效把次再核对。
+      const lost = verifyOwnership(input);
+      if (lost) {
+        const discarded = await discardOwnCopy(fresh.index, target);
+        return Object.assign({}, lost, {
+          cleanupError: discarded.ok ? '' : discarded.error || ''
+        });
       }
 
       const previous = clipsFor(fresh.index, archiveId, input.attemptId);
       const clip = {
-        clipId,
+        clipId: target.clipId,
         archiveId,
         sessionId: input.sessionId,
         routeId: input.routeId,
         attemptId: input.attemptId,
         attemptSeq: safeNumber(input.attemptSeq),
         rev: revOf(current) + 1,
-        fileId: files.fileIdOf(clipId, ext),
+        fileId: target.fileId,
         bytes: written.bytes,
         durationSeconds: safeNumber(input.durationSeconds),
         width: safeNumber(input.width),
         height: safeNumber(input.height),
         fileName: hasText(input.fileName) ? input.fileName : fileNameOf(input.tempFilePath),
+        opId: hasText(input.opId) ? input.opId : '',
         createdAt: now()
       };
-      if (!hasText(clip.fileId)) {
-        await files.remove(targetPath);
-        return fail('file-write-failed', '视频文件位置不在小程序用户目录内，未提交索引');
-      }
+      fresh.index.pending = (fresh.index.pending || []).filter(
+        entry => entry.fileId !== target.fileId
+      );
       fresh.index.clips = fresh.index.clips.filter(
         entry => !(entry.archiveId === archiveId && entry.attemptId === input.attemptId)
       );
       fresh.index.clips.push(clip);
       // 等待写入期间另一个页面可能已经用掉更大的序号：向上取整，绝不把计数写小。
-      fresh.index.nextClipSeq = Math.max(fresh.index.nextClipSeq, seq + 1);
+      fresh.index.nextClipSeq = Math.max(fresh.index.nextClipSeq, target.seq + 1);
       const saved = saveIndex(storage, fresh.index);
-      if (!saved.ok) {
-        const cleaned = await files.remove(targetPath);
-        return Object.assign({}, saved, {
-          cleanupError: cleaned.ok ? '' : cleaned.error || '新副本清理失败'
-        });
+      if (saved.ok) {
+        const cleanupError = await reclaimCopies(fresh.index, previous);
+        return {
+          ok: true,
+          duplicate: false,
+          clip: cloneClip(clip),
+          cleanupError
+        };
       }
 
-      // 提交完成之后才回收旧副本：只删本档案视频目录里、索引已不再引用的片段文件。
-      let cleanupError = '';
-      const keptFileIds = new Set(fresh.index.clips.map(entry => entry.fileId));
-      for (const entry of previous) {
-        if (!hasText(entry.fileId) || keptFileIds.has(entry.fileId)) continue;
-        const oldPath = files.pathForFileId(entry.fileId);
-        if (!hasText(oldPath)) {
-          cleanupError = '旧副本位置不在本档案视频目录，未删除';
-          continue;
-        }
-        const removed = await files.remove(oldPath);
-        if (!removed.ok) cleanupError = removed.error;
+      // 索引写入抛错：只有读回确认本次片段已落盘才按成功处理，并继续按读回索引
+      // 回收无引用旧副本；读不回来时保留存疑的新旧副本。
+      const readback = readbackFor(clip);
+      if (!readback) {
+        return Object.assign({}, saved, { keptCopy: true, cleanupError: '' });
       }
-      return {
-        ok: true,
-        duplicate: false,
-        clip: cloneClip(clip),
-        cleanupError
-      };
+      if (readback.clip) {
+        const cleanupError = await reclaimCopies(readback.index, previous);
+        return {
+          ok: true,
+          duplicate: false,
+          receiptLost: true,
+          clip: cloneClip(readback.clip),
+          cleanupError
+        };
+      }
+      const discarded = await discardOwnCopy(readback.index, target);
+      return Object.assign({}, saved, {
+        cleanupError: discarded.ok ? '' : discarded.error || ''
+      });
     } finally {
-      releaseWrite(targetPath);
+      releaseWrite(target.path);
     }
   }
 
   /**
    * 移除：核对当前片段版本 → 先解除索引关联 → 再回收小程序内副本。
-   * 索引写失败时关联与文件都保持原样；文件删除失败时关联已移除，返回 cleanupError。
+   * 索引写失败时关联与文件都保持原样；只有读回明确显示指定版本已解除关联时
+   * 才回收副本。文件删除失败时关联已移除，返回 cleanupError 并留下待清理记录。
    */
   async function remove(request) {
     const input = request || {};
@@ -1219,31 +1677,53 @@ function createAttemptVideoStore(options) {
       );
     }
 
+    // 这里是同步路径，没有异步等待；仍然在同一位置核对一次归属，防止旧页面迟到。
+    const lost = verifyOwnership(input);
+    if (lost) return lost;
+
     const previous = clipsFor(loaded.index, archiveId, input.attemptId);
     loaded.index.clips = loaded.index.clips.filter(
       entry => !(entry.archiveId === archiveId && entry.attemptId === input.attemptId)
     );
     const saved = saveIndex(storage, loaded.index);
-    if (!saved.ok) return saved;
-
-    let cleanupError = '';
-    const referenced = new Set(loaded.index.clips.map(entry => entry.fileId));
-    for (const entry of previous) {
-      if (!hasText(entry.fileId) || referenced.has(entry.fileId)) continue;
-      const targetPath = files.pathForFileId(entry.fileId);
-      if (!hasText(targetPath)) {
-        cleanupError = '副本位置不在本档案视频目录，未删除';
-        continue;
-      }
-      const removed = await files.remove(targetPath);
-      if (!removed.ok) cleanupError = removed.error;
+    if (saved.ok) {
+      const cleanupError = await reclaimCopies(loaded.index, previous);
+      return { ok: true, removed: true, duplicate: false, clip: null, cleanupError };
     }
-    return { ok: true, removed: true, duplicate: false, clip: null, cleanupError };
+
+    // 索引写入抛错：读回判断指定版本是否已经明确解除关联。
+    const read = readIndex(storage);
+    if (!read.ok) {
+      return Object.assign({}, saved, {
+        cleanupError: '无法读回本机视频索引，未删除任何文件；请稍后重新进入本页核对'
+      });
+    }
+    const after = currentClipFor(read.index, archiveId, input.attemptId);
+    if (!after) {
+      // 解除关联已经落盘：只回收不再被引用的指定版本副本。
+      const cleanupError = await reclaimCopies(read.index, previous);
+      return {
+        ok: true,
+        removed: true,
+        duplicate: false,
+        receiptLost: true,
+        clip: null,
+        cleanupError
+      };
+    }
+    if (sameClipIdentity(after, input)) {
+      return saved;
+    }
+    return Object.assign({}, saved, {
+      cleanupError: '这一把的视频关联已经变化，未删除任何文件'
+    });
   }
 
   /**
-   * 无引用副本清理：只处理本档案视频目录里 `clip-*` 命名、当前索引不再引用、
-   * 也没有在途写入的文件。每次删除前重读索引，异步窗口内新提交的视频不会被删。
+   * 无引用副本清理：只处理本档案视频目录里、当前索引不再引用、并且能证实由本功能
+   * 创建的文件——即出现在持久待清理记录（pending）里的相对文件标识。
+   * 仅仅命名合法但没有所有权记录的 clip-* 文件保留不动，只计入实际占用。
+   * 每次删除前重读索引，异步窗口内新提交的视频不会被删；索引/目录读失败时不删。
    */
   async function cleanupOrphans() {
     const loaded = readIndex(storage);
@@ -1255,8 +1735,27 @@ function createAttemptVideoStore(options) {
       return fail('cleanup-failed', '读取视频目录失败，未删除任何文件：' + listed.error);
     }
 
+    const present = new Set(listed.files.map(file => file.fileId));
     const deleted = [];
     const errors = [];
+
+    // 待清理记录有、文件已经不存在的：只去掉记录，不碰任何文件。
+    const stalePending = (loaded.index.pending || []).filter(
+      entry => entry.archiveId === archiveId && !present.has(entry.fileId)
+    );
+    if (stalePending.length) {
+      const fresh = readIndex(storage);
+      if (!fresh.ok) {
+        errors.push(fresh.error);
+      } else {
+        fresh.index.pending = (fresh.index.pending || []).filter(
+          entry => !(entry.archiveId === archiveId && !present.has(entry.fileId))
+        );
+        const saved = saveIndex(storage, fresh.index);
+        if (!saved.ok) errors.push(saved.error);
+      }
+    }
+
     for (const file of listed.files) {
       if (RUNTIME_WRITES.has(file.path)) continue;
       const fresh = readIndex(storage);
@@ -1265,14 +1764,26 @@ function createAttemptVideoStore(options) {
         break;
       }
       if (fresh.index.clips.some(entry => entry.fileId === file.fileId)) continue;
+      if (!pendingOf(fresh.index, file.fileId)) continue;
       if (RUNTIME_WRITES.has(file.path)) continue;
       const removed = await files.remove(file.path);
-      if (removed.ok) {
-        if (removed.existed) deleted.push(file.path);
-      } else {
+      if (!removed.ok) {
         errors.push(removed.error);
+        continue;
       }
+      if (removed.existed) deleted.push(file.path);
+      const after = readIndex(storage);
+      if (!after.ok) {
+        errors.push(after.error);
+        continue;
+      }
+      after.index.pending = (after.index.pending || []).filter(
+        entry => entry.fileId !== file.fileId
+      );
+      const saved = saveIndex(storage, after.index);
+      if (!saved.ok) errors.push(saved.error);
     }
+
     if (errors.length) {
       return {
         ok: false,
@@ -1311,11 +1822,13 @@ function createAttemptVideoStore(options) {
         missing: []
       };
     }
+    const fresh = readIndex(storage);
+    const index = fresh.ok ? fresh.index : loaded.index;
     const missing = [];
     if (files) {
-      for (const clip of loaded.index.clips) {
+      for (const clip of index.clips) {
         if (clip.archiveId !== archiveId) continue;
-        const targetPath = files.pathForFileId(clip.fileId);
+        const targetPath = files.pathForClip(clip);
         const statResult = targetPath ? await files.stat(targetPath) : { ok: false, exists: false };
         if (!statResult.ok || !statResult.exists || !(statResult.bytes > 0)) {
           missing.push({ clipId: clip.clipId, attemptId: clip.attemptId, fileId: clip.fileId });
@@ -1325,7 +1838,7 @@ function createAttemptVideoStore(options) {
     return { ok: true, deleted: cleanup.deleted || [], missing, deletedCount: cleanup.deletedCount || 0 };
   }
 
-  /** 本档案视频占用：按实际文件字节，含无引用副本。 */
+  /** 本档案视频占用：按实际文件字节，含各档案副本与无引用副本。 */
   async function getSpaceUsage() {
     const loaded = readIndex(storage);
     const measured = await measure(loaded.ok ? loaded.index : null);
@@ -1337,6 +1850,9 @@ function createAttemptVideoStore(options) {
       // 索引不可读时无法判断哪些文件无引用：不把全部文件报成可清理，避免误导。
       orphanBytes: loaded.ok ? measured.orphanBytes : 0,
       clipCount: clips.length,
+      otherArchiveClips: loaded.ok
+        ? loaded.index.clips.filter(clip => clip.archiveId !== archiveId).length
+        : 0,
       indexOk: loaded.ok,
       indexError: loaded.ok ? '' : loaded.error
     });
@@ -1363,22 +1879,8 @@ function createAttemptVideoStore(options) {
 const services = new Map();
 
 /**
- * 生产默认核对：当前本机档案必须还是请求带来的那一份。
- * 换档之后的迟到写入在这里被拒绝，不写文件、不改索引。
- */
-function defaultVerifyArchive(archiveId) {
-  try {
-    const store = require('./training-store.js');
-    const loaded = store.loadState();
-    return Boolean(loaded.ok && loaded.archive.archiveId === archiveId);
-  } catch (error) {
-    return false;
-  }
-}
-
-/**
  * 按档案取得共享视频服务（每份档案一个实例）。第一次打开时执行一次 recover()：
- * 清理上次崩溃留下的无引用副本，失败不影响页面继续读取已保存视频。
+ * 清理上次崩溃留下的、有所有权记录的无引用副本，失败不影响页面继续读取已保存视频。
  * options 只在首次创建时生效（测试可注入隔离文件根、存储与预算）。
  */
 function openAttemptVideoService(archiveId, options) {
@@ -1394,14 +1896,16 @@ function openAttemptVideoService(archiveId, options) {
       storage: config.storage,
       now: config.now,
       space: config.space,
-      verifyArchive: config.verifyArchive || defaultVerifyArchive,
+      verifyArchive: config.verifyArchive,
+      verifyContext: config.verifyContext,
       files:
         config.files ||
         createWxAttemptVideoFiles({
           archiveId,
           wxApi: config.wxApi,
           userDataPath: config.userDataPath,
-          rootDir: config.rootDir
+          rootDir: config.rootDir,
+          rootBaseDir: config.rootBaseDir
         })
     });
     entry = { service, ready: null };
@@ -1442,6 +1946,7 @@ module.exports = {
   checkClipSpace,
   normalizeIndex,
   normalizeClip,
+  normalizePending,
   createEmptyIndex,
   currentClipFor,
   sameClipIdentity,

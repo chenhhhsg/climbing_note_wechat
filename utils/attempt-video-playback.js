@@ -106,13 +106,15 @@ function userDataPathOf(options) {
  * 根路径和 `..`，避免把播放器指到视频目录之外。
  */
 function isSafeFileId(fileId) {
-  if (!hasText(fileId)) return false;
-  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(fileId)) return false;
-  const text = fileId.replace(/\\/g, '/');
-  if (text.charAt(0) === '/') return false;
-  return text.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+  return attemptVideo.isSafeVideoFileId(fileId);
 }
 
+/**
+ * 已保存片源只能来自当前档案视频根目录里的同一片段文件：
+ *   attempt-video/v1/<archiveId>/<clipId>.<ext>
+ * 普通相对路径（例如别的功能写在用户目录下的 different-feature.mp4）、旧绝对路径
+ * 与别的档案目录都不播放，交给调用方显示「重新选择原片」。
+ */
 function savedSourceFromClip(clip, options) {
   const source = clip || {};
   if (!hasText(source.clipId) || !hasText(source.fileId)) {
@@ -123,11 +125,20 @@ function savedSourceFromClip(clip, options) {
       source: null
     };
   }
-  if (!isSafeFileId(source.fileId)) {
+  const parsed = attemptVideo.parseVideoFileId(source.fileId);
+  if (!parsed || parsed.clipId !== source.clipId) {
     return {
       ok: false,
       code: 'unsafe-file',
-      error: '视频关联里的文件位置不受支持，无法播放；请重新选择原片。',
+      error: '视频关联里的文件不属于这一把的本机副本，无法播放；请重新选择原片。',
+      source: null
+    };
+  }
+  if (hasText(source.archiveId) && source.archiveId !== parsed.archiveId) {
+    return {
+      ok: false,
+      code: 'archive-mismatch',
+      error: '视频关联指向另一份本机档案，无法播放；请重新选择原片。',
       source: null
     };
   }
@@ -349,19 +360,23 @@ function previewInfoOf(preview) {
  * - commit：新片的临时文件信息；
  * - replace：原片片段标识/版本 + 新片临时文件信息；
  * - remove：只带当前片段标识/版本/文件标识与实际字节。
+ *
+ * 每次操作另带一个操作标识（opId）：持久层把它写进本次生成的索引条目，
+ * 页面读回时据此区分「这次操作真的提交了」与「另一页/另一版刚好更新了」。
  */
-function buildRequest(kind, context, beforeClip, preview) {
+function buildRequest(kind, context, beforeClip, preview, operationId) {
   const base = attemptBaseOf(context);
   const before = beforeClip || {};
+  const opId = hasText(operationId) ? operationId : '';
   if (kind === METHOD_REMOVE) {
-    return Object.assign({ action: kind }, base, {
+    return Object.assign({ action: kind, opId }, base, {
       clipId: before.clipId || '',
       rev: safeNumber(before.rev),
       fileId: before.fileId || '',
       bytes: safeNumber(before.bytes)
     });
   }
-  const request = Object.assign({ action: kind }, base, previewInfoOf(preview));
+  const request = Object.assign({ action: kind, opId }, base, previewInfoOf(preview));
   if (kind === METHOD_REPLACE) {
     request.clipId = before.clipId || '';
     request.rev = safeNumber(before.rev);
@@ -369,6 +384,16 @@ function buildRequest(kind, context, beforeClip, preview) {
     request.bytes = safeNumber(before.bytes);
   }
   return request;
+}
+
+/** 每次操作的唯一标识（只用于本机索引核对，不含用户或视频内容）。 */
+function makeOperationId() {
+  return (
+    'op-' +
+    Date.now().toString(36) +
+    '-' +
+    Math.random().toString(36).slice(2, 8)
+  );
 }
 
 function operationStatusText(kind) {
@@ -402,15 +427,27 @@ function clipChanged(before, after) {
 /**
  * 按读回的视频索引判断这次操作的真实结果（不采信回执）：
  * - 索引读不回来：回执成功也只算「未确认」，回执失败算失败；
- * - 索引已到目标状态（保存/更换后有一段新片，移除后没有片段）：成功，
+ * - 读回的片段带操作标识时，只有本次操作写下的那一条才算本次结果。另一页/另一版
+ *   刚更新的片段（操作标识不同）不能被报成本次「已更换」；
+ * - 索引已到目标状态（保存/更换后有一段本次片段，移除后没有片段）：成功，
  *   即使写入回执丢了（receiptLost）；
  * - 回执成功而索引没变：未确认，页面保留原片与预览，可重新核对；
  * - 回执失败且索引没变：失败，原关联不动。
  *
+ * options（可选）：
+ * - opId：本次操作标识；
+ * - expectedBytes：本次预览的实际字节；索引里本次片段的大小必须一致。
+ *
  * 返回 { ok, code, error, clip, receiptLost }：
  * ok 为 true 时 clip 是读回的当前片段（移除后为 null）。
  */
-function evaluateOperation(kind, beforeClip, receipt, read) {
+function evaluateOperation(kind, beforeClip, receipt, read, options) {
+  const config = options || {};
+  const opId = hasText(config.opId) ? config.opId : '';
+  const expectedBytes =
+    config.expectedBytes === undefined || config.expectedBytes === null
+      ? null
+      : safeNumber(config.expectedBytes);
   const receiptOk = Boolean(receipt && receipt.ok);
   const receiptError = (receipt && receipt.error) || '';
   const readOk = Boolean(read && read.ok);
@@ -429,13 +466,37 @@ function evaluateOperation(kind, beforeClip, receipt, read) {
   }
 
   const after = read.clip || null;
+  const afterOwner = after && hasText(after.opId) ? after.opId : '';
+  const afterBytes = safeNumber(after && after.bytes);
+  // 读回片段是否已经越过本次操作前的版本：只有越过之后、操作标识又不是本次的，
+  // 才说明这次操作被另一处提交取代。原地未变的旧片段（它带着更早的操作标识）
+  // 不算「他处更新」，否则会把磁盘写入失败误报成过期操作。
+  const movedOn = clipChanged(beforeClip, after);
+  const foreign = Boolean(opId && afterOwner && afterOwner !== opId && movedOn);
+  // 本次条目必须是持久层核对过的真实字节，与预览大小一致才算「本次的片段」。
+  const bytesMismatch = Boolean(
+    opId && afterOwner === opId && expectedBytes !== null &&
+      afterBytes !== null && afterBytes !== expectedBytes
+  );
+
   let confirmed = false;
+  let duplicate = false;
   if (kind === METHOD_REMOVE) {
     confirmed = !after;
   } else if (kind === METHOD_COMMIT) {
-    confirmed = Boolean(after);
+    const receiptDuplicate = Boolean(receipt && receipt.duplicate === true);
+    if (receiptDuplicate || foreign) {
+      // 结束状态有视频，但形成当前关联的不是本次预览（另一处已提交）。
+      duplicate = Boolean(after) && !bytesMismatch;
+    } else {
+      confirmed = Boolean(after) && !bytesMismatch;
+    }
   } else {
-    confirmed = clipChanged(beforeClip, after);
+    confirmed =
+      clipChanged(beforeClip, after) &&
+      !foreign &&
+      !bytesMismatch &&
+      (!opId || !afterOwner || afterOwner === opId);
   }
 
   if (confirmed) {
@@ -447,6 +508,36 @@ function evaluateOperation(kind, beforeClip, receipt, read) {
       receiptLost: !receiptOk
     };
   }
+  if (duplicate) {
+    return {
+      ok: true,
+      code: 'duplicate',
+      error: '',
+      clip: after,
+      receiptLost: !receiptOk
+    };
+  }
+
+  // 另一处已经更新到别的版本：这不是本次的成功，也不覆盖对方的关联。
+  const superseded =
+    foreign ||
+    bytesMismatch ||
+    (kind === METHOD_REMOVE && Boolean(after) && clipChanged(beforeClip, after));
+  if (superseded) {
+    return {
+      ok: false,
+      code: 'stale-operation',
+      error:
+        kind === METHOD_REMOVE
+          ? '这一把的视频关联已经由另一处更新，本次移除已过期，没有移除现在这段视频；页面已按读回显示最新副本。'
+          : '这一把的视频关联已经由另一处更新，本次' +
+            (kind === METHOD_COMMIT ? '保存' : '更换') +
+            '没有提交；页面已按读回显示最新副本，原视频仍可用。',
+      clip: after,
+      receiptLost: false
+    };
+  }
+
   if (!receiptOk) {
     return {
       ok: false,
@@ -462,7 +553,7 @@ function evaluateOperation(kind, beforeClip, receipt, read) {
     error:
       kind === METHOD_REMOVE
         ? '移除后本机索引里仍能看到这段视频，结果未确认；请稍后重新进入本页核对，原关联暂不改动。'
-        : '写入后本机索引还没有指向新视频，结果未确认；请稍后重新进入本页核对，原关联暂不改动。',
+        : '写入后本机索引还没有指向本次新视频，结果未确认；请稍后重新进入本页核对，原关联暂不改动。',
     clip: after,
     receiptLost: false
   };
@@ -472,6 +563,9 @@ function operationSuccessText(kind, outcome) {
   const suffix = outcome && outcome.receiptLost
     ? '（写入回执不明确，已按本机索引读回确认）'
     : '';
+  if (outcome && outcome.code === 'duplicate') {
+    return '这一把已经有本机副本，已按读回切换显示；没有写入第二份。' + suffix;
+  }
   if (kind === METHOD_COMMIT) {
     return '已保存到本机：这一把现在可以从本机副本回看。' + suffix;
   }
@@ -507,6 +601,7 @@ module.exports = {
   videoStoreAvailable,
   callVideoStore,
   buildRequest,
+  makeOperationId,
   operationStatusText,
   sameClipIdentity,
   clipChanged,

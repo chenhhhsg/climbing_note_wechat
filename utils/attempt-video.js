@@ -18,6 +18,15 @@ const recordActions = require('./training-record-actions.js');
 // T026 写入的独立视频索引；本单只读，绝不创建。与照片、卡点、清单同用正式本机命名空间。
 const VIDEO_INDEX_KEY = store.NAMESPACE + 'attempt-video';
 
+// 视频副本的唯一合法位置：<USER_DATA_PATH>/attempt-video/v1/<archiveId>/<clipId>.<ext>。
+// 列表、播放与回收共用这一份严格解析：合法文件名本身不算归属证据，路径必须落在
+// 当前档案的视频根目录里、并且与索引条目的片段标识是同一个片段文件。
+const VIDEO_ROOT_DIRNAME = 'attempt-video';
+const VIDEO_FILES_VERSION = 1;
+const ARCHIVE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const CLIP_ID_PATTERN = /^clip-[A-Za-z0-9_-]+$/;
+const CLIP_FILE_PATTERN = /^(clip-[A-Za-z0-9_-]+)\.([A-Za-z0-9]{1,5})$/i;
+
 // 相册单选：一个选项对象同时说明数量、媒体类型与来源。
 const CHOOSE_MEDIA_OPTIONS = {
   count: 1,
@@ -32,6 +41,61 @@ function hasText(value) {
 function safeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+/**
+ * 索引里的文件标识必须是相对路径：不接受协议前缀（旧绝对路径）、盘符、根路径
+ * 与 `..`。这只是第一层，能否播放/回收还要过下面的同片段解析。
+ */
+function isSafeVideoFileId(value) {
+  if (!hasText(value)) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return false;
+  const text = value.replace(/\\/g, '/');
+  if (text.charAt(0) === '/') return false;
+  return text.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+}
+
+/**
+ * 严格解析本功能写下的相对文件标识：
+ *   attempt-video/v1/<archiveId>/<clipId>.<ext>
+ * 目录、档案、片段标识与文件名必须逐项对上。普通的相对路径（例如其他功能的
+ * different-feature.mp4）、旧绝对路径、别的档案目录都返回 null。
+ */
+function parseVideoFileId(fileId) {
+  if (!isSafeVideoFileId(fileId)) return null;
+  const parts = fileId.replace(/\\/g, '/').split('/');
+  if (parts.length !== 4) return null;
+  if (parts[0] !== VIDEO_ROOT_DIRNAME) return null;
+  if (parts[1] !== 'v' + VIDEO_FILES_VERSION) return null;
+  if (!ARCHIVE_ID_PATTERN.test(parts[2])) return null;
+  const match = CLIP_FILE_PATTERN.exec(parts[3]);
+  if (!match) return null;
+  return {
+    archiveId: parts[2],
+    clipId: match[1],
+    ext: match[2].toLowerCase(),
+    fileName: parts[3]
+  };
+}
+
+/** 索引条目与文件标识必须是当前档案里的同一个片段文件。 */
+function isClipFileIdFor(archiveId, clipId, fileId) {
+  if (!hasText(archiveId) || !CLIP_ID_PATTERN.test(clipId || '')) return false;
+  const parsed = parseVideoFileId(fileId);
+  return Boolean(
+    parsed && parsed.archiveId === archiveId && parsed.clipId === clipId
+  );
+}
+
+/** 由档案、片段与扩展名生成唯一的合法相对文件标识（持久层写入索引用）。 */
+function clipFileIdOf(archiveId, clipId, ext) {
+  if (!ARCHIVE_ID_PATTERN.test(archiveId || '') || !CLIP_ID_PATTERN.test(clipId || '')) {
+    return '';
+  }
+  const suffix = hasText(ext) ? ext.replace(/[^A-Za-z0-9]/g, '').slice(0, 5) : 'mp4';
+  if (!suffix) return '';
+  return VIDEO_ROOT_DIRNAME + '/v' + VIDEO_FILES_VERSION + '/' + archiveId + '/' +
+    clipId + '.' + suffix;
 }
 
 /**
@@ -188,12 +252,17 @@ function readVideoIndex() {
 
 function clipFor(read, archiveId, attemptId) {
   if (!read || !read.ok || !hasText(archiveId) || !hasText(attemptId)) return null;
+  // 只有落在当前档案视频根目录、且文件名就是这条片段标识的条目才算已关联。
+  // 损坏索引里的普通相对路径、旧绝对路径、别的档案目录一律按「没有视频」处理，
+  // 不把文件位置传给播放器，也不会成为移除/回收的目标。
   const matches = read.clips.filter(
     clip =>
       clip &&
       clip.archiveId === archiveId &&
       clip.attemptId === attemptId &&
-      hasText(clip.fileId)
+      hasText(clip.clipId) &&
+      hasText(clip.fileId) &&
+      isClipFileIdFor(archiveId, clip.clipId, clip.fileId)
   );
   if (!matches.length) return null;
   // 同一把只应有一条当前片段。若替换期间索引里短暂残留多条，取版本号最大的一条；
@@ -349,6 +418,15 @@ function previewFromChoice(res) {
 
 module.exports = {
   VIDEO_INDEX_KEY,
+  VIDEO_ROOT_DIRNAME,
+  VIDEO_FILES_VERSION,
+  ARCHIVE_ID_PATTERN,
+  CLIP_ID_PATTERN,
+  CLIP_FILE_PATTERN,
+  isSafeVideoFileId,
+  parseVideoFileId,
+  isClipFileIdFor,
+  clipFileIdOf,
   parseVideoQuery,
   videoQueryString,
   contextToken,

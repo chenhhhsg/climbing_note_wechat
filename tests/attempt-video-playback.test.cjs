@@ -528,6 +528,71 @@ test('T024-3 成功以读回的索引为准：回执丢失但已提交算成功�
   assert.equal(playback.clipChanged(before, before), false);
   assert.equal(playback.clipChanged(before, { clipId: 'clip-old', rev: 2 }), true);
   assert.equal(playback.sameClipIdentity(before, { clipId: 'clip-old', rev: 1 }), true);
+
+  // 操作标识：读回的是另一页刚写下的新版本时，不能报成本次「已更换」。
+  const otherPage = {
+    ok: true,
+    clip: { clipId: 'clip-other', rev: 2, bytes: 2048, opId: 'op-other-page' }
+  };
+  const superseded = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: false, error: '关联已变化' },
+    otherPage,
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(superseded.ok, false);
+  assert.equal(superseded.code, 'stale-operation');
+  assert.doesNotMatch(superseded.error, /已更换|更换成功/);
+  assert.equal(superseded.clip.clipId, 'clip-other', '读回仍给出他页版本供刷新展示');
+
+  // 本次操作写下的条目（操作标识与真实字节一致）才按成功处理。
+  const ownClip = {
+    ok: true,
+    clip: { clipId: 'clip-mine', rev: 2, bytes: 2048, opId: 'op-this-page' }
+  };
+  const committed = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: true },
+    ownClip,
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(committed.ok, true);
+  assert.equal(committed.code, 'committed');
+
+  // 操作标识对上但字节与预览不一致：不当成本次结果。
+  const wrongBytes = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: true },
+    { ok: true, clip: { clipId: 'clip-mine', rev: 2, bytes: 999, opId: 'op-this-page' } },
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(wrongBytes.ok, false);
+
+  // 原地未变的旧片段带着更早的操作标识：写入失败仍按失败原因展示，不误报过期。
+  const untouched = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: false, error: '空间不足' },
+    { ok: true, clip: { clipId: 'clip-old', rev: 1, bytes: 100, opId: 'op-older' } },
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(untouched.ok, false);
+  assert.equal(untouched.code, 'failed');
+  assert.match(untouched.error, /空间不足/);
+
+  // 移除的指定版本仍被别的版本取代：按过期处理，不报本次已移除。
+  const staleRemove = playback.evaluateOperation(
+    'remove',
+    before,
+    { ok: false, error: '关联已变化' },
+    { ok: true, clip: { clipId: 'clip-other', rev: 2, bytes: 2048, opId: 'op-other-page' } },
+    { opId: 'op-remove' }
+  );
+  assert.equal(staleRemove.ok, false);
+  assert.equal(staleRemove.code, 'stale-operation');
 });
 
 // ------------------------------------------------------------------ *
