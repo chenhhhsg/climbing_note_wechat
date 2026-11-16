@@ -963,3 +963,59 @@ test('PH23 空间策略可注入小数值，且提醒线与余量不超过预算
   assert.equal(spaceModule.isSpaceError('copyFile:fail mock write failed'), false);
   assert.equal(spaceModule.formatBytes(0), '0 KB');
 });
+
+test('PH24 普通清缓存只清照片缩略图：逐把视频、训练档案、自测与未知文件保持原值', async () => {
+  const service = makeService(ARCHIVE_A);
+  const added = await service.addPhoto({
+    routeId: ROUTE_BLUE,
+    sourcePath: addSourceImage()
+  });
+  assert.equal(added.ok, true, added.error);
+  const shown = await service.getPhoto({ photoId: added.photo.photoId });
+  assert.equal(shown.ok, true, shown.error);
+  const mainPath = shown.photo.storage.location;
+  const thumbPath = shown.photo.thumbnail.location;
+  assert.ok(virtual.files.has(mainPath));
+  assert.ok(virtual.files.has(thumbPath));
+
+  // 逐把视频副本与独立索引（T026）、自测记录、训练档案与未知文件。
+  const videoPath = USER_DATA_PATH + '/attempt-video/v1/' + ARCHIVE_A + '/clip-1.mp4';
+  virtual.files.set(videoPath, Buffer.alloc(2048, 4));
+  const videoIndex = JSON.stringify({ version: 1, nextClipSeq: 2, clips: [] });
+  storage.set(store.NAMESPACE + 'attempt-video', videoIndex);
+  const fitnessValue = JSON.stringify({ version: 1, sessions: [] });
+  storage.set('climbingNote.fitness.v1.records', fitnessValue);
+  // 卡点（照片标记）也在正式本机命名空间里，普通清缓存不得改动。
+  const marksValue = JSON.stringify({ version: 1, marks: [] });
+  storage.set(store.NAMESPACE + 'photo-marks', marksValue);
+  const archiveValue = JSON.stringify({ version: 1, keep: true });
+  storage.set(store.ARCHIVE_KEY, archiveValue);
+  const unknownPath = USER_DATA_PATH + '/keep-me.bin';
+  virtual.files.set(unknownPath, Buffer.alloc(32, 8));
+
+  const cleared = await service.clearRebuildableCache();
+  assert.equal(cleared.ok, true, cleared.error);
+  const storageCleared = store.clearRebuildableStorage();
+  assert.equal(storageCleared.ok, true, storageCleared.error);
+
+  assert.equal(virtual.files.has(mainPath), true, '被引用的主图保留');
+  assert.equal(virtual.files.has(thumbPath), false, '缩略图是可重建缓存，照旧清理');
+  assert.equal(virtual.files.has(videoPath), true, '逐把视频副本不属于照片缓存');
+  assert.equal(
+    storage.get(store.NAMESPACE + 'attempt-video'),
+    videoIndex,
+    '视频索引逐字节不变'
+  );
+  assert.equal(
+    storage.get('climbingNote.fitness.v1.records'),
+    fitnessValue,
+    '自测记录不受影响'
+  );
+  assert.equal(
+    storage.get(store.NAMESPACE + 'photo-marks'),
+    marksValue,
+    '卡点记录不受影响'
+  );
+  assert.equal(storage.get(store.ARCHIVE_KEY), archiveValue, '训练档案不受影响');
+  assert.equal(virtual.files.has(unknownPath), true, '未知文件不删除');
+});

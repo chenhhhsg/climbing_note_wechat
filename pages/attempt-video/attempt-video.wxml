@@ -29,6 +29,26 @@
         <text id="video-state" class="video-state">{{videoStateText}}</text>
       </view>
 
+      <!-- T026：本档案视频实际占用与可执行的无引用副本清理 -->
+      <view wx:if="{{spaceUsageText || spaceError}}" id="video-space" class="card space-card">
+        <text class="card-title">本机视频占用</text>
+        <text wx:if="{{spaceUsageText}}" id="video-space-usage" class="space-usage">{{spaceUsageText}}</text>
+        <text wx:if="{{spaceDetailText}}" id="video-space-detail" class="preview-meta">{{spaceDetailText}}</text>
+        <text wx:if="{{spaceWarning}}" id="video-space-warning" class="space-warning">{{spaceWarning}}</text>
+        <text wx:if="{{spaceError}}" id="video-space-error" class="space-error">{{spaceError}}</text>
+        <view wx:if="{{cleanupNotice}}" id="video-cleanup-notice" class="notice cleanup-notice" bindtap="dismissCleanupNotice">
+          <text class="notice-text">{{cleanupNotice}}</text>
+          <text class="notice-hint">点击收起</text>
+        </view>
+        <button
+          wx:if="{{canCleanupOrphans}}"
+          id="cleanup-video-orphans"
+          class="secondary-button cleanup-button"
+          bindtap="cleanupVideoOrphans"
+          disabled="{{cleanupBusy || busy}}"
+        >{{cleanupBusy ? '正在清理…' : '清理无引用副本'}}</button>
+      </view>
+
       <!-- 写入进行中 / 失败 / 保存服务未就绪 -->
       <view wx:if="{{opStatus}}" id="video-op-status" class="notice op-status">
         <text class="notice-text">{{opStatus}}</text>

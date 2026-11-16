@@ -37,6 +37,8 @@ const PROFILE_WXML = path.join(ROOT, 'pages', 'profile', 'profile.wxml');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 const SERVICE_JS = path.join(ROOT, 'utils', 'training-photos.js');
 const CONTROLLER_JS = path.join(ROOT, 'utils', 'training-photo-controller.js');
+const VIDEO_FILES_JS = path.join(ROOT, 'utils', 'attempt-video-files.js');
+const VIDEO_UTIL_JS = path.join(ROOT, 'utils', 'attempt-video.js');
 
 const USER_DATA_PATH = 'http://usr';
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
@@ -64,6 +66,7 @@ const wxLog = {
   previews: [],
   mediaCalls: [],
   imageCalls: [],
+  modals: [],
   // 选择器调用形状：参数个数与 success/fail 是否在选项对象里。
   pickerCalls: [],
   mediaVariant: 'tempFiles',
@@ -91,6 +94,7 @@ function resetAll() {
   wxLog.previews = [];
   wxLog.mediaCalls = [];
   wxLog.imageCalls = [];
+  wxLog.modals = [];
   wxLog.pickerCalls = [];
   wxLog.mediaVariant = 'tempFiles';
   wxLog.imageVariant = 'tempFilePaths';
@@ -272,6 +276,7 @@ global.wx = {
     options.success({ tempFilePaths: [pickerFile()] });
   },
   showModal(options) {
+    wxLog.modals.push(options);
     options.success({ confirm: wxLog.modalConfirm, cancel: !wxLog.modalConfirm });
   },
   showToast(options) {
@@ -295,6 +300,8 @@ const db = require(path.join(ROOT, 'utils', 'db.js'));
 const store = require(STORE_JS);
 const serviceModule = require(SERVICE_JS);
 const controllerModule = require(CONTROLLER_JS);
+const videoFilesModule = require(VIDEO_FILES_JS);
+const attemptVideo = require(VIDEO_UTIL_JS);
 
 // 捕获原生 Page(...) 定义。每个用例都重新执行页面模块，避免命中 require 缓存后
 // 拿不到本次注册的定义（也顺带覆盖“模块重新加载”这条路径）。
@@ -1119,4 +1126,90 @@ test('R6 照片流程只落正式本机命名空间：无云调用、不写旧�
   assert.equal(filesUnder(USER_DATA_PATH + '/gym-log-trial-photos').length, 0);
   // 旧云记录接口没有被本流程使用。
   assert.equal(typeof db.getRecentRecords, 'function');
+});
+
+test('R7 普通清缓存保留逐把视频索引与副本（含撤回后待恢复），照片仍按既有策略清理', async () => {
+  const seeded = seedTraining();
+  const page = await openRoutePage(seeded.route.id);
+  await settle();
+  await page.chooseRoutePhoto(tapDataset({ source: 'album' }));
+  await page.confirmRoutePhoto(tapDataset({ routeId: seeded.route.id }));
+  await settle();
+  const mainPath = page.data.routePhoto.mainPath;
+  const thumbPath = page.data.routePhoto.thumbnailPath;
+  assert.ok(virtual.files.has(mainPath));
+  assert.ok(virtual.files.has(thumbPath));
+
+  const saved = store.saveAttempt({
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id,
+    result: 'fail',
+    note: '带本机视频的那把'
+  });
+  assert.equal(saved.ok, true, saved.error);
+  const attemptId = saved.attempt.id;
+  const archiveId = archiveOf().archiveId;
+  const tempPath = 'http://tmp/video-source.mp4';
+  virtual.files.set(tempPath, Buffer.alloc(2048, 9));
+  const videoService = videoFilesModule.createAttemptVideoStore({
+    archiveId,
+    files: videoFilesModule.createWxAttemptVideoFiles({
+      archiveId,
+      wxApi: global.wx
+    }),
+    now: () => '2026-11-16T10:00:00.000Z'
+  });
+  const committed = await videoService.commit({
+    action: 'commit',
+    archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id,
+    attemptId,
+    attemptSeq: saved.attempt.seq,
+    tempFilePath: tempPath,
+    sizeBytes: 2048,
+    durationSeconds: 6.4,
+    width: 1080,
+    height: 1920,
+    fileName: 'video-source.mp4'
+  });
+  assert.equal(committed.ok, true, committed.error);
+  const videoPath = USER_DATA_PATH + '/' + committed.clip.fileId;
+  assert.ok(virtual.files.has(videoPath), '视频副本应写入本机目录');
+  const videoIndexRaw = storage.get(store.NAMESPACE + 'attempt-video');
+  assert.ok(videoIndexRaw);
+
+  // 撤回这一把：视频索引与副本不参与把次状态，待恢复期间仍能读到原片。
+  assert.equal(store.undoAttempt(attemptId).ok, true);
+  assert.equal(attemptVideo.videoClipView(archiveId, attemptId).state, 'saved');
+  const archiveBefore = rawArchive();
+
+  const profile = await openProfilePage();
+  profile.clearCache();
+  await settle();
+  assert.ok(wxLog.modals.length > 0, '清缓存应有一次确认提示');
+  assert.match(wxLog.modals[0].content, /逐把视频不会被清除/);
+
+  // 既有照片/训练缓存策略不变；视频索引与副本原样保留。
+  assert.equal(
+    storage.get(store.NAMESPACE + 'attempt-video'),
+    videoIndexRaw,
+    '视频索引逐字节不变'
+  );
+  assert.ok(virtual.files.has(videoPath), '已关联的视频副本仍在');
+  assert.ok(virtual.files.has(mainPath), '线路主照片仍在');
+  assert.equal(virtual.files.has(thumbPath), false, '缩略图仍按可重建缓存清理');
+  assert.equal(rawArchive(), archiveBefore, '训练档案逐字节不变');
+  assert.equal(
+    store.loadState().archive.attempts.find(item => item.id === attemptId).undoneAt
+      !== undefined,
+    true,
+    '撤回状态保持'
+  );
+  assert.equal(attemptVideo.videoClipView(archiveId, attemptId).state, 'saved');
+
+  // 恢复同一把后仍读同一条片段。
+  assert.equal(store.restoreAttempt(attemptId).ok, true);
+  assert.equal(attemptVideo.videoClipView(archiveId, attemptId).state, 'saved');
+  assert.ok(virtual.files.has(videoPath));
 });

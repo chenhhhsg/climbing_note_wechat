@@ -225,6 +225,47 @@ page {
   background-color: #E8F0EC;
 }
 
+/* 本机视频占用（T026） */
+.space-card {
+  border-left: 8rpx solid #B7683D;
+}
+
+.space-usage {
+  display: block;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 30rpx;
+  line-height: 1.5;
+  color: #182421;
+}
+
+.space-warning {
+  display: block;
+  margin-top: 10rpx;
+  padding: 12rpx 16rpx;
+  border-radius: 6rpx;
+  background-color: #F7E6DB;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #813323;
+}
+
+.space-error {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
+}
+
+.cleanup-notice {
+  margin-top: 12rpx;
+}
+
+.cleanup-button {
+  margin-top: 16rpx;
+}
+
 .store-hint {
   background-color: #F7F1E2;
 }

@@ -23,6 +23,11 @@
  * 会立刻读一次索引判定真实状态。返回值只用于判断「写入是否明确失败」，其中的
  * 成功标记不直接决定界面状态。replace/remove 的 request 带原片段的 clipId/rev，
  * 供持久层做版本核对与无引用副本回收。
+ *
+ * T026：持久层默认由 utils/attempt-video-files.js 提供。页面在模块加载时注册一个
+ * 按档案创建服务的工厂（setVideoStoreFactory）；调用时才按 request.archiveId 取
+ * 对应档案的服务，因此后台页面与换档迟到回调不会写到另一份档案。
+ * setVideoStore 仍可显式覆盖工厂（测试与宿主注入用），显式实例优先。
  */
 const attemptVideo = require('./attempt-video.js');
 
@@ -38,8 +43,10 @@ const OPERATION_METHODS = [METHOD_COMMIT, METHOD_REPLACE, METHOD_REMOVE];
 const UNAVAILABLE_MESSAGE =
   '当前版本还不能保存或修改本机视频副本（本机保存服务未就绪）；已有视频仍可回看。';
 
-// 由 T026 注入；本单缺省为空，页面据此显示可见提示，不伪造写入结果。
+// 显式实例由 setVideoStore 注入（测试与宿主）；生产默认走工厂，按 request.archiveId
+// 取对应档案的持久层。工厂在页面模块加载时注册，不写 storage、不碰文件。
 let videoStore = null;
+let videoStoreFactory = null;
 
 function hasText(value) {
   return typeof value === 'string' && value.length > 0;
@@ -253,8 +260,32 @@ function getVideoStore() {
   return videoStore;
 }
 
+/**
+ * 按档案创建持久层的工厂。工厂只应在调用那一刻创建/取得该档案的服务；
+ * 传入非法值等同「没有工厂」。
+ */
+function setVideoStoreFactory(factory) {
+  videoStoreFactory = typeof factory === 'function' ? factory : null;
+}
+
+function getVideoStoreFactory() {
+  return videoStoreFactory;
+}
+
+/** 显式实例优先；没有显式实例时按请求的档案取工厂服务。 */
+function resolveVideoStore(request) {
+  if (videoStore) return videoStore;
+  if (!videoStoreFactory) return null;
+  try {
+    const resolved = videoStoreFactory(request && request.archiveId);
+    return resolved && typeof resolved === 'object' ? resolved : null;
+  } catch (error) {
+    return null;
+  }
+}
+
 function videoStoreAvailable() {
-  return Boolean(videoStore);
+  return Boolean(videoStore || videoStoreFactory);
 }
 
 /**
@@ -265,7 +296,7 @@ function callVideoStore(method, request) {
   if (OPERATION_METHODS.indexOf(method) === -1) {
     return Promise.resolve({ ok: false, code: 'bad-method', error: '不支持的视频操作：' + method });
   }
-  const store = videoStore;
+  const store = resolveVideoStore(request);
   if (!store || typeof store[method] !== 'function') {
     return Promise.resolve({ ok: false, code: 'unavailable', error: UNAVAILABLE_MESSAGE });
   }
@@ -470,6 +501,9 @@ module.exports = {
   unavailableMessage,
   setVideoStore,
   getVideoStore,
+  setVideoStoreFactory,
+  getVideoStoreFactory,
+  resolveVideoStore,
   videoStoreAvailable,
   callVideoStore,
   buildRequest,
