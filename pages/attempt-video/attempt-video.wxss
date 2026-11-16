@@ -1,0 +1,325 @@
+/**
+ * 逐把视频页样式（T023 / T024）
+ * 与逐把明细、单线记录同一套粉笔白 + 深绿配色；本页含待确认预览、原生播放器、
+ * 已保存副本与更换/移除操作。
+ */
+
+page {
+  background-color: #F2F4F3;
+}
+
+.page {
+  padding: 12px 16px 28px;
+  background-color: #F2F4F3;
+}
+
+.card {
+  background-color: #FFFFFF;
+  border-radius: 8rpx;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.card-title {
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.35;
+  font-weight: 700;
+  font-size: 32rpx;
+  color: #182421;
+  margin-bottom: 16rpx;
+}
+
+.error-card {
+  background-color: #F7E6DB;
+}
+
+.choose-error {
+  margin-bottom: 12px;
+}
+
+.error-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #943A23;
+  margin-bottom: 12rpx;
+}
+
+.error-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #813323;
+  margin-bottom: 10rpx;
+}
+
+.error-hint {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
+  margin-bottom: 16rpx;
+}
+
+.notice {
+  border-radius: 8rpx;
+  padding: 20rpx 24rpx;
+  margin-bottom: 12px;
+  background-color: #F7F1E2;
+  color: #745241;
+}
+
+.notice-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.5;
+}
+
+.notice-hint {
+  display: block;
+  font-size: 22rpx;
+  margin-top: 8rpx;
+  opacity: 0.75;
+}
+
+/* 这一把的归属与状态 */
+.video-target {
+  border-left: 8rpx solid #1F5948;
+}
+
+.video-route {
+  display: block;
+  font-size: 32rpx;
+  font-weight: 700;
+  color: #182421;
+  word-break: break-all;
+}
+
+.video-route-meta {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
+.video-attempt-meta {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: #182421;
+}
+
+.video-session-meta {
+  display: block;
+  margin-top: 4rpx;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #53615B;
+  word-break: break-all;
+}
+
+.video-note {
+  display: block;
+  border-left: 4rpx solid #B7683D;
+  padding: 3rpx 0 3rpx 16rpx;
+  margin: 12rpx 0 4rpx;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #53615B;
+  word-break: break-all;
+}
+
+.video-state {
+  display: inline-block;
+  margin-top: 12rpx;
+  padding: 4rpx 14rpx;
+  border-radius: 6rpx;
+  background-color: #F2F4F3;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
+/* 选片与预览 */
+.video-hint {
+  display: block;
+  margin-bottom: 16rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+
+.preview-name {
+  display: block;
+  font-size: 28rpx;
+  line-height: 1.5;
+  color: #182421;
+  word-break: break-all;
+}
+
+.preview-meta {
+  display: block;
+  margin-top: 4rpx;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
+.button-row {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 16rpx;
+}
+
+.button-row .secondary-button,
+.button-row .primary-button {
+  flex: 1;
+  margin: 0 8rpx;
+}
+
+.video-foot-hint {
+  display: block;
+  margin-top: 16px;
+  font-size: 22rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+
+/* 播放器：待确认预览与已保存副本共用，换片时整块重建 */
+.player-card {
+  border-left: 8rpx solid #1F5948;
+}
+
+.video {
+  width: 100%;
+  height: 380rpx;
+  margin-top: 12rpx;
+  background-color: #000000;
+  border-radius: 6rpx;
+}
+
+.player-status {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
+.playback-error {
+  margin-top: 12rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 6rpx;
+  background-color: #F7E6DB;
+}
+
+.op-status {
+  background-color: #E8F0EC;
+}
+
+/* 本机视频占用（T026） */
+.space-card {
+  border-left: 8rpx solid #B7683D;
+}
+
+.space-usage {
+  display: block;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 30rpx;
+  line-height: 1.5;
+  color: #182421;
+}
+
+.space-warning {
+  display: block;
+  margin-top: 10rpx;
+  padding: 12rpx 16rpx;
+  border-radius: 6rpx;
+  background-color: #F7E6DB;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #813323;
+}
+
+.space-error {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #745241;
+}
+
+.cleanup-notice {
+  margin-top: 12rpx;
+}
+
+.cleanup-button {
+  margin-top: 16rpx;
+}
+
+.store-hint {
+  background-color: #F7F1E2;
+}
+
+/* 已保存副本与更换/移除 */
+.saved-card {
+  border-left: 8rpx solid #B7683D;
+}
+
+.confirm-box {
+  margin-top: 16rpx;
+  padding: 16rpx 20rpx;
+  border-radius: 6rpx;
+  background-color: #F7F1E2;
+}
+
+.confirm-text {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.6;
+  color: #745241;
+  margin-bottom: 8rpx;
+}
+
+/* 常用触控目标至少 44×44 逻辑像素 */
+.primary-button,
+.secondary-button {
+  min-height: 44px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.4;
+}
+
+.primary-button::after,
+.secondary-button::after {
+  border: none;
+}
+
+.primary-button {
+  background-color: #1F5948;
+  color: #FFFFFF;
+  border-radius: 8rpx;
+  font-size: 30rpx;
+  padding: 22rpx;
+  border: none;
+}
+
+.secondary-button {
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
+  border-radius: 8rpx;
+  font-size: 28rpx;
+  padding: 18rpx;
+}

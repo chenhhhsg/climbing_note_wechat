@@ -2,6 +2,7 @@
   本线逐把明细（T036）
   只列所选场次与长期线路的已提交把次；按原序号、结果、备注对齐，给指定把次补/改备注。
   保存、取消与失败重试都只影响原 attemptId；撤回与恢复在单线记录页。
+  T023：每一行还显示这一把的视频关联状态与文字入口，选片与待确认预览在视频页。
 -->
 <view class="page">
   <view wx:if="{{loadError}}" id="load-error" class="card error-card">
@@ -73,7 +74,22 @@
                 <text class="attempt-time">{{item.timeText}}</text>
               </view>
               <text wx:if="{{item.hasNote}}" class="attempt-note">{{item.note}}</text>
-              <text class="attempt-note-action">{{item.hasNote ? '改备注 ›' : '补备注 ›'}}</text>
+              <view class="attempt-actions">
+                <text class="attempt-note-action">{{item.hasNote ? '改备注 ›' : '补备注 ›'}}</text>
+                <!--
+                  视频入口（T023）：只显示关联状态与文字入口，点它进入这一把的视频页。
+                  catchtap 阻止冒泡：点视频入口不会顺手打开备注编辑器，两者互不干扰。
+                -->
+                <view class="attempt-video-slot">
+                  <text id="video-state-{{item.id}}" class="attempt-video-state">{{item.videoStateText}}</text>
+                  <text
+                    id="open-video-{{item.id}}"
+                    class="attempt-video-action {{item.hasVideo ? 'attempt-video-saved' : ''}}"
+                    data-attempt-id="{{item.id}}"
+                    catchtap="openAttemptVideo"
+                  >{{item.videoEntryText}}</text>
+                </view>
+              </view>
             </view>
 
             <!-- 这一把的备注编辑器：只改打开时的那一把；取消不写盘，失败保留输入可原地重试 -->

@@ -11,12 +11,18 @@
  *
  * 备注写入口只认原 attemptId 与归属：保存、取消、失败重试都只影响这一把；保存前
  * 先核对档案没换，换档后的迟到保存不写进新档案。
+ *
+ * T023 在每一行加视频关联状态与文字入口：点的是哪一行，就只带那一把的原 attemptId
+ * 与档案、场次、线路进入视频页；视频入口独立于整行补备注（catchtap），选片与预览
+ * 都在视频页，本页不读写任何视频文件或索引。
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
+const attemptVideo = require('../../utils/attempt-video.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
+const ATTEMPT_VIDEO_URL = '/pages/attempt-video/attempt-video';
 
 Page({
   data: {
@@ -108,17 +114,28 @@ Page({
     };
 
     const labels = actions.attemptLabelMap(archive, session.id, route.id);
-    const attempts = store
-      .attemptsFor(archive, { sessionId: session.id, routeId: route.id })
-      .map(attempt => ({
+    const rows = store.attemptsFor(archive, { sessionId: session.id, routeId: route.id });
+    // 关联状态只读视频索引（T023 只显示状态与文字入口，选片在视频页）。
+    const links = attemptVideo.videoLinkMap(archive.archiveId, rows);
+    const attempts = rows.map(attempt => {
+      const link = links.get(attempt.id) || {
+        hasVideo: false,
+        stateText: '未添加视频',
+        entryText: '添加视频 ›'
+      };
+      return {
         id: attempt.id,
         label: labels.get(attempt.id) || '',
         resultText: actions.attemptResultText(attempt.result),
         isSend: attempt.result === 'send',
         timeText: actions.timeText(attempt.createdAt),
         note: attempt.note || '',
-        hasNote: Boolean(attempt.note)
-      }));
+        hasNote: Boolean(attempt.note),
+        hasVideo: link.hasVideo,
+        videoStateText: link.stateText,
+        videoEntryText: link.entryText
+      };
+    });
 
     // 编辑中的这一把若已不在有效列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
     let noteEditor = this.data.noteEditor;
@@ -174,6 +191,39 @@ Page({
       this.setData({ 'noteEditor.hasNote': Boolean(editor.text) });
     }
     return outcome;
+  },
+
+  /**
+   * 视频入口（T023）：只把这一行渲染时的原把次与归属带到视频页。
+   * 打开前按最新档案再核对一次：这一把被撤回、换了档案、还没保存或只存在于旧汇总时
+   * 不打开；视频页会用同一组四个 ID 再核对一次。
+   */
+  openAttemptVideo(event) {
+    if (this.data.loadError || this.data.contextError) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    if (!archiveId || !sessionId || !routeId || !attemptId) {
+      this.setData({ notice: '无法定位这一把的原归属，请重试。' });
+      return;
+    }
+
+    const ids = { archiveId, sessionId, routeId, attemptId };
+    const context = attemptVideo.loadVideoContext(ids);
+    if (!context.ok) {
+      this.loadPage();
+      this.setData({ notice: context.error });
+      return;
+    }
+
+    wx.navigateTo({
+      url: ATTEMPT_VIDEO_URL + '?' + attemptVideo.videoQueryString(ids),
+      fail: () => {
+        this.setData({ notice: '视频页没有打开，请再点一次。' });
+      }
+    });
   },
 
   // 共用事件：目标只认原 attemptId 与归属，保存/取消/失败重试都只影响这一把。

@@ -12,6 +12,11 @@
  * T020：本页新增「体能自测」入口（pages/fitness-test）。自测记录存在独立命名空间
  * `climbingNote.fitness.v1.`，不是可重建缓存，因此上面的清缓存同样不会清掉它；
  * 本页不读也不写自测记录，只做跳转。
+ *
+ * T026：逐把视频的独立索引在正式本机命名空间（`climbingNote.training.v1.attempt-video`），
+ * 属于受保护键；视频副本写在 USER_DATA_PATH 下的档案专属目录，不属于照片可重建缓存。
+ * 因此普通清缓存不会删除已关联的视频（含撤回后待恢复的把次对应副本），页面提示里
+ * 一并说明本机训练记录、线路照片与逐把视频都会保留。
  */
 const app = getApp();
 const trainingStore = require('../../utils/training-store.js');
@@ -100,7 +105,7 @@ Page({
   clearCache() {
     wx.showModal({
       title: '提示',
-      content: '确定要清除缓存吗？本机训练记录与照片不会被清除。',
+      content: '确定要清除缓存吗？本机训练记录、线路照片与逐把视频不会被清除。',
       success: (res) => {
         if (!res.confirm) return;
         this.clearCacheConfirmed();

@@ -30,11 +30,16 @@
  * - 「改为未完成」按渲染那一行带下来的原把次 ID 与归属逐个更正：只翻那一把的
  *   result，把数、ID、序号、场次、时间与备注都不变；改好的那一把留在原位置变成
  *   只读回读，同一坐标不会自动接上另一把。
+ *
+ * T023 在跨日历史的每一把上加视频关联状态与文字入口：按这一组的**原场次**、当前
+ * 长期线路与这一把的原 attemptId 进入视频页；关联状态只读视频索引，选片与待确认
+ * 预览都在视频页，本页不创建任何视频文件或索引。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
 const photoMarks = require('../../utils/training-photo-marks.js');
 const recordActions = require('../../utils/training-record-actions.js');
+const attemptVideo = require('../../utils/attempt-video.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 const {
   createTrainingPhotoController
@@ -43,6 +48,7 @@ const {
 const RECORD_URL = '/pages/training-record/training-record';
 const SESSION_URL = '/pages/training-session/training-session';
 const PROFILE_URL = '/pages/profile/profile';
+const ATTEMPT_VIDEO_URL = '/pages/attempt-video/attempt-video';
 
 function pad2(value) {
   return value < 10 ? '0' + value : String(value);
@@ -1206,6 +1212,12 @@ Page({
         };
       });
 
+    // 逐把视频（T023）：关联状态只读视频索引，跨日历史按分组里的原场次与原把次进入。
+    const videoLinks = attemptVideo.videoLinkMap(
+      this.archive.archiveId,
+      history.groups.reduce((all, group) => all.concat(group.attempts), [])
+    );
+
     this.setData({
       route: {
         id: route.id,
@@ -1230,15 +1242,25 @@ Page({
         sessionLabel: group.sessionLabel,
         gymName: group.gymName,
         countText: group.countText,
-        attempts: group.attempts.map(attempt => ({
-          id: attempt.id,
-          label: attempt.label,
-          resultText: attempt.resultText,
-          isSend: attempt.result === 'send',
-          timeText: timeText(attempt.createdAt),
-          note: attempt.note,
-          hasNote: Boolean(attempt.note)
-        }))
+        attempts: group.attempts.map(attempt => {
+          const link = videoLinks.get(attempt.id) || {
+            hasVideo: false,
+            stateText: '未添加视频',
+            entryText: '添加视频 ›'
+          };
+          return {
+            id: attempt.id,
+            label: attempt.label,
+            resultText: attempt.resultText,
+            isSend: attempt.result === 'send',
+            timeText: timeText(attempt.createdAt),
+            note: attempt.note,
+            hasNote: Boolean(attempt.note),
+            hasVideo: link.hasVideo,
+            videoStateText: link.stateText,
+            videoEntryText: link.entryText
+          };
+        })
       })),
       hasAttempts: history.attemptCount > 0,
       attemptCount: history.attemptCount,
@@ -1564,6 +1586,40 @@ Page({
     const sessionId = dataset.sessionId || '';
     const routeId = dataset.routeId || this._routeId || '';
     this.goToRecord(sessionId, routeId);
+  },
+
+  /**
+   * 跨日历史的视频入口（T023）：只认这一组渲染时的**原场次**、当前长期线路与这一把的
+   * 原 attemptId——同一把在别的日子回看，用的仍是它当初记下的那一场。
+   * 打开前按最新档案再核对一次（撤回、换档、待保存与旧汇总都打不开）；视频页再按同一
+   * 组四个 ID 核对一次。
+   */
+  openAttemptVideoFromHistory(event) {
+    if (this.data.loadError || this.data.notFound || this._claimBlocked) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const sessionId = dataset.sessionId || '';
+    const routeId = dataset.routeId || this._routeId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (!archiveId || !sessionId || !routeId || !attemptId) {
+      this.setData({ notice: '无法定位这一把的原归属，请重试。' });
+      return;
+    }
+
+    const ids = { archiveId, sessionId, routeId, attemptId };
+    const context = attemptVideo.loadVideoContext(ids);
+    if (!context.ok) {
+      this.loadPage({ keepPicker: true });
+      this.setData({ notice: context.error });
+      return;
+    }
+
+    wx.navigateTo({
+      url: ATTEMPT_VIDEO_URL + '?' + attemptVideo.videoQueryString(ids),
+      fail: () => {
+        this.setData({ notice: '视频页没有打开，请再点一次。' });
+      }
+    });
   },
 
   // ---------------------------------------------------------------- 按把更正

@@ -859,7 +859,8 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
   assert.equal(rootProject.cloudfunctionRoot, 'cloudfunctions/');
 
   // T017 起首页新增正式场内记录页；T018/T020 各再增一页；T034 再增本次小结独立页；
-  // T035 再增独立「下次想爬」清单页；T036 再增单线记录页与逐把明细页。
+  // T035 再增独立「下次想爬」清单页；T036 再增单线记录页与逐把明细页；
+  // T023 再增逐把视频页。
   // 不把正式 app.pages 自己当唯一 oracle：用获批页面白名单加源码四件套独立核对。
   const basePages = [
     'pages/index/index',
@@ -876,6 +877,7 @@ test('G09 独立工程配置、页面绑定与视觉要求齐全', async () => {
     'pages/training-route/training-route',
     'pages/training-record/training-record',
     'pages/training-attempts/training-attempts',
+    'pages/attempt-video/attempt-video',
     'pages/fitness-test/fitness-test'
   ];
   const approvedPages = new Set([...basePages, ...approvedExtraPages]);
