@@ -421,12 +421,39 @@ function usableClip(clip) {
   );
 }
 
-function clipsFor(index, archiveId, attemptId) {
+/**
+ * 条目是否就是这一把的视频：四个原 ID（档案、场次、线路、把次）逐项对上。
+ * 损坏索引里的条目即使 path/档案合法，只要场次或线路不是这一把的真实归属，
+ * 就不算这一把的视频——不播放、不更换、不移除，也不会被当作待清理旧副本。
+ * reference 必须是加载到的真实把次（持久层请求带齐四项；缺任何一项都不匹配）。
+ */
+function clipMatchesAttempt(clip, archiveId, attemptId, reference) {
+  if (!clip || clip.archiveId !== archiveId || clip.attemptId !== attemptId) return false;
+  const real = reference || {};
+  if (!hasText(real.sessionId) || !hasText(real.routeId)) return false;
+  return clip.sessionId === real.sessionId && clip.routeId === real.routeId;
+}
+
+/** 索引条目是否属于这一次操作的那一把（四个原 ID 全部对上）。 */
+function sameAttemptEntry(entry, archiveId, identity) {
+  const real = identity || {};
+  return Boolean(
+    entry &&
+      entry.archiveId === archiveId &&
+      hasText(real.attemptId) &&
+      hasText(real.sessionId) &&
+      hasText(real.routeId) &&
+      entry.attemptId === real.attemptId &&
+      entry.sessionId === real.sessionId &&
+      entry.routeId === real.routeId
+  );
+}
+
+function clipsFor(index, archiveId, attemptId, reference) {
   if (!index || !Array.isArray(index.clips)) return [];
   return index.clips.filter(
     clip =>
-      clip.archiveId === archiveId &&
-      clip.attemptId === attemptId &&
+      clipMatchesAttempt(clip, archiveId, attemptId, reference) &&
       usableClip(clip)
   );
 }
@@ -437,8 +464,8 @@ function clipsFor(index, archiveId, attemptId) {
  * 文件标识不符合当前档案视频命名空间的条目不算当前片段，避免把损坏索引里的
  * 普通相对路径或旧绝对路径传给播放器。
  */
-function currentClipFor(index, archiveId, attemptId) {
-  const matches = clipsFor(index, archiveId, attemptId);
+function currentClipFor(index, archiveId, attemptId, reference) {
+  const matches = clipsFor(index, archiveId, attemptId, reference);
   if (!matches.length) return null;
   let chosen = matches[0];
   for (const clip of matches) {
@@ -1037,6 +1064,7 @@ function createAttemptVideoStore(options) {
     return saveIndex(storage, fresh.index);
   }
 
+  /** 删除失败后把清理记录写回索引；写不进去时文件与失败原因都保留给页面。 */
   function rememberCleanup(records) {
     if (!records || !records.length) return { ok: true };
     const fresh = readIndex(storage);
@@ -1048,6 +1076,47 @@ function createAttemptVideoStore(options) {
       changed = true;
     }
     if (!changed) return { ok: true };
+    return saveIndex(storage, fresh.index);
+  }
+
+  /**
+   * 即将退役的旧副本：属于这一把、归属与路径可验证、并且在切换后的索引里已经
+   * 没有任何引用的文件。记录会与引用切换写在同一次索引写入里，作为持久清理意图；
+   * 不属于这一把（例如场次或线路对不上的损坏条目）一律不进入退役范围。
+   */
+  function retirementRecords(index, previous) {
+    const referenced = new Set(
+      index && Array.isArray(index.clips) ? index.clips.map(entry => entry.fileId) : []
+    );
+    const known = new Set(
+      index && Array.isArray(index.pending) ? index.pending.map(entry => entry.fileId) : []
+    );
+    const records = [];
+    for (const entry of previous || []) {
+      if (!entry || entry.archiveId !== archiveId) continue;
+      if (!hasText(entry.fileId) || referenced.has(entry.fileId) || known.has(entry.fileId)) {
+        continue;
+      }
+      if (!usableClip(entry) || !hasText(files.pathForClip(entry))) continue;
+      records.push(pendingRecord(entry.clipId, entry.fileId, 'cleanup', now()));
+      known.add(entry.fileId);
+    }
+    return records;
+  }
+
+  /**
+   * 清掉已成功回收的待清理记录。这里保留索引键（即使最后一段视频刚被移除），
+   * 与「提交过就有一个可读索引」的既有语义一致。
+   */
+  function forgetPendingRecords(fileIds) {
+    if (!fileIds || !fileIds.length) return { ok: true };
+    const fresh = readIndex(storage);
+    if (!fresh.ok) return fresh;
+    const before = fresh.index.pending.length;
+    fresh.index.pending = fresh.index.pending.filter(
+      entry => fileIds.indexOf(entry.fileId) === -1
+    );
+    if (fresh.index.pending.length === before) return { ok: true };
     return saveIndex(storage, fresh.index);
   }
 
@@ -1334,6 +1403,8 @@ function createAttemptVideoStore(options) {
       entry =>
         entry.archiveId === clip.archiveId &&
         entry.attemptId === clip.attemptId &&
+        entry.sessionId === clip.sessionId &&
+        entry.routeId === clip.routeId &&
         entry.clipId === clip.clipId &&
         entry.fileId === clip.fileId
     );
@@ -1342,13 +1413,15 @@ function createAttemptVideoStore(options) {
 
   /**
    * 提交成功后回收旧副本：只回收索引曾经引用过、现在已无引用的文件。
-   * 删除失败时写一条持久待清理记录，重启后可安全重试。
+   * 退役记录的清理意图已在本次引用切换的同一个索引写里落盘；回收前先把这些记录
+   * 移出索引（删除只发生在这份引用切换已经持久之后），删除失败再写回记录，重启
+   * 后由 recover 继续安全回收。
    */
   async function reclaimCopies(index, previous) {
     const referenced = new Set(
       index && Array.isArray(index.clips) ? index.clips.map(entry => entry.fileId) : []
     );
-    const failed = [];
+    const candidates = [];
     let cleanupError = '';
     for (const entry of previous || []) {
       if (!hasText(entry.fileId) || referenced.has(entry.fileId)) continue;
@@ -1357,10 +1430,21 @@ function createAttemptVideoStore(options) {
         cleanupError = '旧副本位置不属于本档案视频目录，未删除';
         continue;
       }
-      const removed = await files.remove(targetPath);
+      candidates.push({ entry, targetPath });
+    }
+    if (!candidates.length) return cleanupError;
+
+    const cleared = forgetPendingRecords(candidates.map(item => item.entry.fileId));
+    if (!cleared.ok && !cleanupError) cleanupError = cleared.error;
+
+    const failed = [];
+    for (const item of candidates) {
+      const removed = await files.remove(item.targetPath);
       if (!removed.ok) {
         cleanupError = removed.error;
-        failed.push(pendingRecord(entry.clipId, entry.fileId, 'cleanup', now()));
+        failed.push(
+          pendingRecord(item.entry.clipId, item.entry.fileId, 'cleanup', now())
+        );
       }
     }
     if (failed.length) {
@@ -1385,7 +1469,7 @@ function createAttemptVideoStore(options) {
 
     const loaded = readIndex(storage);
     if (!loaded.ok) return loaded;
-    const existing = currentClipFor(loaded.index, archiveId, input.attemptId);
+    const existing = currentClipFor(loaded.index, archiveId, input.attemptId, input);
     if (existing) {
       return {
         ok: true,
@@ -1433,7 +1517,7 @@ function createAttemptVideoStore(options) {
       if (!fresh.ok) {
         return Object.assign({}, fresh, { keptCopy: true, cleanupError: '' });
       }
-      const won = currentClipFor(fresh.index, archiveId, input.attemptId);
+      const won = currentClipFor(fresh.index, archiveId, input.attemptId, input);
       if (won) {
         const discarded = await discardOwnCopy(fresh.index, target);
         return {
@@ -1520,7 +1604,7 @@ function createAttemptVideoStore(options) {
 
     const loaded = readIndex(storage);
     if (!loaded.ok) return loaded;
-    const current = currentClipFor(loaded.index, archiveId, input.attemptId);
+    const current = currentClipFor(loaded.index, archiveId, input.attemptId, input);
     if (!current) {
       return fail(
         'stale-operation',
@@ -1570,7 +1654,7 @@ function createAttemptVideoStore(options) {
       if (!fresh.ok) {
         return Object.assign({}, fresh, { keptCopy: true, cleanupError: '' });
       }
-      const stillCurrent = currentClipFor(fresh.index, archiveId, input.attemptId);
+      const stillCurrent = currentClipFor(fresh.index, archiveId, input.attemptId, input);
       if (!sameClipIdentity(stillCurrent, input) || stillCurrent.clipId !== current.clipId) {
         const discarded = await discardOwnCopy(fresh.index, target);
         return Object.assign(
@@ -1591,7 +1675,7 @@ function createAttemptVideoStore(options) {
         });
       }
 
-      const previous = clipsFor(fresh.index, archiveId, input.attemptId);
+      const previous = clipsFor(fresh.index, archiveId, input.attemptId, input);
       const clip = {
         clipId: target.clipId,
         archiveId,
@@ -1612,10 +1696,19 @@ function createAttemptVideoStore(options) {
       fresh.index.pending = (fresh.index.pending || []).filter(
         entry => entry.fileId !== target.fileId
       );
+      // 只撤销这一把（四个原 ID 全部对上）的旧引用；损坏索引里场次或线路不符的
+      // 条目保留原样，它的文件也不在这把的退役范围内。
       fresh.index.clips = fresh.index.clips.filter(
-        entry => !(entry.archiveId === archiveId && entry.attemptId === input.attemptId)
+        entry => !sameAttemptEntry(entry, archiveId, input)
       );
       fresh.index.clips.push(clip);
+      // 退役旧副本的清理意图与本次新引用写在同一次索引写里：即使这次写入抛错、
+      // 服务与页面的读回都暂时失败，重启后 recover 仍能凭持久记录回收旧副本，
+      // 并保留索引里的当前片。
+      fresh.index.pending.push.apply(
+        fresh.index.pending,
+        retirementRecords(fresh.index, previous)
+      );
       // 等待写入期间另一个页面可能已经用掉更大的序号：向上取整，绝不把计数写小。
       fresh.index.nextClipSeq = Math.max(fresh.index.nextClipSeq, target.seq + 1);
       const saved = saveIndex(storage, fresh.index);
@@ -1666,7 +1759,7 @@ function createAttemptVideoStore(options) {
 
     const loaded = readIndex(storage);
     if (!loaded.ok) return loaded;
-    const current = currentClipFor(loaded.index, archiveId, input.attemptId);
+    const current = currentClipFor(loaded.index, archiveId, input.attemptId, input);
     if (!current) {
       return { ok: true, removed: true, duplicate: true, clip: null, cleanupError: '' };
     }
@@ -1681,9 +1774,16 @@ function createAttemptVideoStore(options) {
     const lost = verifyOwnership(input);
     if (lost) return lost;
 
-    const previous = clipsFor(loaded.index, archiveId, input.attemptId);
+    const previous = clipsFor(loaded.index, archiveId, input.attemptId, input);
+    // 只解除这一把（四个原 ID 全部对上）的关联；丢失归属的损坏条目保持原样。
     loaded.index.clips = loaded.index.clips.filter(
-      entry => !(entry.archiveId === archiveId && entry.attemptId === input.attemptId)
+      entry => !sameAttemptEntry(entry, archiveId, input)
+    );
+    // 退役副本的清理意图与本次解除关联写在同一次索引写里：写入抛错且读回暂时
+    // 失败时文件全部保留，重启后 recover 再凭持久记录回收。
+    loaded.index.pending.push.apply(
+      loaded.index.pending,
+      retirementRecords(loaded.index, previous)
     );
     const saved = saveIndex(storage, loaded.index);
     if (saved.ok) {
@@ -1698,7 +1798,7 @@ function createAttemptVideoStore(options) {
         cleanupError: '无法读回本机视频索引，未删除任何文件；请稍后重新进入本页核对'
       });
     }
-    const after = currentClipFor(read.index, archiveId, input.attemptId);
+    const after = currentClipFor(read.index, archiveId, input.attemptId, input);
     if (!after) {
       // 解除关联已经落盘：只回收不再被引用的指定版本副本。
       const cleanupError = await reclaimCopies(read.index, previous);

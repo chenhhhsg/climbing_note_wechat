@@ -178,7 +178,7 @@ Page({
     this._attempt = attempt;
 
     const labels = actions.attemptLabelMap(archive, session.id, route.id);
-    const read = attemptVideo.videoClipView(archive.archiveId, attempt.id);
+    const read = attemptVideo.videoClipView(archive.archiveId, attempt.id, attempt);
     const storeAvailable = playback.videoStoreAvailable();
     const patch = {
       ready: true,
@@ -852,14 +852,15 @@ Page({
       return;
     }
 
-    const read = attemptVideo.videoClipView(context.archive.archiveId, context.attempt.id);
+    const read = attemptVideo.videoClipView(context.archive.archiveId, context.attempt.id, context.attempt);
     const outcome = playback.evaluateOperation(op.kind, op.beforeClip, receipt, read, {
       opId: op.opId,
-      // 本次预览的实际字节必须与索引里本次条目一致，避免把别的文件当成这次结果。
+      // 实际字节以持久层写入后核对、并回执给本次 opId 的那一条为准；
+      // 相册选择器给的 size 只是提示，不能当作「本次提交」的凭据。
       expectedBytes:
-        op.kind === playback.METHOD_REMOVE || !op.preview
+        op.kind === playback.METHOD_REMOVE
           ? null
-          : op.preview.sizeBytes
+          : playback.verifiedBytesOf(receipt, op.opId)
     });
     if (!outcome.ok) {
       this._removeTarget = null;

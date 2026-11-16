@@ -63,12 +63,16 @@ const faults = {
   stat: false,
   readdir: false,
   access: false,
-  storageFail: new Set()
+  storageFail: new Set(),
+  // 匹配的索引写入先落盘再抛错；随后同一键的 N 次读取抛错（写入回执与读回同时丢失）。
+  storageAfter: [],
+  readThrows: null
 };
 const wxLog = {
   chooseCalls: [],
   chooseHandler: null,
   storageWrites: 0,
+  storageReadFails: 0,
   navigations: [],
   videoContexts: []
 };
@@ -92,9 +96,12 @@ function resetAll() {
   faults.readdir = false;
   faults.access = false;
   faults.storageFail = new Set();
+  faults.storageAfter = [];
+  faults.readThrows = null;
   wxLog.chooseCalls = [];
   wxLog.chooseHandler = null;
   wxLog.storageWrites = 0;
+  wxLog.storageReadFails = 0;
   wxLog.navigations = [];
   wxLog.videoContexts = [];
   copyHold.matches = null;
@@ -261,14 +268,31 @@ function fileSystem() {
 global.wx = {
   env: { USER_DATA_PATH },
   getStorageSync(key) {
+    if (
+      faults.readThrows &&
+      faults.readThrows.key === key &&
+      faults.readThrows.remaining > 0
+    ) {
+      faults.readThrows.remaining -= 1;
+      wxLog.storageReadFails += 1;
+      throw { errMsg: 'getStorageSync:fail mock read error' };
+    }
     return storage.has(key) ? storage.get(key) : '';
   },
   setStorageSync(key, value) {
     if (faults.storageFail.has(key)) {
       throw { errMsg: 'setStorageSync:fail mock storage error' };
     }
+    const index = faults.storageAfter.findIndex(
+      item => item.key === key && item.matches(value)
+    );
+    const fault = index === -1 ? null : faults.storageAfter.splice(index, 1)[0];
     wxLog.storageWrites += 1;
     storage.set(key, value);
+    if (fault) {
+      faults.readThrows = { key, remaining: fault.readFailures || 0 };
+      throw { errMsg: 'setStorageSync:fail mock storage error after write' };
+    }
   },
   removeStorageSync(key) {
     storage.delete(key);
@@ -560,14 +584,15 @@ function openRoutePage(flow) {
   return page;
 }
 
-function chooseVideo(tempPath) {
+function chooseVideo(tempPath, reportedSize) {
   const bytes = virtual.files.has(tempPath) ? virtual.files.get(tempPath).length : 0;
   wxLog.chooseHandler = options => {
     options.success({
       tempFiles: [
         {
           tempFilePath: tempPath,
-          size: bytes,
+          // 相册回调的 size 只是提示：测试可以传一个与物理字节不符的值。
+          size: reportedSize === undefined ? bytes : reportedSize,
           duration: 7.5,
           width: 1920,
           height: 1080,
@@ -1807,4 +1832,209 @@ test('T026-18 总视频占用包含其他档案副本：预算各档案共用，
   assert.equal(virtual.files.has(otherPath), true, '其他档案副本不被本档案移除');
   assert.equal(videoIndex().clips.length, 1, '只剩下其他档案的关联');
   assert.equal(videoIndex().clips[0].archiveId, otherArchiveId);
+});
+
+// ------------------------------------------------------------------ *
+// QA 返工：清理意图与引用切换同写、实际字节为准、四个原 ID 校验
+// ------------------------------------------------------------------ */
+
+test('T026-19 更换索引写已落盘但服务与页面读回都失败：新旧副本先保留，冷启动按持久清理意图回收旧片', async () => {
+  const flow = seedTwoAttempts();
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+  const firstTemp = addTempVideo('a.mp4', 4096);
+  chooseVideo(firstTemp);
+  page.choosePreview();
+  page.commitPreview();
+  await settle();
+  assert.equal(page.data.hasSavedVideo, true, page.data.opError);
+  const oldClip = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  const oldPath = USER_DATA_PATH + '/' + oldClip.fileId;
+
+  // 更换的索引写：引用切换先落盘，随后抛错；服务与页面各一次读回都短暂失败。
+  const nextTemp = addTempVideo('b.mp4', 2048);
+  chooseVideo(nextTemp);
+  page.choosePreview();
+  faults.storageAfter.push({
+    key: VIDEO_INDEX_KEY,
+    readFailures: 2,
+    matches: value => {
+      const parsed = JSON.parse(value);
+      return parsed.clips.some(
+        clip => clip.attemptId === flow.attemptB.id && clip.fileId !== oldClip.fileId
+      );
+    }
+  });
+  page.confirmReplace();
+  await settle();
+
+  assert.equal(wxLog.storageReadFails, 2, '服务读回与页面读回都失败');
+  assert.match(page.data.opError, /读回|未确认|索引/);
+  assert.equal(page.data.busy, false);
+  const committed = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  assert.notEqual(committed.fileId, oldClip.fileId);
+  assert.equal(committed.bytes, 2048);
+  assert.equal(virtual.files.has(oldPath), true, '写入结果不明时旧副本保留');
+  assert.equal(virtual.files.has(USER_DATA_PATH + '/' + committed.fileId), true, '新副本保留');
+  assert.deepEqual(
+    videoIndex().pending.map(entry => entry.fileId),
+    [oldClip.fileId],
+    '旧副本的清理意图与引用切换写在同一次索引写里'
+  );
+
+  // 读恢复并冷启动：recover 依据持久 pending 回收旧副本，保留索引当前片。
+  files.resetAttemptVideoServices();
+  const recoveredPage = openVideoPage(flow, flow.attemptB);
+  await settle(20);
+  assert.equal(virtual.files.has(oldPath), false, '冷启动回收已退役旧副本');
+  assert.equal(
+    virtual.files.has(USER_DATA_PATH + '/' + committed.fileId),
+    true,
+    '索引当前片保留'
+  );
+  assert.equal(recoveredPage.data.hasSavedVideo, true);
+  assert.equal(recoveredPage.data.playerSrc, USER_DATA_PATH + '/' + committed.fileId);
+  assert.equal(recoveredPage.data.attempt.note, 'B 把的备注');
+  assert.deepEqual(videoIndex().pending, [], '回收成功后对应 pending 已删除');
+});
+
+test('T026-20 移除索引写已落盘但服务与页面读回都失败：旧副本先保留，冷启动按持久清理意图回收', async () => {
+  const flow = seedTwoAttempts();
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+  const firstTemp = addTempVideo('a.mp4', 3072);
+  chooseVideo(firstTemp);
+  page.choosePreview();
+  page.commitPreview();
+  await settle();
+  assert.equal(page.data.hasSavedVideo, true, page.data.opError);
+  const oldClip = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  const oldPath = USER_DATA_PATH + '/' + oldClip.fileId;
+
+  // 解除关联的索引写：已落盘（clips 里没有这一把），随后抛错；两次读回都失败。
+  faults.storageAfter.push({
+    key: VIDEO_INDEX_KEY,
+    readFailures: 2,
+    matches: value => {
+      const parsed = JSON.parse(value);
+      return !parsed.clips.some(clip => clip.attemptId === flow.attemptB.id);
+    }
+  });
+  page.askRemove();
+  page.confirmRemove();
+  await settle();
+
+  assert.equal(wxLog.storageReadFails, 2);
+  assert.match(page.data.opError, /读回|未确认|索引/);
+  assert.equal(page.data.hasSavedVideo, true, '读回失败时不改页面显示的关联');
+  assert.equal(videoIndex().clips.length, 0, '解除关联已落盘');
+  assert.equal(virtual.files.has(oldPath), true, '删除前保留旧副本');
+  assert.deepEqual(
+    videoIndex().pending.map(entry => entry.fileId),
+    [oldClip.fileId],
+    '退役副本的清理意图随解除关联同写'
+  );
+
+  files.resetAttemptVideoServices();
+  const recoveredPage = openVideoPage(flow, flow.attemptB);
+  await settle(20);
+  assert.equal(virtual.files.has(oldPath), false, '冷启动回收旧副本');
+  assert.equal(recoveredPage.data.hasSavedVideo, false);
+  assert.equal(recoveredPage.data.playerSrc, '');
+  assert.equal(recoveredPage.data.attempt.note, 'B 把的备注');
+  assert.deepEqual(videoIndex().pending, []);
+});
+
+test('T026-21 相册提示大小与实际字节不一致不否认本次已核实的提交', async () => {
+  const flow = seedTwoAttempts();
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+  const temp = addTempVideo('a.mp4', 4096);
+  // chooser 提示 1B，物理文件实际 4096B：以持久层核过的实际字节为准。
+  chooseVideo(temp, 1);
+  page.choosePreview();
+  assert.equal(page.data.preview.sizeBytes, 1);
+  page.commitPreview();
+  await settle();
+
+  assert.equal(page.data.opError, '', '实际字节与本次 opId 条目一致时应报成功');
+  assert.equal(page.data.busy, false);
+  assert.equal(page.data.hasSavedVideo, true);
+  const committed = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  assert.equal(committed.bytes, 4096, '索引记录实际物理字节');
+  assert.equal(page.data.savedVideo.clipId, committed.clipId);
+  assert.equal(page.data.playerSrc, USER_DATA_PATH + '/' + committed.fileId);
+  assert.match(page.data.notice, /已保存到本机/);
+  assert.equal(virtual.files.get(USER_DATA_PATH + '/' + committed.fileId).length, 4096);
+});
+
+test('T026-22 索引条目场次/线路与实际把次不符：两处入口不播放，页内与持久服务都不移除也不删除', async () => {
+  const flow = seedTwoAttempts();
+  const service = makeService(flow);
+  const temp = addTempVideo('a.mp4', 2048);
+  const first = await service.commit(requestFor(flow, flow.attemptB, temp));
+  assert.equal(first.ok, true, first.error);
+  const uri = USER_DATA_PATH + '/' + first.clip.fileId;
+
+  // 损坏索引：文件路径、档案与把次都合法，但原场次/线路被换成另一场的另一条线。
+  const otherSession = startAt('2026-11-13', '另一场岩馆');
+  const otherRoute = newRoute(otherSession);
+  const corrupted = JSON.parse(videoIndexRaw());
+  corrupted.clips[0].sessionId = otherSession.id;
+  corrupted.clips[0].routeId = otherRoute.id;
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify(corrupted));
+
+  // 两处列表入口都不把这条片段认成 B 的视频。
+  const attemptsPage = openAttemptsPage(flow);
+  const rowB = attemptsPage.data.attempts.find(item => item.id === flow.attemptB.id);
+  assert.equal(rowB.hasVideo, false, '场内明细不显示已添加视频');
+  assert.equal(rowB.videoEntryText, '添加视频 ›');
+  const routePage = openRoutePage(flow);
+  const historyB = routePage.data.groups[0].attempts.find(
+    item => item.id === flow.attemptB.id
+  );
+  assert.equal(historyB.hasVideo, false, '跨日历史不显示看视频入口');
+
+  // 视频页不播放这条片段；页内移除尝试没有可移除的当前片段。
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+  assert.equal(page.data.hasSavedVideo, false);
+  assert.equal(page.data.playerSrc, '');
+  assert.equal(page.data.attempt.note, 'B 把的备注');
+  page.askRemove();
+  page.confirmRemove();
+  await settle();
+  assert.equal(page.data.confirmRemove, false);
+  assert.match(page.data.opError, /没有已保存/);
+  assert.deepEqual(videoIndex().clips[0], corrupted.clips[0], '页内尝试不改损坏条目');
+
+  // 持久服务按真实四个 ID 也认不到这一条：不移除、不删除文件。
+  const direct = await service.remove(
+    requestFor(flow, flow.attemptB, '', {
+      action: 'remove',
+      clipId: first.clip.clipId,
+      rev: first.clip.rev,
+      fileId: first.clip.fileId,
+      bytes: first.clip.bytes
+    })
+  );
+  assert.equal(direct.ok, true);
+  assert.equal(direct.duplicate, true);
+  assert.equal(videoIndex().clips.length, 1, '损坏条目保留');
+  assert.equal(virtual.files.has(uri), true, '对应文件保留');
+
+  // 同档同把的合法归属恢复后，两处入口与视频页重新读到同一片段。
+  corrupted.clips[0].sessionId = flow.session.id;
+  corrupted.clips[0].routeId = flow.route.id;
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify(corrupted));
+  const fixedAttempts = openAttemptsPage(flow);
+  assert.equal(
+    fixedAttempts.data.attempts.find(item => item.id === flow.attemptB.id).hasVideo,
+    true
+  );
+  const fixedPage = openVideoPage(flow, flow.attemptB);
+  await settle();
+  assert.equal(fixedPage.data.hasSavedVideo, true);
+  assert.equal(fixedPage.data.playerSrc, uri);
+  assert.deepEqual(videoIndex().clips[0], corrupted.clips[0], '合法条目原样可读');
 });

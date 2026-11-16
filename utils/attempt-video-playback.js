@@ -425,6 +425,20 @@ function clipChanged(before, after) {
 }
 
 /**
+ * 持久层回执里核过的实际字节：只有回执成功、并且回执里的片段就是本次操作
+ * （opId 一致）写下的那一条时才采信。相册选择器给的 size 只是提示，不能作为
+ * 「本次提交」的凭据——实际字节由持久层写入后核对并记进索引。
+ */
+function verifiedBytesOf(receipt, operationId) {
+  const opId = hasText(operationId) ? operationId : '';
+  const clip = receipt && receipt.ok === true ? receipt.clip : null;
+  if (!opId || !clip || typeof clip !== 'object') return null;
+  if (!hasText(clip.opId) || clip.opId !== opId) return null;
+  const bytes = safeNumber(clip.bytes);
+  return bytes !== null && bytes > 0 ? bytes : null;
+}
+
+/**
  * 按读回的视频索引判断这次操作的真实结果（不采信回执）：
  * - 索引读不回来：回执成功也只算「未确认」，回执失败算失败；
  * - 读回的片段带操作标识时，只有本次操作写下的那一条才算本次结果。另一页/另一版
@@ -436,7 +450,8 @@ function clipChanged(before, after) {
  *
  * options（可选）：
  * - opId：本次操作标识；
- * - expectedBytes：本次预览的实际字节；索引里本次片段的大小必须一致。
+ * - expectedBytes：持久层回执里核过的实际字节（由 verifiedBytesOf 取得）；索引里
+ *   本次片段的大小必须一致。相册选择器的提示大小不用于这里。
  *
  * 返回 { ok, code, error, clip, receiptLost }：
  * ok 为 true 时 clip 是读回的当前片段（移除后为 null）。
@@ -605,6 +620,7 @@ module.exports = {
   operationStatusText,
   sameClipIdentity,
   clipChanged,
+  verifiedBytesOf,
   evaluateOperation,
   operationSuccessText,
   errorText

@@ -250,16 +250,52 @@ function readVideoIndex() {
   return { ok: true, code: 'ready', error: '', clips: parsed.clips };
 }
 
-function clipFor(read, archiveId, attemptId) {
+/**
+ * 这一把的真实原场次与原线路。读取方应从已加载的档案传入这一把（四个 ID 同源）；
+ * 没传时只读本机档案补一次，拿不到就按「关联不可确认」处理，绝不猜归属。
+ */
+function attemptReferenceOf(reference) {
+  const item = reference || {};
+  if (hasText(item.sessionId) && hasText(item.routeId)) {
+    return { sessionId: item.sessionId, routeId: item.routeId };
+  }
+  return null;
+}
+
+/** 本机档案里各把次的真实场次/线路（一次读取，供整页列表校验）。 */
+function archiveAttemptReferences(archiveId) {
+  try {
+    const loaded = store.loadState();
+    if (!loaded.ok || !loaded.archive || loaded.archive.archiveId !== archiveId) return null;
+    const references = new Map();
+    (loaded.archive.attempts || []).forEach(attempt => {
+      const reference = attemptReferenceOf(attempt);
+      if (attempt && attempt.id && reference) references.set(attempt.id, reference);
+    });
+    return references;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clipFor(read, archiveId, attemptId, reference) {
   if (!read || !read.ok || !hasText(archiveId) || !hasText(attemptId)) return null;
-  // 只有落在当前档案视频根目录、且文件名就是这条片段标识的条目才算已关联。
-  // 损坏索引里的普通相对路径、旧绝对路径、别的档案目录一律按「没有视频」处理，
-  // 不把文件位置传给播放器，也不会成为移除/回收的目标。
+  const references = reference ? null : archiveAttemptReferences(archiveId);
+  const real =
+    attemptReferenceOf(reference) || (references && references.get(attemptId)) || null;
+  // 拿不到这一把的真实场次与线路时不能确认关联，按「没有视频」处理。
+  if (!real) return null;
+  // 只有四个原 ID（档案、场次、线路、把次）逐项对上，并且落在当前档案视频根目录、
+  // 文件名就是这条片段标识的条目才算已关联。损坏索引里场次/线路被改成别的合法值、
+  // 普通相对路径、旧绝对路径、别的档案目录一律按「没有视频」处理，不把文件位置传给
+  // 播放器，也不会成为移除/回收的目标。
   const matches = read.clips.filter(
     clip =>
       clip &&
       clip.archiveId === archiveId &&
       clip.attemptId === attemptId &&
+      clip.sessionId === real.sessionId &&
+      clip.routeId === real.routeId &&
       hasText(clip.clipId) &&
       hasText(clip.fileId) &&
       isClipFileIdFor(archiveId, clip.clipId, clip.fileId)
@@ -279,8 +315,8 @@ function clipFor(read, archiveId, attemptId) {
   return chosen;
 }
 
-function linkView(read, archiveId, attemptId) {
-  const clip = clipFor(read, archiveId, attemptId);
+function linkView(read, archiveId, attemptId, reference) {
+  const clip = clipFor(read, archiveId, attemptId, reference);
   if (clip) {
     return { state: 'saved', hasVideo: true, stateText: '已添加视频', entryText: '看视频 ›' };
   }
@@ -296,8 +332,8 @@ function linkView(read, archiveId, attemptId) {
 }
 
 /** 单行关联状态：读一次索引即用（视频页与小列表用）。 */
-function videoLinkView(archiveId, attemptId) {
-  return linkView(readVideoIndex(), archiveId, attemptId);
+function videoLinkView(archiveId, attemptId, reference) {
+  return linkView(readVideoIndex(), archiveId, attemptId, reference);
 }
 
 /**
@@ -308,10 +344,10 @@ function videoLinkView(archiveId, attemptId) {
  * - ok 为 false 时索引不可读，clip 为 null；
  * - clip 只在状态为 saved 时非空（与列表上的「看视频」判定同一份 clipFor）。
  */
-function videoClipView(archiveId, attemptId) {
+function videoClipView(archiveId, attemptId, reference) {
   const read = readVideoIndex();
   if (!read.ok) {
-    const view = linkView(read, archiveId, attemptId);
+    const view = linkView(read, archiveId, attemptId, reference);
     return {
       ok: false,
       code: read.code,
@@ -322,8 +358,8 @@ function videoClipView(archiveId, attemptId) {
       entryText: view.entryText
     };
   }
-  const clip = clipFor(read, archiveId, attemptId);
-  const view = linkView(read, archiveId, attemptId);
+  const clip = clipFor(read, archiveId, attemptId, reference);
+  const view = linkView(read, archiveId, attemptId, reference);
   return {
     ok: true,
     code: clip ? 'saved' : 'none',
@@ -337,13 +373,27 @@ function videoClipView(archiveId, attemptId) {
 
 /**
  * 一次刷新内给多行算关联状态：索引只读一次，避免 45 行逐行读 storage。
+ * 每行按**该行自己的**原场次/线路校验；行里没带时从本机档案补一次。
  * 返回 Map<attemptId, linkView>。
  */
 function videoLinkMap(archiveId, attempts) {
   const read = readVideoIndex();
+  const rows = attempts || [];
   const map = new Map();
-  (attempts || []).forEach(attempt => {
-    if (attempt && attempt.id) map.set(attempt.id, linkView(read, archiveId, attempt.id));
+  let references = new Map();
+  let resolvedOnce = false;
+  rows.forEach(attempt => {
+    if (!attempt || !attempt.id) return;
+    let reference = attemptReferenceOf(attempt);
+    if (!reference && !resolvedOnce) {
+      const loaded = archiveAttemptReferences(archiveId);
+      if (loaded) references = loaded;
+      resolvedOnce = true;
+      reference = references.get(attempt.id) || null;
+    } else if (!reference) {
+      reference = references.get(attempt.id) || null;
+    }
+    map.set(attempt.id, linkView(read, archiveId, attempt.id, reference));
   });
   return map;
 }
