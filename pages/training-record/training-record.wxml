@@ -332,6 +332,8 @@
               </view>
 
               <block wx:if="{{item.expanded}}">
+              <!-- 平常态只占一行：备注单行摘要靠左，编辑与视频入口作为一个靠右的组，
+                   不再让「编辑」单独占一整行。缩窄时备注先省略，两个入口不重叠。 -->
               <view class="record-attempt-detail">
                 <text
                   wx:if="{{item.hasNote}}"
@@ -339,34 +341,47 @@
                   class="record-attempt-note{{item.isLatest ? ' record-attempt-note-summary' : ''}}"
                 >{{item.note}}</text>
 
-                <!-- T049：视频入口固定在备注右侧同一个槽位；最新一把只显示动作本身，
-                     旧把展开后连同关联状态一起显示。无片「＋ 添加视频」，有片「回看视频」。 -->
-                <view wx:if="{{item.canOpenVideo}}" class="record-attempt-video">
+                <view class="record-attempt-detail-actions">
+                  <!-- 最新平常态把「编辑」收进这一行；较早把次展开后仍在自己的动作行里编辑。 -->
+                  <button
+                    wx:if="{{item.isLatest && item.canEditNote}}"
+                    id="edit-note-{{item.id}}"
+                    class="text-button record-attempt-edit"
+                    data-attempt-id="{{item.id}}"
+                    catchtap="openNoteEditor"
+                  >编辑 ›</button>
+
+                  <!-- T049：视频入口固定在备注右侧同一个槽位；最新一把只显示动作本身，
+                       旧把展开后连同关联状态一起显示。无片「＋ 添加视频」，有片「回看视频」。 -->
+                  <view wx:if="{{item.canOpenVideo}}" class="record-attempt-video">
+                    <text
+                      wx:if="{{!item.isLatest}}"
+                      id="record-video-state-{{item.id}}"
+                      class="record-attempt-video-state"
+                    >{{item.videoStateText}}</text>
+                    <text
+                      id="record-open-video-{{item.id}}"
+                      class="record-attempt-video-action {{item.hasVideo ? 'record-attempt-video-saved' : ''}}"
+                      data-attempt-id="{{item.id}}"
+                      data-archive-id="{{item.archiveId}}"
+                      data-session-id="{{item.sessionId}}"
+                      data-route-id="{{item.routeId}}"
+                      catchtap="openAttemptVideo"
+                    >{{item.videoEntryText}}</text>
+                  </view>
                   <text
-                    wx:if="{{!item.isLatest}}"
+                    wx:else
                     id="record-video-state-{{item.id}}"
                     class="record-attempt-video-state"
                   >{{item.videoStateText}}</text>
-                  <text
-                    id="record-open-video-{{item.id}}"
-                    class="record-attempt-video-action {{item.hasVideo ? 'record-attempt-video-saved' : ''}}"
-                    data-attempt-id="{{item.id}}"
-                    data-archive-id="{{item.archiveId}}"
-                    data-session-id="{{item.sessionId}}"
-                    data-route-id="{{item.routeId}}"
-                    catchtap="openAttemptVideo"
-                  >{{item.videoEntryText}}</text>
                 </view>
-                <text
-                  wx:else
-                  id="record-video-state-{{item.id}}"
-                  class="record-attempt-video-state"
-                >{{item.videoStateText}}</text>
               </view>
 
-              <view class="record-attempt-actions">
+              <!-- 较早把次展开后的动作行；最新一把平常态不再需要这一行，
+                   只有已撤回时在这里说明备注暂不可改。 -->
+              <view wx:if="{{!item.isLatest || !item.canEditNote}}" class="record-attempt-actions">
                 <button
-                  wx:if="{{item.canEditNote}}"
+                  wx:if="{{!item.isLatest && item.canEditNote}}"
                   id="edit-note-{{item.id}}"
                   class="text-button record-attempt-edit"
                   data-attempt-id="{{item.id}}"
@@ -382,7 +397,12 @@
             </view>
 
             <block wx:if="{{item.expanded}}">
-            <view class="record-attempt-fix">
+            <!-- 平常态不渲染空的纠错区：最新一把只在菜单展开、已撤回、有回读或错误反馈时
+                 才需要这一块，避免固定的上边距把收起态又撑高。 -->
+            <view
+              wx:if="{{!item.isLatest || item.isUndone || item.menuOpen || item.stateText || item.correctStatusText}}"
+              class="record-attempt-fix"
+            >
               <!-- 较早把次（T050）：更正只从自己的详情发起，资格与确认仍是同一份实现 -->
               <view
                 wx:if="{{!item.isLatest && item.correctionSupported}}"
@@ -477,8 +497,13 @@
                 id="record-attempt-state-{{item.id}}"
                 class="record-attempt-status"
               >{{item.stateText}}</text>
-              <!-- 两种动作对把数的影响写在同一行里；说明槽固定高度，动作切换不抖 -->
-              <view wx:if="{{item.actionHint}}" class="record-attempt-hint-slot">
+              <!-- 两种动作对把数的影响写在同一行里；说明槽固定高度，动作切换不抖。
+                   最新一把平常态不再重复一遍「更多」里的说明（菜单项自己写清后果），
+                   只在已撤回（恢复入口旁）和较早把次的更正按钮旁保留。 -->
+              <view
+                wx:if="{{item.actionHint && (!item.isLatest || item.isUndone)}}"
+                class="record-attempt-hint-slot"
+              >
                 <text
                   id="record-attempt-hint-{{item.id}}"
                   class="record-attempt-hint"

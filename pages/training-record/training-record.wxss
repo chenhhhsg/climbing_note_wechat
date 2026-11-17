@@ -471,9 +471,23 @@ page {
   padding: 16rpx 20rpx;
 }
 
-/* 最新一把：结果、时间与一行备注完整展示，明显高于旧把次的短行 */
+/* 最新一把：结果、时间与一行备注完整展示，明显高于旧把次的短行。
+   平常态就两行（标题 + 备注/入口），上下内边距略收，实测约 100px。 */
 .record-attempt-latest {
+  box-sizing: border-box;
   min-height: 100px;
+  padding-top: 12rpx;
+  padding-bottom: 12rpx;
+}
+
+/* 最新一把标题行固定为一行：时间靠右，不能被「更多」的默认按钮宽度挤到第二行。 */
+.record-attempt-latest .record-attempt-headline {
+  flex-wrap: nowrap;
+}
+
+/* 详情行紧接标题行，不再额外留上下间距；旧把展开仍用默认间距。 */
+.record-attempt-latest .record-attempt-detail {
+  margin: 0;
 }
 
 /* 旧把次短行：保留边框、序号、结果、时间；结果色仍是墨绿／岩橙，左侧加粗边缘标记。
@@ -594,9 +608,11 @@ page {
   color: #53615B;
 }
 
-/* 最新一把右侧「更多」（T050）：固定 44px 命中区；展开/收起只改本页展示，不写盘。 */
+/* 最新一把右侧「更多」（T050）：固定 44px 命中区；展开/收起只改本页展示，不写盘。
+   宽度必须用内容宽度：微信按钮的默认宽度会把同一行的时间挤到下一行。 */
 .record-attempt-more {
   flex: none;
+  width: auto;
   box-sizing: border-box;
   min-width: 44px;
   min-height: 44px;
@@ -606,6 +622,7 @@ page {
   color: #1F5948;
   font-size: 26rpx;
   line-height: 1.4;
+  white-space: nowrap;
 }
 
 .record-attempt-more::after {
@@ -649,6 +666,15 @@ page {
   min-height: 44px;
 }
 
+/* 最新一把的「编辑」与视频入口同组：按内容宽度，避免默认按钮宽度独占一行；
+   较早把次展开后的编辑入口保持原样。 */
+.record-attempt-latest .record-attempt-edit {
+  flex: none;
+  width: auto;
+  padding: 0 8rpx;
+  white-space: nowrap;
+}
+
 .record-attempt-note-locked {
   font-size: 22rpx;
   line-height: 1.5;
@@ -668,6 +694,15 @@ page {
   flex: 1 1 auto;
   min-width: 0;
   margin: 0;
+}
+
+/* 「编辑」与视频入口同属右侧一组：备注占剩余宽度，缩窄时只省略备注，两个入口不重叠。 */
+.record-attempt-detail-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-left: auto;
 }
 
 /* 视频关联状态与文字入口（T023 / T049）：入口独立于「编辑备注」，靠右同一槽位 */
