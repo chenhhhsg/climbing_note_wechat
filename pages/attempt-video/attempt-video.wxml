@@ -195,7 +195,7 @@
       <!-- 没有已保存片源也没有预览：从相册单选一段 -->
       <view wx:if="{{!hasSavedVideo && !hasPreview}}" id="video-choose" class="card">
         <text class="card-title">从相册选一段视频</text>
-        <text class="video-hint">只选视频、单选、只从相册取；选中的临时文件只在本页预览，保存前不会写入本机，也不上传。</text>
+        <text id="choose-empty-hint" class="video-hint">只选视频、单选、只从相册取。选片后先预览。确认后在这台手机的攀笔里保存一份副本；保存前不会写入本机，也不上传。</text>
         <button
           id="choose-video"
           class="primary-button"
