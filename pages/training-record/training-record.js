@@ -3,13 +3,13 @@
  *
  * 从本场线路列表整行进入，或加线成功后直达。页面只服务**一条长期线路在**一场训练里
  * 的记录：按入口带下来的 archiveId + sessionId + routeId 核对归属，然后把这一条线的
- * 结果按钮、本场把数、最近一把的撤回／恢复、待保存重试与按把「改为未完成」放在一页。
+ * 结果按钮、本场把数、最近一把的撤回／恢复与「更正结果」、待保存重试放在一页。
  *
  * 数据归属：
  * - 入口缺参、场次/线路不存在、线路不属于这一场，或档案已经换成另一份时，页面只显示
  *   可见原因与返回路径，不展示别场别线的把次，也不接受任何写入；
  * - 把次、撤回状态、待保存与完攀判定全部来自 utils/training-store.js；写入、重试与
- *   按把更正走 utils/training-record-actions.js 的共用事件处理，与逐把明细页、线路
+ *   按把更正走 utils/training-record-actions.js 的共用事件处理，与本场逐把页、线路
  *   历史页是同一份实现；
  * - 照片、卡点、跨天历史与清单操作不在这里重复，页面只提供「线路历史」入口。
  *
@@ -61,13 +61,8 @@ Page({
     resultLocked: false,
     resultLockHint: '',
 
-    // 按把「改为未完成」：本场这条线每一把仍可更正的已确认完攀各占一行。
-    correctionRows: [],
-    correctionStatusText: '',
-    // 刚撤回的完攀：更正区留同高惰性行，撤销/恢复时页面高度与滚动位置不变。
-    correctionPlaceholder: false,
-
-    // 最近一把的撤回与恢复：结果按钮下方的固定操作区。null 表示不显示。
+    // 最近一把的撤回、恢复与「更正结果」：结果按钮下方的固定操作区。null 表示不显示。
+    // 较早的合资格把次在本场逐把页各自一行处理，本页不再铺独立更正区。
     recentAttempt: null,
 
     // 线路主照片（T041）：现场入口只渲染控制器推导的状态。
@@ -88,6 +83,8 @@ Page({
     this._lastTap = {};
     this._correctedRows = {};
     this._correctionFailures = {};
+    // 已打开、还没回应的更正确认：同一把连点沿用这一次，不叠第二个弹窗。
+    this._correctionPrompt = null;
     this._recentStatus = null;
     // 照片控制器只在本页创建一次；照片读写全在控制器里，页面不另存文件或索引。
     this._photoUi = null;
@@ -111,6 +108,7 @@ Page({
    */
   onUnload() {
     this._unloaded = true;
+    this._correctionPrompt = null;
   },
 
   /**
@@ -142,8 +140,6 @@ Page({
         hasPending: false,
         resultLocked: false,
         resultLockHint: '',
-        correctionRows: [],
-        correctionStatusText: '',
         recentAttempt: null,
         // 入口/档案不可用：不展示任何照片，也不受理照片写入。
         recordPhoto: null,
@@ -250,53 +246,19 @@ Page({
       }));
     const pendingRows = fromArchive.concat(localOnly);
 
-    // 按把「改为未完成」：只列本场这条线仍可更正的已确认完攀；跨天历史在线路历史页更正。
-    const correctionRows = store
-      .routeCorrectionTargets(archive, route.id)
-      .filter(target => target.sessionId === session.id)
-      .map(target => {
-        const corrected = this._correctedRows[target.attemptId];
-        const needsRetry = Boolean(
-          this._correctionFailures[target.attemptId] ||
-            (archive.pendingCorrections || []).some(item => item.attemptId === target.attemptId)
-        );
-        const state = corrected ? 'corrected' : needsRetry ? 'retry' : 'ready';
-        return {
-          attemptId: target.attemptId,
-          routeId: target.routeId,
-          sessionId: target.sessionId,
-          archiveId: archive.archiveId,
-          label: target.label,
-          contextText: target.contextText,
-          state,
-          buttonText: state === 'retry' ? '重试改为未完成' : '改为未完成',
-          statusText: corrected ? corrected.statusText : ''
-        };
-      });
-
     const resultLocked = pendingRows.length > 0;
     const routeCountText = pendingRows.length
       ? attempts.length + ' 把 · ' + pendingRows.length + ' 把待保存'
       : attempts.length + ' 把';
-    const correctionStatusText = correctionRows.some(row => row.state === 'retry')
-      ? '更正未保存 · 点「重试改为未完成」按同一把重试'
-      : '';
+    // 最近一把旁只放这一把自己的撤回／恢复与「更正结果」；较早的合资格把次与跨场候选
+    // 各有原来的目的地（本场逐把 / 线路历史），本页不再铺第二套更正区。
     const recentAttempt = actions.recentAttemptView.call(
       this,
       archive,
       activeSession,
       selectedRoute,
-      pendingRows
-    );
-    // 刚撤回的那一把本身就是完攀：它从更正区消失了，但这一段必须留着同样高度。
-    // 否则页面变短、滚动位置被系统夹紧，刚才撤回按钮所在的屏幕坐标会落到结果按钮上。
-    // 只有抱石线有这一段「点错了完攀？」；顶绳/先锋本来就不显示，不能凭空加高。
-    const correctionPlaceholder = Boolean(
-      recentAttempt &&
-        recentAttempt.isSend &&
-        recentAttempt.canRestore &&
-        completion &&
-        !completion.repeatable
+      pendingRows,
+      route
     );
 
     this.setData({
@@ -316,9 +278,6 @@ Page({
       resultLockHint: resultLocked
         ? '上一把还没保存：先在「待保存」行点「重试保存」，确认后再记下一把。'
         : '',
-      correctionRows,
-      correctionStatusText,
-      correctionPlaceholder,
       recentAttempt
     });
   },
@@ -326,7 +285,7 @@ Page({
   // ---------------------------------------------------------------- 页面入口
 
   /**
-   * 逐把明细：只带这一场、这一条线的原 ID；明细页按同一组参数再核对一次归属。
+   * 本场逐把：只带这一场、这一条线的原 ID；逐把页按同一组参数再核对一次归属。
    */
   openAttempts() {
     if (this.data.loadError || this.data.contextError) return;
@@ -563,7 +522,53 @@ Page({
   undoLatestAttempt: actions.undoLatestAttempt,
   restoreLatestAttempt: actions.restoreLatestAttempt,
   changeRecentAttempt: actions.changeRecentAttempt,
-  correctSend: actions.correctSend,
+
+  // ---------------------------------------------------------------- 更正结果（T042）
+
+  /**
+   * 最近一把旁的「更正结果」（模板里沿用 correctSend 这个绑定名）：先核对这一下仍指向
+   * 当前这一把可更正的完攀，再确认。
+   *
+   * 确认弹窗写明原把次的日期/场次/岩馆、原序号与原结果（完攀 → 未完成），取消时一个
+   * 字节都不写；确认后仍走 utils/training-record-actions.js 的同一份 correctSend，
+   * 只翻这一把的结果、不改把数。连点同一把只弹一次确认；这一下若已不属于当前这一把，
+   * 只提示并按最新档案刷新。本页界面不再直接调用无确认的写入口。
+   */
+  correctSend(event) {
+    if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const recent = this.data.recentAttempt;
+    const attemptId = dataset.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (!recent || !recent.correctable || !attemptId || recent.attemptId !== attemptId) {
+      this.setData({ notice: '这一把当前没有可更正的完攀，已按最新数据刷新。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    const stale =
+      (dataset.routeId && dataset.routeId !== recent.routeId) ||
+      (dataset.sessionId && dataset.sessionId !== recent.sessionId) ||
+      (dataset.archiveId && dataset.archiveId !== recent.archiveId) ||
+      recent.routeId !== ((this._route && this._route.id) || '') ||
+      recent.sessionId !== ((this._session && this._session.id) || '') ||
+      recent.archiveId !== archiveId;
+    if (stale) {
+      this.setData({ notice: '这一下不属于当前这一把，没有改动任何记录。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    return actions.confirmCorrection.call(this, {
+      attemptId,
+      routeId: recent.routeId,
+      sessionId: recent.sessionId,
+      archiveId: recent.archiveId,
+      label: recent.correctLabel,
+      contextText: recent.correctContextText,
+      resultText: '完攀'
+    });
+  },
 
   dismissNotice() {
     this.setData({ notice: '' });

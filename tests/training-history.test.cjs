@@ -30,6 +30,8 @@ const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wx
 const ROUTE_JSON = path.join(ROOT, 'pages', 'training-route', 'training-route.json');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
 const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
+const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.js');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 
@@ -158,6 +160,7 @@ const detailDefinition = capturePage(DETAIL_JS);
 const routeDefinition = capturePage(ROUTE_JS);
 const sessionDefinition = capturePage(SESSION_JS);
 const recordDefinition = capturePage(RECORD_JS);
+const attemptsDefinition = capturePage(ATTEMPTS_JS);
 
 /**
  * 页面实例替身：支持 wx 的 setData 数据路径写法（如 'noteEditor.text'）。
@@ -226,6 +229,14 @@ function openRecordFor(sessionId, routeId) {
   const page = createPage(recordDefinition);
   page.onLoad({ archiveId: archiveOf().archiveId, sessionId, routeId });
   assert.equal(page.data.contextError, '', '单线页应能按原归属打开');
+  return page;
+}
+
+/** 本场逐把页（T042）：只列指定场次与长期线路。 */
+function openAttemptsFor(sessionId, routeId) {
+  const page = createPage(attemptsDefinition);
+  page.onLoad({ archiveId: archiveOf().archiveId, sessionId, routeId });
+  assert.equal(page.data.contextError, '', '本场逐把应能按原归属打开');
   return page;
 }
 
@@ -1771,4 +1782,99 @@ test('T037 返工 原 A 档的旧选场事件不能改 B 档 activeSession', () 
   assert.equal(after.activeRouteId, route.id);
   assert.equal(after.sessions.length, 2, '不新增场次');
   assert.match(page.data.notice, /原来的本机档案|原来的页面/);
+});
+
+// ------------------------------------------------------------------ *
+// T042 本场逐把：只列原场原线，跨场完攀仍在线路历史处理
+// ------------------------------------------------------------------ *
+
+test('T042 跨场完攀不进本场逐把与最近一把旁，仍从线路历史的原把次处理', async () => {
+  const day1 = '2020-06-01';
+  const day2 = '2020-06-02';
+  writeArchiveFixture({
+    gymName: '跨场岩馆',
+    sessions: [
+      { id: 'session-1', seq: 1, gymId: 'gym-1', date: day1, createdAt: day1 + 'T09:30:00.000Z' },
+      { id: 'session-2', seq: 2, gymId: 'gym-1', date: day2, createdAt: day2 + 'T09:30:00.000Z' }
+    ],
+    routes: [
+      {
+        id: 'route-1',
+        seq: 1,
+        gymId: 'gym-1',
+        name: '跨场抱石线',
+        climbType: '抱石',
+        grade: 'V3',
+        colorName: '蓝色',
+        colorHex: '#2f6fe4',
+        createdAt: day1 + 'T09:40:00.000Z'
+      }
+    ],
+    sessionRoutes: [
+      { sessionId: 'session-1', routeId: 'route-1', addedAt: day1 + 'T09:45:00.000Z' },
+      { sessionId: 'session-2', routeId: 'route-1', addedAt: day2 + 'T09:45:00.000Z' }
+    ],
+    attempts: [
+      {
+        id: 'attempt-cross-send',
+        seq: 1,
+        sessionId: 'session-1',
+        routeId: 'route-1',
+        result: 'send',
+        note: '第一场完攀',
+        createdAt: day1 + 'T10:05:00.000Z'
+      },
+      {
+        id: 'attempt-cross-fail',
+        seq: 2,
+        sessionId: 'session-2',
+        routeId: 'route-1',
+        result: 'fail',
+        note: '第二场这把未完成',
+        createdAt: day2 + 'T10:05:00.000Z'
+      }
+    ],
+    activeSessionId: 'session-2',
+    activeRouteId: 'route-1'
+  });
+
+  const recordPage = openRecordFor('session-2', 'route-1');
+  assert.equal(recordPage.data.recentAttempt.attemptId, 'attempt-cross-fail');
+  assert.equal(recordPage.data.recentAttempt.correctable, false, '跨场完攀不放到最近一把旁');
+  assert.match(
+    recordPage.data.recentAttempt.guidanceText,
+    /线路历史/,
+    '跨场候选的出口仍写线路历史'
+  );
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.equal(recordWxml.indexOf('id="route-correction"'), -1, '单线页没有独立更正区');
+  assert.doesNotMatch(recordWxml, /点错了完攀/);
+
+  // 本场逐把只列第二场这一把；伪造跨场把次的点击不弹确认、不写盘。
+  const attemptsPage = openAttemptsFor('session-2', 'route-1');
+  assert.deepEqual(
+    attemptsPage.data.attempts.map(row => row.id),
+    ['attempt-cross-fail'],
+    '只列原场原线的有效把次'
+  );
+  assert.equal(attemptsPage.data.attempts[0].correctable, false);
+  const rawBefore = rawArchive();
+  resetModalLog();
+  assert.equal(
+    await attemptsPage.confirmCorrectRow(tapDataset({ attemptId: 'attempt-cross-send' })),
+    null,
+    '跨场把次不在本页，不能在这里更正'
+  );
+  assert.equal(modalLog.calls.length, 0, '不弹确认');
+  assert.equal(rawArchive(), rawBefore, '不写盘');
+
+  // 线路历史继续按原场次给出这一把的更正入口。
+  const history = openRoutePage('route-1');
+  assert.deepEqual(
+    history.data.correctionRows.map(row => row.attemptId),
+    ['attempt-cross-send'],
+    '跨场完攀仍在线路历史原把次旁'
+  );
+  assert.match(history.data.correctionRows[0].contextText, /2020-06-01/);
+  assert.equal(history.data.correctionRows[0].sessionId, 'session-1');
 });

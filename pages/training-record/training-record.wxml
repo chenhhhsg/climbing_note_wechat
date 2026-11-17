@@ -1,8 +1,8 @@
 <!--
-  单线记录页（T036 / T041 现场照片入口）
+  单线记录页（T036 / T041 现场照片入口 / T042 本场逐把）
   按 archiveId + sessionId + routeId 进入一条长期线路在某一场的记录：
-  首屏一行线路照片入口、结果按钮、本场把数、最近一把的撤回/恢复、待保存重试与按把更正。
-  照片、卡点与跨天历史在「线路历史」；逐把备注在「逐把明细」。
+  首屏一行线路照片入口、结果按钮、本场把数、最近一把的撤回/恢复与「更正结果」、待保存重试。
+  照片、卡点与跨天历史在「线路历史」；逐把备注在本场逐把。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -234,9 +234,12 @@
         </view>
 
         <!--
-          最近一把的撤回与恢复：同一个永久操作区里的两个并排槽——左槽撤回、右槽恢复，
-          各占一半宽度、等高。不可用的动作在自己那一槽里留非交互空位，两个动作的命中
-          矩形在任何状态下都不相交。目标只认这一行带下来的原把次 ID 与归属。
+          最近一把：同一个永久操作区里的两个并排槽——左槽撤回、右槽恢复，各占一半宽度、
+          等高。不可用的动作在自己那一槽里留非交互空位，两个动作的命中矩形在任何状态下
+          都不相交。目标只认这一行带下来的原把次 ID 与归属。
+
+          T042「更正结果」只放在这一把旁：固定槽在支持更正的线路上一直占位，撤回/恢复
+          前后本区高度不变；较早的合资格把次在本场逐把各自一行处理。
         -->
         <view wx:if="{{recentAttempt}}" id="recent-attempt" class="recent-attempt">
           <view class="recent-attempt-head">
@@ -286,6 +289,35 @@
             <text id="recent-attempt-text" class="recent-attempt-text">{{recentAttempt.titleText}}</text>
             <text class="recent-attempt-meta">{{recentAttempt.metaText}}</text>
           </view>
+
+          <!-- 更正结果的固定槽：可更正时是按钮，刚改好/不可改时是只读文字。
+               槽高固定，撤回与恢复前后下面的内容不会上下跳。 -->
+          <view
+            wx:if="{{recentAttempt.correctionSupported}}"
+            class="recent-attempt-correct-slot"
+          >
+            <button
+              wx:if="{{recentAttempt.correctable}}"
+              id="correct-recent-{{recentAttempt.attemptId}}"
+              class="secondary-button recent-attempt-correct"
+              data-attempt-id="{{recentAttempt.attemptId}}"
+              data-route-id="{{recentAttempt.routeId}}"
+              data-session-id="{{recentAttempt.sessionId}}"
+              data-archive-id="{{recentAttempt.archiveId}}"
+              bindtap="correctSend"
+            >{{recentAttempt.correctText}}</button>
+            <text
+              wx:elif="{{recentAttempt.correctStatusText}}"
+              id="recent-attempt-correct-state"
+              class="recent-attempt-correct-state"
+            >{{recentAttempt.correctStatusText}}</text>
+            <text
+              wx:elif="{{recentAttempt.correctIdleText}}"
+              id="recent-attempt-correct-idle"
+              class="recent-attempt-correct-idle"
+            >{{recentAttempt.correctIdleText}}</text>
+          </view>
+
           <text
             wx:if="{{recentAttempt.stateText}}"
             id="recent-attempt-state"
@@ -295,17 +327,7 @@
           <!-- 固定高度的说明槽：撤回/恢复完攀时下面几行的显隐不会改变本区高度，
                页面高度与滚动位置保持原样。 -->
           <view class="recent-attempt-guidance-slot">
-            <text
-              wx:if="{{recentAttempt.canRestore}}"
-              id="recent-attempt-undone-guidance"
-              class="recent-attempt-guidance-text"
-            >撤回的这把不计入本场完攀；要恢复就点右侧「恢复这一把」。</text>
-            <text
-              wx:elif="{{routeCompleted}}"
-              id="route-completed-guidance"
-              class="recent-attempt-guidance-text"
-            >要改这一把：用下方「点错了完攀？」里的「改为未完成」。</text>
-            <text wx:else class="recent-attempt-guidance-text">刚才那一把已计入本场；撤回只减这一把，不改其他把次。</text>
+            <text id="recent-attempt-guidance" class="recent-attempt-guidance-text">{{recentAttempt.guidanceText}}</text>
           </view>
         </view>
 
@@ -337,53 +359,14 @@
         <!-- 明细与线路历史：各自去往独立目的地，返回仍在原线 -->
         <view id="record-links" class="record-links">
           <button id="open-attempts" class="secondary-button record-link" bindtap="openAttempts">
-            逐把明细（本场 {{attempts.length}} 把）›
+            本场逐把（{{attempts.length}} 把）›
           </button>
           <button id="open-route-profile" class="secondary-button record-link" bindtap="openRouteProfile">
             线路历史（照片 · 卡点 · 跨天历史）›
           </button>
         </view>
 
-        <!-- 按把「改为未完成」：每一把各占一行、各带自己的控件，只列本场这条线。
-             刚撤回的完攀在这里留一条同结构的惰性行：撤回/恢复前后本段高度不变，
-             页面高度与滚动位置也就不变，原撤回坐标不会落到别把或结果按钮上。 -->
-        <view
-          wx:if="{{correctionRows.length > 0 || correctionPlaceholder}}"
-          id="route-correction"
-          class="route-correction"
-        >
-          <text class="route-correction-title">点错了完攀？</text>
-          <text class="route-correction-hint">下面每一把各占一行：点哪一行就只改那一把，改另一把要再点它自己那一行。</text>
-          <text wx:if="{{correctionStatusText}}" id="route-correction-status" class="route-correction-status">{{correctionStatusText}}</text>
-          <view wx:for="{{correctionRows}}" wx:key="attemptId" class="route-correction-row">
-            <text class="route-correction-target">改正原把次：{{item.label}} · {{item.contextText}}</text>
-            <view class="route-correction-slot">
-              <button
-                wx:if="{{item.state !== 'corrected'}}"
-                id="correct-{{item.attemptId}}"
-                class="secondary-button route-correct-button"
-                data-attempt-id="{{item.attemptId}}"
-                data-route-id="{{item.routeId}}"
-                data-session-id="{{item.sessionId}}"
-                data-archive-id="{{item.archiveId}}"
-                bindtap="correctSend"
-              >{{item.buttonText}}</button>
-              <text wx:else id="corrected-{{item.attemptId}}" class="route-corrected-text">{{item.statusText}}</text>
-            </view>
-          </view>
-          <view
-            wx:if="{{correctionPlaceholder}}"
-            id="route-correction-idle"
-            class="route-correction-row route-correction-idle"
-          >
-            <text class="route-correction-target">改正原把次：{{recentAttempt.correctionLabel}} · {{recentAttempt.correctionContextText}}</text>
-            <view class="route-correction-slot">
-              <text class="route-corrected-text">已撤回，暂不可改</text>
-            </view>
-          </view>
-        </view>
-
-        <text class="record-foot-hint">照片、卡点与跨天历史在「线路历史」；按把备注在「逐把明细」。</text>
+        <text class="record-foot-hint">照片、卡点与跨天历史在「线路历史」；按把备注在本场逐把。</text>
       </block>
     </block>
   </block>

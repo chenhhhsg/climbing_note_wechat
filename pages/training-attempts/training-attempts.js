@@ -1,9 +1,13 @@
 /**
- * 本线逐把明细页（T036）
+ * 本场逐把页（T036 / T042）
  *
  * 从单线记录页进入，只列**所选场次 + 所选长期线路**的已提交把次：按原序号、结果、
  * 备注对齐，并可给指定把次补/改备注。照片、卡点、跨天历史不在这里（线路资料页），
  * 撤回与恢复也不在这里（单线记录页的「最近一把」）。
+ *
+ * T042：较早的合资格完攀在**自己那一行**给「更正结果」：确认弹窗写明原把次的序号、
+ * 日期/场次/岩馆与原结果，确认后仍走共用 correctSend，只翻这一把的结果。本页只列原场
+ * 原线的把次，跨场次候选仍在线路历史的原把次处理，不会被拿到这里。
  *
  * 归属核对：archiveId + sessionId + routeId 与单线页同一份校验（training-record-actions
  * 的 loadRecordContext）。缺参、串档、场次/线路不存在或线路不属于这一场时只显示原因，
@@ -42,6 +46,13 @@ Page({
   },
 
   onLoad(query) {
+    // 本实例的临时状态（与单线记录页同名，便于沿用共用事件处理）：
+    // _correctedRows / _correctionFailures 是按把更正的只读回读与失败重试标记，
+    // _correctionPrompt 是已打开、还没回应的更正确认，_unloaded 拦迟到的确认回调。
+    this._correctedRows = {};
+    this._correctionFailures = {};
+    this._correctionPrompt = null;
+    this._unloaded = false;
     this._context = actions.parseRecordQuery(query);
     this.loadPage();
   },
@@ -50,6 +61,11 @@ Page({
     if (!this.data.ready) return;
     // 从资料页返回或重新显示：按最新档案重算这一场这一条线的逐把。
     this.loadPage();
+  },
+
+  onUnload() {
+    this._unloaded = true;
+    this._correctionPrompt = null;
   },
 
   loadPage() {
@@ -117,12 +133,21 @@ Page({
     const rows = store.attemptsFor(archive, { sessionId: session.id, routeId: route.id });
     // 关联状态只读视频索引（T023 只显示状态与文字入口，选片在视频页）。
     const links = attemptVideo.videoLinkMap(archive.archiveId, rows);
+    // 本场仍可更正的完攀（T042）：与线路历史同一份资格边界，只留本场次。
+    const correctionTargets = actions.correctionTargetsForSession(
+      archive,
+      session.id,
+      route.id
+    );
     const attempts = rows.map(attempt => {
       const link = links.get(attempt.id) || {
         hasVideo: false,
         stateText: '未添加视频',
         entryText: '添加视频 ›'
       };
+      const correctionTarget = correctionTargets.get(attempt.id) || null;
+      const correctionState = actions.correctionStateOf(archive, this, attempt.id);
+      const correctable = Boolean(correctionTarget);
       return {
         id: attempt.id,
         label: labels.get(attempt.id) || '',
@@ -133,7 +158,11 @@ Page({
         hasNote: Boolean(attempt.note),
         hasVideo: link.hasVideo,
         videoStateText: link.stateText,
-        videoEntryText: link.entryText
+        videoEntryText: link.entryText,
+        // 这一行自己那一把的更正入口；刚改好或不可改时只留只读文字。
+        correctable,
+        correctText: correctionState.state === 'retry' ? '重试更正结果' : '更正结果',
+        correctStatusText: correctable ? '' : correctionState.statusText
       };
     });
 
@@ -226,8 +255,61 @@ Page({
     });
   },
 
+  // ---------------------------------------------------------------- 更正结果（T042）
+
+  /**
+   * 这一行旁的「更正结果」：先核对这一下仍指向本页这一行可更正的完攀，再确认。
+   *
+   * 确认弹窗写明原把次的日期/场次/岩馆、原序号与原结果（完攀 → 未完成）；取消时一个
+   * 字节都不写。确认后仍走共用 correctSend，只翻这一把的结果，备注、视频关联、原序号
+   * 与把数都不变。连点同一把只弹一次确认；这一下若已不属于本场这一条线，只刷新不写盘。
+   */
+  confirmCorrectRow(event) {
+    if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const row = (this.data.attempts || []).find(item => item.id === attemptId) || null;
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    if (!row || !row.correctable || !archiveId || !sessionId || !routeId) {
+      this.setData({ notice: '这一把当前没有可更正的完攀，已按最新数据刷新。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    const stale =
+      (dataset.routeId && dataset.routeId !== routeId) ||
+      (dataset.sessionId && dataset.sessionId !== sessionId) ||
+      (dataset.archiveId && dataset.archiveId !== archiveId);
+    if (stale) {
+      this.setData({ notice: '这一下不属于本场这一条线的把次，没有改动任何记录。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    const activeSession = this.data.activeSession || {};
+    return actions.confirmCorrection.call(this, {
+      attemptId,
+      routeId,
+      sessionId,
+      archiveId,
+      label: row.label,
+      contextText: [
+        activeSession.dateText || '',
+        activeSession.label || '',
+        activeSession.gymName ? '· ' + activeSession.gymName : ''
+      ]
+        .filter(Boolean)
+        .join(' '),
+      resultText: '完攀'
+    });
+  },
+
   // 共用事件：目标只认原 attemptId 与归属，保存/取消/失败重试都只影响这一把。
   onNoteInput: actions.onNoteInput,
   cancelNote: actions.cancelNote,
-  saveNote: actions.saveNote
+  saveNote: actions.saveNote,
+  // 更正写入口仍是同一份实现；界面入口统一经 confirmCorrectRow 确认后调用。
+  correctSend: actions.correctSend
 });

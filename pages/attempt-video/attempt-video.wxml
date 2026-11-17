@@ -15,7 +15,7 @@
     <view wx:if="{{contextError}}" id="video-context-error" class="card error-card">
       <text class="error-title">这个入口不能用来添加视频</text>
       <text class="error-text">{{contextError}}</text>
-      <text class="error-hint">没有改动任何数据；请从逐把明细或线路历史重新进入这一把。</text>
+      <text class="error-hint">没有改动任何数据；请从本场逐把或线路历史重新进入这一把。</text>
       <button id="video-back" class="secondary-button" bindtap="backToList">返回上一页</button>
     </view>
 
@@ -204,7 +204,7 @@
         >{{choosing ? '正在打开相册…' : '从相册选择视频'}}</button>
       </view>
 
-      <text class="video-foot-hint">播放、暂停与更换只作用于这一把；结果、备注与其他把次都在逐把明细里。</text>
+      <text class="video-foot-hint">播放、暂停与更换只作用于这一把；结果、备注与其他把次都在本场逐把里。</text>
     </block>
   </block>
 </view>

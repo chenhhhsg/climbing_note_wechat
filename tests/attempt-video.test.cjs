@@ -348,6 +348,11 @@ test('T023-1 正式包注册逐把视频页，四件套齐全，原路由与 tab
   const pageJson = JSON.parse(fs.readFileSync(VIDEO_JSON, 'utf8'));
   assert.equal(pageJson.navigationBarTitleText, '逐把视频');
 
+  // T042：视频页里指向逐把页的提示统一叫「本场逐把」，不再用旧称呼。
+  const hintsWxml = fs.readFileSync(VIDEO_WXML, 'utf8');
+  assert.match(hintsWxml, /本场逐把/, '视频页提示使用「本场逐把」');
+  assert.doesNotMatch(hintsWxml, /逐把明细/, '视频页不再用旧称呼');
+
   // 正式页只走本机档案层，不接云。
   for (const file of [VIDEO_JS, ATTEMPTS_JS, ROUTE_JS, VIDEO_UTIL]) {
     const source = fs.readFileSync(file, 'utf8');
