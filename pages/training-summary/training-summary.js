@@ -477,7 +477,7 @@ Page({
     // 资料页按它核对入口是否还属于本机现在这一份档案；换档后的迟到点击不会打开别的档。
     const archiveId = (this.archive && this.archive.archiveId) || '';
     if (!archiveId) {
-      this.setData({ notice: '这份小结没有可用的本机档案归属，暂不打开线路资料。' });
+      this.setData({ notice: '这份小结没有可用的本机档案归属，暂不打开线路历史。' });
       return;
     }
     wx.navigateTo({
