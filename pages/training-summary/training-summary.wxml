@@ -137,9 +137,15 @@
                 id="summary-pick-state-{{item.routeId}}"
                 class="summary-pick-state"
               >{{item.wishlistStateText}}</text>
+              <!--
+                行事件带齐渲染这一行时的原档案 ID、所看场次的场次 ID 与长期线路 ID：
+                处理器只按这三个 ID 核对当前渲染，迟到送达的别场行不会借用当前所看场次。
+              -->
               <button
                 id="summary-open-{{item.routeId}}"
                 class="text-button summary-open"
+                data-archive-id="{{item.archiveId}}"
+                data-session-id="{{item.sessionId}}"
                 data-route-id="{{item.routeId}}"
                 bindtap="openSummaryRoute"
               >本场逐把 ›</button>

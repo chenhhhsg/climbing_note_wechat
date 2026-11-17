@@ -888,7 +888,9 @@ test('R3 独立小结页：只读回看入口能换看别的场次，也能回�
   // 从小结先看昨天那条线的原场逐把（T046）：带原档案、所看这一场与长期线路 ID，
   // 且标明入口来自小结；跨场历史改由逐把页主动点「线路历史」进入。
   resetWxLog();
-  page.openSummaryRoute(tapDataset({ routeId: boulder.id }));
+  page.openSummaryRoute(
+    tapDataset({ archiveId, sessionId: yesterday.id, routeId: boulder.id })
+  );
   assert.deepEqual(wxLog.navigations, [
     '/pages/training-attempts/training-attempts?archiveId=' +
       archiveId +
@@ -1213,7 +1215,7 @@ test('R3 独立小结页 WXML 区块与真实绑定齐全；新页在正式 app.
   );
   assert.match(
     wxml,
-    /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="openSummaryRoute"/
+    /data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,200}data-session-id="\{\{item\.sessionId\}\}"[\s\S]{0,160}data-route-id="\{\{item\.routeId\}\}"[\s\S]{0,120}bindtap="openSummaryRoute"/
   );
   assert.match(
     wxml,
@@ -1462,7 +1464,7 @@ test('T044 小结一线一卡：每条线一张中性细边框卡并留卡间间
   assert.match(wxml, /id="summary-row-\{\{item\.routeId\}\}"/);
   assert.match(
     wxml,
-    /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="openSummaryRoute"/
+    /data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,200}data-session-id="\{\{item\.sessionId\}\}"[\s\S]{0,160}data-route-id="\{\{item\.routeId\}\}"[\s\S]{0,120}bindtap="openSummaryRoute"/
   );
 
   // 同色同级同名两条线各占一张卡，顺序与小结数据一致，没有并成一行。
@@ -1506,9 +1508,13 @@ test('T046 小结点线先进本场逐把：入口文案与绑定一致，跨场
   // 每条线的入口写的是「本场逐把」，绑定的仍是原长期 routeId。
   assert.match(
     wxml,
-    /id="summary-open-\{\{item\.routeId\}\}"[\s\S]{0,200}本场逐把 ›/
+    /id="summary-open-\{\{item\.routeId\}\}"[\s\S]{0,320}本场逐把 ›/
   );
-  assert.match(wxml, /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="openSummaryRoute"/);
+  // 行事件带齐原档案、场次与线路 ID：处理器据此核对，不取运行时当前所看场次。
+  assert.match(
+    wxml,
+    /data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,200}data-session-id="\{\{item\.sessionId\}\}"[\s\S]{0,160}data-route-id="\{\{item\.routeId\}\}"[\s\S]{0,120}bindtap="openSummaryRoute"/
+  );
   // 同一位置说明：跨场历史在逐把页里主动点开。
   assert.match(wxml, /id="summary-route-hint"[\s\S]{0,120}线路历史/);
 
