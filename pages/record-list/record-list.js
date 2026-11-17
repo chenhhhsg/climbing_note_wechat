@@ -1,25 +1,27 @@
 /**
  * 记录列表页面（Tab）
  *
- * 上半部分是 T018 的本机训练历史：只读 T016 的正式本机档案，按长期线路列出有逐把
- * 记录的线路（最近训练的在前），点一条进 pages/training-route 按本地日期与场次回看。
- * 打开本页只读档案，不建场次、不改写、不把旧云汇总并进本机统计。
+ * 上半部分是本机训练历史（T018 起点，T043 改为原场次列表）：只读 T016 的正式本机
+ * 档案，按训练场次的原本地日期倒序、同日按原岩馆 ID 分组列出每一场（一个原场次 ID
+ * 一行），行里是现有场次标识与小结的线路数 / 有效把数；点一行用原档案 ID 与原场次
+ * ID 打开现有小结页（pages/training-summary），从小结继续回看原线路与跨日历史。
+ * 打开本页只读档案，不建场次、不改写、不选当前场次或线路，也不把旧云汇总并进本机统计。
  *
  * 下半部分是既有的「旧记录」：仍是原 climbing_records 云列表，保留 T002 的第一页/
  * 翻页/下拉刷新与请求竞争处理，保留本人有权限的访问边界；读取失败按「云环境不可用 /
  * 没有权限 / 读取失败」显示有区别的状态，且不触发任何回写、清空或覆盖本机档案。
- * 两条入口的 ID 不混用：本机线路走 routeId（training-route），旧记录走原 _id
+ * 两条入口的 ID 不混用：本机场次走 sessionId（training-summary），旧记录走原 _id
  * （record-detail），即使字符串相同也各自进入自己的详情。
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
 const store = require('../../utils/training-store');
-const { climbTypeOf } = require('../../utils/training-rules');
+const { buildSessionList } = require('../../utils/training-session-summary');
 
 Page({
   data: {
-    // 本机训练历史（T018）
-    localRoutes: [],          // 有逐把记录的长期线路
+    // 本机训练历史（T043）：日期倒序 → 同日原岩馆 ID 分组 → 组内原场次倒序
+    sessionDays: [],
     hasLocalHistory: false,
     archiveError: '',         // 本机档案损坏/版本不支持/读取失败
 
@@ -74,34 +76,25 @@ Page({
   },
 
   /**
-   * 刷新本机训练历史：只读档案，损坏时显示可见错误但不动旧记录区。
+   * 刷新本机训练历史（T043）：只读档案，按原日期与原岩馆 ID 列出原场次。
+   * 每行的线路数与有效把数直接取现有小结的同一份只读计数；损坏时显示可见错误
+   * 但不动旧记录区，也不覆盖原档案。
    */
   refreshLocalHistory() {
     const loaded = store.loadState();
     if (!loaded.ok) {
-      this.setData({ archiveError: loaded.error, localRoutes: [], hasLocalHistory: false });
+      this._archiveId = '';
+      this.setData({ archiveError: loaded.error, sessionDays: [], hasLocalHistory: false });
       return;
     }
 
-    const localRoutes = store.routesWithHistory(loaded.archive).map(route => ({
-      id: route.id,
-      name: route.name,
-      // 旧 V 级线路没有 climbType，按抱石只读展示，不回写档案。
-      climbType: climbTypeOf(route),
-      grade: route.grade,
-      colorName: route.colorName,
-      colorHex: route.colorHex || '#dee2e6',
-      gymName: route.gymName,
-      lastDateText: route.lastDate + ' ' + route.lastSessionLabel,
-      countText:
-        route.dayCount + ' 天 · ' + route.sessionCount + ' 场 · ' + route.attemptCount + ' 把',
-      sendText: route.sendCount > 0 ? route.sendCount + ' 次完攀' : '还没有完攀'
-    }));
-
+    const listed = buildSessionList(loaded.archive);
+    // 点行时按渲染这一份档案的原档案 ID 进小结；之后换档由小结页按既有错误路径处理。
+    this._archiveId = (loaded.archive && loaded.archive.archiveId) || '';
     this.setData({
       archiveError: '',
-      localRoutes,
-      hasLocalHistory: localRoutes.length > 0
+      sessionDays: listed.days,
+      hasLocalHistory: listed.sessionCount > 0
     });
   },
 
@@ -254,13 +247,22 @@ Page({
   },
 
   /**
-   * 打开本机长期线路历史（按长期线路 ID 路由，与旧记录 ID 分开）
+   * 打开这一行的原场小结（T043）：只用渲染这一行时写下的原档案 ID 与原场次 ID，
+   * 经现有小结页读取；同字 ID 的旧记录仍走 goToDetail 的原 _id 路由，两边不混用。
+   * 换档或场次不存在时由小结页按既有错误路径显示可见状态，本页不猜、不补场次。
    */
-  goToRouteDetail(e) {
-    const routeId = e.currentTarget.dataset.routeId;
-    if (!routeId) return;
+  goToSessionSummary(e) {
+    const dataset = (e && e.currentTarget && e.currentTarget.dataset) || {};
+    const sessionId = dataset.sessionId;
+    if (!sessionId) return;
+    const archiveId = dataset.archiveId || this._archiveId || '';
+    if (!archiveId) return;
+    const params = [
+      'sessionId=' + encodeURIComponent(sessionId),
+      'archiveId=' + encodeURIComponent(archiveId)
+    ];
     wx.navigateTo({
-      url: `/pages/training-route/training-route?routeId=${routeId}`
+      url: '/pages/training-summary/training-summary?' + params.join('&')
     });
   },
 

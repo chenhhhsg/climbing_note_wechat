@@ -1,14 +1,15 @@
 <!--
   记录列表页面（Tab）
-  上半部分：T018 本机训练历史（只读本机档案，按长期线路进 pages/training-route）。
+  上半部分：本机训练历史（T043 原场次列表，只读本机档案，按原日期与岩馆分组，
+  点一场直达 pages/training-summary 的原场小结）。
   下半部分：既有「旧记录」云列表（只读回看，保留原分页、失败重试与刷新竞争处理）。
 -->
 <view class="container">
-  <!-- 本机训练历史 -->
+  <!-- 本机训练历史：日期倒序 → 同日原岩馆分组 → 组内原场次倒序 -->
   <view class="local-history">
     <view class="section-header">
       <text class="section-title">本机训练历史</text>
-      <text class="section-hint">本地存档 · 逐把</text>
+      <text class="section-hint">本地存档 · 按场次</text>
     </view>
 
     <view wx:if="{{archiveError}}" id="archive-error" class="inline-error">
@@ -21,26 +22,39 @@
       <text class="local-empty-hint">回首页「开始训练」，按线路逐把记录后会出现在这里。</text>
     </view>
 
-    <view wx:else class="local-route-list">
+    <view wx:else class="local-session-list">
       <view
-        wx:for="{{localRoutes}}"
-        wx:key="id"
-        id="local-route-{{item.id}}"
-        class="local-route-card"
-        bindtap="goToRouteDetail"
-        data-route-id="{{item.id}}"
+        wx:for="{{sessionDays}}"
+        wx:for-item="day"
+        wx:key="date"
+        id="local-day-{{day.date}}"
+        class="local-day"
       >
-        <view class="local-route-main">
-          <view class="local-route-swatch" style="background: {{item.colorHex}};"></view>
-          <view class="local-route-info">
-            <text class="local-route-name">{{item.name}}</text>
-            <text class="local-route-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
-            <text class="local-route-gym">{{item.gymName}}</text>
+        <text class="local-day-date">{{day.date}}</text>
+        <view
+          wx:for="{{day.gyms}}"
+          wx:for-item="gym"
+          wx:key="gymId"
+          id="local-gym-{{day.date}}-{{gym.gymId}}"
+          class="local-gym"
+        >
+          <text class="local-gym-name">{{gym.gymName}}</text>
+          <view
+            wx:for="{{gym.sessions}}"
+            wx:for-item="session"
+            wx:key="id"
+            id="local-session-{{session.id}}"
+            class="local-session-row"
+            bindtap="goToSessionSummary"
+            data-session-id="{{session.id}}"
+            data-archive-id="{{session.archiveId}}"
+          >
+            <view class="local-session-main">
+              <text class="local-session-label">{{session.label}}</text>
+              <text wx:if="{{session.stateText}}" class="local-session-state">{{session.stateText}}</text>
+            </view>
+            <text class="local-session-count">{{session.summaryText}}</text>
           </view>
-        </view>
-        <view class="local-route-stats">
-          <text class="local-route-last">最近：{{item.lastDateText}}</text>
-          <text class="local-route-count">{{item.countText}} · {{item.sendText}}</text>
         </view>
       </view>
     </view>

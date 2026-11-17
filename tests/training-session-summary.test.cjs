@@ -145,7 +145,7 @@ const db = require(DB_JS);
 const realGetAllRecords = db.getAllRecords;
 const store = require(STORE_JS);
 const wishlist = require(WISHLIST_JS);
-const { buildSessionSummary } = require(SUMMARY_JS);
+const { buildSessionSummary, buildSessionList } = require(SUMMARY_JS);
 const fitness = require(FITNESS_JS);
 
 // 捕获原生 Page(...) 定义
@@ -1307,4 +1307,120 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   ['recordAttempt', 'retryPendingAttempt', 'undoLatestAttempt', 'restoreLatestAttempt', 'correctSend']
     .forEach(name => assert.ok(recordHandlers.includes(name), '单线页绑定：' + name));
   assert.equal(archiveOf().activeSessionId, s2.id, '打开小结与读取入口都不改当前场次');
+});
+
+// ------------------------------------------------------------------ *
+// T043 底栏记录的原场次列表：复用小结计数，只读
+// ------------------------------------------------------------------ *
+
+test('T043 场次列表按日期倒序、同日按原岩馆 ID 分组、组内场次倒序，行取小结同一份计数', () => {
+  const { yesterday, todayFirst, todayActive } = twoDaysFixture();
+  const archive = archiveOf();
+  const archiveBytes = rawOf(ARCHIVE_KEY);
+  const archiveWrites = writesOf(ARCHIVE_KEY);
+
+  const listed = buildSessionList(archive);
+  assert.equal(listed.sessionCount, 3);
+  assert.equal(listed.dayCount, 2);
+  assert.deepEqual(listed.days.map(day => day.date), [DAY, YESTERDAY]);
+
+  // 同日同馆两场：原场次顺序倒序，空场也占一行并沿用空场小结口径。
+  const today = listed.days[0];
+  assert.equal(today.gyms.length, 1);
+  assert.equal(today.gyms[0].gymId, archive.sessions.find(s => s.id === todayActive.id).gymId);
+  assert.deepEqual(
+    today.gyms[0].sessions.map(row => row.id),
+    [todayActive.id, todayFirst.id]
+  );
+  const activeRow = today.gyms[0].sessions[0];
+  assert.equal(activeRow.label, '第 2 场');
+  assert.equal(activeRow.isEmpty, true);
+  assert.equal(activeRow.stateText, '空场');
+  assert.equal(activeRow.summaryText, '0 条线 · 0 把');
+  const firstRow = today.gyms[0].sessions[1];
+  assert.equal(firstRow.label, '第 1 场');
+  assert.equal(firstRow.summaryText, '1 条线 · 1 把');
+
+  // 昨天的场次与今天分开，读数与 buildSessionSummary 完全一致。
+  const yesterdayRow = listed.days[1].gyms[0].sessions[0];
+  assert.equal(yesterdayRow.id, yesterday.id);
+  assert.equal(yesterdayRow.summaryText, '2 条线 · 3 把 · 完攀 1 把');
+  [...listed.days[0].gyms[0].sessions, yesterdayRow].forEach(row => {
+    const summary = buildSessionSummary(archive, row.id);
+    assert.equal(row.routeCount, summary.routeCount);
+    assert.equal(row.attemptCount, summary.attemptCount);
+    assert.equal(row.summaryText, summary.summaryText);
+    assert.equal(row.archiveId, archive.archiveId);
+  });
+
+  // 每个原场次 ID 恰好一行。
+  const ids = listed.days.flatMap(day => day.gyms.flatMap(gym => gym.sessions.map(row => row.id)));
+  assert.equal(new Set(ids).size, ids.length);
+  assert.equal(ids.length, archive.sessions.length);
+
+  // 只读：读取列表不写档案。
+  assert.equal(rawOf(ARCHIVE_KEY), archiveBytes);
+  assert.equal(writesOf(ARCHIVE_KEY), archiveWrites);
+});
+
+test('T043 同日两家同名岩馆按原岩馆 ID 各成一组，不按名字并组', () => {
+  const s1 = startAt(DAY, '同名岩馆');
+  const s2 = startAt(DAY, '另一家');
+  // 把第二家的展示名改成与第一家相同：同名不等于同一家，仍按原岩馆 ID 分组。
+  const raw = archiveOf();
+  raw.gyms = raw.gyms.map(gym => Object.assign({}, gym, { name: '同名岩馆' }));
+  assert.equal(store.saveArchive(raw).ok, true);
+
+  const listed = buildSessionList(store.loadState().archive);
+  assert.equal(listed.days.length, 1);
+  assert.equal(listed.days[0].gyms.length, 2, '两家同名岩馆仍是两组');
+  assert.deepEqual(
+    listed.days[0].gyms.map(gym => gym.gymName),
+    ['同名岩馆', '同名岩馆']
+  );
+  // 组序由组内最新场次决定：第二场（seq 更大）所在岩馆在前。
+  assert.deepEqual(
+    listed.days[0].gyms.flatMap(gym => gym.sessions.map(row => row.id)),
+    [s2.id, s1.id]
+  );
+});
+
+test('T043 撤回与恢复后场次列表的把数同步变化，恢复拿回原计数', () => {
+  const { s1, s2, boulder } = twoSessionsFixture();
+  const before = buildSessionList(archiveOf());
+  const findRow = listed =>
+    listed.days
+      .flatMap(day => day.gyms.flatMap(gym => gym.sessions))
+      .find(row => row.id === s1.id);
+  assert.equal(findRow(before).summaryText, '2 条线 · 3 把 · 完攀 1 把');
+
+  const sendAttempt = archiveOf().attempts.find(
+    item => item.sessionId === s1.id && item.result === 'send'
+  );
+  const undone = store.undoAttempt(sendAttempt.id, {
+    opId: 't043-undo',
+    sessionId: s1.id,
+    routeId: boulder.id
+  });
+  assert.equal(undone.code, 'undone');
+
+  const afterUndo = buildSessionList(archiveOf());
+  const undoneRow = findRow(afterUndo);
+  assert.equal(undoneRow.summaryText, '2 条线 · 2 把', '已撤回的那一把不算本场把数');
+  assert.equal(undoneRow.sendCount, 0);
+  // 第二场自己那一把不受影响。
+  assert.equal(
+    afterUndo.days
+      .flatMap(day => day.gyms.flatMap(gym => gym.sessions))
+      .find(row => row.id === s2.id).summaryText,
+    '1 条线 · 1 把'
+  );
+
+  const restored = store.restoreAttempt(sendAttempt.id, {
+    opId: 't043-restore',
+    sessionId: s1.id,
+    routeId: boulder.id
+  });
+  assert.equal(restored.code, 'restored');
+  assert.equal(findRow(buildSessionList(archiveOf())).summaryText, '2 条线 · 3 把 · 完攀 1 把');
 });

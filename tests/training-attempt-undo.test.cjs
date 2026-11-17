@@ -971,14 +971,20 @@ test('T032 撤回后首页、场内、线路历史、跨天历史、统计、小
   assert.deepEqual(day1Group.attempts.map(item => item.label), ['第 1 把', '第 2 把']);
   assert.equal(day1Group.countText, '2 把');
 
-  // 5) 跨天历史（记录 tab 的本机历史）。
+  // 5) 跨天历史（记录 tab 的本机历史，T043 起按原场次一行）。
   const listPage = createPage(listDefinition);
   listPage.refreshLocalHistory();
-  const listA = listPage.data.localRoutes.find(row => row.id === fixture.first.route.id);
-  assert.equal(listA.countText, '2 天 · 2 场 · 3 把');
-  assert.equal(listA.sendText, '1 次完攀');
-  const listB = listPage.data.localRoutes.find(row => row.id === fixture.b.route.id);
-  assert.equal(listB.countText, '1 天 · 1 场 · 1 把', 'B 线只剩第一天那一把');
+  const listRows = (listPage.data.sessionDays || []).flatMap(day =>
+    (day.gyms || []).flatMap(gym => gym.sessions || [])
+  );
+  const listFirst = listRows.find(row => row.id === fixture.first.session.id);
+  assert.equal(listFirst.summaryText, '2 条线 · 3 把', '第一天两线三把有效');
+  const listSecond = listRows.find(row => row.id === fixture.second.session.id);
+  assert.equal(
+    listSecond.summaryText,
+    '1 条线 · 1 把 · 完攀 1 把',
+    '第二天只算它自己那一把（已撤回的 B 把不算）'
+  );
 
   // 6) 底部统计（同一分母：本机有效把次）。
   const statsPage = createPage(statsDefinition);
