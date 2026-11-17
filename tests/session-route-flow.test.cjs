@@ -3566,6 +3566,96 @@ test('T048 保存失败与取消不生成新卡、保持原展开；重试成功
   assert.equal(page.data.attemptCards.filter(row => row.expanded).length, 1, '仍然只有最新一把完整');
 });
 
+test('T048 撤回第 3 把后再记一把失败：原第 3 把留在原卡，待保存不提升第 2 把，重试成功才切换', () => {
+  const seeded = seedRopeAttempts(['fail', 'send', 'fail'], ['', '第二把备注', '第三把备注']);
+  let page = openRecordFor(seeded.route.id, seeded.session.id);
+
+  // 撤回最近的第 3 把：原行仍是最新卡，原编号与备注保留，恢复入口在同一行。
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.routeCountText, '2 把');
+  const withdrawn = page.data.attemptCards[0];
+  assert.equal(withdrawn.id, seeded.attempts[2].id);
+  assert.equal(withdrawn.isUndone, true);
+  assert.equal(withdrawn.canRestore, true, '没有待保存时恢复入口照旧可用');
+  assert.equal(withdrawn.note, '第三把备注');
+
+  // 记第 4 把未完成，第二段写盘失败：这一把进入待保存，不生成新卡。
+  tick();
+  armSetFailAt(2); // 第一段待保存标记已落盘，第二段提交失败
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  assert.equal(page.data.pendingRows.length, 1, '失败的那一把在待保存行');
+  assert.equal(page.data.hasPending, true);
+  assert.equal(page.data.routeCountText, '2 把 · 1 把待保存', '有效计数不变');
+
+  const expectOriginalCards = () => {
+    assert.deepEqual(
+      page.data.attemptCards.map(row => row.label),
+      ['第 3 把', '第 2 把', '第 1 把'],
+      '撤回的那一把保留原层级与编号'
+    );
+    assert.deepEqual(
+      page.data.attemptCards.map(row => row.id),
+      [seeded.attempts[2].id, seeded.attempts[1].id, seeded.attempts[0].id],
+      '待保存不生成新卡，也不把第 2 把提前'
+    );
+    assert.equal(page.data.attemptCards[0].isLatest, true, '原第 3 把仍是完整卡');
+    assert.equal(page.data.attemptCards[0].isUndone, true);
+    assert.equal(page.data.attemptCards[0].note, '第三把备注', '撤回保留原备注');
+    assert.equal(page.data.attemptCards[1].isLatest, false, '第 2 把不被错误提升');
+    // pending 门禁仍控制动作：这一把看得见，但恢复/撤回都不开放。
+    assert.equal(page.data.attemptCards[0].canRestore, false);
+    assert.equal(page.data.attemptCards[0].canUndo, false);
+    assert.equal(page.data.attemptCards[0].showMenu, false);
+  };
+
+  expectOriginalCards();
+
+  // 冷重开（新页面实例读同一份档案）仍是同一层级：#3 完整卡，#4 仍待保存。
+  page = openRecordFor(seeded.route.id, seeded.session.id);
+  assert.equal(page.data.pendingRows.length, 1, '待保存意图重开后仍在');
+  expectOriginalCards();
+
+  // 按原待保存行重试成功：只有第 4 把一条置顶；不再处于恢复范围的旧撤回把按原规则离开现场。
+  const opId = page.data.pendingRows[0].opId;
+  tick();
+  page.retryPendingAttempt(
+    tapDataset({
+      opId,
+      archiveId: archiveOf().archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.hasPending, false);
+  assert.equal(page.data.routeCountText, '3 把');
+  assert.equal(page.data.attemptCards.length, 3);
+  assert.equal(page.data.attemptCards[0].label, '第 4 把', '第 4 把置顶');
+  assert.equal(page.data.attemptCards[0].isLatest, true);
+  assert.equal(page.data.attemptCards[0].isUndone, false);
+  assert.equal(
+    page.data.attemptCards.filter(row => row.label === '第 4 把').length,
+    1,
+    '重试成功只落一把'
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.id),
+    [page.data.attemptCards[0].id, seeded.attempts[1].id, seeded.attempts[0].id],
+    '第 4 把之后按原序号倒序，旧撤回把不再占据现场'
+  );
+  assert.equal(
+    page.data.attemptCards.some(row => row.id === seeded.attempts[2].id),
+    false,
+    '已撤回且不再是最近一把的第 3 把按原规则离开现场'
+  );
+  // 其他场次/线路与存储不变：原把次仍按原 ID 留在档案里。
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === seeded.attempts[2].id).note,
+    '第三把备注'
+  );
+});
+
 test('T048 同线另一场不串入：只列入口那一场这一条线的原把次，各页面展开态互不影响', () => {
   const seeded = seedRopeAttempts(['fail', 'fail'], ['', '第一场第二把备注'], {
     gymName: '岩馆 T048 隔离'

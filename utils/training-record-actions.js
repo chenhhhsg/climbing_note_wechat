@@ -988,15 +988,27 @@ function attemptCardRows(
     ? store.isBoulderRoute(route)
     : selectedRoute.climbType === '抱石';
   const recent = recentAttempt || null;
+  // 待保存时 recentAttemptView 整体收起（不开放撤回/恢复动作），但「最近一把是谁」的
+  // 展示身份仍按同场同线的最新已提交原把取——撤回的那一把要留在原层级与原编号上，
+  // 不能因为下一把还没落盘就整卡消失、把前一把错误提升为最新。这里只补展示身份，
+  // 动作仍由 pending 门禁关闭（canUndo / canRestore 都来自上面那一份 recent）。
+  const latestCommitted = recent
+    ? null
+    : recentAttemptTarget(archive, activeSession.id, selectedRoute.id);
 
   const rows = store.attemptsFor(archive, {
     sessionId: activeSession.id,
     routeId: selectedRoute.id
   });
   // 刚撤回的那一把仍留在原框里（恢复入口就在这一行）；更早的已撤回把次不在这里。
-  if (recent && !rows.some(item => item.id === recent.attemptId)) {
-    const undone = (archive.attempts || []).find(item => item.id === recent.attemptId);
-    if (undone) rows.push(undone);
+  const keptAttemptId = recent
+    ? recent.attemptId
+    : latestCommitted
+      ? latestCommitted.attempt.id
+      : '';
+  if (keptAttemptId && !rows.some(item => item.id === keptAttemptId)) {
+    const kept = (archive.attempts || []).find(item => item.id === keptAttemptId);
+    if (kept && store.isUndoneAttempt(kept)) rows.push(kept);
   }
   rows.sort((left, right) => (right.seq || 0) - (left.seq || 0));
 
