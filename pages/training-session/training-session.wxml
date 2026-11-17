@@ -197,7 +197,7 @@
 
             <text wx:if="{{newRouteError}}" id="new-route-error" class="field-error">{{newRouteError}}</text>
             <button id="create-route" class="secondary-button" bindtap="createRoute">创建并选中</button>
-            <text class="photo-hint">创建后直达这条线的单线记录；照片与卡点在线路资料里补。</text>
+            <text class="photo-hint">创建后直达这条线的单线记录；照片在单线记录首屏直接补，卡点在线路历史里看。</text>
           </block>
 
           <button

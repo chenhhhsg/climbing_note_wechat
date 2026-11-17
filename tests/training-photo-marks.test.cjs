@@ -34,6 +34,9 @@ const ROUTE_WXSS = path.join(ROOT, 'pages', 'training-route', 'training-route.wx
 const MARKS_PAGE_JS = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.js');
 const MARKS_PAGE_WXML = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.wxml');
 const MARKS_PAGE_WXSS = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.wxss');
+// T041：现场单线记录首屏也读同一张主照片与同一版标记数量。
+const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 const PHOTO_KEY = 'climbingNote.training.v1.photos';
@@ -241,6 +244,7 @@ function capturePage(jsPath) {
 
 const routeDefinition = capturePage(ROUTE_JS);
 const marksPageDefinition = capturePage(MARKS_PAGE_JS);
+const recordDefinition = capturePage(RECORD_JS);
 
 /** 页面实例替身：支持 wx 的 setData 数据路径写法。 */
 function createPage(definition) {
@@ -374,6 +378,24 @@ async function openHistoryPage(routeId, view) {
   });
   page._photoUi = ui;
   page.refreshView();
+  page.applyPhotoView();
+  await settle();
+  return { page, ui };
+}
+
+/**
+ * 打开现场单线记录页（T041）：首屏一行照片入口，读同一份标记记录。
+ * onLoad 之后换成只回答展示状态的替身，再按最新档案重算照片与数量。
+ */
+async function openRecordHistoryPage(session, route, view) {
+  const ui = photoUi(view);
+  const page = createPage(recordDefinition);
+  page.onLoad({
+    archiveId: archiveIdOf(),
+    sessionId: session.id,
+    routeId: route.id
+  });
+  page._photoUi = ui;
   page.applyPhotoView();
   await settle();
   return { page, ui };
@@ -2092,4 +2114,78 @@ test('T040 大图页：入口属于另一份本机档案时不展示、不受理
   const outcome = await page.tapPhotoStage(tapAt(75, 181.875));
   assert.equal(outcome, null);
   assert.equal(rawOf(MARKS_KEY), '', '不展示任何线路内容时也不写标记');
+});
+
+// ================================================================== *
+// 五、T041 现场单线首屏与线路历史同一照片版本
+// ================================================================== *
+
+test('T041 现场单线页与线路历史读同一照片版本与标记数量，进入二级页/返回/重开都一致', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const where = { archiveId: archiveIdOf(), routeId: route.id, photoId: 'photo-1' };
+  marks.addMark(Object.assign({ x: 0.2, y: 0.4, kind: 'foot', text: '左脚踩这里' }, where));
+  marks.addMark(Object.assign({ x: 0.8, y: 0.6, kind: 'hand', text: '右手抓这个点' }, where));
+
+  const view = savedPhotoView('photo-1', PHOTO_MAIN);
+  const { page: record } = await openRecordHistoryPage(session, route, view);
+  const { page: history } = await openHistoryPage(route.id, view);
+
+  // 现场首屏与线路历史读到同一张照片、同一版标记数量。
+  assert.equal(record.data.recordPhoto.status, 'saved');
+  assert.equal(record.data.recordPhoto.photoId, 'photo-1');
+  assert.equal(record.data.photoMarkCount, 2);
+  assert.equal(record.data.photoMarkCountText, '照片动作标记 · 2 个');
+  assert.equal(history.data.photoMarkCountText, record.data.photoMarkCountText);
+
+  // 现场入口绑定真实处理器，带的是同一组档案、线路与当前照片版本 ID。
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.match(recordWxml, /id="record-photo-entry"[\s\S]{0,420}data-archive-id="\{\{archiveId\}\}"[\s\S]{0,160}data-route-id="\{\{selectedRoute\.id\}\}"[\s\S]{0,160}data-photo-id="\{\{recordPhoto\.photoId\}\}"[\s\S]{0,120}bindtap="openRoutePhotoMarks"/);
+  handlersIn(recordWxml).forEach(handler => {
+    assert.equal(typeof recordDefinition[handler], 'function', '单线页绑定缺少处理器：' + handler);
+  });
+
+  record.openRoutePhotoMarks(
+    tapDataset({ archiveId: archiveIdOf(), routeId: route.id, photoId: 'photo-1' })
+  );
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(
+    wxLog.navigations[0],
+    '/pages/training-photo-marks/training-photo-marks?archiveId=' +
+      encodeURIComponent(archiveIdOf()) +
+      '&routeId=' +
+      encodeURIComponent(route.id) +
+      '&photoId=photo-1'
+  );
+
+  // 从二级页加了一条标记再返回：现场与历史一起刷新，数量仍然一致。
+  marks.addMark(Object.assign({ x: 0.5, y: 0.5, kind: 'hand', text: '中间这个点' }, where));
+  record.onShow();
+  history.onShow();
+  await settle();
+  assert.equal(record.data.photoMarkCount, 3);
+  assert.equal(history.data.photoMarkCount, 3);
+  assert.equal(record.data.photoMarkCountText, history.data.photoMarkCountText);
+  assert.equal(listedMarks(route.id, 'photo-1').length, 3);
+
+  // 退出重开同一页：照片版本与坐标数量都从本机记录读回，不靠页面快照。
+  const reopened = await openRecordHistoryPage(session, route, view);
+  assert.equal(reopened.page.data.recordPhoto.photoId, 'photo-1');
+  assert.equal(reopened.page.data.photoMarkCount, 3);
+
+  // 另一页刚换了照片：旧入口不按旧照片打开，也不把操作落到新图上。
+  record._photoUi.set(savedPhotoView('photo-2', PHOTO_MAIN_2));
+  record.applyPhotoView();
+  record.openRoutePhotoMarks(
+    tapDataset({ archiveId: archiveIdOf(), routeId: route.id, photoId: 'photo-1' })
+  );
+  assert.equal(wxLog.navigations.length, 1, '过期入口不再打开');
+  assert.match(record.data.notice, /已经变化/);
+
+  // 同名 B 线不共享 A 的照片与标记数量。
+  const b = newRoute(session, { name: '同名线' });
+  const freshB = await openRecordHistoryPage(session, b, noPhotoView());
+  assert.equal(freshB.page.data.recordPhoto.status, 'none');
+  assert.equal(freshB.page.data.photoMarkCount, 0);
+  assert.equal(freshB.page.data.photoMarkCountText, '');
 });

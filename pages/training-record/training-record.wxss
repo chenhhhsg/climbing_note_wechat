@@ -192,6 +192,143 @@ page {
   word-break: break-all;
 }
 
+/* 线路照片（T041）：首屏一行紧凑入口——有图时缩略图 + 标记数量，无图时添加入口 */
+.record-photo {
+  box-sizing: border-box;
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
+  padding: 12px;
+  margin: 0 0 12px;
+}
+
+.record-photo-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  min-width: 0;
+}
+
+/* 整行即入口：缩略图与标记数量都属于同一次点击（行高由缩略图与 44px 兜底） */
+.record-photo-open {
+  border-radius: 6rpx;
+}
+
+.record-photo-thumb {
+  flex: none;
+  width: 56px;
+  height: 56px;
+  border-radius: 6rpx;
+  background-color: #E9EFEC;
+}
+
+.record-photo-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.record-photo-title {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  font-weight: 700;
+  font-size: 28rpx;
+  line-height: 1.4;
+  color: #182421;
+  word-break: break-all;
+}
+
+.record-photo-link {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #1F5948;
+}
+
+.record-photo-hint {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
+.record-photo-arrow {
+  flex: none;
+  font-size: 30rpx;
+  line-height: 1.4;
+  color: #53615B;
+}
+
+.record-photo-preview {
+  display: block;
+  width: 100%;
+  height: 160px;
+  border-radius: 6rpx;
+  background-color: #F2F4F3;
+}
+
+.record-photo-status {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 26rpx;
+  line-height: 1.5;
+  color: #182421;
+}
+
+.record-photo-status-error {
+  color: #943A23;
+}
+
+.record-photo-error {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #943A23;
+}
+
+.record-photo-actions {
+  display: flex;
+  gap: 12rpx;
+  margin-top: 12rpx;
+}
+
+.record-photo-source,
+.record-photo-confirm {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  border-radius: 8rpx;
+  font-size: 26rpx;
+  line-height: 1.4;
+}
+
+.record-photo-source {
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
+}
+
+.record-photo-confirm {
+  background-color: #1F5948;
+  color: #FFFFFF;
+  border: none;
+}
+
+.record-photo-source::after,
+.record-photo-confirm::after {
+  border: none;
+}
+
 /* 结果区：正常态、已完攀与待确认三种面板同一行高 */
 .result-footer {
   display: flex;

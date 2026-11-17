@@ -383,6 +383,19 @@ async function openRoutePage(routeId) {
   return page;
 }
 
+/** 单线记录页（T036 / T041）：按档案、场次与长期线路打开现场记录。 */
+async function openRecordPageFor(routeId, sessionId) {
+  const archive = store.loadState().archive;
+  const page = createPage(recordDefinition);
+  page.onLoad({
+    archiveId: archive.archiveId,
+    sessionId: sessionId || archive.activeSessionId,
+    routeId
+  });
+  await settle();
+  return page;
+}
+
 /** 当前照片版本（照片索引里这条线的 photoId）：大图页入口带它核对归属。 */
 function currentPhotoIdOf(routeId) {
   const index = photoIndex();
@@ -512,10 +525,14 @@ test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真�
     assert.ok(marksWxml.indexOf('id="' + id + '"') !== -1, '大图页缺少 ' + id);
   });
   assert.ok(marksWxml.indexOf('bindtap="rebuildRoutePhoto"') !== -1);
-  // 单线页只提供「线路资料」入口，不铺第二套照片操作。
+  // 单线页只提供紧凑的照片入口（T041）：首屏一行添加/缩略图，不铺整张照片卡，
+  // 也不铺标记编辑；换图与移除仍在二级大图页。
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
   assert.match(recordWxml, /id="open-route-profile"[\s\S]{0,80}bindtap="openRouteProfile"/);
   assert.equal(recordWxml.indexOf('id="route-photo-card"'), -1, '单线页不再铺照片卡');
+  assert.match(recordWxml, /id="record-photo"/);
+  assert.equal(recordWxml.indexOf('id="route-photo-stage"'), -1, '单线页不铺标记图层');
+  assert.equal(recordWxml.indexOf('bindtap="removeRoutePhoto"'), -1, '移除入口在二级页');
   // 场内页不再有新建线路时的照片选择（照片统一在资料页补）。
   const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
   assert.equal(sessionWxml.indexOf('id="new-route-photo-album"'), -1);
@@ -617,7 +634,7 @@ test('R2 拍照/相册按微信的选项对象回调调用，兼容首选与回�
 });
 
 test('R2 新建线路时从相册选一张主照片并确认，照片落到本机档案目录', async () => {
-  // T036：照片在新建后从线路资料页补；创建表单不再收集临时照片。
+  // T036：照片在新建后从单线记录首屏（T041）或线路历史页补；创建表单不再收集临时照片。
   const seeded = seedTraining();
   const page = await openRoutePage(seeded.route.id);
   await settle();
@@ -1254,4 +1271,162 @@ test('R7 普通清缓存保留逐把视频索引与副本（含撤回后待恢�
   assert.equal(store.restoreAttempt(attemptId).ok, true);
   assert.equal(attemptVideo.videoClipView(archiveId, attemptId).state, 'saved');
   assert.ok(virtual.files.has(videoPath));
+});
+
+// ------------------------------------------------------------------ T041 现场照片入口
+
+test('T041 单线首屏照片入口：无图添加、预览确认、取消与写失败都保留之前状态', async () => {
+  const seeded = seedTraining({ gymName: '我自己去的岩馆', routeName: '现场 A 线' });
+  const archiveId = archiveOf().archiveId;
+
+  // 首屏真实绑定：无图给拍照 / 相册，选图后预览确认，有图整行进二级标记页；
+  // 两种记把动作与最近一把都还在。
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.match(recordWxml, /id="record-photo-camera"[\s\S]{0,260}bindtap="chooseRecordPhoto"/);
+  assert.match(recordWxml, /id="record-photo-album"[\s\S]{0,260}bindtap="chooseRecordPhoto"/);
+  assert.match(recordWxml, /id="record-photo-confirm"[\s\S]{0,160}bindtap="confirmRecordPhoto"/);
+  assert.match(recordWxml, /id="record-photo-cancel"[\s\S]{0,160}bindtap="cancelRecordPhoto"/);
+  assert.match(recordWxml, /id="record-photo-entry"[\s\S]{0,400}bindtap="openRoutePhotoMarks"/);
+  assert.ok(recordWxml.indexOf('id="record-fail"') !== -1, '未完成按钮仍在');
+  assert.ok(recordWxml.indexOf('id="record-send"') !== -1, '完攀按钮仍在');
+  assert.ok(recordWxml.indexOf('id="recent-attempt"') !== -1, '最近一把仍在');
+  // 本任务涉及的现场入口与提示统一叫「线路历史」。
+  assert.equal(recordWxml.indexOf('线路资料'), -1, '单线页不再写「线路资料」');
+  assert.match(recordWxml, /线路历史（照片 · 卡点 · 跨天历史）›/);
+  assert.equal(
+    fs.readFileSync(SESSION_WXML, 'utf8').indexOf('线路资料'),
+    -1,
+    '场内页新建线路提示同步为「线路历史」'
+  );
+
+  const page = await openRecordPageFor(seeded.route.id, seeded.session.id);
+  assert.equal(page.data.recordPhoto.status, 'none', '新线还没有照片');
+  assert.equal(page.data.recordPhoto.sourceVisible, true);
+  assert.equal(page.data.attempts.length, 0);
+
+  // 选图后先预览；取消只丢掉临时路径，不写索引也不留文件。
+  await page.chooseRecordPhoto(
+    tapDataset({ source: 'album', routeId: seeded.route.id, archiveId })
+  );
+  assert.equal(page.data.recordPhoto.status, 'preview');
+  assert.equal(page.data.recordPhoto.previewPath.indexOf('http://tmp/'), 0);
+  page.cancelRecordPhoto(tapDataset({ routeId: seeded.route.id }));
+  assert.equal(page.data.recordPhoto.status, 'none', '取消后回到没有照片');
+  assert.equal(photoIndex(), null, '取消预览不写照片索引');
+  assert.equal(filesUnder(USER_DATA_PATH + '/training-photos').length, 0);
+
+  // 取消后立刻重选并确认：照片落到本机档案目录，页面读回同一张。
+  await page.chooseRecordPhoto(
+    tapDataset({ source: 'camera', routeId: seeded.route.id, archiveId })
+  );
+  assert.equal(page.data.recordPhoto.status, 'preview');
+  await page.confirmRecordPhoto(tapDataset({ routeId: seeded.route.id }));
+  await settle();
+  assert.equal(page.data.recordPhoto.status, 'saved');
+  let index = photoIndex();
+  assert.equal(index.photos.length, 1);
+  assert.equal(index.photos[0].archiveId, archiveId);
+  assert.equal(index.photos[0].routeId, seeded.route.id);
+  assert.equal(index.photos[0].photoId, page.data.recordPhoto.photoId);
+  const mainPath = page.data.recordPhoto.mainPath;
+  assert.ok(virtual.files.has(mainPath), '主图落在本机');
+
+  // 现场、历史与重开用同一档案、线路与照片 ID。
+  const reopened = await openRecordPageFor(seeded.route.id, seeded.session.id);
+  assert.equal(reopened.data.recordPhoto.status, 'saved');
+  assert.equal(reopened.data.recordPhoto.photoId, page.data.recordPhoto.photoId);
+  assert.equal(reopened.data.recordPhoto.mainPath, mainPath);
+  const history = await openRoutePage(seeded.route.id);
+  assert.equal(history.data.routePhoto.photoId, page.data.recordPhoto.photoId);
+  assert.equal(history.data.routePhoto.mainPath, mainPath);
+
+  // 同名 B 线：写失败不报成功，也不动 A 的照片；重试沿用同一把操作。
+  const b = store.createRoute({
+    sessionId: seeded.session.id,
+    name: '现场 A 线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(b.ok, true, b.error);
+  const bPage = await openRecordPageFor(b.route.id, seeded.session.id);
+  assert.equal(bPage.data.recordPhoto.status, 'none', '同名 B 线没有 A 的照片');
+  faults.copyFile = true;
+  await bPage.chooseRecordPhoto(
+    tapDataset({ source: 'album', routeId: b.route.id, archiveId })
+  );
+  await bPage.confirmRecordPhoto(tapDataset({ routeId: b.route.id }));
+  await settle();
+  assert.equal(bPage.data.recordPhoto.status, 'failed', '写失败不报已保存');
+  assert.match(bPage.data.recordPhoto.statusText, /保存失败|空间不足/);
+  assert.equal(bPage.data.recordPhoto.hasPhoto, false, '失败后回到之前的状态');
+  index = photoIndex();
+  assert.equal(index.photos.length, 1, '失败不新增照片记录');
+  assert.equal(index.photos[0].routeId, seeded.route.id, 'A 的照片没有被改写');
+  assert.ok(virtual.files.has(mainPath));
+
+  faults.copyFile = false;
+  await bPage.retryRecordPhoto(tapDataset({ routeId: b.route.id }));
+  await settle();
+  assert.equal(bPage.data.recordPhoto.status, 'saved');
+  index = photoIndex();
+  assert.equal(index.photos.length, 2);
+  assert.equal(index.photos.filter(photo => photo.routeId === b.route.id).length, 1);
+  assert.equal(
+    index.photos.filter(photo => photo.routeId === seeded.route.id).length,
+    1,
+    '重试只补 B 这一条'
+  );
+});
+
+test('T041 同名 B 线、切档与迟到选图回调互不改写，当前线只读自己的照片', async () => {
+  const seeded = seedTraining({ gymName: '我自己去的岩馆', routeName: '同名线' });
+  const b = store.createRoute({
+    sessionId: seeded.session.id,
+    name: '同名线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  const archiveId = archiveOf().archiveId;
+
+  // A 页发起选图，原生回执挂起。
+  const aPage = await openRecordPageFor(seeded.route.id, seeded.session.id);
+  const realChooseMedia = global.wx.chooseMedia;
+  let pending = null;
+  global.wx.chooseMedia = options => {
+    pending = options;
+  };
+  aPage.chooseRecordPhoto(tapDataset({ source: 'album', routeId: seeded.route.id }));
+  assert.ok(pending, 'A 的照片选择已经发起');
+  global.wx.chooseMedia = realChooseMedia;
+
+  // 用户已经打开同名 B 线的记录页：A 的迟到回执不得改到 B。
+  const bPage = await openRecordPageFor(b.route.id, seeded.session.id);
+  pending.success({ tempFiles: [{ tempFilePath: pickerFile() }] });
+  await settle();
+  assert.equal(bPage.data.recordPhoto.status, 'none', 'B 页不接收 A 的迟到回执');
+  assert.equal(photoIndex(), null, '只选未确认不写照片索引');
+  assert.equal(aPage.data.recordPhoto.status, 'preview', '回执只落在发起它的 A 页');
+
+  // 串线的旧事件（带着 B 的 routeId 点到 A 页）拿不到写入入口，也不改展示。
+  await aPage.chooseRecordPhoto(tapDataset({ source: 'album', routeId: b.route.id }));
+  assert.equal(aPage.data.recordPhoto.status, 'preview', '不属于本页线路的入口不改状态');
+  aPage.cancelRecordPhoto(tapDataset({ routeId: b.route.id }));
+  assert.equal(aPage.data.recordPhoto.status, 'preview', '串线入口连取消也不受理');
+  aPage.cancelRecordPhoto(tapDataset({ routeId: seeded.route.id }));
+  assert.equal(aPage.data.recordPhoto.status, 'none');
+
+  // 换档：本机档案换成另一份之后，原入口不再展示，也不再受理照片写入。
+  const twin = JSON.parse(rawArchive());
+  twin.archiveId = 'archive-of-another-profile';
+  storage.set(ARCHIVE_KEY, JSON.stringify(twin));
+  aPage.onShow();
+  await settle();
+  assert.ok(aPage.data.contextError, '换档后原入口不再可用');
+  assert.equal(aPage.data.recordPhoto, null, '不展示另一份档案里的同名照片');
+  const rawAfterSwap = storage.get(ARCHIVE_KEY);
+  await aPage.chooseRecordPhoto(tapDataset({ source: 'album', routeId: seeded.route.id }));
+  await aPage.confirmRecordPhoto(tapDataset({ routeId: seeded.route.id }));
+  await settle();
+  assert.equal(storage.get(ARCHIVE_KEY), rawAfterSwap, '换档后迟到照片操作不写档案');
+  assert.equal(photoIndex(), null, '换档后迟到照片操作不写索引');
 });

@@ -1,8 +1,8 @@
 <!--
-  单线记录页（T036）
+  单线记录页（T036 / T041 现场照片入口）
   按 archiveId + sessionId + routeId 进入一条长期线路在某一场的记录：
-  结果按钮、本场把数、最近一把的撤回/恢复、待保存重试与按把更正。
-  照片、卡点与跨天历史在「线路资料」；逐把备注在「逐把明细」。
+  首屏一行线路照片入口、结果按钮、本场把数、最近一把的撤回/恢复、待保存重试与按把更正。
+  照片、卡点与跨天历史在「线路历史」；逐把备注在「逐把明细」。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -56,6 +56,139 @@
             </view>
             <text id="record-session-meta" class="record-session-meta">{{activeSession.dateText}} · {{activeSession.gymName}} · {{activeSession.label}}</text>
           </view>
+        </view>
+
+        <!--
+          线路照片（T041）：现场记把时就地留一张，一行紧凑入口，不铺第二套照片卡。
+          无图时给拍照 / 相册；有图时显示缩略图与当前照片版本的标记数量，整行进原来的
+          二级大图标记页。选图后先预览，确认才由同一个照片控制器写入，取消或写失败都保留
+          之前的状态（原图、索引与卡点都不动）。
+        -->
+        <view wx:if="{{recordPhoto}}" id="record-photo" class="record-photo">
+          <!-- 有图：紧凑缩略图 + 当前照片版本的标记数量，整行进二级标记页 -->
+          <block wx:if="{{recordPhoto.status === 'saved' || recordPhoto.status === 'missing'}}">
+            <view
+              id="record-photo-entry"
+              class="record-photo-main record-photo-open"
+              data-archive-id="{{archiveId}}"
+              data-route-id="{{selectedRoute.id}}"
+              data-photo-id="{{recordPhoto.photoId}}"
+              bindtap="openRoutePhotoMarks"
+            >
+              <image
+                wx:if="{{recordPhoto.status === 'saved'}}"
+                id="record-photo-thumb"
+                class="record-photo-thumb"
+                src="{{recordPhoto.thumbnailPath}}"
+                mode="aspectFill"
+              />
+              <view class="record-photo-text">
+                <text id="record-photo-status" class="record-photo-title">{{recordPhoto.statusText}}</text>
+                <text
+                  wx:if="{{recordPhoto.photoId}}"
+                  id="record-photo-marks-entry"
+                  class="record-photo-link"
+                >{{photoMarkCountText || '照片动作标记'}} ›</text>
+                <text wx:else class="record-photo-hint">可重新添加一张；历史把次与备注不变。</text>
+              </view>
+              <text class="record-photo-arrow">›</text>
+            </view>
+            <!-- 主图文件被系统清理：仍可打开该版本已写的卡点，也可重新添加一张 -->
+            <view wx:if="{{recordPhoto.status === 'missing'}}" class="record-photo-actions">
+              <button
+                id="record-photo-album"
+                class="record-photo-source"
+                data-source="album"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="chooseRecordPhoto"
+              >重新添加照片</button>
+            </view>
+            <text wx:if="{{photoMarksError}}" id="record-photo-marks-error" class="record-photo-error">{{photoMarksError}}</text>
+          </block>
+
+          <!-- 预览：确认前不写照片索引与文件；取消回到之前的状态 -->
+          <block wx:elif="{{recordPhoto.status === 'preview'}}">
+            <image
+              id="record-photo-preview-image"
+              class="record-photo-preview"
+              src="{{recordPhoto.previewPath}}"
+              mode="aspectFit"
+            />
+            <text id="record-photo-preview-status" class="record-photo-status">{{recordPhoto.statusText}}</text>
+            <view class="record-photo-actions">
+              <button
+                id="record-photo-cancel"
+                class="record-photo-source"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="cancelRecordPhoto"
+              >取消</button>
+              <button
+                id="record-photo-confirm"
+                class="record-photo-confirm"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="confirmRecordPhoto"
+              >确认保存</button>
+            </view>
+          </block>
+
+          <!-- 保存中 / 失败：文件与关联都写入后才提示成功；失败保留原图并可重试 -->
+          <block wx:elif="{{recordPhoto.status === 'saving'}}">
+            <text id="record-photo-saving" class="record-photo-status">{{recordPhoto.statusText}}</text>
+            <text class="record-photo-hint">照片文件和关联都写入后才提示成功。</text>
+          </block>
+
+          <block wx:elif="{{recordPhoto.status === 'failed'}}">
+            <text id="record-photo-error" class="record-photo-status record-photo-status-error">{{recordPhoto.statusText}}</text>
+            <text class="record-photo-error">{{recordPhoto.errorText}}</text>
+            <view class="record-photo-actions">
+              <button
+                id="record-photo-retry"
+                class="record-photo-source"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="retryRecordPhoto"
+              >{{recordPhoto.retryText}}</button>
+              <button
+                id="record-photo-dismiss"
+                class="record-photo-source"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="dismissRecordPhotoFailure"
+              >收起</button>
+            </view>
+          </block>
+
+          <!-- 无图 / 读取失败：一行「添加线路照片」，拍照与相册都可；失败给重试 -->
+          <block wx:else>
+            <view class="record-photo-main">
+              <view class="record-photo-text">
+                <text id="record-photo-status" class="record-photo-title">{{recordPhoto.status === 'none' ? '添加线路照片' : recordPhoto.statusText}}</text>
+                <text wx:if="{{recordPhoto.status === 'none'}}" class="record-photo-hint">现场就地留一张；线路历史与动作标记共用这一张。</text>
+              </view>
+            </view>
+            <view wx:if="{{recordPhoto.status === 'error'}}" class="record-photo-actions">
+              <button
+                id="record-photo-reload"
+                class="record-photo-source"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="reloadRecordPhoto"
+              >重试读取</button>
+            </view>
+            <view wx:elif="{{recordPhoto.sourceVisible}}" class="record-photo-actions">
+              <button
+                id="record-photo-camera"
+                class="record-photo-source"
+                data-source="camera"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="chooseRecordPhoto"
+              >{{recordPhoto.cameraText}}</button>
+              <button
+                id="record-photo-album"
+                class="record-photo-source"
+                data-source="album"
+                data-route-id="{{selectedRoute.id}}"
+                bindtap="chooseRecordPhoto"
+              >{{recordPhoto.albumText}}</button>
+            </view>
+          </block>
         </view>
 
         <!--
@@ -201,13 +334,13 @@
           </view>
         </view>
 
-        <!-- 明细与资料：各自去往独立目的地，返回仍在原线 -->
+        <!-- 明细与线路历史：各自去往独立目的地，返回仍在原线 -->
         <view id="record-links" class="record-links">
           <button id="open-attempts" class="secondary-button record-link" bindtap="openAttempts">
             逐把明细（本场 {{attempts.length}} 把）›
           </button>
           <button id="open-route-profile" class="secondary-button record-link" bindtap="openRouteProfile">
-            线路资料（照片 · 卡点 · 跨天历史）›
+            线路历史（照片 · 卡点 · 跨天历史）›
           </button>
         </view>
 
@@ -250,7 +383,7 @@
           </view>
         </view>
 
-        <text class="record-foot-hint">照片、卡点与跨天历史在「线路资料」；按把备注在「逐把明细」。</text>
+        <text class="record-foot-hint">照片、卡点与跨天历史在「线路历史」；按把备注在「逐把明细」。</text>
       </block>
     </block>
   </block>
