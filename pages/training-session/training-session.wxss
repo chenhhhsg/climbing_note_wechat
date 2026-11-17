@@ -1,10 +1,11 @@
 /**
- * 场内页样式（T017 开场 / T030 加线 / T036 入口收敛 / T037 统一线路列表）
+ * 场内页样式（T017 开场 / T030 加线 / T036 入口收敛 / T037 统一线路列表 / T044 一线一卡）
  *
- * 视觉规格（T037，整条训练动线共用这一套）：
+ * 视觉规格（T037 起，整条训练动线共用这一套；T044 把本场线路改成一条线一张中性细边框卡）：
  * - 白色内容区 #FFFFFF、浅灰页底 #F2F4F3、深墨标题与正文 #182421、次级文字 #53615B；
  * - 墨绿 #1F5948 标主操作与当前线，橙色 #FF793F 只标完攀；
- * - 细分隔线 #D7DED9 承接列表行与分区，岩点颜色只表示线路色（小色块）；
+ * - 中性细边框 #D7DED9 承接每一张线路卡与表单分区，卡间留 12px 间距；
+ *   岩点颜色只表示线路色（小色块）；
  * - 标题与正文用设备中文黑体，间距按 4 像素体系（rpx 排版），
  *   常用命中区在原生视口下至少 44×44 逻辑像素，因此行高与按钮高度用 px 兜底
  *   （rpx 会随屏宽缩放：88rpx 在 390 宽是 45.8px，在 320 宽只有 37.5px，不够 44）。
@@ -452,17 +453,17 @@ page {
   color: #53615B;
 }
 
-/* ---- 统一线路列表（T037）：一线一行，整行点入单线记录 ---- */
+/* ---- 统一线路列表（T037 / T044）：一线一卡，整行点入单线记录 ---- */
 
+/* 列表只负责纵向排布与卡间距；卡框落在每一条线自己的行上，相邻条目靠间距区分。 */
 .route-list {
   margin-top: 16rpx;
-  background: #FFFFFF;
-  border: 1px solid #D7DED9;
-  border-radius: 8rpx;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
 }
 
-/* 同一套行样式：0 把、1 条、4 条以上都一样；行宽占满，不随名称长短变化。 */
+/* 同一套卡样式：0 把、1 条、4 条以上都一样；卡宽占满，不随名称长短变化。 */
 .route-row {
   display: flex;
   align-items: center;
@@ -472,16 +473,32 @@ page {
   box-sizing: border-box;
   padding: 16rpx 20rpx;
   background: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
 }
 
-.route-row + .route-row {
-  border-top: 1px solid #D7DED9;
-}
-
-/* 当前线：左侧墨绿条 + 极浅底，位置不动，是同一行上的状态而不是另一套控件。 */
+/* 当前线：左侧墨绿边缘标记 + 标题旁的「当前」短文字，位置不动，行序不变。 */
 .route-row-on {
   background: #F3F8F5;
   box-shadow: inset 8rpx 0 0 #1F5948;
+}
+
+.route-row-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8rpx;
+}
+
+.route-row-current {
+  flex: none;
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+  background: #1F5948;
+  color: #FFFFFF;
+  font-size: 20rpx;
+  line-height: 1.4;
+  font-weight: 650;
 }
 
 /* 等级槽：V 级与 YDS 都用同一个槽，槽宽不随等级位数跳动。 */

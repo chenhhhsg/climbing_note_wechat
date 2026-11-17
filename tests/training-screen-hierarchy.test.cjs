@@ -976,3 +976,78 @@ test('T037 返工 训练页页底/内容区、44px 清单命中、设备黑体�
     assert.match(page.wxss, /\.card \{[^}]*padding: 16px/, name + ' 卡片 16px');
   });
 });
+
+// ------------------------------------------------------------------ *
+// T044 本场线路：一线一卡
+// ------------------------------------------------------------------ *
+
+/** 去掉注释后按选择器取声明块（同一选择器出现多次时按 CSS 顺序合并）。 */
+function declarationsOf(wxss, selector) {
+  const clean = wxss.replace(/\/\*[\s\S]*?\*\//g, '');
+  return [...clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(match => match[1].split(',').map(text => text.trim()).includes(selector))
+    .map(match => match[2])
+    .join('\n');
+}
+
+test('T044 本场一线一卡：每行中性卡框并留卡间间距，当前线有短文字标记，行身份与顺序不变', () => {
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  const wxss = fs.readFileSync(SESSION_WXSS, 'utf8');
+
+  // 卡框在每一行上，列表只负责纵向排布与卡间距；不再用一个大边框包住所有行。
+  const listCss = declarationsOf(wxss, '.route-list');
+  assert.match(listCss, /display:\s*flex/);
+  assert.match(listCss, /gap:\s*12px/, '卡与卡之间留 12px 间距');
+  assert.doesNotMatch(listCss, /border:\s*1px solid/, '列表本身不再是一张大卡');
+  const rowCss = declarationsOf(wxss, '.route-row');
+  assert.match(rowCss, /border:\s*1px solid #D7DED9/, '每一条线一条中性细边框');
+  assert.match(rowCss, /border-radius:\s*8rpx/);
+  assert.doesNotMatch(wxss, /\.route-row\s*\+\s*\.route-row/, '相邻线路不再靠分隔线区分');
+
+  // 当前线：标题旁短文字「当前」+ 左侧墨绿边缘标记，标记跟着行而非另起控件。
+  assert.match(
+    wxml,
+    /class="route-row-title">[\s\S]{0,160}class="route-row-name">\{\{item\.name\}\}[\s\S]{0,260}wx:if="\{\{item\.isSelected\}\}"[\s\S]{0,160}class="route-row-current"[\s\S]{0,40}>当前</
+  );
+  assert.match(wxss, /\.route-row-on\s*\{[^}]*box-shadow:\s*inset 8rpx 0 0 #1F5948/);
+  // 整行仍是唯一的打开入口，点行带的是原档案、场次与长期线路 ID。
+  assert.match(
+    wxml,
+    /id="route-row-\{\{item\.id\}\}"[\s\S]{0,400}data-route-id="\{\{item\.id\}\}"[\s\S]{0,160}bindtap="openRecord"/
+  );
+
+  // 同色同级两条线各占一张卡，顺序就是本场关联顺序；长名照原样留在卡内。
+  const session = seedSession('卡框岩馆', '2026-11-11');
+  const first = seedRoute(session.id, {
+    name: '同色同级线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  const second = seedRoute(session.id, {
+    name: '同色同级线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  const longName = '很长的线路名称'.repeat(5);
+  const long = seedRoute(session.id, {
+    name: longName,
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+
+  const page = openSessionPage({});
+  assert.deepEqual(
+    page.data.routes.map(row => row.id),
+    [first.id, second.id, long.id],
+    '同色同级也按原关联顺序各占一张卡，不按名称颜色归并'
+  );
+  assert.equal(page.data.routes.filter(row => row.isSelected).length, 1);
+  assert.equal(page.data.routes[2].isSelected, true, '刚建的那张卡是当前线');
+  assert.equal(page.data.routes[2].name, longName, '长名完整保留在卡内');
+});

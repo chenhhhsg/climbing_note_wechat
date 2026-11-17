@@ -4,6 +4,8 @@
   保存、取消与失败重试都只影响原 attemptId；撤回与恢复在单线记录页。
   T023：每一行还显示这一把的视频关联状态与文字入口，选片与待确认预览在视频页。
   T042：符合条件的完攀在自己那一行给「更正结果」，确认后只翻这一把的结果。
+  T044：每一把一张卡框——完攀用深绿、未完成用深橙，卡框描边与浅色底同色系，
+  结果用深底白字并写明「完攀 / 未完成」；同一套卡框供 T045 现场复用。
 -->
 <view class="page">
   <view wx:if="{{loadError}}" id="load-error" class="card error-card">
@@ -62,7 +64,7 @@
             wx:for="{{attempts}}"
             wx:key="id"
             id="attempt-{{item.id}}"
-            class="attempt-item"
+            class="attempt-item {{item.isSend ? 'attempt-item-send' : 'attempt-item-fail'}}"
           >
             <view
               class="attempt-row-tap"
@@ -71,7 +73,7 @@
             >
               <view class="attempt-main">
                 <text class="attempt-label">{{item.label}}</text>
-                <text class="attempt-result {{item.isSend ? 'attempt-send' : ''}}">{{item.resultText}}</text>
+                <text class="attempt-result {{item.isSend ? 'attempt-result-send' : 'attempt-result-fail'}}">{{item.resultText}}</text>
                 <text class="attempt-time">{{item.timeText}}</text>
               </view>
               <text wx:if="{{item.hasNote}}" class="attempt-note">{{item.note}}</text>
