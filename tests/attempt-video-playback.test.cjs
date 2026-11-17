@@ -3,8 +3,8 @@
  *
  * 直接加载真实页面（pages/attempt-video、pages/training-attempts、pages/training-route）、
  * 真实工具模块（utils/attempt-video、utils/attempt-video-playback、utils/training-store），
- * 用隔离的微信本地存储替身、可控相册选择器、可控 videoContext 与注入的持久层接口
- * （T026 的替身，直接写测试索引）驱动真实页面处理器。
+ * 用隔离的微信本地存储替身、可控相册选择器、可控 videoContext 与显式注入的持久层
+ * 替身（优先于 T026 的真实工厂）驱动真实页面处理器。
  *
  * 覆盖任务单的验收口径：
  * - 待确认与已保存片源都能播放、暂停；已保存片源按相对文件标识拼出本机路径；
@@ -528,6 +528,71 @@ test('T024-3 成功以读回的索引为准：回执丢失但已提交算成功�
   assert.equal(playback.clipChanged(before, before), false);
   assert.equal(playback.clipChanged(before, { clipId: 'clip-old', rev: 2 }), true);
   assert.equal(playback.sameClipIdentity(before, { clipId: 'clip-old', rev: 1 }), true);
+
+  // 操作标识：读回的是另一页刚写下的新版本时，不能报成本次「已更换」。
+  const otherPage = {
+    ok: true,
+    clip: { clipId: 'clip-other', rev: 2, bytes: 2048, opId: 'op-other-page' }
+  };
+  const superseded = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: false, error: '关联已变化' },
+    otherPage,
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(superseded.ok, false);
+  assert.equal(superseded.code, 'stale-operation');
+  assert.doesNotMatch(superseded.error, /已更换|更换成功/);
+  assert.equal(superseded.clip.clipId, 'clip-other', '读回仍给出他页版本供刷新展示');
+
+  // 本次操作写下的条目（操作标识与真实字节一致）才按成功处理。
+  const ownClip = {
+    ok: true,
+    clip: { clipId: 'clip-mine', rev: 2, bytes: 2048, opId: 'op-this-page' }
+  };
+  const committed = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: true },
+    ownClip,
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(committed.ok, true);
+  assert.equal(committed.code, 'committed');
+
+  // 操作标识对上但字节与预览不一致：不当成本次结果。
+  const wrongBytes = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: true },
+    { ok: true, clip: { clipId: 'clip-mine', rev: 2, bytes: 999, opId: 'op-this-page' } },
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(wrongBytes.ok, false);
+
+  // 原地未变的旧片段带着更早的操作标识：写入失败仍按失败原因展示，不误报过期。
+  const untouched = playback.evaluateOperation(
+    'replace',
+    before,
+    { ok: false, error: '空间不足' },
+    { ok: true, clip: { clipId: 'clip-old', rev: 1, bytes: 100, opId: 'op-older' } },
+    { opId: 'op-this-page', expectedBytes: 2048 }
+  );
+  assert.equal(untouched.ok, false);
+  assert.equal(untouched.code, 'failed');
+  assert.match(untouched.error, /空间不足/);
+
+  // 移除的指定版本仍被别的版本取代：按过期处理，不报本次已移除。
+  const staleRemove = playback.evaluateOperation(
+    'remove',
+    before,
+    { ok: false, error: '关联已变化' },
+    { ok: true, clip: { clipId: 'clip-other', rev: 2, bytes: 2048, opId: 'op-other-page' } },
+    { opId: 'op-remove' }
+  );
+  assert.equal(staleRemove.ok, false);
+  assert.equal(staleRemove.code, 'stale-operation');
 });
 
 // ------------------------------------------------------------------ *
@@ -572,11 +637,11 @@ test('T024-4 已保存片源可播放、暂停，播放状态以播放器事件�
   assert.equal(page.data.playing, false);
   assert.equal(page.data.playerStatus, '已暂停');
 
-  // 播放与暂停不改索引，也不写 storage。
+  // 播放与暂停不改索引，也不写 storage。T026 起页面打开时会读取一次实际占用
+  // （会拿到文件系统管理器），这里只要求播放链路不产生任何文件或索引写入。
   assert.equal(wxLog.storageWrites, 0);
   assert.equal(storage.get(attemptVideo.VIDEO_INDEX_KEY), indexRaw);
   assert.equal(rawArchive(), storage.get(ARCHIVE_KEY));
-  assert.equal(wxLog.fileManagerCalls, 0, '本单不触碰文件系统');
 });
 
 test('T024-5 文件缺失或损坏：可见重选提示，原把次与关联都在；索引损坏不吞掉播放器', () => {
@@ -662,10 +727,10 @@ test('T024-6 更换先预览：确认前不改关联，取消回到同一段旧�
   assert.equal(page.data.playing, false);
 
   // 仍在预览：没有写入、没有删文件、没有调用持久层。
+  // T026 起打开页面会读取一次实际占用（文件系统管理器只读调用），但不写任何文件。
   assert.equal(calls.length, 0);
   assert.equal(wxLog.storageWrites, 0);
   assert.equal(storage.get(attemptVideo.VIDEO_INDEX_KEY), indexRaw);
-  assert.equal(wxLog.fileManagerCalls, 0);
 
   page.cancelReplace();
   assert.equal(page.data.hasPreview, false);
@@ -1036,35 +1101,42 @@ test('T024-14 首次保存：待确认片源可播放，确认后忙碌、成功
   assert.equal(rawArchive(), archiveRaw, '保存视频不改训练档案');
 });
 
-test('T024-15 保存服务未接入：给出可见失败，不伪造成成功，已有视频仍可播放', () => {
+test('T024-15 持久层不可用时给出可见失败，不伪造成成功，已有视频仍可播放', () => {
   const flow = seedTwoAttempts();
   writeClip(flow, flow.attemptB);
   resetWxLog();
 
-  const page = openVideoPage(idsOf(flow, flow.attemptB));
-  assert.equal(page.data.storeAvailable, false);
-  assert.match(page.data.storeHint, /本机保存服务未就绪/);
-  assert.equal(page.data.playerKind, 'saved');
+  // T026 已提供真实持久层工厂；这里临时摘掉工厂与显式实例，模拟服务未接入的环境。
+  const factory = playback.getVideoStoreFactory();
+  playback.setVideoStoreFactory(null);
+  try {
+    const page = openVideoPage(idsOf(flow, flow.attemptB));
+    assert.equal(page.data.storeAvailable, false);
+    assert.match(page.data.storeHint, /本机保存服务未就绪/);
+    assert.equal(page.data.playerKind, 'saved');
 
-  chooseSuccess(VIDEO_B);
-  page.choosePreview();
-  page.confirmReplace();
-  assert.equal(page.data.busy, false);
-  assert.match(page.data.opError, /本机保存服务未就绪/);
-  assert.equal(page.data.hasSavedVideo, true);
-  assert.equal(page.data.hasPreview, true);
-  assert.equal(page.data.playerSrc, VIDEO_B.tempFilePath, '预览仍可播放');
+    chooseSuccess(VIDEO_B);
+    page.choosePreview();
+    page.confirmReplace();
+    assert.equal(page.data.busy, false);
+    assert.match(page.data.opError, /本机保存服务未就绪/);
+    assert.equal(page.data.hasSavedVideo, true);
+    assert.equal(page.data.hasPreview, true);
+    assert.equal(page.data.playerSrc, VIDEO_B.tempFilePath, '预览仍可播放');
 
-  // 首次保存同样不伪造成功。
-  const other = seedTwoAttempts();
-  const fresh = openVideoPage(idsOf(other, other.attemptA));
-  chooseSuccess(VIDEO_A);
-  fresh.choosePreview();
-  fresh.commitPreview();
-  assert.equal(fresh.data.busy, false);
-  assert.match(fresh.data.opError, /本机保存服务未就绪/);
-  assert.equal(fresh.data.hasSavedVideo, false);
-  assert.equal(fresh.data.hasPreview, true);
+    // 首次保存同样不伪造成功。
+    const other = seedTwoAttempts();
+    const fresh = openVideoPage(idsOf(other, other.attemptA));
+    chooseSuccess(VIDEO_A);
+    fresh.choosePreview();
+    fresh.commitPreview();
+    assert.equal(fresh.data.busy, false);
+    assert.match(fresh.data.opError, /本机保存服务未就绪/);
+    assert.equal(fresh.data.hasSavedVideo, false);
+    assert.equal(fresh.data.hasPreview, true);
+  } finally {
+    playback.setVideoStoreFactory(factory);
+  }
 });
 
 // ------------------------------------------------------------------ *

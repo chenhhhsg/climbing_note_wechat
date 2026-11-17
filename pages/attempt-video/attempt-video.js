@@ -22,16 +22,21 @@
  * - 每次操作带自己的序号、归属标识与预览序号：离页、换把、换档或预览被替换之后，
  *   迟到的写入回执不采用，也不会写到别的把次上。
  *
- * 持久副本、索引提交与旧文件回收由 T026 实现，通过
- * utils/attempt-video-playback.js 的 setVideoStore 注入；本页不写 storage、不碰文件。
+ * 持久副本、索引提交与旧文件回收由 T026 实现（utils/attempt-video-files.js）：
+ * 本页在模块加载时注册按档案创建持久层的工厂，写入只经 playback 的注入接口；
+ * 页面自身不写 storage、不碰文件系统，只显示占用并提供「清理无引用副本」入口。
  */
 const attemptVideo = require('../../utils/attempt-video.js');
 const playback = require('../../utils/attempt-video-playback.js');
+const videoFiles = require('../../utils/attempt-video-files.js');
 const actions = require('../../utils/training-record-actions.js');
 const store = require('../../utils/training-store.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
+
+// T026：持久层按 request.archiveId 取对应档案的服务；换档/迟到回调不会写错档案。
+playback.setVideoStoreFactory(archiveId => videoFiles.openAttemptVideoService(archiveId));
 
 Page({
   data: {
@@ -79,7 +84,16 @@ Page({
     opError: '',
     confirmRemove: false,
     storeAvailable: false,
-    storeHint: ''
+    storeHint: '',
+
+    // T026：本档案视频占用（按实际文件字节）与可执行的无引用副本清理。
+    spaceUsageText: '',
+    spaceDetailText: '',
+    spaceWarning: '',
+    spaceError: '',
+    canCleanupOrphans: false,
+    cleanupBusy: false,
+    cleanupNotice: ''
   },
 
   onLoad(query) {
@@ -92,6 +106,9 @@ Page({
     this._opSeq = 0;
     // 片源序号：每次切换播放器片源递增，video 节点 token 与 domId 一起换。
     this._sourceSeq = 0;
+    // 空间统计序号：换页/换档后迟到的占用读数不覆盖新页面。
+    this._spaceSeq = 0;
+    this._videoService = null;
     this._unloaded = false;
     this._contextToken = '';
     this._previewToken = '';
@@ -99,6 +116,8 @@ Page({
     this._previewBaseClip = null;
     this._savedClip = null;
     this._playerClip = null;
+    // 移除确认框固定发起时的原把与片段版本（外部刷新不得把它改绑到新片）。
+    this._removeTarget = null;
     this._videoContext = null;
     this._videoContextDomId = '';
     this.archive = null;
@@ -122,6 +141,7 @@ Page({
     this._selectionSeq += 1;
     this._previewSeq += 1;
     this._opSeq += 1;
+    this._spaceSeq += 1;
   },
 
   // ------------------------------------------------------------------ *
@@ -158,7 +178,7 @@ Page({
     this._attempt = attempt;
 
     const labels = actions.attemptLabelMap(archive, session.id, route.id);
-    const read = attemptVideo.videoClipView(archive.archiveId, attempt.id);
+    const read = attemptVideo.videoClipView(archive.archiveId, attempt.id, attempt);
     const storeAvailable = playback.videoStoreAvailable();
     const patch = {
       ready: true,
@@ -198,11 +218,13 @@ Page({
       Object.assign(patch, this.emptyExtras());
       this._savedClip = null;
       this._playerClip = null;
+      this._removeTarget = null;
       this._videoContext = null;
       this._videoContextDomId = '';
     }
     this.setData(patch);
     this.applyClipState(read);
+    this.attachVideoService(archive.archiveId);
   },
 
   /** 换归属或上下文失效时一起清掉的全部附加状态。 */
@@ -305,11 +327,14 @@ Page({
     this._contextToken = '';
     this._savedClip = null;
     this._playerClip = null;
+    this._removeTarget = null;
     this._videoContext = null;
     this._videoContextDomId = '';
+    this._videoService = null;
     this._selectionSeq += 1;
     this.invalidatePreview();
     this._opSeq += 1;
+    this._spaceSeq += 1;
     this.setData(
       Object.assign(this.emptyExtras(), {
         ready: true,
@@ -320,13 +345,161 @@ Page({
         selectedRoute: null,
         attempt: null,
         hasSavedVideo: false,
-        videoStateText: ''
+        videoStateText: '',
+        spaceUsageText: '',
+        spaceDetailText: '',
+        spaceWarning: '',
+        spaceError: '',
+        canCleanupOrphans: false,
+        cleanupBusy: false,
+        cleanupNotice: ''
       })
     );
   },
 
   retryLoad() {
     this.loadPage();
+  },
+
+  // ------------------------------------------------------------------ *
+  // 本机视频占用与无引用副本（T026）
+  // ------------------------------------------------------------------ *
+
+  /**
+   * 绑定当前档案的持久层实例（同一档案共享），并刷新实际占用。
+   * 打不开服务时只显示可见提示，已有视频仍按索引读取。
+   */
+  attachVideoService(archiveId) {
+    const service = videoFiles.openAttemptVideoService(archiveId);
+    this._videoService = service || null;
+    if (!service) {
+      this.setData({
+        spaceUsageText: '',
+        spaceDetailText: '',
+        spaceWarning: '',
+        spaceError: '当前本机档案拿不到视频保存服务，暂时无法统计本机视频占用。'
+      });
+      return;
+    }
+    this.refreshSpaceUsage();
+  },
+
+  /**
+   * 读取本档案视频目录的实际字节：占用、提醒线与可用上限。
+   * 只读；统计失败不阻塞播放与返回。
+   */
+  refreshSpaceUsage() {
+    const service = this._videoService;
+    if (!service || typeof service.getSpaceUsage !== 'function') return;
+    const seq = this._spaceSeq + 1;
+    this._spaceSeq = seq;
+    Promise.resolve(service.getSpaceUsage()).then(
+      result => {
+        if (this._unloaded || seq !== this._spaceSeq) return;
+        if (!result || !result.ok) {
+          this.setData({
+            spaceError:
+              '暂时无法统计本机视频占用：' +
+              ((result && result.error) || '未知原因') +
+              '；已有视频仍可回看。'
+          });
+          return;
+        }
+        const policy = result.policy || {};
+        const usableBytes =
+          typeof result.usableBytes === 'number' ? result.usableBytes : policy.usableBytes;
+        const over = result.overBudget === true;
+        const warn = result.warn === true;
+        let warning = '';
+        if (over) {
+          warning =
+            '本机视频占用已超过可用预算（已为照片保留 ' +
+            videoFiles.formatBytes(policy.photoReserveBytes) +
+            '）；新的保存或更换会被阻止。可移除不用的本机视频，或清理无引用副本后重试。';
+        } else if (warn) {
+          warning =
+            '本机视频占用接近提醒线 ' +
+            videoFiles.formatBytes(policy.warnBytes) +
+            '；请在需要时移除不用的本机视频或清理无引用副本。';
+        }
+        const detail = [];
+        detail.push((result.clipCount || 0) + ' 段本机视频');
+        detail.push('文件 ' + (result.fileCount || 0) + ' 个');
+        // 视频预算在各档案之间共用：存在其他档案的副本时按实际字节一并说明。
+        if (result.otherArchiveBytes > 0) {
+          detail.push('含其他档案 ' + videoFiles.formatBytes(result.otherArchiveBytes));
+        }
+        if (result.orphanBytes > 0) {
+          detail.push('无引用 ' + videoFiles.formatBytes(result.orphanBytes));
+        }
+        detail.push('已为照片保留 ' + videoFiles.formatBytes(policy.photoReserveBytes));
+        this.setData({
+          spaceUsageText:
+            videoFiles.formatBytes(result.totalBytes) +
+            ' / ' +
+            videoFiles.formatBytes(usableBytes),
+          spaceDetailText: detail.join(' · '),
+          spaceWarning: warning,
+          spaceError: '',
+          canCleanupOrphans: (result.orphanBytes || 0) > 0
+        });
+      },
+      error => {
+        if (this._unloaded || seq !== this._spaceSeq) return;
+        this.setData({
+          spaceError:
+            '暂时无法统计本机视频占用：' +
+            playback.errorText(error) +
+            '；已有视频仍可回看。'
+        });
+      }
+    );
+  },
+
+  /**
+   * 清理无引用副本：只删本功能创建、索引不再引用、也没有在途写入的文件。
+   * 清理期间不受理其他清理；保存/更换/移除进行中时不做清理。
+   */
+  cleanupVideoOrphans() {
+    if (this.data.cleanupBusy || this.data.busy) return;
+    const service = this._videoService;
+    if (!service || typeof service.cleanupOrphans !== 'function') {
+      this.setData({ spaceError: '当前环境不支持清理无引用副本。' });
+      return;
+    }
+    this.setData({ cleanupBusy: true, cleanupNotice: '', spaceError: '' });
+    Promise.resolve(service.cleanupOrphans()).then(
+      result => {
+        if (this._unloaded) return;
+        if (result && result.ok) {
+          this.setData({
+            cleanupBusy: false,
+            cleanupNotice:
+              result.deletedCount > 0
+                ? '已清理 ' + result.deletedCount + ' 个无引用副本。'
+                : '没有发现可清理的无引用副本。'
+          });
+          this.refreshSpaceUsage();
+          return;
+        }
+        this.setData({
+          cleanupBusy: false,
+          spaceError:
+            (result && result.error) || '无引用副本未完全清理，可以重试。'
+        });
+      },
+      error => {
+        if (this._unloaded) return;
+        this.setData({
+          cleanupBusy: false,
+          spaceError: '清理无引用副本失败：' + playback.errorText(error)
+        });
+      }
+    );
+  },
+
+  dismissCleanupNotice() {
+    this.setData({ cleanupNotice: '' });
   },
 
   /** 作废当前预览：模式、基准片段、预览序号一起前进。 */
@@ -548,27 +721,40 @@ Page({
   /** 移除前先明确问一次，不直接删。 */
   askRemove() {
     if (this.data.busy) return;
-    if (!this._savedClip) {
-      this.setData({ confirmRemove: false, opError: '当前没有已保存的本机副本可以移除。' });
-      return;
-    }
-    this.setData({ confirmRemove: true, opError: '', notice: '' });
-  },
-
-  cancelRemove() {
-    if (this.data.busy) return;
-    this.setData({ confirmRemove: false });
-  },
-
-  /** 确认移除：只回收小程序内的副本，原把次与相册原片保留。 */
-  confirmRemove() {
-    if (this.data.busy) return;
     const clip = this._savedClip;
     if (!clip) {
       this.setData({ confirmRemove: false, opError: '当前没有已保存的本机副本可以移除。' });
       return;
     }
-    this.startOperation(playback.METHOD_REMOVE, { beforeClip: clip });
+    // 固定发起时的原把与片段版本：期间另一页换了片、本页 onShow 刷新之后，
+    // 这个确认框也不得改绑到新片。延迟确认继续用原片段 ID/版本，由服务拒绝过期操作。
+    this._removeTarget = {
+      clipId: clip.clipId || '',
+      rev: clip.rev,
+      fileId: clip.fileId || '',
+      bytes: clip.bytes,
+      archiveId: this.data.archiveId || '',
+      attemptId: this.data.attempt ? this.data.attempt.id : ''
+    };
+    this.setData({ confirmRemove: true, opError: '', notice: '' });
+  },
+
+  cancelRemove() {
+    if (this.data.busy) return;
+    this._removeTarget = null;
+    this.setData({ confirmRemove: false });
+  },
+
+  /** 确认移除：只回收发起确认时那一版小程序内的副本，原把次与相册原片保留。 */
+  confirmRemove() {
+    if (this.data.busy) return;
+    const target = this._removeTarget;
+    if (!target || !target.clipId) {
+      this._removeTarget = null;
+      this.setData({ confirmRemove: false, opError: '当前没有已保存的本机副本可以移除。' });
+      return;
+    }
+    this.startOperation(playback.METHOD_REMOVE, { beforeClip: target });
   },
 
   /**
@@ -578,6 +764,7 @@ Page({
   startOperation(kind, input) {
     if (this.data.busy) return;
     if (!playback.videoStoreAvailable()) {
+      this._removeTarget = null;
       this.setData({
         confirmRemove: false,
         opKind: '',
@@ -596,6 +783,8 @@ Page({
     this._opSeq = opSeq;
     const op = {
       seq: opSeq,
+      // 操作标识写进索引条目：读回时据此区分本次提交与他页刚更新的版本。
+      opId: playback.makeOperationId(),
       kind,
       contextToken: this._contextToken,
       previewSeq: this._previewSeq,
@@ -612,7 +801,8 @@ Page({
         attemptSeq: context.attempt.seq
       },
       op.beforeClip,
-      op.preview
+      op.preview,
+      op.opId
     );
 
     this.setData({
@@ -662,15 +852,29 @@ Page({
       return;
     }
 
-    const read = attemptVideo.videoClipView(context.archive.archiveId, context.attempt.id);
-    const outcome = playback.evaluateOperation(op.kind, op.beforeClip, receipt, read);
+    const read = attemptVideo.videoClipView(context.archive.archiveId, context.attempt.id, context.attempt);
+    const outcome = playback.evaluateOperation(op.kind, op.beforeClip, receipt, read, {
+      opId: op.opId,
+      // 实际字节以持久层写入后核对、并回执给本次 opId 的那一条为准；
+      // 相册选择器给的 size 只是提示，不能当作「本次提交」的凭据。
+      expectedBytes:
+        op.kind === playback.METHOD_REMOVE
+          ? null
+          : playback.verifiedBytesOf(receipt, op.opId)
+    });
     if (!outcome.ok) {
+      this._removeTarget = null;
       this.setData({
         busy: false,
         opKind: '',
         opStatus: '',
-        opError: outcome.error
+        opError: outcome.error,
+        confirmRemove: false
       });
+      // 失败可能留下无引用副本（例如索引写失败后的清理也失败），按实际文件刷新占用；
+      // 另一页已经换了片时，这里也按读回刷新展示，但不把对方的版本报成本次成功。
+      this.applyClipState(read);
+      this.refreshSpaceUsage();
       return;
     }
     this.applyCommittedOperation(op, outcome);
@@ -679,6 +883,7 @@ Page({
   /** 读回确认成功后，按已提交的关联切换页面与播放器。 */
   applyCommittedOperation(op, outcome) {
     const clip = outcome.clip || null;
+    this._removeTarget = null;
     this.invalidatePreview();
     this._selectionSeq += 1;
     const patch = {
@@ -704,6 +909,7 @@ Page({
       extras.hasSavedVideo = false;
       extras.videoStateText = '未添加视频';
       this.setData(extras);
+      this.refreshSpaceUsage();
       return;
     }
 
@@ -713,6 +919,7 @@ Page({
     patch.savedVideo = this.savedViewOf(clip);
     this.setData(patch);
     this.ensureSavedPlayer(clip, { force: true });
+    this.refreshSpaceUsage();
   },
 
   // ------------------------------------------------------------------ *

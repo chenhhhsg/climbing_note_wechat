@@ -18,6 +18,15 @@ const recordActions = require('./training-record-actions.js');
 // T026 写入的独立视频索引；本单只读，绝不创建。与照片、卡点、清单同用正式本机命名空间。
 const VIDEO_INDEX_KEY = store.NAMESPACE + 'attempt-video';
 
+// 视频副本的唯一合法位置：<USER_DATA_PATH>/attempt-video/v1/<archiveId>/<clipId>.<ext>。
+// 列表、播放与回收共用这一份严格解析：合法文件名本身不算归属证据，路径必须落在
+// 当前档案的视频根目录里、并且与索引条目的片段标识是同一个片段文件。
+const VIDEO_ROOT_DIRNAME = 'attempt-video';
+const VIDEO_FILES_VERSION = 1;
+const ARCHIVE_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+const CLIP_ID_PATTERN = /^clip-[A-Za-z0-9_-]+$/;
+const CLIP_FILE_PATTERN = /^(clip-[A-Za-z0-9_-]+)\.([A-Za-z0-9]{1,5})$/i;
+
 // 相册单选：一个选项对象同时说明数量、媒体类型与来源。
 const CHOOSE_MEDIA_OPTIONS = {
   count: 1,
@@ -32,6 +41,61 @@ function hasText(value) {
 function safeNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+/**
+ * 索引里的文件标识必须是相对路径：不接受协议前缀（旧绝对路径）、盘符、根路径
+ * 与 `..`。这只是第一层，能否播放/回收还要过下面的同片段解析。
+ */
+function isSafeVideoFileId(value) {
+  if (!hasText(value)) return false;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(value)) return false;
+  const text = value.replace(/\\/g, '/');
+  if (text.charAt(0) === '/') return false;
+  return text.split('/').every(part => part !== '' && part !== '.' && part !== '..');
+}
+
+/**
+ * 严格解析本功能写下的相对文件标识：
+ *   attempt-video/v1/<archiveId>/<clipId>.<ext>
+ * 目录、档案、片段标识与文件名必须逐项对上。普通的相对路径（例如其他功能的
+ * different-feature.mp4）、旧绝对路径、别的档案目录都返回 null。
+ */
+function parseVideoFileId(fileId) {
+  if (!isSafeVideoFileId(fileId)) return null;
+  const parts = fileId.replace(/\\/g, '/').split('/');
+  if (parts.length !== 4) return null;
+  if (parts[0] !== VIDEO_ROOT_DIRNAME) return null;
+  if (parts[1] !== 'v' + VIDEO_FILES_VERSION) return null;
+  if (!ARCHIVE_ID_PATTERN.test(parts[2])) return null;
+  const match = CLIP_FILE_PATTERN.exec(parts[3]);
+  if (!match) return null;
+  return {
+    archiveId: parts[2],
+    clipId: match[1],
+    ext: match[2].toLowerCase(),
+    fileName: parts[3]
+  };
+}
+
+/** 索引条目与文件标识必须是当前档案里的同一个片段文件。 */
+function isClipFileIdFor(archiveId, clipId, fileId) {
+  if (!hasText(archiveId) || !CLIP_ID_PATTERN.test(clipId || '')) return false;
+  const parsed = parseVideoFileId(fileId);
+  return Boolean(
+    parsed && parsed.archiveId === archiveId && parsed.clipId === clipId
+  );
+}
+
+/** 由档案、片段与扩展名生成唯一的合法相对文件标识（持久层写入索引用）。 */
+function clipFileIdOf(archiveId, clipId, ext) {
+  if (!ARCHIVE_ID_PATTERN.test(archiveId || '') || !CLIP_ID_PATTERN.test(clipId || '')) {
+    return '';
+  }
+  const suffix = hasText(ext) ? ext.replace(/[^A-Za-z0-9]/g, '').slice(0, 5) : 'mp4';
+  if (!suffix) return '';
+  return VIDEO_ROOT_DIRNAME + '/v' + VIDEO_FILES_VERSION + '/' + archiveId + '/' +
+    clipId + '.' + suffix;
 }
 
 /**
@@ -186,14 +250,55 @@ function readVideoIndex() {
   return { ok: true, code: 'ready', error: '', clips: parsed.clips };
 }
 
-function clipFor(read, archiveId, attemptId) {
+/**
+ * 这一把的真实原场次与原线路。读取方应从已加载的档案传入这一把（四个 ID 同源）；
+ * 没传时只读本机档案补一次，拿不到就按「关联不可确认」处理，绝不猜归属。
+ */
+function attemptReferenceOf(reference) {
+  const item = reference || {};
+  if (hasText(item.sessionId) && hasText(item.routeId)) {
+    return { sessionId: item.sessionId, routeId: item.routeId };
+  }
+  return null;
+}
+
+/** 本机档案里各把次的真实场次/线路（一次读取，供整页列表校验）。 */
+function archiveAttemptReferences(archiveId) {
+  try {
+    const loaded = store.loadState();
+    if (!loaded.ok || !loaded.archive || loaded.archive.archiveId !== archiveId) return null;
+    const references = new Map();
+    (loaded.archive.attempts || []).forEach(attempt => {
+      const reference = attemptReferenceOf(attempt);
+      if (attempt && attempt.id && reference) references.set(attempt.id, reference);
+    });
+    return references;
+  } catch (error) {
+    return null;
+  }
+}
+
+function clipFor(read, archiveId, attemptId, reference) {
   if (!read || !read.ok || !hasText(archiveId) || !hasText(attemptId)) return null;
+  const references = reference ? null : archiveAttemptReferences(archiveId);
+  const real =
+    attemptReferenceOf(reference) || (references && references.get(attemptId)) || null;
+  // 拿不到这一把的真实场次与线路时不能确认关联，按「没有视频」处理。
+  if (!real) return null;
+  // 只有四个原 ID（档案、场次、线路、把次）逐项对上，并且落在当前档案视频根目录、
+  // 文件名就是这条片段标识的条目才算已关联。损坏索引里场次/线路被改成别的合法值、
+  // 普通相对路径、旧绝对路径、别的档案目录一律按「没有视频」处理，不把文件位置传给
+  // 播放器，也不会成为移除/回收的目标。
   const matches = read.clips.filter(
     clip =>
       clip &&
       clip.archiveId === archiveId &&
       clip.attemptId === attemptId &&
-      hasText(clip.fileId)
+      clip.sessionId === real.sessionId &&
+      clip.routeId === real.routeId &&
+      hasText(clip.clipId) &&
+      hasText(clip.fileId) &&
+      isClipFileIdFor(archiveId, clip.clipId, clip.fileId)
   );
   if (!matches.length) return null;
   // 同一把只应有一条当前片段。若替换期间索引里短暂残留多条，取版本号最大的一条；
@@ -210,8 +315,8 @@ function clipFor(read, archiveId, attemptId) {
   return chosen;
 }
 
-function linkView(read, archiveId, attemptId) {
-  const clip = clipFor(read, archiveId, attemptId);
+function linkView(read, archiveId, attemptId, reference) {
+  const clip = clipFor(read, archiveId, attemptId, reference);
   if (clip) {
     return { state: 'saved', hasVideo: true, stateText: '已添加视频', entryText: '看视频 ›' };
   }
@@ -227,8 +332,8 @@ function linkView(read, archiveId, attemptId) {
 }
 
 /** 单行关联状态：读一次索引即用（视频页与小列表用）。 */
-function videoLinkView(archiveId, attemptId) {
-  return linkView(readVideoIndex(), archiveId, attemptId);
+function videoLinkView(archiveId, attemptId, reference) {
+  return linkView(readVideoIndex(), archiveId, attemptId, reference);
 }
 
 /**
@@ -239,10 +344,10 @@ function videoLinkView(archiveId, attemptId) {
  * - ok 为 false 时索引不可读，clip 为 null；
  * - clip 只在状态为 saved 时非空（与列表上的「看视频」判定同一份 clipFor）。
  */
-function videoClipView(archiveId, attemptId) {
+function videoClipView(archiveId, attemptId, reference) {
   const read = readVideoIndex();
   if (!read.ok) {
-    const view = linkView(read, archiveId, attemptId);
+    const view = linkView(read, archiveId, attemptId, reference);
     return {
       ok: false,
       code: read.code,
@@ -253,8 +358,8 @@ function videoClipView(archiveId, attemptId) {
       entryText: view.entryText
     };
   }
-  const clip = clipFor(read, archiveId, attemptId);
-  const view = linkView(read, archiveId, attemptId);
+  const clip = clipFor(read, archiveId, attemptId, reference);
+  const view = linkView(read, archiveId, attemptId, reference);
   return {
     ok: true,
     code: clip ? 'saved' : 'none',
@@ -268,13 +373,27 @@ function videoClipView(archiveId, attemptId) {
 
 /**
  * 一次刷新内给多行算关联状态：索引只读一次，避免 45 行逐行读 storage。
+ * 每行按**该行自己的**原场次/线路校验；行里没带时从本机档案补一次。
  * 返回 Map<attemptId, linkView>。
  */
 function videoLinkMap(archiveId, attempts) {
   const read = readVideoIndex();
+  const rows = attempts || [];
   const map = new Map();
-  (attempts || []).forEach(attempt => {
-    if (attempt && attempt.id) map.set(attempt.id, linkView(read, archiveId, attempt.id));
+  let references = new Map();
+  let resolvedOnce = false;
+  rows.forEach(attempt => {
+    if (!attempt || !attempt.id) return;
+    let reference = attemptReferenceOf(attempt);
+    if (!reference && !resolvedOnce) {
+      const loaded = archiveAttemptReferences(archiveId);
+      if (loaded) references = loaded;
+      resolvedOnce = true;
+      reference = references.get(attempt.id) || null;
+    } else if (!reference) {
+      reference = references.get(attempt.id) || null;
+    }
+    map.set(attempt.id, linkView(read, archiveId, attempt.id, reference));
   });
   return map;
 }
@@ -349,6 +468,15 @@ function previewFromChoice(res) {
 
 module.exports = {
   VIDEO_INDEX_KEY,
+  VIDEO_ROOT_DIRNAME,
+  VIDEO_FILES_VERSION,
+  ARCHIVE_ID_PATTERN,
+  CLIP_ID_PATTERN,
+  CLIP_FILE_PATTERN,
+  isSafeVideoFileId,
+  parseVideoFileId,
+  isClipFileIdFor,
+  clipFileIdOf,
   parseVideoQuery,
   videoQueryString,
   contextToken,
