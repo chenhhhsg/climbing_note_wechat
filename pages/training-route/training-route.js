@@ -31,6 +31,13 @@
  *   result，把数、ID、序号、场次、时间与备注都不变；改好的那一把留在原位置变成
  *   只读回读，同一坐标不会自动接上另一把。
  *
+ * T039 把更正入口合到原把次旁：资格仍由 store.routeCorrectionRows 给出（只认仍有效
+ * 的抱石已确认完攀），「更正」就显示在原场次分组里的那一把行上；点它先弹出确认，
+ * 写明日期、场次、原序号、原结果和「完攀改成未完成；这把还计入总把数，完攀次数减 1」。
+ * 确认后才按该行捕获的档案、场次、线路、把次四个 ID 在**最新**档案上重新核对并调用
+ * 同一份 correctSend；取消不写盘，写失败保留同一把的「重试更正」。原来独立的
+ * 「点错了完攀？」区默认收起，只作为逐行复查的出口，不另开一套写实现。
+ *
  * T023 在跨日历史的每一把上加视频关联状态与文字入口：按这一组的**原场次**、当前
  * 长期线路与这一把的原 attemptId 进入视频页；关联状态只读视频索引，选片与待确认
  * 预览都在视频页，本页不创建任何视频文件或索引。
@@ -127,6 +134,9 @@ Page({
     correctionRows: [],
     correctionStatusText: '',
     routeCorrectable: false,
+    // 独立更正区默认收起（T039）：入口已经在原场次那一把旁边，这里只做逐行复查。
+    correctionOpen: false,
+    correctionCountText: '',
 
     // 同日多场：先让用户明确选一场
     sessionPicker: null
@@ -142,6 +152,9 @@ Page({
     // _correctedRows 刚改好的那一把（原位只读回读）；_correctionFailures 失败可重试标记。
     this._correctedRows = {};
     this._correctionFailures = {};
+    // 确认弹窗：_correctionPrompt 是正在等回执的那一次确认（连点同一把只弹一次），
+    // 它按对象身份清理，不会把后来打开的另一行确认顶掉。
+    this._correctionPrompt = null;
     // 同日选场面板的实例代次：每次打开面板换一个号，随按钮 dataset 一起带回，
     // 旧面板上的迟到选择不能套用到后来打开的另一个面板。
     this._sessionPickerSeq = 0;
@@ -1121,6 +1134,8 @@ Page({
         correctionRows: [],
         correctionStatusText: '',
         routeCorrectable: false,
+        correctionOpen: false,
+        correctionCountText: '',
         sessionPicker: keepPicker ? this.data.sessionPicker : null
       },
       this.resetMarkEditing()
@@ -1168,7 +1183,8 @@ Page({
         routeStateText: '',
         correctionRows: [],
         correctionStatusText: '',
-        routeCorrectable: false
+        routeCorrectable: false,
+        correctionCountText: ''
       });
       return;
     }
@@ -1178,11 +1194,15 @@ Page({
 
     // 逐把更正行：这条抱石线的每一把仍可更正的完攀各占一行；本实例刚改好的那一把
     // 留在原位置变成只读回读行，行与行之间不塌陷，同一坐标不会被另一把接手。
+    // T039：行里补上这一把的**原结果**（确认弹窗要显示），并把行按 attemptId 挂回
+    // 原场次分组里的那一把，让「更正」出现在原把次旁边而不是另一块区域。
+    const attemptById = new Map((this.archive.attempts || []).map(item => [item.id, item]));
     const correctionRows = store
       .routeCorrectionRows(this.archive, route.id, Object.keys(this._correctedRows))
       .map(row => {
+        const source = attemptById.get(row.attemptId);
+        const resultText = recordActions.attemptResultText(source ? source.result : 'send');
         if (row.state === 'corrected') {
-          const readback = this._correctedRows[row.attemptId];
           return {
             attemptId: row.attemptId,
             routeId: row.routeId,
@@ -1190,9 +1210,11 @@ Page({
             archiveId: this.archive.archiveId,
             label: row.label,
             contextText: row.contextText,
+            resultText,
             state: 'corrected',
             buttonText: '',
-            statusText: (readback && readback.statusText) || '已改为未完成 · 本把次保留原时间、场次与备注'
+            // 本页的回读口径：只翻结果，原时间、场次、备注与已关联视频都保留。
+            statusText: '已改为未完成 · 本把次保留原时间、场次、备注与视频'
           };
         }
         const needsRetry = Boolean(
@@ -1206,11 +1228,14 @@ Page({
           archiveId: this.archive.archiveId,
           label: row.label,
           contextText: row.contextText,
+          resultText,
           state: needsRetry ? 'retry' : 'ready',
           buttonText: needsRetry ? '重试改为未完成' : '改为未完成',
           statusText: ''
         };
       });
+    const correctionById = new Map(correctionRows.map(row => [row.attemptId, row]));
+    const correctableCount = correctionRows.filter(row => row.state !== 'corrected').length;
 
     // 逐把视频（T023）：关联状态只读视频索引，跨日历史按分组里的原场次与原把次进入。
     const videoLinks = attemptVideo.videoLinkMap(
@@ -1248,6 +1273,9 @@ Page({
             stateText: '未添加视频',
             entryText: '添加视频 ›'
           };
+          // 完攀更正（T039）：入口只出现在 routeCorrectionRows 认可的那一把旁边；
+          // 已改好的那一把在这一行原位显示回读文案，控件不再出现。
+          const correction = correctionById.get(attempt.id) || null;
           return {
             id: attempt.id,
             label: attempt.label,
@@ -1258,7 +1286,17 @@ Page({
             hasNote: Boolean(attempt.note),
             hasVideo: link.hasVideo,
             videoStateText: link.stateText,
-            videoEntryText: link.entryText
+            videoEntryText: link.entryText,
+            archiveId: this.archive.archiveId,
+            correctionState: correction ? correction.state : '',
+            correctionButtonText:
+              correction && correction.state !== 'corrected'
+                ? correction.state === 'retry'
+                  ? '重试更正'
+                  : '更正'
+                : '',
+            correctionStatusText:
+              correction && correction.state === 'corrected' ? correction.statusText : ''
           };
         })
       })),
@@ -1273,10 +1311,12 @@ Page({
       canRecordAgain: Boolean(completion && completion.canRecord),
       routeStateText: completionText(completion),
       correctionRows,
+      correctionCountText:
+        correctableCount > 0 ? correctableCount + ' 把可更正' : '都已改为未完成',
       correctionStatusText: correctionRows.some(row => row.state === 'retry')
         ? '更正未保存 · 点「重试改为未完成」按同一把重试'
         : '',
-      routeCorrectable: correctionRows.some(row => row.state !== 'corrected')
+      routeCorrectable: correctableCount > 0
     });
   },
 
@@ -1625,6 +1665,129 @@ Page({
   // ---------------------------------------------------------------- 按把更正
 
   /**
+   * 原把次旁的「更正」（T039）：先确认，再走同一份按把更正。
+   *
+   * 事件里的四个 ID（档案、场次、线路、把次）是那一行渲染时写下来的。这里先核对它们
+   * 与当前页面上仍可更正的同一行一致——串档、串线或已经改好的迟到事件不会打开确认；
+   * 连点同一把只弹一次确认，两行来回各弹各的，确认哪一行就只准备改哪一行。
+   * 用户取消时一个字节都不写；确认后才把同一组 ID 交给 correctSend，由它在最新档案上
+   * 再核对一次（换档、撤回或已改好的把次都不写），失败则保留同一把的重试入口。
+   */
+  confirmCorrectSend(event) {
+    if (this.data.loadError || this.data.notFound || this._claimBlocked) {
+      return Promise.resolve(null);
+    }
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const target = this.correctionTarget(dataset);
+    if (!target) {
+      this.setData({ notice: '这一把当前没有可更正的完攀，已按最新数据刷新。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    const pending = this._correctionPrompt;
+    if (pending && pending.attemptId === target.attemptId) {
+      // 连点同一把：沿用已经打开的那一次确认，不叠第二个弹窗，也不会改两次。
+      return pending.promise;
+    }
+
+    const prompt = { attemptId: target.attemptId, promise: null };
+    prompt.promise = this.askCorrectConfirm(target).then(confirmed => {
+      if (this._correctionPrompt === prompt) this._correctionPrompt = null;
+      if (this._unloaded || !confirmed) return null;
+      return this.applyCorrection(target);
+    });
+    this._correctionPrompt = prompt;
+    return prompt.promise;
+  },
+
+  /**
+   * 把这一行的四个 ID 与当前仍可更正的那一行对上；对不上（缺参、串档、串线、
+   * 已经改好）返回 null，确认弹窗与写入口都不打开。
+   */
+  correctionTarget(dataset) {
+    const attemptId = (dataset && dataset.attemptId) || '';
+    if (!attemptId) return null;
+    const routeId = (this.data.route && this.data.route.id) || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (!routeId || !archiveId) return null;
+
+    const row = (this.data.correctionRows || []).find(item => item.attemptId === attemptId);
+    if (!row || row.state === 'corrected') return null;
+    // 行里带的原归属必须与这一行渲染时一致：迟到的旧事件不能借同名线路/同序号改另一把。
+    if (dataset.routeId && dataset.routeId !== row.routeId) return null;
+    if (dataset.sessionId && dataset.sessionId !== row.sessionId) return null;
+    if (dataset.archiveId && dataset.archiveId !== row.archiveId) return null;
+    if (row.routeId !== routeId || row.archiveId !== archiveId) return null;
+
+    return {
+      attemptId,
+      routeId: row.routeId,
+      sessionId: row.sessionId,
+      archiveId: row.archiveId,
+      label: row.label,
+      contextText: row.contextText,
+      resultText: row.resultText || '完攀'
+    };
+  },
+
+  /**
+   * 更正前的确认：写明日期、场次、原序号、原结果，并说清这把仍计入总把数。
+   * 弹窗不可用时按取消处理，不写盘。
+   */
+  askCorrectConfirm(target) {
+    return new Promise(resolve => {
+      if (typeof wx === 'undefined' || typeof wx.showModal !== 'function') {
+        resolve(false);
+        return;
+      }
+      try {
+        wx.showModal({
+          title: '更正这一把？',
+          content:
+            (target.contextText ? target.contextText + ' · ' : '') +
+            target.label +
+            ' · 原结果：' +
+            target.resultText +
+            '\n完攀改成未完成；这把还计入总把数，完攀次数减 1。',
+          confirmText: '更正',
+          cancelText: '取消',
+          success(result) {
+            resolve(Boolean(result && result.confirm));
+          },
+          fail() {
+            resolve(false);
+          }
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  },
+
+  /**
+   * 确认后按确认弹窗里那一行的四个 ID 重新核对并更正。
+   * 只把捕获的 ID 交给共用实现；本页不另写档案。
+   */
+  applyCorrection(target) {
+    return recordActions.correctSend.call(this, {
+      currentTarget: {
+        dataset: {
+          attemptId: target.attemptId,
+          routeId: target.routeId,
+          sessionId: target.sessionId,
+          archiveId: target.archiveId
+        }
+      }
+    });
+  },
+
+  /** 展开/收起独立更正区（默认收起）；只改展示状态，不写盘。 */
+  toggleCorrectionArea() {
+    this.setData({ correctionOpen: !this.data.correctionOpen });
+  },
+
+  /**
    * 「改为未完成」：只改正渲染这一行对应的那一把已确认完攀。
    *
    * 目标来自该行按钮带下来的原把次 ID 与归属，连点/双击原坐标只会重复更正同一把
@@ -1633,6 +1796,7 @@ Page({
    *
    * T036：与单线记录页共用 utils/training-record-actions.js 的同一份实现，避免两个
    * 不一致的写实现；本页的 _correctedRows / _correctionFailures 由 refreshView 读取。
+   * T039：界面入口统一经 confirmCorrectSend 确认后调用它；直接调用只用于内部与测试。
    */
   correctSend: recordActions.correctSend,
 
