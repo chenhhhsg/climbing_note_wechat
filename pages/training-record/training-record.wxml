@@ -1,8 +1,9 @@
 <!--
-  单线记录页（T036 / T041 现场照片入口 / T042 本场逐把）
+  单线记录页（T036 / T041 现场照片入口 / T045 现场逐把同页）
   按 archiveId + sessionId + routeId 进入一条长期线路在某一场的记录：
-  首屏一行线路照片入口、结果按钮、本场把数、最近一把的撤回/恢复与「更正结果」、待保存重试。
-  照片、卡点与跨天历史在「线路历史」；逐把备注在本场逐把。
+  首屏一行线路照片入口、结果按钮、待保存重试，普通文档流下直接列本场本线把次
+  （最新在前、一把一框），每行只编辑所点那一把，更正/撤回/恢复都在原框。
+  照片、卡点与跨天历史仍在原来的二级大图标记页；现场不再有独立逐把与线路历史跳转。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -233,104 +234,6 @@
           </block>
         </view>
 
-        <!--
-          最近一把：同一个永久操作区里的两个并排槽——左槽撤回、右槽恢复，各占一半宽度、
-          等高。不可用的动作在自己那一槽里留非交互空位，两个动作的命中矩形在任何状态下
-          都不相交。目标只认这一行带下来的原把次 ID 与归属。
-
-          T042「更正结果」只放在这一把旁：固定槽在支持更正的线路上一直占位，撤回/恢复
-          前后本区高度不变；较早的合资格把次在本场逐把各自一行处理。
-        -->
-        <view wx:if="{{recentAttempt}}" id="recent-attempt" class="recent-attempt">
-          <view class="recent-attempt-head">
-            <text class="recent-attempt-title">最近一把</text>
-            <text class="recent-attempt-note">撤回只减本场一把</text>
-          </view>
-
-          <view class="recent-attempt-row">
-            <view class="recent-attempt-slot">
-              <button
-                wx:if="{{recentAttempt.canUndo}}"
-                id="undo-attempt-{{recentAttempt.attemptId}}"
-                class="secondary-button recent-attempt-action"
-                data-attempt-id="{{recentAttempt.attemptId}}"
-                data-route-id="{{recentAttempt.routeId}}"
-                data-session-id="{{recentAttempt.sessionId}}"
-                data-archive-id="{{recentAttempt.archiveId}}"
-                data-expected="{{recentAttempt.expected}}"
-                data-expected-rev="{{recentAttempt.expectedRev}}"
-                bindtap="undoLatestAttempt"
-              >{{recentAttempt.undoText}}</button>
-              <view wx:else class="recent-attempt-idle">
-                <text class="recent-attempt-idle-text">已撤回</text>
-              </view>
-            </view>
-
-            <view class="recent-attempt-recovery">
-              <button
-                wx:if="{{recentAttempt.canRestore}}"
-                id="restore-attempt-{{recentAttempt.attemptId}}"
-                class="secondary-button recent-attempt-restore"
-                data-attempt-id="{{recentAttempt.attemptId}}"
-                data-route-id="{{recentAttempt.routeId}}"
-                data-session-id="{{recentAttempt.sessionId}}"
-                data-archive-id="{{recentAttempt.archiveId}}"
-                data-expected="{{recentAttempt.expected}}"
-                data-expected-rev="{{recentAttempt.expectedRev}}"
-                bindtap="restoreLatestAttempt"
-              >{{recentAttempt.restoreText}}</button>
-              <view wx:else class="recent-attempt-idle">
-                <text class="recent-attempt-idle-text">撤回后可恢复</text>
-              </view>
-            </view>
-          </view>
-
-          <view class="recent-attempt-info">
-            <text id="recent-attempt-text" class="recent-attempt-text">{{recentAttempt.titleText}}</text>
-            <text class="recent-attempt-meta">{{recentAttempt.metaText}}</text>
-          </view>
-
-          <!-- 更正结果的固定槽：可更正时是按钮，刚改好/不可改时是只读文字。
-               槽高固定，撤回与恢复前后下面的内容不会上下跳。 -->
-          <view
-            wx:if="{{recentAttempt.correctionSupported}}"
-            class="recent-attempt-correct-slot"
-          >
-            <button
-              wx:if="{{recentAttempt.correctable}}"
-              id="correct-recent-{{recentAttempt.attemptId}}"
-              class="secondary-button recent-attempt-correct"
-              data-attempt-id="{{recentAttempt.attemptId}}"
-              data-route-id="{{recentAttempt.routeId}}"
-              data-session-id="{{recentAttempt.sessionId}}"
-              data-archive-id="{{recentAttempt.archiveId}}"
-              bindtap="correctSend"
-            >{{recentAttempt.correctText}}</button>
-            <text
-              wx:elif="{{recentAttempt.correctStatusText}}"
-              id="recent-attempt-correct-state"
-              class="recent-attempt-correct-state"
-            >{{recentAttempt.correctStatusText}}</text>
-            <text
-              wx:elif="{{recentAttempt.correctIdleText}}"
-              id="recent-attempt-correct-idle"
-              class="recent-attempt-correct-idle"
-            >{{recentAttempt.correctIdleText}}</text>
-          </view>
-
-          <text
-            wx:if="{{recentAttempt.stateText}}"
-            id="recent-attempt-state"
-            class="recent-attempt-status"
-          >{{recentAttempt.stateText}}</text>
-          <text class="recent-attempt-hint">原把次的备注、照片与时间都保留；恢复后回到原来的位置。</text>
-          <!-- 固定高度的说明槽：撤回/恢复完攀时下面几行的显隐不会改变本区高度，
-               页面高度与滚动位置保持原样。 -->
-          <view class="recent-attempt-guidance-slot">
-            <text id="recent-attempt-guidance" class="recent-attempt-guidance-text">{{recentAttempt.guidanceText}}</text>
-          </view>
-        </view>
-
         <!-- 待保存：重试沿用同一操作 ID，只多出预期的一把 -->
         <view
           wx:for="{{pendingRows}}"
@@ -356,17 +259,203 @@
           </view>
         </view>
 
-        <!-- 明细与线路历史：各自去往独立目的地，返回仍在原线 -->
-        <view id="record-links" class="record-links">
-          <button id="open-attempts" class="secondary-button record-link" bindtap="openAttempts">
-            本场逐把（{{attempts.length}} 把）›
-          </button>
-          <button id="open-route-profile" class="secondary-button record-link" bindtap="openRouteProfile">
-            线路历史（照片 · 卡点 · 跨天历史）›
-          </button>
+        <!--
+          本场本线把次（T045）：普通文档流里直接列出，最新在前，一把一框。
+          卡框沿用 T044 的配色与边框（完攀深绿、未完成深橙）；每行只用这一行带下来的
+          原把次 ID 与归属：
+          - 「编辑」只展开这一行的备注编辑器，保存/取消只改这一把；
+          - 视频入口沿用原把次视频页（四个 ID 再核对）；
+          - 合资格的完攀给「改成未完成」，最近一把给「这把多记了」/「恢复这一把」，
+            失败重试与恢复都留在原框；两个动作各占一个并排槽，坐标互不接管。
+        -->
+        <view wx:if="{{hasAttemptCards}}" id="record-attempts" class="record-attempts">
+          <view class="record-attempts-head">
+            <text class="record-attempts-title">本场本线把次</text>
+            <text class="record-attempts-hint">最新在前 · 共 {{attempts.length}} 把</text>
+          </view>
+
+          <view
+            wx:for="{{attemptCards}}"
+            wx:key="id"
+            id="record-attempt-{{item.id}}"
+            class="record-attempt {{item.isSend ? 'record-attempt-send' : 'record-attempt-fail'}}{{item.isUndone ? ' record-attempt-undone' : ''}}"
+          >
+            <view class="record-attempt-main">
+              <view class="record-attempt-headline">
+                <text id="record-attempt-label-{{item.id}}" class="record-attempt-label">{{item.label}}</text>
+                <text
+                  class="record-attempt-result {{item.isSend ? 'record-attempt-result-send' : 'record-attempt-result-fail'}}"
+                >{{item.resultText}}</text>
+                <text
+                  wx:if="{{item.isUndone}}"
+                  id="record-attempt-undone-{{item.id}}"
+                  class="record-attempt-undone-tag"
+                >已撤回</text>
+                <text class="record-attempt-time">{{item.timeText}}</text>
+              </view>
+
+              <text
+                wx:if="{{item.hasNote}}"
+                id="record-attempt-note-{{item.id}}"
+                class="record-attempt-note"
+              >{{item.note}}</text>
+
+              <view class="record-attempt-actions">
+                <button
+                  wx:if="{{item.canEditNote}}"
+                  id="edit-note-{{item.id}}"
+                  class="text-button record-attempt-edit"
+                  data-attempt-id="{{item.id}}"
+                  catchtap="openNoteEditor"
+                >{{item.hasNote ? '编辑 ›' : '补备注 ›'}}</button>
+                <text
+                  wx:else
+                  id="record-attempt-note-locked-{{item.id}}"
+                  class="record-attempt-note-locked"
+                >已撤回 · 恢复后可改备注</text>
+
+                <view wx:if="{{item.canOpenVideo}}" class="record-attempt-video">
+                  <text
+                    id="record-video-state-{{item.id}}"
+                    class="record-attempt-video-state"
+                  >{{item.videoStateText}}</text>
+                  <text
+                    id="record-open-video-{{item.id}}"
+                    class="record-attempt-video-action {{item.hasVideo ? 'record-attempt-video-saved' : ''}}"
+                    data-attempt-id="{{item.id}}"
+                    catchtap="openAttemptVideo"
+                  >{{item.videoEntryText}}</text>
+                </view>
+                <text
+                  wx:else
+                  id="record-video-state-{{item.id}}"
+                  class="record-attempt-video-state"
+                >{{item.videoStateText}}</text>
+              </view>
+            </view>
+
+            <view class="record-attempt-fix">
+              <!-- 「改成未完成」：与线路历史、本场逐把同一份资格；确认后才翻这一把 -->
+              <view wx:if="{{item.correctionSupported}}" class="record-attempt-correct-slot">
+                <button
+                  wx:if="{{item.correctable}}"
+                  id="correct-attempt-{{item.id}}"
+                  class="secondary-button record-attempt-correct"
+                  data-attempt-id="{{item.id}}"
+                  data-route-id="{{item.routeId}}"
+                  data-session-id="{{item.sessionId}}"
+                  data-archive-id="{{item.archiveId}}"
+                  bindtap="correctSend"
+                >{{item.correctText}}</button>
+                <text
+                  wx:elif="{{item.correctStatusText}}"
+                  id="corrected-attempt-{{item.id}}"
+                  class="record-attempt-correct-state"
+                >{{item.correctStatusText}}</text>
+                <text
+                  wx:elif="{{item.correctIdleText}}"
+                  id="record-attempt-correct-idle-{{item.id}}"
+                  class="record-attempt-correct-idle"
+                >{{item.correctIdleText}}</text>
+              </view>
+
+              <!-- 最近一把：左槽「这把多记了」、右槽「恢复这一把」，各占一半、等高；
+                   不可用的一侧留非交互空位，同一坐标不会被相反动作接管。 -->
+              <view wx:if="{{item.showChange}}" class="record-attempt-change">
+                <view class="record-attempt-change-slot">
+                  <button
+                    wx:if="{{item.canUndo}}"
+                    id="undo-attempt-{{item.id}}"
+                    class="secondary-button record-attempt-change-action"
+                    data-attempt-id="{{item.id}}"
+                    data-route-id="{{item.routeId}}"
+                    data-session-id="{{item.sessionId}}"
+                    data-archive-id="{{item.archiveId}}"
+                    data-expected="{{item.expected}}"
+                    data-expected-rev="{{item.expectedRev}}"
+                    bindtap="undoLatestAttempt"
+                  >{{item.undoText}}</button>
+                  <view wx:else class="record-attempt-idle">
+                    <text class="record-attempt-idle-text">已撤回</text>
+                  </view>
+                </view>
+
+                <view class="record-attempt-change-restore">
+                  <button
+                    wx:if="{{item.canRestore}}"
+                    id="restore-attempt-{{item.id}}"
+                    class="secondary-button record-attempt-change-action"
+                    data-attempt-id="{{item.id}}"
+                    data-route-id="{{item.routeId}}"
+                    data-session-id="{{item.sessionId}}"
+                    data-archive-id="{{item.archiveId}}"
+                    data-expected="{{item.expected}}"
+                    data-expected-rev="{{item.expectedRev}}"
+                    bindtap="restoreLatestAttempt"
+                  >{{item.restoreText}}</button>
+                  <view wx:else class="record-attempt-idle">
+                    <text class="record-attempt-idle-text">撤回后可恢复</text>
+                  </view>
+                </view>
+              </view>
+
+              <text
+                wx:if="{{item.stateText}}"
+                id="record-attempt-state-{{item.id}}"
+                class="record-attempt-status"
+              >{{item.stateText}}</text>
+              <!-- 两种动作对把数的影响写在同一行里；说明槽固定高度，动作切换不抖 -->
+              <view wx:if="{{item.actionHint}}" class="record-attempt-hint-slot">
+                <text
+                  id="record-attempt-hint-{{item.id}}"
+                  class="record-attempt-hint"
+                >{{item.actionHint}}</text>
+              </view>
+            </view>
+
+            <!-- 这一把的备注编辑器：只改打开时的那一把；取消不写盘，失败保留输入可原地重试 -->
+            <view
+              wx:if="{{noteEditor && noteEditor.attemptId === item.id}}"
+              id="note-editor"
+              class="note-editor"
+            >
+              <text class="note-title">{{noteEditor.hasNote ? '改备注' : '补备注'}}</text>
+              <text class="note-context">{{noteEditor.routeName}} · {{noteEditor.attemptLabel}} · {{noteEditor.resultText}}</text>
+              <textarea
+                id="note-input"
+                class="note-input"
+                data-attempt-id="{{noteEditor.attemptId}}"
+                data-edit-version="{{noteEditor.version}}"
+                value="{{noteEditor.text}}"
+                placeholder="例如：抓到后向右摆"
+                maxlength="120"
+                bindinput="onNoteInput"
+              ></textarea>
+              <view class="button-row">
+                <button
+                  id="cancel-note"
+                  class="secondary-button"
+                  data-attempt-id="{{noteEditor.attemptId}}"
+                  data-edit-version="{{noteEditor.version}}"
+                  bindtap="cancelNote"
+                >取消</button>
+                <button
+                  id="save-note"
+                  class="primary-button"
+                  data-attempt-id="{{noteEditor.attemptId}}"
+                  data-edit-version="{{noteEditor.version}}"
+                  bindtap="saveNote"
+                >保存备注</button>
+              </view>
+            </view>
+          </view>
         </view>
 
-        <text class="record-foot-hint">照片、卡点与跨天历史在「线路历史」；按把备注在本场逐把。</text>
+        <view wx:else id="record-attempts-empty" class="record-attempts-empty">
+          <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
+        </view>
+
+        <text class="record-foot-hint">点「编辑」只改这一把的备注；视频沿用原把次视频页。照片与卡点在照片缩略图里。</text>
       </block>
     </block>
   </block>

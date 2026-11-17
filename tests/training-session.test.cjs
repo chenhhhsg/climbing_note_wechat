@@ -352,7 +352,8 @@ test('R1 WXML 里的每个按钮绑定都有真实处理器，导航目标指向
     assert.equal(typeof sessionDefinition[handler], 'function', '场内页绑定缺少处理器：' + handler);
   }
 
-  // T036：记录、待保存重试、备注与更正都在各自目的地，绑定与处理器必须真实存在。
+  // T036/T045：记录、待保存重试、行内备注、按把更正与撤回/恢复都在单线页；
+  // 现场不再有独立逐把跳转与线路历史入口，绑定与处理器必须真实存在。
   const recordHandlers = new Set(handlersIn(fs.readFileSync(RECORD_WXML, 'utf8')));
   for (const required of [
     'recordAttempt',
@@ -360,8 +361,10 @@ test('R1 WXML 里的每个按钮绑定都有真实处理器，导航目标指向
     'undoLatestAttempt',
     'restoreLatestAttempt',
     'correctSend',
-    'openAttempts',
-    'openRouteProfile'
+    'openNoteEditor',
+    'saveNote',
+    'cancelNote',
+    'openAttemptVideo'
   ]) {
     assert.ok(recordHandlers.has(required), '单线页应有绑定：' + required);
     assert.equal(typeof recordDefinition[required], 'function', required + ' 必须有页面方法');
@@ -1601,8 +1604,8 @@ test('T030 复验 320 首屏层级：主操作区（加线 / 统一线路列表 
   const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
 
-  // T036/T037：场内页首屏是「本场线路（加线 / 统一列表）」，点一条线进入单线页；
-  // 单线页以结果 + 最近一把为主，明细与资料入口排在它们之后。
+  // T036/T045：场内页首屏是「本场线路（加线 / 统一列表）」，点一条线进入单线页；
+  // 单线页以结果 + 同页本场本线把次为主，待保存重试紧随结果区。
   const routesStart = wxml.indexOf('id="session-routes"');
   const routeList = wxml.indexOf('id="route-list"');
   const sessionCard = wxml.indexOf('class="card session-card"');
@@ -1614,11 +1617,11 @@ test('T030 复验 320 首屏层级：主操作区（加线 / 统一线路列表 
   assert.ok(wxml.indexOf('id="session-chip-') > routeList, '同日多场的原生入口仍然保留');
 
   const resultSend = recordWxml.indexOf('id="record-send"');
-  const recentStart = recordWxml.indexOf('id="recent-attempt"');
-  const linksStart = recordWxml.indexOf('id="record-links"');
-  assert.ok(resultSend !== -1 && recentStart !== -1 && linksStart !== -1);
-  assert.ok(resultSend < recentStart, '结果按钮在最近一把之前');
-  assert.ok(recentStart < linksStart, '明细与资料入口在最近一把之后');
+  const pendingStart = recordWxml.indexOf('id="pending-{{item.opId}}"');
+  const attemptsStart = recordWxml.indexOf('id="record-attempts"');
+  assert.ok(resultSend !== -1 && pendingStart !== -1 && attemptsStart !== -1);
+  assert.ok(resultSend < pendingStart, '待保存重试紧随结果按钮');
+  assert.ok(pendingStart < attemptsStart, '本场本线把次排在待保存行之后');
   // 单线页没有页内换线列表、照片卡与第二套写入：那些都在各自目的地。
   assert.doesNotMatch(recordWxml, /id="route-switch"/);
   assert.doesNotMatch(recordWxml, /id="route-photo-card"/);
@@ -1631,9 +1634,10 @@ test('T030 复验 320 首屏层级：主操作区（加线 / 统一线路列表 
     recordWxml,
     /id="record-send"[\s\S]{0,400}data-archive-id="\{\{archiveId\}\}"[\s\S]{0,200}data-session-id="\{\{activeSession\.id\}\}"[\s\S]{0,200}data-route-id="\{\{selectedRoute\.id\}\}"/
   );
-  // 明细与资料是两个真实目的地。
-  assert.match(recordWxml, /id="open-attempts"[\s\S]{0,120}bindtap="openAttempts"/);
-  assert.match(recordWxml, /id="open-route-profile"[\s\S]{0,120}bindtap="openRouteProfile"/);
+  // T045：现场独立逐把跳转与线路历史入口已移出。
+  assert.equal(recordWxml.indexOf('id="open-attempts"'), -1, '不再有独立逐把跳转');
+  assert.equal(recordWxml.indexOf('id="open-route-profile"'), -1, '不再有线路历史入口');
+  assert.equal(recordWxml.indexOf('id="record-links"'), -1, '入口区已移除');
 });
 
 test('T030 复验 布局滚入视口：新建 / 选中 / 切场次后按现量布局把换线与结果带回可见处，已可见不滚', () => {
@@ -2443,37 +2447,38 @@ test('T033 最近一把操作区在结果按钮之后：写线路名、原序号
     index === 2 ? '第三把改成先挂左脚' : ''
   );
 
-  // T036：结果、最近一把与撤回/恢复都在单线记录页；明细/资料入口排在它们之后。
+  // T045：结果按钮在普通文档流里，下面直接是本场本线把次；现场不再有独立跳转。
   const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
   const sendButton = wxml.indexOf('class="result-button result-send"');
-  const recentStart = wxml.indexOf('id="recent-attempt"');
-  const linksStart = wxml.indexOf('id="record-links"');
-  assert.ok(sendButton !== -1 && recentStart !== -1 && linksStart !== -1);
-  assert.ok(sendButton < recentStart, '撤回区在结果按钮之后（同一屏里紧跟结果按钮）');
-  assert.ok(recentStart < linksStart, '明细与资料入口在最近一把之后');
+  const attemptsStart = wxml.indexOf('id="record-attempts"');
+  assert.ok(sendButton !== -1 && attemptsStart !== -1);
+  assert.ok(sendButton < attemptsStart, '本场本线把次在结果按钮之后（同一屏里紧跟结果区）');
+  assert.equal(wxml.indexOf('id="record-links"'), -1, '现场入口区已移除');
   assert.doesNotMatch(wxml, /id="route-photo-card"/, '单线页不再铺照片卡');
 
-  // 撤回按钮与恢复按钮是两个控件：恢复入口在「最近一把」这一行下方的独立一行里。
-  const rowStart = wxml.indexOf('class="recent-attempt-row"');
-  const recoveryStart = wxml.indexOf('class="recent-attempt-recovery"');
-  assert.ok(rowStart !== -1 && recoveryStart !== -1);
-  assert.ok(rowStart < recoveryStart, '恢复入口在最近一把这一行之后，是另一个按钮');
+  // 最近一把那一行里，撤回与恢复是两个并排的独立槽：左槽撤回、右槽恢复。
+  const changeStart = wxml.indexOf('class="record-attempt-change"');
+  const undoSlotStart = wxml.indexOf('class="record-attempt-change-slot"');
+  const recoveryStart = wxml.indexOf('class="record-attempt-change-restore"');
+  assert.ok(changeStart !== -1 && undoSlotStart !== -1 && recoveryStart !== -1);
+  assert.ok(changeStart < undoSlotStart, '左槽先排撤回');
+  assert.ok(undoSlotStart < recoveryStart, '恢复是右槽里的另一个按钮');
   assert.match(
     wxml,
-    /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,260}data-archive-id="\{\{recentAttempt\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{recentAttempt\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,120}bindtap="undoLatestAttempt"/
+    /id="undo-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}bindtap="undoLatestAttempt"/
   );
   assert.match(
     wxml,
-    /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-attempt-id="\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,260}data-archive-id="\{\{recentAttempt\.archiveId\}\}"[\s\S]{0,120}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,120}bindtap="restoreLatestAttempt"/
+    /id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}bindtap="restoreLatestAttempt"/
   );
   // 已撤回时撤回按钮整个不渲染（位置留空），恢复按钮才出现：同一坐标不会被相反动作接管。
-  assert.match(wxml, /wx:if="\{\{recentAttempt\.canUndo\}\}"[\s\S]{0,240}id="undo-attempt-/);
-  assert.match(wxml, /wx:if="\{\{recentAttempt\.canRestore\}\}"[\s\S]{0,240}id="restore-attempt-/);
+  assert.match(wxml, /wx:if="\{\{item\.canUndo\}\}"[\s\S]{0,260}id="undo-attempt-/);
+  assert.match(wxml, /wx:if="\{\{item\.canRestore\}\}"[\s\S]{0,260}id="restore-attempt-/);
 
   // 行高固定：撤回按钮消失后这一行的高度不变，刚才点过的坐标留在原处、交给空位。
   const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
-  const rowStyle = wxss.match(/\.recent-attempt-row\s*\{[^}]*\}/);
-  assert.ok(rowStyle, '样式里应有 .recent-attempt-row');
+  const rowStyle = wxss.match(/\.record-attempt-change\s*\{[^}]*\}/);
+  assert.ok(rowStyle, '样式里应有 .record-attempt-change');
   assert.match(rowStyle[0], /min-height:\s*44px/, '这一行与文字按钮同高（44px 逻辑像素），按钮消失后行高不变');
   const buttonRule = wxss.match(
     /\.primary-button,\s*\.secondary-button,\s*\.text-button\s*\{[^}]*\}/

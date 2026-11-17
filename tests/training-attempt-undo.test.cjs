@@ -1587,37 +1587,38 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
   assert.equal(page.data.recentAttempt.correctable, true);
   assert.equal(page.data.recentAttempt.attemptId, send.id);
 
-  // WXML：没有独立更正区；更正结果与撤回/恢复在同一块里，且只绑真实处理器。
+  // WXML（T045 同页）：没有独立更正区；「改成未完成」就在这一把的卡框里，
+  // 撤回/恢复在同一卡框的下一行，且只绑真实处理器。
   const wxml = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
     'utf8'
   );
   assert.equal(wxml.indexOf('id="route-correction"'), -1, '独立更正区已移除');
   assert.equal(wxml.indexOf('点错了完攀'), -1, '不再有独立更正区的标题与提示');
-  const slotAt = wxml.indexOf('class="recent-attempt-correct-slot"');
-  const buttonAt = wxml.indexOf('id="correct-recent-{{recentAttempt.attemptId}}"');
-  const idleAt = wxml.indexOf('id="recent-attempt-correct-idle"');
-  const infoAt = wxml.indexOf('class="recent-attempt-info"');
-  const guidanceAt = wxml.indexOf('class="recent-attempt-guidance-slot"');
-  assert.ok(infoAt > 0 && slotAt > infoAt, '更正槽在最近一把说明之后');
+  const cardAt = wxml.indexOf('id="record-attempts"');
+  const slotAt = wxml.indexOf('class="record-attempt-correct-slot"');
+  const buttonAt = wxml.indexOf('id="correct-attempt-{{item.id}}"');
+  const idleAt = wxml.indexOf('id="record-attempt-correct-idle-{{item.id}}"');
+  const hintAt = wxml.indexOf('class="record-attempt-hint-slot"');
+  assert.ok(cardAt > 0 && slotAt > cardAt, '更正槽在这一把的卡框里');
   assert.ok(buttonAt > slotAt, '可更正时槽里是按钮');
   assert.ok(idleAt > buttonAt, '不可更正时同一槽里是只读文字');
-  assert.ok(guidanceAt > slotAt, '说明槽在更正槽之后');
+  assert.ok(hintAt > slotAt, '把数影响的说明槽在更正槽之后');
   assert.match(
     wxml,
-    /id="correct-recent-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,500}data-archive-id="\{\{recentAttempt\.archiveId\}\}"[\s\S]{0,120}bindtap="correctSend"/
+    /id="correct-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}bindtap="correctSend"/
   );
-  const idleBlock = wxml.slice(idleAt, idleAt + 260);
+  const idleBlock = wxml.slice(idleAt, idleAt + 240);
   assert.equal(/bindtap|catchtap/.test(idleBlock), false, '只读文字不可点，不会变成结果按钮');
-  assert.match(idleBlock, /recent-attempt-correct-idle/);
-  assert.match(wxml, /recentAttempt\.correctIdleText/, '惰性文案由同一把的状态派生');
+  assert.match(idleBlock, /record-attempt-correct-idle/);
+  assert.match(wxml, /item\.correctIdleText/, '惰性文案由同一把的状态派生');
 
   const wxss = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
     'utf8'
   );
-  assert.match(wxss, /\.recent-attempt-correct-slot \{[^}]*min-height: 44px/, '更正槽 44px 固定');
-  assert.match(wxss, /\.recent-attempt-guidance-slot \{[^}]*min-height: 32px/, '说明槽固定高度');
+  assert.match(wxss, /\.record-attempt-correct-slot \{[^}]*min-height: 44px/, '更正槽 44px 固定');
+  assert.match(wxss, /\.record-attempt-hint-slot \{[^}]*min-height: 32px/, '说明槽固定高度');
   assert.match(wxss, /\.result-button \{[^}]*min-height: 48px/, '结果按钮 48px');
   assert.match(wxss, /\.route-completed-panel,[\s\S]*?min-height: 48px/, '完攀面板同高');
   assert.equal(/route-correction/.test(wxss), false, '独立更正区样式已移除');
