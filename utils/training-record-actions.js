@@ -8,8 +8,10 @@
  * - 入口归属核对只读档案：archiveId + sessionId + routeId 必须对得上，缺失、串档或
  *   线路不属于这一场时返回可见原因，页面据此拒绝展示与写入。
  *
- * pages/training-record（单线记录）与 pages/training-attempts（逐把明细）共用这里的
+ * pages/training-record（单线记录）与 pages/training-attempts（本场逐把）共用这里的
  * 事件处理；training-route 的「改为未完成」也指向同一份实现，避免两个不一致的写实现。
+ * T042：更正的可见入口按把就近——最近一把在单线页旁、较早的把次在本场逐把那一行；
+ * 这里只补确认与准入判断，持久化、重试规则与线路历史的更正能力都保持原样。
  *
  * 页面需要提供（与 T017 场内页同名）：
  *   this.archive、this.data.loadError、this.data.activeSession、this.data.selectedRoute、
@@ -318,6 +320,108 @@ function recentAttemptTarget(archive, sessionId, routeId) {
 }
 
 /**
+ * 本场这条线仍可更正的已确认完攀：attemptId → 目标行（含原场次、原序号与说明）。
+ *
+ * 与线路历史页共用档案层的 routeCorrectionTargets（同一份资格边界：只认抱石、
+ * 只认有效把次、只认已确认完攀），这里只收**本场次**的目标：本场逐把只展示原场原线，
+ * 跨场次的候选仍在线路历史里按原把次处理。
+ */
+function correctionTargetsForSession(archive, sessionId, routeId) {
+  const targets = new Map();
+  if (!archive || !hasText(sessionId) || !hasText(routeId)) return targets;
+  store.routeCorrectionTargets(archive, routeId).forEach(target => {
+    if (target.sessionId === sessionId) targets.set(target.attemptId, target);
+  });
+  return targets;
+}
+
+/**
+ * 「更正结果」在这一把上的展示状态（只读派生，不写盘）：
+ * - corrected：本页实例刚把这一把改好，原位显示只读回读；
+ * - retry：上一次更正没落盘（本实例记着，或档案里留着 pendingCorrections 标记），
+ *   按钮改成「重试更正结果」，仍指向同一把；
+ * - ready：仍可更正。
+ */
+function correctionStateOf(archive, page, attemptId) {
+  const corrected = page && page._correctedRows ? page._correctedRows[attemptId] : null;
+  if (corrected) return { state: 'corrected', statusText: corrected.statusText || '' };
+  const needsRetry = Boolean(
+    (page && page._correctionFailures && page._correctionFailures[attemptId]) ||
+      (archive &&
+        (archive.pendingCorrections || []).some(item => item.attemptId === attemptId))
+  );
+  return { state: needsRetry ? 'retry' : 'ready', statusText: '' };
+}
+
+/**
+ * 更正前的确认：写明原把次的日期/场次/岩馆与序号、原结果，以及将要改成的结果。
+ * 弹窗不可用时按取消处理，一个字节都不写。
+ */
+function askCorrectConfirm(target) {
+  return new Promise(resolve => {
+    if (typeof wx === 'undefined' || typeof wx.showModal !== 'function') {
+      resolve(false);
+      return;
+    }
+    try {
+      wx.showModal({
+        title: '更正这一把？',
+        content:
+          (target.contextText ? target.contextText + ' · ' : '') +
+          target.label +
+          ' · 原结果：' +
+          (target.resultText || '完攀') +
+          ' → 改为：未完成\n这把还计入本场把数，完攀次数减 1。',
+        confirmText: '更正',
+        cancelText: '取消',
+        success(result) {
+          resolve(Boolean(result && result.confirm));
+        },
+        fail() {
+          resolve(false);
+        }
+      });
+    } catch (error) {
+      resolve(false);
+    }
+  });
+}
+
+/**
+ * 「更正结果」入口的接线（T042）：先确认，确认后仍交给同一份 correctSend。
+ *
+ * target 由页面按**本次点击的那一行**解析好（原把次 ID、原归属与说明）；本函数只做
+ * 三件事：同一把连点只弹一次确认（不会改两次）、取消时不写盘、确认后走原动作。
+ * 页面需要提供 _correctionPrompt（onLoad 初始化为 null）与 _unloaded。
+ */
+function confirmCorrection(target) {
+  if (!target) return Promise.resolve(null);
+  const pending = this._correctionPrompt;
+  if (pending && pending.attemptId === target.attemptId) {
+    // 连点同一把：沿用已经打开的那一次确认，不叠第二个弹窗，也不会改两次。
+    return pending.promise;
+  }
+
+  const prompt = { attemptId: target.attemptId, promise: null };
+  prompt.promise = askCorrectConfirm(target).then(confirmed => {
+    if (this._correctionPrompt === prompt) this._correctionPrompt = null;
+    if (this._unloaded || !confirmed) return null;
+    return correctSend.call(this, {
+      currentTarget: {
+        dataset: {
+          attemptId: target.attemptId,
+          routeId: target.routeId,
+          sessionId: target.sessionId,
+          archiveId: target.archiveId
+        }
+      }
+    });
+  });
+  this._correctionPrompt = prompt;
+  return prompt.promise;
+}
+
+/**
  * 这条线在这一场次里是否还有未落盘的把次（档案里的「进行中」标记）。
  * 有的话最近一把的撤回区先收起：待保存的一把不是已保存可撤回项。
  */
@@ -365,7 +469,7 @@ function loadRecordContext(query) {
     };
   }
   const archive = loaded.archive;
-  // 新入口（单线记录 / 逐把明细）必须带齐档案归属：只凭 sessionId + routeId 打开时，
+  // 新入口（单线记录 / 本场逐把）必须带齐档案归属：只凭 sessionId + routeId 打开时，
   // 换了本机档案后同名 ID 可以直接指向另一份档案，页面既无法展示也无法拒绝写入。
   if (!ids.archiveId) {
     return {
@@ -722,12 +826,15 @@ function retryPendingAttempt(event) {
  *   右槽恢复，各占一半宽度、等高；不可用的动作在自己那一槽里留非交互空位，因此两个
  *   动作的命中矩形在任何状态下都不相交；
  * - 失败（写盘失败）时保留原动作与同一个 opId 的重试文案；成功的那一次在本行下方
- *   写一句确认（只在本页显示，不落盘，重开后以档案里的撤回状态为准）。
+ *   写一句确认（只在本页显示，不落盘，重开后以档案里的撤回状态为准）；
+ * - T042：符合既有更正条件的这一把旁给「更正结果」（抱石线的有效已确认完攀）。固定槽
+ *   在支持更正的线路上一直占位，撤回/恢复前后本区高度不变；较早的候选在本场逐把里
+ *   各自一行处理，跨场候选仍在线路历史里处理。
  *
  * 失败后换页再回来（新页面实例）时，重试文案来自档案里的 pending 标记或当前应用运行期
  * 记着的那一次失败，仍指向原 opId。
  */
-function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
+function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, route) {
   if (!activeSession || !selectedRoute) return null;
   if (
     (pendingRows && pendingRows.length) ||
@@ -761,6 +868,36 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
     stateText = '已' + madeByText + '这一把 · 本场 ' + counted + ' 把';
   }
 
+  // 「更正结果」（T042）：只在符合既有更正条件的最近一把旁出现——抱石线、有效把次、
+  // 已确认完攀，与线路历史页共用同一份资格边界。较早的合资格把次在本场逐把各自一行处理，
+  // 跨场次的候选仍在线路历史里按原把次处理。
+  const allCorrectionTargets = store.routeCorrectionTargets(archive, selectedRoute.id);
+  const correctionTargets = new Map();
+  allCorrectionTargets.forEach(target => {
+    if (target.sessionId === activeSession.id) correctionTargets.set(target.attemptId, target);
+  });
+  const correctionTarget = correctionTargets.get(attempt.id) || null;
+  const correctionState = correctionStateOf(archive, this, attempt.id);
+  const correctionSupported = route
+    ? store.isBoulderRoute(route)
+    : selectedRoute.climbType === '抱石';
+  const correctable = Boolean(correctionTarget);
+  // 刚改好的那一把仍在原位置显示只读回读；写失败的保留同一把的重试按钮。
+  const correctText = correctionState.state === 'retry' ? '重试更正结果' : '更正结果';
+  const correctStatusText = correctable ? '' : correctionState.statusText;
+
+  let guidanceText = '刚才那一把已计入本场；撤回只减这一把，不改其他把次。';
+  if (undone) {
+    guidanceText = '撤回的这把不计入本场完攀；要恢复就点右侧「恢复这一把」。';
+  } else if (correctable) {
+    guidanceText = '要改这一把：点上方「更正结果」；这把仍计入本场把数。';
+  } else if (correctionSupported && correctionTargets.size > 0) {
+    guidanceText = '要改本场的完攀：到「本场逐把」点那一把的「更正结果」。';
+  } else if (correctionSupported && allCorrectionTargets.length > 0) {
+    // 跨场次的完攀不拿到本场来改：仍在线路历史里按原场次那一把处理。
+    guidanceText = '要改别的场次的完攀：到「线路历史」按原场次那一把更正。';
+  }
+
   return {
     attemptId: attempt.id,
     routeId: attempt.routeId,
@@ -771,14 +908,18 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
     archiveId: archive.archiveId,
     expectedRev: store.attemptRev(attempt),
     expected: undone ? 'undone' : 'effective',
-    // 这一把本身是不是完攀：撤回/恢复完攀时，页面要在原位置保留「改为未完成」那一段的
-    // 空间，撤回后不能因为下方内容缩短而让滚动位置把原按钮换到别的动作上。
     isSend: attempt.result === 'send',
-    // 与「改为未完成」原行同一套文字（序号、日期、场次、岩馆）：撤回后在原位留的
-    // 惰性行要和原行一样高，原坐标才不会落到结果按钮上。
-    correctionLabel: '第 ' + target.number + ' 把',
-    correctionContextText:
+    // 确认弹窗里辨认目标用的原把次说明（日期/场次/岩馆 + 原序号）。
+    correctLabel: '第 ' + target.number + ' 把',
+    correctContextText:
       activeSession.dateText + ' ' + activeSession.label + ' · ' + activeSession.gymName,
+    // 更正结果的固定槽：支持更正的线路始终占位；可更正时给按钮，刚改好/不可改时给只读文字。
+    correctionSupported,
+    correctable,
+    correctText,
+    correctStatusText,
+    // 不可交互时只有撤回完攀这一种状态需要一句解释；其余情况留空槽占位，不叠加噪音。
+    correctIdleText: undone ? '已撤回，暂不可改' : '',
     titleText:
       (undone ? '已撤回 · ' : '刚才 · ') +
       selectedRoute.name +
@@ -789,6 +930,7 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows) {
     metaText:
       '本场 ' + activeSession.label + ' · ' + activeSession.gymName + ' · ' + timeText(attempt.createdAt),
     stateText,
+    guidanceText,
     canUndo: !undone,
     undoText: retryOpId && !undone ? '重试撤回这一把' : '撤回这一把',
     canRestore: undone,
@@ -1248,6 +1390,8 @@ module.exports = {
   completionText,
   attemptLabelMap,
   recentAttemptTarget,
+  correctionTargetsForSession,
+  correctionStateOf,
   hasPendingOnRoute,
   parseRecordQuery,
   loadRecordContext,
@@ -1259,6 +1403,9 @@ module.exports = {
   undoLatestAttempt,
   restoreLatestAttempt,
   changeRecentAttempt,
+  // 更正结果的确认与接入口（写仍走 correctSend，不另建持久模型）
+  askCorrectConfirm,
+  confirmCorrection,
   // 当前应用运行期的失败操作（只读给待保存行与重试文案，不落盘）
   failedSaveEntries,
   failedSaveEntry,

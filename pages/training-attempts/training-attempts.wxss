@@ -1,6 +1,6 @@
 /**
- * 本线逐把明细页样式（T036）
- * 与单线记录页同一套配色；备注编辑与原把次行一一对应。
+ * 本场逐把页样式（T036 / T042）
+ * 与单线记录页同一套配色；备注编辑、更正结果与原把次行一一对应。
  */
 
 page {
@@ -223,6 +223,30 @@ page {
   display: block;
   font-size: 26rpx;
   line-height: 1.4;
+  color: #1F5948;
+}
+
+/* 更正结果（T042）：这一行自己那一把的完攀入口，独立于点整行补备注 */
+.attempt-correct-slot {
+  display: flex;
+  align-items: center;
+}
+
+.attempt-correct-action {
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 10rpx 12rpx;
+  font-size: 26rpx;
+  line-height: 1.4;
+  color: #1F5948;
+  margin: 0;
+}
+
+.attempt-corrected-text {
+  display: block;
+  padding: 10rpx 0;
+  font-size: 24rpx;
+  line-height: 1.5;
   color: #1F5948;
 }
 

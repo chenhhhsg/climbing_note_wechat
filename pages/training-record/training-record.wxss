@@ -530,6 +530,34 @@ page {
   color: #53615B;
 }
 
+/* 更正结果（T042）：最近一把旁的固定槽，可更正时是按钮，其余状态是只读文字 */
+.recent-attempt-correct-slot {
+  display: flex;
+  align-items: center;
+  box-sizing: border-box;
+  min-height: 44px;
+  margin-top: 8rpx;
+}
+
+.recent-attempt-correct {
+  width: 100%;
+  margin: 0;
+}
+
+.recent-attempt-correct-state {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #1F5948;
+}
+
+.recent-attempt-correct-idle {
+  display: block;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #53615B;
+}
+
 /* 结果状态的固定说明槽：撤回/恢复前后都占同样的高度（32px = 4px 的整数倍） */
 .recent-attempt-guidance-slot {
   margin-top: 8rpx;
@@ -608,68 +636,6 @@ page {
   justify-content: center;
   margin: 0;
   text-align: center;
-}
-
-/* 按把更正 */
-.route-correction {
-  background-color: #FFFFFF;
-  border-radius: 8rpx;
-  padding: 24rpx;
-  margin-bottom: 20rpx;
-}
-
-.route-correction-title {
-  display: block;
-  font-size: 30rpx;
-  font-weight: bold;
-  color: #182421;
-  margin-bottom: 10rpx;
-}
-
-.route-correction-hint {
-  display: block;
-  font-size: 24rpx;
-  line-height: 1.6;
-  color: #53615B;
-  margin-bottom: 12rpx;
-}
-
-.route-correction-status {
-  display: block;
-  font-size: 24rpx;
-  color: #8A442E;
-  margin-bottom: 12rpx;
-}
-
-.route-correction-row {
-  border-top: 2rpx solid #F2F4F3;
-  padding: 16rpx 0;
-}
-
-/* 每行下半槽固定 44px：按钮、只读回读与撤回后的惰性行占同样的高度 */
-.route-correction-slot {
-  display: flex;
-  align-items: center;
-  min-height: 44px;
-  box-sizing: border-box;
-}
-
-.route-correction-idle .route-corrected-text {
-  color: #53615B;
-}
-
-.route-correction-target {
-  display: block;
-  font-size: 24rpx;
-  line-height: 1.5;
-  color: #53615B;
-  margin-bottom: 10rpx;
-}
-
-.route-corrected-text {
-  display: block;
-  font-size: 26rpx;
-  color: #1F5948;
 }
 
 .record-foot-hint {

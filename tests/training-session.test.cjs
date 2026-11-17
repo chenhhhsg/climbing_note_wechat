@@ -33,6 +33,7 @@ const SUMMARY_JS = path.join(ROOT, 'utils', 'training-session-summary.js');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 const PHOTO_KEY = 'climbingNote.training.v1.photos';
+const VIDEO_INDEX_KEY = 'climbingNote.training.v1.attempt-video';
 
 // ---- 微信本地存储替身：只在正式本机命名空间内读写，可按需注入故障 ----
 const storage = new Map();
@@ -62,6 +63,19 @@ function resetWxLog() {
   wxLog.navigations = [];
   wxLog.switches = [];
   wxLog.toasts = [];
+}
+
+// 更正确认弹窗（T042）：默认立刻「确认」；队列里可指定 cancel 来核对取消不写盘。
+const modalLog = { calls: [], held: [], queue: [] };
+
+function resetModalLog() {
+  modalLog.calls = [];
+  modalLog.held = [];
+  modalLog.queue = [];
+}
+
+function queueModal(behavior) {
+  modalLog.queue.push(behavior);
 }
 
 // 刻意不带 cloud：T017 的新增训练路径不得依赖云能力。
@@ -94,6 +108,15 @@ global.wx = {
   },
   showToast(options) {
     wxLog.toasts.push(options);
+  },
+  showModal(options) {
+    modalLog.calls.push(options);
+    const behavior = modalLog.queue.length > 0 ? modalLog.queue.shift() : 'confirm';
+    if (behavior === 'hold') {
+      modalLog.held.push(options);
+      return;
+    }
+    options.success({ confirm: behavior === 'confirm', cancel: behavior !== 'confirm' });
   },
   stopPullDownRefresh() {}
 };
@@ -263,6 +286,7 @@ function seedTraining(options = {}) {
 beforeEach(() => {
   resetDevice();
   resetWxLog();
+  resetModalLog();
   db.getRecentRecords = realGetRecentRecords;
 });
 
@@ -345,6 +369,8 @@ test('R1 WXML 里的每个按钮绑定都有真实处理器，导航目标指向
   for (const handler of recordHandlers) {
     assert.equal(typeof recordDefinition[handler], 'function', '单线页绑定缺少处理器：' + handler);
   }
+  // T042：correctSend 是单线页的确认入口，确认后仍交给共用动作层的同一份写实现。
+  assert.equal(typeof recordDefinition.correctSend, 'function', 'correctSend 入口存在');
   const attemptsWxml = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.wxml'),
     'utf8'
@@ -1699,7 +1725,7 @@ test('T030 复验 撤回与恢复是原地动作：不主动滚动，刚才点�
   }
 });
 
-test('R3 两把未完成只给第二把加备注，完攀收起新增入口并按把更正', () => {
+test('R3 两把未完成只给第二把加备注，完攀收起新增入口并在最近一把旁更正', async () => {
   const seeded = seedTraining();
   const page = openRecordPage();
   const routeId = seeded.route.id;
@@ -1731,28 +1757,51 @@ test('R3 两把未完成只给第二把加备注，完攀收起新增入口并�
   assert.equal(page.data.attempts[1].note, '抓到后向右摆');
   assert.equal(store.attemptsFor(archiveOf(), { routeId }).length, 2);
 
-  // 再记抱石完攀：确认后收起新增结果按钮，保留按把「改为未完成」。
+  // 再记抱石完攀：确认后收起新增结果按钮，最近一把旁给出「更正结果」。
   tick();
   page.recordAttempt(tapResult('send'));
   assert.equal(page.data.attempts.length, 3);
   assert.equal(page.data.routeCompleted, true);
   assert.equal(page.data.routeClosed, true);
   assert.equal(page.data.routeStateText, '已完攀');
-  assert.equal(page.data.correctionRows.length, 1, '给出一把可更正的控件');
   const sendId = page.data.attempts[2].id;
-  assert.equal(page.data.correctionRows[0].attemptId, sendId);
-  assert.match(page.data.correctionRows[0].label, /第 3 把/);
-  assert.match(page.data.correctionRows[0].contextText, /2026-11-09/);
-  assert.match(page.data.correctionRows[0].contextText, /第 1 场/);
+  const recentSend = page.data.recentAttempt;
+  assert.equal(recentSend.attemptId, sendId, '更正入口就在最近这一把旁');
+  assert.equal(recentSend.correctionSupported, true);
+  assert.equal(recentSend.correctable, true, '给出一把可更正的控件');
+  assert.equal(recentSend.correctText, '更正结果');
+  assert.match(recentSend.correctLabel, /第 3 把/);
+  assert.match(recentSend.correctContextText, /2026-11-09/);
+  assert.match(recentSend.correctContextText, /第 1 场/);
 
   // 完攀后再点结果不会新增（守卫在档案层）。
   tick();
   page.recordAttempt(tapResult('send'));
   assert.equal(archiveOf().attempts.length, 3);
 
-  // 改为未完成：把数不变，ID、场次、时间与备注保留。
+  // 先取消一次：确认弹窗里能认出原把次与预期结果，取消时一个字节都不写。
+  const archiveBeforeCancel = JSON.stringify(archiveOf());
+  queueModal('cancel');
+  assert.equal(
+    await page.correctSend(
+      tapDataset({ attemptId: sendId, routeId, sessionId, archiveId: archiveOf().archiveId })
+    ),
+    null,
+    '取消返回空，不落盘'
+  );
+  const cancelPrompt = modalLog.calls.at(-1);
+  assert.match(cancelPrompt.content, /第 3 把/, '确认里写明原把次');
+  assert.match(cancelPrompt.content, /完攀/, '确认里写明原结果');
+  assert.match(cancelPrompt.content, /未完成/, '确认里写明将要改成的结果');
+  assert.match(cancelPrompt.content, /2026-11-09/, '确认里写明原场次日期');
+  assert.equal(JSON.stringify(archiveOf()), archiveBeforeCancel, '取消不写盘');
+  assert.equal(page.data.recentAttempt.correctable, true, '取消后按钮还在原位');
+
+  // 确认后改为未完成：把数不变，ID、场次、时间与备注保留。
   const sendAttemptBefore = archiveOf().attempts.find(item => item.id === sendId);
-  page.correctSend(tapDataset({ attemptId: sendId, routeId, sessionId }));
+  await page.correctSend(
+    tapDataset({ attemptId: sendId, routeId, sessionId, archiveId: archiveOf().archiveId })
+  );
   const afterCorrect = archiveOf();
   assert.equal(afterCorrect.attempts.length, 3, '更正不增把数');
   const sendAttemptAfter = afterCorrect.attempts.find(item => item.id === sendId);
@@ -1763,7 +1812,8 @@ test('R3 两把未完成只给第二把加备注，完攀收起新增入口并�
   assert.equal(sendAttemptAfter.note, sendAttemptBefore.note);
   assert.equal(afterCorrect.attempts.find(item => item.id === secondId).note, '抓到后向右摆');
   assert.equal(page.data.routeCompleted, false, '更正后收起状态解除');
-  assert.equal(page.data.correctionRows.length, 0);
+  assert.equal(page.data.recentAttempt.correctable, false, '这一把已不是可更正的完攀');
+  assert.match(page.data.recentAttempt.correctStatusText, /已改为未完成/);
 
   // 更正后可以再记一次完攀：总把数加一。
   tick();
@@ -1771,14 +1821,26 @@ test('R3 两把未完成只给第二把加备注，完攀收起新增入口并�
   assert.equal(archiveOf().attempts.length, 4);
   assert.equal(store.routeCompletion(archiveOf(), routeId).sendCount, 1);
   assert.equal(page.data.routeCompleted, true);
+  assert.equal(page.data.recentAttempt.correctable, true);
 
-  // 同一坐标再点一次（连点/双击原位置）：只重复更正同一把，另一把不被碰。
-  const newestSendId = archiveOf().attempts[3].id;
-  page.correctSend(tapDataset({ attemptId: newestSendId, routeId, sessionId }));
-  assert.equal(archiveOf().attempts.length, 4, '连点不增把数');
-  page.correctSend(tapDataset({ attemptId: newestSendId, routeId, sessionId }));
+  // 连点同一把（第二个弹窗还开着就再点一次）：只弹一次确认，最终只改这一把。
+  const newestSendId = page.data.recentAttempt.attemptId;
+  const newestEvent = tapDataset({
+    attemptId: newestSendId,
+    routeId,
+    sessionId,
+    archiveId: archiveOf().archiveId
+  });
+  const modalCallsBefore = modalLog.calls.length;
+  queueModal('hold');
+  const firstClick = page.correctSend(newestEvent);
+  const secondClick = page.correctSend(newestEvent);
+  assert.equal(modalLog.calls.length - modalCallsBefore, 1, '连点同一把只弹一次确认');
+  const held = modalLog.held[0];
+  held.success({ confirm: true });
+  await Promise.all([firstClick, secondClick]);
   const finalArchive = archiveOf();
-  assert.equal(finalArchive.attempts.length, 4, '连点同一把仍不增把数');
+  assert.equal(finalArchive.attempts.length, 4, '连点同一把不增把数');
   assert.equal(store.routeCompletion(finalArchive, routeId).sendCount, 0);
   assert.equal(finalArchive.pendingCorrections.length, 0);
   // 逐把结果没有被别的操作串改：两把未完成与备注仍在原位。
@@ -1786,24 +1848,155 @@ test('R3 两把未完成只给第二把加备注，完攀收起新增入口并�
   assert.equal(finalArchive.attempts[1].result, 'fail');
   assert.equal(finalArchive.attempts[1].note, '抓到后向右摆');
   assert.equal(finalArchive.attempts.find(item => item.id === firstId).note, '');
+  assert.equal(finalArchive.attempts.find(item => item.id === sendId).result, 'fail');
+  assert.equal(finalArchive.attempts.find(item => item.id === newestSendId).result, 'fail');
 });
 
-test('R3 迟到或跨线路的「改为未完成」不改动任何数据', () => {
+test('T042 两把夹具：最近一把旁更正只翻原把次，有效两把、完攀减一，重开一致', async () => {
+  const seeded = seedTraining({ gymName: '两把岩馆', routeName: '两把抱石线' });
+  const page = openRecordPage();
+  const routeId = seeded.route.id;
+  const sessionId = seeded.session.id;
+  const archiveId = archiveOf().archiveId;
+
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  tick();
+  page.recordAttempt(tapResult('send'));
+  assert.equal(page.data.attempts.length, 2);
+  const firstId = page.data.attempts[0].id;
+  const sendId = page.data.attempts[1].id;
+
+  // 完攀这一把带备注与本机视频关联：更正前后必须逐项一致。
+  const noted = store.setAttemptNote(sendId, {
+    note: '这一把完攀备注',
+    sessionId,
+    routeId
+  });
+  assert.equal(noted.ok, true, noted.error);
+  const clip = {
+    archiveId,
+    attemptId: sendId,
+    sessionId,
+    routeId,
+    clipId: 'clip-two',
+    fileId: 'attempt-video/v1/' + archiveId + '/clip-two.mp4',
+    rev: 1
+  };
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify({ clips: [clip] }));
+  page.onShow();
+
+  const before = {
+    first: archiveOf().attempts.find(item => item.id === firstId),
+    send: archiveOf().attempts.find(item => item.id === sendId),
+    video: storage.get(VIDEO_INDEX_KEY)
+  };
+  assert.equal(page.data.recentAttempt.attemptId, sendId, '更正入口就在最近这一把旁');
+  assert.equal(page.data.recentAttempt.correctable, true);
+  assert.equal(page.data.routeCountText, '2 把');
+
+  await page.correctSend(tapDataset({ attemptId: sendId, routeId, sessionId, archiveId }));
+
+  const after = archiveOf();
+  const corrected = after.attempts.find(item => item.id === sendId);
+  assert.equal(corrected.result, 'fail');
+  assert.equal(corrected.id, before.send.id, '原把 ID 不变');
+  assert.equal(corrected.seq, before.send.seq, '原序号不变');
+  assert.equal(corrected.createdAt, before.send.createdAt, '原时间不变');
+  assert.equal(corrected.note, '这一把完攀备注', '原备注不变');
+  assert.equal(
+    after.attempts.find(item => item.id === firstId).result,
+    before.first.result,
+    '另一把不被串改'
+  );
+  assert.equal(
+    storage.get(VIDEO_INDEX_KEY),
+    before.video,
+    '视频标识与本机副本关联原样保留'
+  );
+  assert.equal(store.attemptsFor(after, { sessionId, routeId }).length, 2, '有效把数仍为 2');
+  assert.equal(store.routeCompletion(after, routeId).sendCount, 0, '完攀数减一');
+  assert.equal(page.data.routeCountText, '2 把', '把数读法不变');
+  assert.equal(page.data.routeCompleted, false, '单线锁定状态随更正解除');
+
+  // 重开：按最新档案读到同一把已是未完成，不再给更正入口。
+  const reopened = openRecordPage();
+  assert.equal(reopened.data.recentAttempt.attemptId, sendId);
+  assert.equal(reopened.data.recentAttempt.correctable, false);
+  assert.equal(reopened.data.attempts[1].resultText, '未完成');
+  assert.equal(reopened.data.attempts[1].note, '这一把完攀备注');
+  assert.equal(reopened.data.routeCountText, '2 把');
+});
+
+test('T042 更正结果写失败后保留同一把的重试入口，重开与旧按钮都不改别的把次', async () => {
+  const seeded = seedTraining({ gymName: '更正重试馆', routeName: '重试抱石线' });
+  const page = openRecordPage();
+  const routeId = seeded.route.id;
+  const sessionId = seeded.session.id;
+  const archiveId = archiveOf().archiveId;
+  tick();
+  page.recordAttempt(tapResult('fail'));
+  tick();
+  page.recordAttempt(tapResult('send'));
+  const firstId = page.data.attempts[0].id;
+  const sendId = page.data.attempts[1].id;
+  const correctionEvent = tapDataset({ attemptId: sendId, routeId, sessionId, archiveId });
+
+  // 第二段写失败：档案里留下 pendingCorrections 标记，页面不报已保存。
+  armSetFailAt(2);
+  await page.correctSend(correctionEvent);
+  armSetFailAt(0);
+  assert.match(page.data.storageError, /保存本机训练档案失败/);
+  assert.match(page.data.notice, /更正未保存/);
+  assert.equal(page.data.recentAttempt.correctable, true, '仍是同一把可更正');
+  assert.equal(page.data.recentAttempt.correctText, '重试更正结果');
+  assert.equal(archiveOf().attempts.find(item => item.id === sendId).result, 'send');
+  assert.equal(archiveOf().pendingCorrections.length, 1);
+
+  // 重开（新实例）：重试文案来自档案里的进行中标记，仍指向原把次。
+  const reopened = openRecordPage();
+  assert.equal(reopened.data.recentAttempt.attemptId, sendId);
+  assert.equal(reopened.data.recentAttempt.correctText, '重试更正结果');
+
+  // 重试成功：只翻这一把，另一把、原备注与待更正标记都按既有规则收尾。
+  await reopened.correctSend(correctionEvent);
+  const after = archiveOf();
+  assert.equal(after.attempts.find(item => item.id === sendId).result, 'fail');
+  assert.equal(after.attempts.find(item => item.id === firstId).result, 'fail');
+  assert.equal(after.attempts.length, 2, '重试不增把数');
+  assert.equal(after.pendingCorrections.length, 0, '重试结清进行中标记');
+  assert.equal(reopened.data.routeCountText, '2 把');
+  assert.equal(reopened.data.routeCompleted, false);
+
+  // 旧按钮（同一组 ID）再点一次：这一把已不是可更正的完攀，不弹确认、不写盘。
+  const rawAfter = JSON.stringify(archiveOf());
+  const modalCallsBefore = modalLog.calls.length;
+  assert.equal(await reopened.correctSend(correctionEvent), null);
+  assert.equal(modalLog.calls.length, modalCallsBefore, '旧按钮不再弹确认');
+  assert.equal(JSON.stringify(archiveOf()), rawAfter, '旧按钮不写盘');
+});
+
+test('R3 迟到或跨线路的「更正结果」不改动任何数据，也不弹确认', async () => {
   const seeded = seedTraining();
   const page = openRecordPage();
   tick();
   page.recordAttempt(tapResult('send'));
   const sendId = page.data.attempts[0].id;
 
-  // 归属不符（伪造的线路 ID）：明确拒绝，不落盘。
-  page.correctSend(tapDataset({ attemptId: sendId, routeId: 'route-999' }));
+  // 归属不符（伪造的线路 ID）：确认都不弹，明确拒绝，不落盘。
+  assert.equal(
+    await page.correctSend(tapDataset({ attemptId: sendId, routeId: 'route-999' })),
+    null
+  );
+  assert.equal(modalLog.calls.length, 0, '归属不符不弹确认');
   assert.equal(archiveOf().attempts[0].result, 'send');
-  assert.match(page.data.notice, /不属于当前线路/);
+  assert.match(page.data.notice, /没有改动任何记录/);
 
-  // 找不到的把次：提示回读，不改数据。
-  page.correctSend(tapDataset({ attemptId: 'op-not-exist' }));
+  // 找不到的把次：同一把的入口也不打开，不改数据。
+  assert.equal(await page.correctSend(tapDataset({ attemptId: 'op-not-exist' })), null);
+  assert.equal(modalLog.calls.length, 0);
   assert.equal(archiveOf().attempts[0].result, 'send');
-  assert.match(page.data.notice, /找不到这一把/);
+  assert.match(page.data.notice, /没有可更正的完攀/);
 });
 
 // ------------------------------------------------------------------ *
@@ -2630,7 +2823,7 @@ test('T033 撤回写盘失败显示失败与原操作重试，把数只按已落
   );
 });
 
-test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定；绳线继续记，旧「改为未完成」仍计一把', () => {
+test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定；绳线继续记，更正结果仍计一把', async () => {
   const boulder = seedTraining({ gymName: '岩馆 T033', routeName: '抱石线' });
   const send = saveAttemptSeries(boulder.session, boulder.route, ['send'])[0];
 
@@ -2638,6 +2831,7 @@ test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定
   assert.equal(page.data.routeCompleted, true);
   assert.equal(page.data.recentAttempt.canUndo, true, '抱石已完攀时仍能找到撤回');
   assert.equal(rowOf(page).titleText, '刚才 · 抱石线 第 1 把 · 完攀');
+  assert.equal(rowOf(page).correctable, true, '抱石完攀旁给出「更正结果」');
 
   // 撤回唯一一次完攀：结果按钮重新可用，这一行留在原处变成可恢复。
   page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
@@ -2648,6 +2842,8 @@ test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定
   assert.equal(page.data.routeCountText, '0 把');
   assert.equal(rowOf(page).canRestore, true);
   assert.equal(rowOf(page).titleText, '已撤回 · 抱石线 第 1 把 · 完攀');
+  assert.equal(rowOf(page).correctable, false, '已撤回的把次不在有效集合里');
+  assert.equal(rowOf(page).correctIdleText, '已撤回，暂不可改', '固定槽原位只留提示');
 
   // 恢复同一把：重新锁定，恢复不会凑出第二次有效完攀。
   page.restoreLatestAttempt(attemptRowEvent(rowOf(page)));
@@ -2655,6 +2851,7 @@ test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定
   assert.equal(page.data.routeStateText, '已完攀');
   assert.equal(page.data.routeCountText, '1 把');
   assert.equal(rowOf(page).canRestore, false);
+  assert.equal(rowOf(page).correctable, true, '恢复后更正入口回到原位');
 
   tick();
   page.recordAttempt(tapResult('send'));
@@ -2667,14 +2864,13 @@ test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定
     1
   );
 
-  // 旧的按把「改为未完成」入口保留：更正这一把完攀不改把数。
-  assert.equal(page.data.correctionRows.length, 1);
-  const correction = page.data.correctionRows[0];
-  page.correctSend(
+  // 最近一把旁的「更正结果」保留：只翻这一把的结果，把数不变。
+  await page.correctSend(
     tapDataset({
-      attemptId: correction.attemptId,
-      routeId: correction.routeId,
-      sessionId: correction.sessionId
+      attemptId: send.id,
+      routeId: boulder.route.id,
+      sessionId: boulder.session.id,
+      archiveId: archiveOf().archiveId
     })
   );
   assert.equal(page.data.routeCountText, '1 把', '更正仍计一把');
@@ -2699,6 +2895,7 @@ test('T033 抱石唯一完攀撤回后结果按钮可用、恢复后再次锁定
   ropePage.recordAttempt(tapResult('send'));
   assert.equal(ropePage.data.routeCountText, '2 把');
   assert.equal(rowOf(ropePage).titleText, '刚才 · 顶绳线 第 2 把 · 完攀');
+  assert.equal(rowOf(ropePage).correctionSupported, false, '绳线不提供更正结果');
   ropePage.undoLatestAttempt(attemptRowEvent(rowOf(ropePage)));
   assert.equal(ropePage.data.routeCountText, '1 把');
   assert.equal(ropePage.data.routeCompleted, false, '绳线不锁完攀入口，仍可继续记');

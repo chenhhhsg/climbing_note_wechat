@@ -1,8 +1,9 @@
 <!--
-  本线逐把明细（T036）
+  本场逐把（T036 / T042）
   只列所选场次与长期线路的已提交把次；按原序号、结果、备注对齐，给指定把次补/改备注。
   保存、取消与失败重试都只影响原 attemptId；撤回与恢复在单线记录页。
   T023：每一行还显示这一把的视频关联状态与文字入口，选片与待确认预览在视频页。
+  T042：符合条件的完攀在自己那一行给「更正结果」，确认后只翻这一把的结果。
 -->
 <view class="page">
   <view wx:if="{{loadError}}" id="load-error" class="card error-card">
@@ -77,6 +78,25 @@
               <view class="attempt-actions">
                 <text class="attempt-note-action">{{item.hasNote ? '改备注 ›' : '补备注 ›'}}</text>
                 <!--
+                  更正结果（T042）：只出现在这一行自己那一把仍可更正的完攀上。
+                  点它先弹确认（原序号、日期场次岩馆、原结果 → 未完成），确认后才改这一把；
+                  catchtap 让这一下不会顺手打开备注编辑器。刚改好或不可改时这一段只留只读文字。
+                -->
+                <view wx:if="{{item.correctable || item.correctStatusText}}" class="attempt-correct-slot">
+                  <button
+                    wx:if="{{item.correctable}}"
+                    id="correct-attempt-{{item.id}}"
+                    class="text-button attempt-correct-action"
+                    data-attempt-id="{{item.id}}"
+                    catchtap="confirmCorrectRow"
+                  >{{item.correctText}}</button>
+                  <text
+                    wx:else
+                    id="corrected-attempt-{{item.id}}"
+                    class="attempt-corrected-text"
+                  >{{item.correctStatusText}}</text>
+                </view>
+                <!--
                   视频入口（T023）：只显示关联状态与文字入口，点它进入这一把的视频页。
                   catchtap 阻止冒泡：点视频入口不会顺手打开备注编辑器，两者互不干扰。
                 -->
@@ -130,7 +150,7 @@
           </view>
         </view>
 
-        <text class="attempts-foot-hint">这里只列这一场这一条线的有效把次；撤回、恢复与结果记录在单线记录页。</text>
+        <text class="attempts-foot-hint">这里只列这一场这一条线的有效把次；撤回、恢复与结果记录在单线记录页，完攀可在这一行更正结果。</text>
       </block>
     </block>
   </block>
