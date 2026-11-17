@@ -208,9 +208,10 @@
         </view>
 
         <!--
-          统一行列表（T037）：每行带渲染时的档案、场次与长期线路 ID，迟到点击或切档之后
-          才送到的点击不打开页、也不改选择。整行只有 openRecord 一个动作，行内没有第二个
-          入口；长名换行，行高不随名称长短变化。
+          统一行列表（T037 / T044 一线一卡）：每行带渲染时的档案、场次与长期线路 ID，
+          迟到点击或切档之后才送到的点击不打开页、也不改选择。整行只有 openRecord 一个
+          动作，行内没有第二个入口；长名换行，行高不随名称长短变化。每条线一张中性细边框
+          卡并留卡间间距，当前线另用左侧边缘标记与「当前」短文字标出，行序不变。
         -->
         <view wx:if="{{routes.length > 0}}" id="route-list" class="route-list">
           <view
@@ -225,7 +226,14 @@
           >
             <text class="route-grade">{{item.grade}}</text>
             <view class="route-row-info">
-              <text class="route-row-name">{{item.name}}</text>
+              <view class="route-row-title">
+                <text class="route-row-name">{{item.name}}</text>
+                <text
+                  wx:if="{{item.isSelected}}"
+                  id="route-current-{{item.id}}"
+                  class="route-row-current"
+                >当前</text>
+              </view>
               <view class="route-row-meta">
                 <view class="route-color" style="background: {{item.colorHex}};"></view>
                 <text class="route-row-type">{{item.climbType}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>

@@ -39,21 +39,24 @@
           class="local-gym"
         >
           <text class="local-gym-name">{{gym.gymName}}</text>
-          <view
-            wx:for="{{gym.sessions}}"
-            wx:for-item="session"
-            wx:key="id"
-            id="local-session-{{session.id}}"
-            class="local-session-row"
-            bindtap="goToSessionSummary"
-            data-session-id="{{session.id}}"
-            data-archive-id="{{session.archiveId}}"
-          >
-            <view class="local-session-main">
-              <text class="local-session-label">{{session.label}}</text>
-              <text wx:if="{{session.stateText}}" class="local-session-state">{{session.stateText}}</text>
+          <!-- T044：同馆多场各一张中性卡，卡间留距；日期与岩馆在标题上，卡里只放场次身份。 -->
+          <view class="local-session-list">
+            <view
+              wx:for="{{gym.sessions}}"
+              wx:for-item="session"
+              wx:key="id"
+              id="local-session-{{session.id}}"
+              class="local-session-row"
+              bindtap="goToSessionSummary"
+              data-session-id="{{session.id}}"
+              data-archive-id="{{session.archiveId}}"
+            >
+              <view class="local-session-main">
+                <text class="local-session-label">{{session.label}}</text>
+                <text wx:if="{{session.stateText}}" class="local-session-state">{{session.stateText}}</text>
+              </view>
+              <text class="local-session-count">{{session.summaryText}}</text>
             </view>
-            <text class="local-session-count">{{session.summaryText}}</text>
           </view>
         </view>
       </view>

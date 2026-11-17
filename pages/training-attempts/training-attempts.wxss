@@ -1,6 +1,8 @@
 /**
- * 本场逐把页样式（T036 / T042）
+ * 本场逐把页样式（T036 / T042 / T044）
  * 与单线记录页同一套配色；备注编辑、更正结果与原把次行一一对应。
+ * T044：一把一框——完攀深绿、未完成深橙，卡框描边与浅色底同色系，结果用深底白字
+ * 并写明「完攀 / 未完成」；这套卡框供 T045 现场复用。
  */
 
 page {
@@ -149,16 +151,34 @@ page {
   padding: 24rpx 0;
 }
 
-/* 明细行：整行可点（点哪一行就在那一行里编辑这一把的备注），命中区至少 44 逻辑像素高 */
+/* 逐把清单：一把一框，卡与卡之间留 12px 间距（T044）。 */
+.attempts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 8rpx;
+}
+
+/* 一张卡就是一把：中性细边框兜底，结果色由下面的 -send / -fail 覆盖。 */
 .attempt-item {
   background-color: #FFFFFF;
-  border-bottom: 1px solid #D7DED9;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
+  padding: 0 20rpx;
 }
 
-.attempt-item:last-child {
-  border-bottom: none;
+/* 完攀：深绿描边 + 浅绿底；未完成：深橙描边 + 浅橙底。 */
+.attempt-item-send {
+  background-color: #EAF2EC;
+  border-color: #1F5948;
 }
 
+.attempt-item-fail {
+  background-color: #FBEEE3;
+  border-color: #B04A1C;
+}
+
+/* 整行可点（点哪一行就在那一行里编辑这一把的备注），命中区至少 44 逻辑像素高 */
 .attempt-row-tap {
   display: flex;
   flex-direction: column;
@@ -170,25 +190,34 @@ page {
 
 .attempt-main {
   display: flex;
-  align-items: baseline;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12rpx;
 }
 
 .attempt-label {
   font-size: 28rpx;
   font-weight: 700;
   color: #182421;
-  margin-right: 20rpx;
 }
 
+/* 结果状态：深底白字、写明「完攀 / 未完成」；颜色与文字同时区分两种结果。 */
 .attempt-result {
-  font-size: 28rpx;
-  color: #182421;
-  margin-right: 20rpx;
+  flex: none;
+  padding: 4rpx 14rpx;
+  border-radius: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #FFFFFF;
 }
 
-.attempt-send {
-  color: #B7683D;
-  font-weight: 700;
+.attempt-result-send {
+  background-color: #1F5948;
+}
+
+.attempt-result-fail {
+  background-color: #B04A1C;
 }
 
 .attempt-time {
@@ -196,6 +225,7 @@ page {
   font-variant-numeric: tabular-nums;
   font-size: 24rpx;
   color: #53615B;
+  margin-left: auto;
 }
 
 /* 长备注换行，不截断：原文与输入框里看到的是同一段话 */

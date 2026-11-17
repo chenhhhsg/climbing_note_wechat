@@ -19,6 +19,7 @@ const { test, beforeEach } = require('node:test');
 const ROOT = path.resolve(__dirname, '..');
 const PAGE_JS = path.join(ROOT, 'pages', 'record-list', 'record-list.js');
 const PAGE_WXML = path.join(ROOT, 'pages', 'record-list', 'record-list.wxml');
+const PAGE_WXSS = path.join(ROOT, 'pages', 'record-list', 'record-list.wxss');
 const PAGE_JSON = path.join(ROOT, 'pages', 'record-list', 'record-list.json');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
@@ -941,4 +942,71 @@ test('T043 两个日期、同日两家同名岩馆、同馆两场与跨午夜：
   assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '浏览场次列表不改写本机档案');
   assert.equal(store.loadState().archive.activeSessionId, 'session-4');
   assert.equal(store.loadState().archive.activeRouteId, '');
+});
+
+// ---- T044：底栏场次一场一卡 ----
+test('T044 底栏一场一卡：同馆多场逐张中性卡并留卡间间距，点卡仍传原场次 ID', async () => {
+  resetWxLog();
+  const fixture = seedSessionListFixture();
+  useDb(() => Promise.resolve({ data: [] }));
+
+  const wxml = fs.readFileSync(PAGE_WXML, 'utf8');
+  const wxss = fs.readFileSync(PAGE_WXSS, 'utf8');
+  const declarationsOf = selector =>
+    [...wxss.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(match => match[1].split(',').map(text => text.trim()).includes(selector))
+      .map(match => match[2])
+      .join('\n');
+
+  // 日期与岩馆留在分组标题上；卡框落到每一场上，同馆多场纵向排布、卡间留 12px。
+  assert.match(wxml, /class="local-day-date">\{\{day\.date\}\}/);
+  assert.match(wxml, /class="local-gym-name">\{\{gym\.gymName\}\}/);
+  assert.match(
+    wxml,
+    /class="local-session-list">[\s\S]{0,700}class="local-session-row"/
+  );
+  assert.match(declarationsOf('.local-session-list'), /display:\s*flex/);
+  assert.match(declarationsOf('.local-session-list'), /gap:\s*12px/);
+  const rowCss = declarationsOf('.local-session-row');
+  assert.match(rowCss, /border:\s*1px solid #d8d9c9/, '每一场一条中性细边框');
+  assert.match(rowCss, /border-radius:\s*6rpx/);
+  assert.match(rowCss, /min-height:\s*44px/, '整卡命中区至少 44 逻辑像素高');
+  assert.doesNotMatch(rowCss, /border-top/, '相邻场次不再靠分隔线区分');
+  assert.doesNotMatch(declarationsOf('.local-gym'), /border:\s*1px solid/, '岩馆标题不再包住整组场次');
+
+  // 卡仍是原入口：ID 与点击参数都来自原场次，没有变成别的键。
+  assert.match(
+    wxml,
+    /id="local-session-\{\{session\.id\}\}"[\s\S]{0,260}data-session-id="\{\{session\.id\}\}"[\s\S]{0,140}data-archive-id="\{\{session\.archiveId\}\}"/
+  );
+
+  // 同馆同日两场的真实数据：两场各是一张卡，顺序与原场次顺序一致。
+  const page = createPage();
+  await page.onShow();
+  const sameGymDay = page.data.sessionDays.find(day => day.date === '2020-05-02');
+  assert.deepEqual(
+    sameGymDay.gyms[0].sessions.map(session => session.id),
+    ['session-4', 'session-2'],
+    '同馆两场逐张成卡、顺序不变'
+  );
+  assert.deepEqual(
+    sameGymDay.gyms[1].sessions.map(session => session.id),
+    ['session-3'],
+    '同日另一家岩馆的场次另成一组、各自一张卡'
+  );
+
+  // 点两张卡各自带上自己的原场次 ID 与原档案 ID。
+  const cards = [sameGymDay.gyms[0].sessions[0], sameGymDay.gyms[0].sessions[1]];
+  cards.forEach(card => {
+    page.goToSessionSummary({
+      currentTarget: { dataset: { sessionId: card.id, archiveId: card.archiveId } }
+    });
+  });
+  assert.deepEqual(
+    wxLog.navigations.map(item => item.url),
+    [
+      '/pages/training-summary/training-summary?sessionId=session-4&archiveId=' + fixture.archiveId,
+      '/pages/training-summary/training-summary?sessionId=session-2&archiveId=' + fixture.archiveId
+    ]
+  );
 });

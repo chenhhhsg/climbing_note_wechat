@@ -46,6 +46,12 @@ const SUMMARY_PAGE_WXML = path.join(
   'training-summary',
   'training-summary.wxml'
 );
+const SUMMARY_PAGE_WXSS = path.join(
+  ROOT,
+  'pages',
+  'training-summary',
+  'training-summary.wxss'
+);
 const APP_JSON = path.join(ROOT, 'app.json');
 const STATS_JS = path.join(ROOT, 'pages', 'stats', 'stats.js');
 
@@ -1423,4 +1429,64 @@ test('T043 撤回与恢复后场次列表的把数同步变化，恢复拿回原
   });
   assert.equal(restored.code, 'restored');
   assert.equal(findRow(buildSessionList(archiveOf())).summaryText, '2 条线 · 3 把 · 完攀 1 把');
+});
+
+// ------------------------------------------------------------------ *
+// T044 小结：一线一卡
+// ------------------------------------------------------------------ *
+
+test('T044 小结一线一卡：每条线一张中性细边框卡并留卡间间距，行身份与顺序不变', () => {
+  const wxml = fs.readFileSync(SUMMARY_PAGE_WXML, 'utf8');
+  const wxss = fs.readFileSync(SUMMARY_PAGE_WXSS, 'utf8');
+  const declarationsOf = selector =>
+    [...wxss.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(match => match[1].split(',').map(text => text.trim()).includes(selector))
+      .map(match => match[2])
+      .join('\n');
+
+  // 卡框在每一条线上：中性细边框、圆角与卡间 12px 间距；长名在卡内换行。
+  const rowCss = declarationsOf('.summary-row');
+  assert.match(rowCss, /border:\s*1px solid #D7DED9/, '每条线一条中性细边框');
+  assert.match(rowCss, /border-radius:\s*8rpx/);
+  assert.match(rowCss, /margin-top:\s*12px/, '卡与卡之间留 12px 间距');
+  assert.match(declarationsOf('.summary-name'), /word-break:\s*break-all/);
+  assert.match(declarationsOf('.summary-meta'), /word-break:\s*break-all/);
+
+  // 只有一份行模板，行的键与身份仍是原长期 routeId（点行回原线不变）。
+  assert.equal(wxml.match(/class="summary-row"/g).length, 1, '只有一份小结行模板');
+  assert.match(wxml, /wx:for="\{\{summaryRows\}\}"[\s\S]{0,160}wx:key="routeId"/);
+  assert.match(wxml, /id="summary-row-\{\{item\.routeId\}\}"/);
+  assert.match(
+    wxml,
+    /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="openSummaryRoute"/
+  );
+
+  // 同色同级同名两条线各占一张卡，顺序与小结数据一致，没有并成一行。
+  const session = startAt(DAY, '卡框岩馆');
+  const a = newRoute(session, {
+    name: '同色同级线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  const b = newRoute(session, {
+    name: '同色同级线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  record(session, a, 'fail');
+  record(session, b, 'fail');
+
+  const page = openSummaryPage({ sessionId: session.id, archiveId: archiveOf().archiveId });
+  const expectedOrder = buildSessionSummary(archiveOf(), session.id).routes.map(row => row.routeId);
+  assert.equal(page.data.summaryRows.length, 2);
+  assert.deepEqual(page.data.summaryRows.map(row => row.routeId), expectedOrder);
+  assert.deepEqual(
+    [...page.data.summaryRows.map(row => row.routeId)].sort(),
+    [a.id, b.id].sort(),
+    '两条同色同级线都在小结里，各占一张卡'
+  );
 });

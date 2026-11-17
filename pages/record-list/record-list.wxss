@@ -299,32 +299,45 @@
   padding: 8rpx 4rpx;
 }
 
+/* T044：日期与岩馆是分组标题；同馆每一场各自成卡，不再用一张大卡包住多场。 */
 .local-gym {
-  margin-bottom: 12rpx;
-  padding: 12rpx 20rpx 16rpx;
-  background-color: #fffcf3;
-  border-radius: 6rpx;
-  border: 1px solid #d8d9c9;
+  margin-bottom: 16rpx;
+  padding: 0 0 0 4rpx;
 }
 
 .local-gym-name {
   display: block;
   font-size: 26rpx;
   color: #526157;
-  padding: 4rpx 0 8rpx;
+  padding: 4rpx 0 10rpx;
 }
 
+/* 同馆多场：纵向排布，卡与卡之间留 12px 间距。 */
+.local-session-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+/* 一场一卡：中性细边框、卡内留白；整卡可点，命中区至少 44 逻辑像素高。 */
 .local-session-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  padding: 16rpx 4rpx;
-  border-top: 1rpx solid #dcdccc;
+  gap: 16rpx;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 16rpx 20rpx;
+  background-color: #fffcf3;
+  border: 1px solid #d8d9c9;
+  border-radius: 6rpx;
 }
 
 .local-session-main {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
 .local-session-label {
@@ -343,6 +356,7 @@
 }
 
 .local-session-count {
+  flex: none;
   font-size: 24rpx;
   color: #173d32;
 }

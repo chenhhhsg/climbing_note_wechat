@@ -34,6 +34,7 @@ const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record
 const RECORD_WXSS = path.join(ROOT, 'pages', 'training-record', 'training-record.wxss');
 const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.js');
 const ATTEMPTS_WXML = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.wxml');
+const ATTEMPTS_WXSS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.wxss');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const LIST_JS = path.join(ROOT, 'pages', 'record-list', 'record-list.js');
 const SUMMARY_PAGE_JS = path.join(ROOT, 'pages', 'training-summary', 'training-summary.js');
@@ -2655,4 +2656,79 @@ test('T043 记录 tab 一行直达原场小结，再回看原线路与跨日历�
   assert.equal(home.data.activeSession.id, flow.sessionId);
   assert.equal(home.data.activeSession.routeName, 'B 线');
   assert.equal(home.data.activeSession.attemptCountText, '4 把');
+});
+
+// ------------------------------------------------------------------ *
+// T044 逐把：一把一框
+// ------------------------------------------------------------------ *
+
+test('T044 逐把一把一框：完攀深绿、未完成深橙，描边 + 浅底 + 深底白字状态可辨', () => {
+  const wxml = fs.readFileSync(ATTEMPTS_WXML, 'utf8');
+  const wxss = fs.readFileSync(ATTEMPTS_WXSS, 'utf8');
+  const declarationsOf = selector =>
+    [...wxss.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+      .filter(match => match[1].split(',').map(text => text.trim()).includes(selector))
+      .map(match => match[2])
+      .join('\n');
+
+  // 一眼一框：卡框落在每一把上，卡与卡之间留 12px。
+  assert.match(declarationsOf('.attempts-list'), /gap:\s*12px/);
+  assert.match(declarationsOf('.attempt-item'), /border:\s*1px solid #D7DED9/, '兜底中性卡框');
+  assert.match(declarationsOf('.attempt-item'), /border-radius:\s*8rpx/);
+  assert.match(declarationsOf('.attempt-row-tap'), /min-height:\s*44px/, '整卡命中区至少 44 逻辑像素');
+  assert.doesNotMatch(declarationsOf('.attempt-item'), /border-bottom/, '不再用连续分隔线');
+
+  // 两种结果各一套：完攀深绿、未完成深橙；描边与浅色底同色系。
+  assert.match(declarationsOf('.attempt-item-send'), /border-color:\s*#1F5948/);
+  assert.match(declarationsOf('.attempt-item-send'), /background-color:\s*#EAF2EC/);
+  assert.match(declarationsOf('.attempt-item-fail'), /border-color:\s*#B04A1C/);
+  assert.match(declarationsOf('.attempt-item-fail'), /background-color:\s*#FBEEE3/);
+  // 结果是深底白字，并把「完攀 / 未完成」写出来。
+  assert.match(declarationsOf('.attempt-result'), /color:\s*#FFFFFF/);
+  assert.match(declarationsOf('.attempt-result-send'), /background-color:\s*#1F5948/);
+  assert.match(declarationsOf('.attempt-result-fail'), /background-color:\s*#B04A1C/);
+
+  // 行模板把结果映射到卡框与结果块，文字仍取原 resultText。
+  assert.match(
+    wxml,
+    /class="attempt-item \{\{item\.isSend \? 'attempt-item-send' : 'attempt-item-fail'\}\}"/
+  );
+  assert.match(
+    wxml,
+    /class="attempt-result \{\{item\.isSend \? 'attempt-result-send' : 'attempt-result-fail'\}\}">\{\{item\.resultText\}\}/
+  );
+
+  // 真实数据：未完成与完攀各一把，各占一框，状态文字与结果一一对应。
+  const started = store.startSession({
+    gymName: '卡框岩馆',
+    date: '2026-11-08',
+    now: new Date(2026, 10, 8, 9, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const created = store.createRoute({
+    sessionId: started.session.id,
+    name: '卡框顶绳线',
+    climbType: '顶绳',
+    grade: '5.10a'
+  });
+  assert.equal(created.ok, true, created.error);
+  const first = store.saveAttempt({
+    sessionId: started.session.id,
+    routeId: created.route.id,
+    result: 'fail',
+    now: new Date(2026, 10, 8, 9, 5)
+  });
+  const second = store.saveAttempt({
+    sessionId: started.session.id,
+    routeId: created.route.id,
+    result: 'send',
+    now: new Date(2026, 10, 8, 9, 10)
+  });
+  assert.equal(first.ok, true, first.error);
+  assert.equal(second.ok, true, second.error);
+
+  const page = openAttemptsFor(started.session.id, created.route.id);
+  assert.deepEqual(page.data.attempts.map(row => row.id), [first.attempt.id, second.attempt.id]);
+  assert.deepEqual(page.data.attempts.map(row => row.resultText), ['未完成', '完攀']);
+  assert.deepEqual(page.data.attempts.map(row => row.isSend), [false, true]);
 });

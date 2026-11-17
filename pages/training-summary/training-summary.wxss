@@ -1,8 +1,10 @@
 /**
- * 本次小结独立页样式（T034）
+ * 本次小结独立页样式（T034 / T044 一线一卡）
  *
  * T037：白色内容区 #FFFFFF、浅灰页底 #F2F4F3、深墨标题与正文 #182421、
  * 墨绿 #1F5948 标主操作、橙色 #FF793F 只标完攀；常用命中区至少 44×44 逻辑像素。
+ * T044：每条线一张中性细边框卡（与本场线路列表同一套卡框），卡间留 12px 间距，
+ * 长线路名与长备注在卡内换行。
  * 只保留这一页真正用到的规则：小结读数、只读回看选择器、各线分项与勾选入口。
  */
 
@@ -147,7 +149,7 @@ page {
 .summary-session-value-text { flex: 1; min-width: 0; font-size: 28rpx; color: #182421; word-break: break-all; }
 .summary-session-arrow { flex: none; font-size: 26rpx; color: #B7683D; }
 .summary-session-hint { display: block; margin-top: 10rpx; font-size: 22rpx; line-height: 1.6; color: #53615B; }
-.summary-row { background: #FFFFFF; border: 1px solid #D7DED9; border-radius: 8rpx; padding: 20rpx; margin-top: 12rpx; }
+.summary-row { background: #FFFFFF; border: 1px solid #D7DED9; border-radius: 8rpx; padding: 20rpx; margin-top: 12px; }
 .summary-row-main { display: flex; align-items: flex-start; }
 .summary-row .route-swatch { flex: none; margin-top: 6rpx; }
 .summary-row-info { flex: 1; min-width: 0; }
@@ -157,7 +159,7 @@ page {
 .summary-state { flex: none; font-size: 22rpx; padding: 4rpx 12rpx; border-radius: 8rpx; background: #E9EFEC; color: #1F5948; }
 .summary-state-done { background: #E9EFEC; color: #1F5948; }
 .summary-state-sent { background: #F7F1E2; color: #8A442E; }
-.summary-meta { display: block; font-size: 24rpx; color: #53615B; margin-top: 6rpx; }
+.summary-meta { display: block; font-size: 24rpx; color: #53615B; margin-top: 6rpx; word-break: break-all; }
 .summary-note { display: block; font-size: 24rpx; color: #53615B; margin-top: 6rpx; border-left: 4rpx solid #B7683D; padding-left: 14rpx; line-height: 1.5; word-break: break-all; }
 .summary-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16rpx; margin-top: 16rpx; }
 .summary-actions .summary-pick { flex: 1; min-width: 280rpx; margin: 0; }
