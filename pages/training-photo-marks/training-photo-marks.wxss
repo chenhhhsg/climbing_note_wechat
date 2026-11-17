@@ -1,0 +1,442 @@
+/**
+ * 线路照片大图 · 照片动作标记页样式（T040）
+ * 与线路历史、逐把视频同一套粉笔白 + 深绿配色；本页放大主图，标记点按原图归一化位置复原。
+ */
+
+page {
+  background-color: #F2F4F3;
+}
+
+.page {
+  padding: 12px 12px 28px;
+  background-color: #F2F4F3;
+}
+
+.card {
+  background-color: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
+  padding: 16px;
+  margin-bottom: 12px;
+}
+
+.card-title {
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.35;
+  font-weight: 700;
+  font-size: 32rpx;
+  color: #182421;
+  margin-bottom: 16rpx;
+}
+
+/* 错误与提示 */
+.error-card {
+  background-color: #F7E6DB;
+}
+
+.error-title {
+  display: block;
+  font-size: 32rpx;
+  font-weight: bold;
+  color: #943A23;
+  margin-bottom: 12rpx;
+}
+
+.error-text {
+  display: block;
+  font-size: 26rpx;
+  color: #813323;
+  margin-bottom: 10rpx;
+}
+
+.error-hint {
+  display: block;
+  font-size: 24rpx;
+  color: #53615B;
+  margin-bottom: 20rpx;
+}
+
+.notice {
+  background-color: #E9EFEC;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  margin-bottom: 20rpx;
+}
+
+.notice-text {
+  display: block;
+  font-size: 26rpx;
+  color: #182421;
+}
+
+.notice-hint {
+  display: block;
+  font-size: 22rpx;
+  color: #53615B;
+  margin-top: 8rpx;
+}
+
+.primary-button {
+  background-color: #1F5948;
+  color: #FFFFFF;
+  border-radius: 8rpx;
+  font-size: 30rpx;
+}
+
+.primary-button::after,
+.secondary-button::after,
+.text-button::after {
+  border: none;
+}
+
+.secondary-button {
+  background-color: #FFFFFF;
+  color: #1F5948;
+  border: 2rpx solid #1F5948;
+  border-radius: 8rpx;
+  font-size: 30rpx;
+}
+
+.text-button {
+  background-color: transparent;
+  color: #1F5948;
+  font-size: 28rpx;
+  margin-top: 12rpx;
+}
+
+.primary-button,
+.secondary-button,
+.text-button {
+  min-height: 44px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1.4;
+}
+
+/* 线路头部：只读展示照片属于哪条线 */
+.route-header {
+  position: relative;
+  overflow: hidden;
+  background: #FFFFFF;
+  border: 1px solid #D7DED9;
+  color: #182421;
+  padding: 24rpx 26rpx 20rpx;
+}
+
+.route-title-row {
+  display: flex;
+  align-items: flex-start;
+  flex-wrap: wrap;
+  gap: 8rpx 16rpx;
+}
+
+.route-swatch {
+  position: absolute;
+  width: 9rpx;
+  height: 100%;
+  left: 0;
+  top: 0;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.route-title-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.route-grade-display {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 52px;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 0 10rpx;
+  border-radius: 6rpx;
+  background: #E9EFEC;
+  color: #1F5948;
+  font: 700 36rpx/1.2 "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.route-name {
+  display: block;
+  margin: 12rpx 0 4rpx;
+  color: #182421;
+  font: 700 40rpx/1.3 -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  word-break: break-all;
+}
+
+.route-meta,
+.route-gym {
+  display: block;
+  color: #53615B;
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.empty-card {
+  background-color: #FFFFFF;
+}
+
+.empty-title {
+  display: block;
+  font-size: 30rpx;
+  font-weight: bold;
+  color: #182421;
+  margin-bottom: 12rpx;
+}
+
+.empty-hint {
+  display: block;
+  font-size: 26rpx;
+  color: #53615B;
+}
+
+.page-hint {
+  display: block;
+  margin-top: 12rpx;
+  font-size: 23rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+
+/* ---- 线路主照片：展示完整主图，保存必须由用户确认 ---- */
+.photo-card {
+  border: 2rpx dashed #D7DED9;
+}
+
+.photo-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.photo-title {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  line-height: 1.35;
+  font-weight: 700;
+  font-size: 32rpx;
+  color: #182421;
+}
+
+.photo-note {
+  font-size: 22rpx;
+  color: #53615B;
+}
+
+.photo-main,
+.photo-preview,
+.photo-thumb {
+  display: block;
+  width: 100%;
+  height: 420rpx;
+  margin-top: 16rpx;
+  background-color: #E9EFEC;
+  border-radius: 4rpx;
+}
+
+.photo-thumb {
+  height: 300rpx;
+}
+
+.photo-status {
+  display: block;
+  margin-top: 14rpx;
+  font-size: 26rpx;
+  font-weight: bold;
+  color: #182421;
+}
+
+.photo-status-busy {
+  color: #8A442E;
+}
+
+.photo-status-error {
+  color: #943A23;
+}
+
+.photo-meta {
+  display: block;
+  margin-top: 4rpx;
+  font-size: 22rpx;
+  color: #53615B;
+}
+
+.photo-error-detail {
+  display: block;
+  margin-top: 6rpx;
+  font-size: 23rpx;
+  color: #813323;
+  line-height: 1.45;
+}
+
+.photo-hint {
+  display: block;
+  margin-top: 8rpx;
+  font-size: 22rpx;
+  color: #53615B;
+  line-height: 1.5;
+}
+
+.photo-actions {
+  display: flex;
+  align-items: center;
+  margin-top: 8rpx;
+}
+
+.photo-action {
+  flex: 1;
+  min-height: 44px;
+  line-height: 80rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-action + .photo-action {
+  margin-left: 14rpx;
+}
+
+.photo-remove {
+  flex: none;
+  margin: 14rpx 0 0 18rpx;
+  color: #943A23;
+}
+
+.photo-source-row {
+  display: flex;
+  margin-top: 10rpx;
+}
+
+.photo-source {
+  flex: 1;
+  min-height: 44px;
+  line-height: 84rpx;
+  margin-top: 14rpx;
+  font-size: 28rpx;
+}
+
+.photo-source + .photo-source {
+  margin-left: 14rpx;
+}
+
+/* ---- 照片卡点标记：只动本机标记记录，图上的点按原图归一化位置复原 ---- */
+/* 显示区即照片本身的矩形：标记的像素位置由这个矩形与原图尺寸换算出，不能有内边距。 */
+.photo-mark-stage {
+  position: relative;
+  margin-top: 16rpx;
+  border-radius: 4rpx;
+  overflow: hidden;
+  background: #E9EFEC;
+}
+.photo-mark-stage .photo-main { margin-top: 0; }
+.photo-mark-stage-active { outline: 4rpx solid #FF793F; outline-offset: -4rpx; }
+
+.mark-pin {
+  position: absolute;
+  z-index: 2;
+  min-width: 44rpx;
+  height: 44rpx;
+  padding: 0 10rpx;
+  box-sizing: border-box;
+  border-radius: 22rpx;
+  transform: translate(-50%, -50%);
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 24rpx;
+  line-height: 44rpx;
+  text-align: center;
+  color: #FFFFFF;
+  background: #1F5948;
+  box-shadow: 0 2rpx 8rpx rgba(23, 61, 50, 0.35);
+}
+/* 手法与脚法用不同底色，图上不用读字也能区分。 */
+.mark-pin-hand { background: #FF793F; }
+.mark-pin-foot { background: #1F5948; }
+.mark-pin-selected { outline: 4rpx solid #FF793F; outline-offset: 2rpx; }
+.mark-pin-draft { background: #B7683D; opacity: 0.9; }
+
+.mark-card { background: #F2F4F3; border: 1px solid #D7DED9; padding: 24rpx; }
+.mark-head { display: flex; align-items: center; justify-content: space-between; gap: 16rpx; }
+.mark-title {
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  font-weight: 700;
+  font-size: 32rpx;
+  color: #182421;
+}
+.mark-count { font-size: 24rpx; padding: 6rpx 16rpx; border-radius: 8rpx; background: #E9EFEC; color: #1F5948; }
+.mark-hint, .mark-warn, .mark-notice, .mark-error {
+  display: block;
+  margin-top: 10rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+.mark-warn { color: #8A442E; }
+.mark-notice { color: #1F5948; }
+.mark-error { color: #9C3D22; }
+
+.mark-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 16rpx; margin-top: 16rpx; }
+.mark-actions .mark-action { flex: 1; min-width: 260rpx; margin: 0; }
+.mark-delete { color: #745241; }
+
+.mark-editor { margin-top: 20rpx; padding-top: 20rpx; border-top: 1px solid #D7DED9; }
+.mark-editor-title { display: block; font-size: 27rpx; font-weight: 700; color: #182421; }
+.mark-kind-row { display: flex; gap: 16rpx; margin-top: 14rpx; }
+.mark-kind {
+  flex: 1;
+  min-height: 44px;
+  line-height: 72rpx;
+  margin: 0;
+  font-size: 27rpx;
+  border-radius: 8rpx;
+  background: #FFFFFF;
+  color: #182421;
+  border: 2rpx solid #D7DED9;
+}
+.mark-kind::after { border: none; }
+.mark-kind-active { background: #1F5948; color: #FFFFFF; border-color: #1F5948; }
+.mark-input {
+  margin-top: 16rpx;
+  padding: 20rpx;
+  min-height: 44px;
+  box-sizing: border-box;
+  font-size: 28rpx;
+  color: #182421;
+  background: #FFFFFF;
+  border: 2rpx solid #D7DED9;
+  border-radius: 8rpx;
+}
+
+.mark-list { margin-top: 20rpx; }
+.mark-list-title { display: block; font-size: 26rpx; font-weight: 700; color: #182421; margin-bottom: 8rpx; }
+/* 清单行是图片小编号的等效选择入口：整行至少 44px 高，编号本身保持原定位大小 */
+.mark-item {
+  display: flex;
+  align-items: center;
+  gap: 14rpx;
+  min-height: 44px;
+  box-sizing: border-box;
+  padding: 8px 0;
+  border-bottom: 1px solid #D7DED9;
+}
+.mark-item-index {
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-size: 24rpx;
+  min-width: 44rpx;
+  height: 44rpx;
+  line-height: 44rpx;
+  text-align: center;
+  border-radius: 22rpx;
+  color: #FFFFFF;
+  background: #1F5948;
+}
+.mark-item-kind { font-size: 26rpx; color: #8A442E; }
+.mark-item-text { flex: 1; font-size: 27rpx; color: #182421; word-break: break-all; }

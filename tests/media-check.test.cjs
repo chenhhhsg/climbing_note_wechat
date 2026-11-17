@@ -663,6 +663,7 @@ test('V05 根配置排除实验目录，正式路由与 tabBar 相对基线无�
     'pages/training-summary/training-summary',
     'pages/training-wishlist/training-wishlist',
     'pages/training-route/training-route',
+    'pages/training-photo-marks/training-photo-marks',
     'pages/training-record/training-record',
     'pages/training-attempts/training-attempts',
     'pages/attempt-video/attempt-video',

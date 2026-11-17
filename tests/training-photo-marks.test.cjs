@@ -30,6 +30,10 @@ const MARKS_JS = path.join(ROOT, 'utils', 'training-photo-marks.js');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wxml');
 const ROUTE_WXSS = path.join(ROOT, 'pages', 'training-route', 'training-route.wxss');
+// T040：标记编辑移到独立大图页，历史页只留缩略图与数量入口。
+const MARKS_PAGE_JS = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.js');
+const MARKS_PAGE_WXML = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.wxml');
+const MARKS_PAGE_WXSS = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.wxss');
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 const PHOTO_KEY = 'climbingNote.training.v1.photos';
@@ -73,6 +77,7 @@ function resetDevice() {
   geometry.modalConfirm = true;
   wxLog.navigations = [];
   wxLog.toasts = [];
+  wxLog.unloadAlerts = [];
 }
 
 function setStageRect(rect) {
@@ -126,7 +131,7 @@ function flushImageInfo() {
   return pending.length;
 }
 
-const wxLog = { navigations: [], toasts: [] };
+const wxLog = { navigations: [], toasts: [], unloadAlerts: [] };
 
 global.wx = {
   getStorageSync(key) {
@@ -157,6 +162,13 @@ global.wx = {
   switchTab() {},
   showToast(options) {
     wxLog.toasts.push(options);
+  },
+  // T040：有未保存草稿时的返回确认。
+  enableAlertBeforeUnload(options) {
+    wxLog.unloadAlerts.push({ type: 'enable', message: (options || {}).message || '' });
+  },
+  disableAlertBeforeUnload() {
+    wxLog.unloadAlerts.push({ type: 'disable' });
   },
   showModal(options) {
     const result = { confirm: geometry.modalConfirm, cancel: !geometry.modalConfirm };
@@ -228,6 +240,7 @@ function capturePage(jsPath) {
 }
 
 const routeDefinition = capturePage(ROUTE_JS);
+const marksPageDefinition = capturePage(MARKS_PAGE_JS);
 
 /** 页面实例替身：支持 wx 的 setData 数据路径写法。 */
 function createPage(definition) {
@@ -331,13 +344,34 @@ function photoUi(initial) {
 }
 
 /**
- * 打开详情页：onLoad 会重建照片控制器，因此在 onLoad 之后换成只回答展示状态的替身，
- * 再按最新档案重算页面（含照片与卡点），与 T027 测试里的做法一致。
+ * 打开大图标记页（T040）：入口带档案、线路与照片 ID；onLoad 会重建照片控制器，
+ * 因此在 onLoad 之后换成只回答展示状态的替身，再按最新档案重算页面（含照片与卡点）。
  */
-async function openRoutePage(routeId, view) {
+async function openMarksPage(routeId, view, photoId) {
+  const ui = photoUi(view);
+  const page = createPage(marksPageDefinition);
+  page.onLoad({
+    archiveId: archiveIdOf(),
+    routeId,
+    photoId: typeof photoId === 'string' ? photoId : (view && view.photoId) || ''
+  });
+  page._photoUi = ui;
+  page.refreshView();
+  page.applyPhotoView();
+  await settle();
+  return { page, ui };
+}
+
+/**
+ * 打开线路历史（T040）：有照片时只展示缩略图与标记数量，读取真实标记记录。
+ */
+async function openHistoryPage(routeId, view) {
   const ui = photoUi(view);
   const page = createPage(routeDefinition);
-  page.onLoad({ routeId });
+  page.onLoad({
+    archiveId: archiveIdOf(),
+    routeId
+  });
   page._photoUi = ui;
   page.refreshView();
   page.applyPhotoView();
@@ -1116,7 +1150,7 @@ test('T028 详情页：左右各加一条提示并保存，重开与换大小后
   const route = newRoute(session);
   record(session, route, 'fail', '起步用右脚', '2026-11-09T10:00:00');
 
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   assert.equal(page.data.marksReady, true);
   assert.equal(page.data.markList.length, 0);
 
@@ -1176,7 +1210,7 @@ test('T028 详情页：左右各加一条提示并保存，重开与换大小后
   });
 
   // 重开：新页面实例上的标记与位置完全一致。
-  const reopened = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const reopened = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   assert.equal(reopened.page.data.markPoints.length, 2);
   assert.deepEqual(
     reopened.page.data.markPoints.map(pin => [pin.markId, pin.kind, pin.text]),
@@ -1212,7 +1246,7 @@ test('T028 详情页：左右各加一条提示并保存，重开与换大小后
 test('T028 详情页：点留白不生成点，落点后可保存、移动、改字、删除且互不影响', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
 
   // 点在照片外的留白：不生成点、不落盘，并有可见提示。
@@ -1290,7 +1324,7 @@ test('T028 详情页：点留白不生成点，落点后可保存、移动、改
 test('T028 详情页：取消更换保留原标记，确认换图后旧点不叠在新图', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page, ui } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page, ui } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   await page.tapPhotoStage(tapAt(75, 181.875));
   page.onMarkTextInput({ detail: { value: '左脚踩这里' } });
@@ -1328,7 +1362,7 @@ test('T028 详情页：取消更换保留原标记，确认换图后旧点不叠
 test('T028 详情页：写失败不报已保存，序号不消耗，重试后只有一条', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   await page.tapPhotoStage(tapAt(75, 181.875));
   page.onMarkTextInput({ detail: { value: '左脚踩这里' } });
@@ -1354,7 +1388,7 @@ test('T028 详情页：写失败不报已保存，序号不消耗，重试后只
 test('T028 详情页：迟到回调有可见处理，不把旧点位写到新照片上', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page, ui } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page, ui } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
 
   // 读图片尺寸的迟到回调：期间换了主照片，这次点击必须作废。
@@ -1403,7 +1437,7 @@ test('T028 详情页：迟到回调有可见处理，不把旧点位写到新照
 test('T028 详情页：换图前落下的草稿不能在确认换图后存到新照片上，取消更换则保留', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page, ui } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page, ui } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
 
   // 先存下一条旧照片上的标记。
@@ -1453,7 +1487,7 @@ test('T028 详情页：换图前落下的草稿不能在确认换图后存到新
 test('T028 详情页：移除主照片后旧草稿、选中与编辑区一并失效，已保存的标记仍在存储里', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page, ui } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page, ui } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   await page.tapPhotoStage(tapAt(75, 181.875));
   page.onMarkTextInput({ detail: { value: '移除前的标记' } });
@@ -1480,7 +1514,7 @@ test('T028 详情页：移除主照片后旧草稿、选中与编辑区一并失
 test('T028 详情页：移动 A 期间改选 B，A 的迟到测量不得把 B 挪走，正常移动仍能完成', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   await page.tapPhotoStage(tapAt(60, 150));
   page.onMarkTextInput({ detail: { value: 'A 的提示' } });
@@ -1529,7 +1563,7 @@ test('T028 详情页：移动 A 期间改选 B，A 的迟到测量不得把 B �
 test('T028 详情页：退出或重进标记模式后，旧点击的测量不得重新打开编辑区', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   const realQuery = page.queryMarkStageRect.bind(page);
   const box = await realQuery();
@@ -1572,7 +1606,7 @@ test('T028 详情页：退出或重进标记模式后，旧点击的测量不得
 test('T028 详情页：换屏后较早的一次显示框测量不得把标记恢复回旧屏位置', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   await page.tapPhotoStage(tapAt(75, 181.875));
   page.onMarkTextInput({ detail: { value: '左脚踩这里' } });
@@ -1617,7 +1651,7 @@ test('T028 详情页：换屏后较早的一次显示框测量不得把标记恢
 test('T028 详情页：写前失败与回执丢失后重试都只留一条，另一份同坐标草稿仍是两条', async () => {
   const session = startAt('2026-11-09', 'A 馆');
   const route = newRoute(session);
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   await page.enterMarkMode();
   await page.tapPhotoStage(tapAt(75, 181.875));
   page.onMarkTextInput({ detail: { value: '定位同一次落点' } });
@@ -1670,7 +1704,7 @@ test('T028 详情页：无图与原图缺失都有可见处理，且不丢已写
   marks.addMark(Object.assign({ x: 0.2, y: 0.4, text: '左脚踩这里' }, where));
 
   // 还没有主照片：不显示点，写入口给出可见原因，原标记仍在存储里。
-  const noPhoto = await openRoutePage(route.id, noPhotoView());
+  const noPhoto = await openMarksPage(route.id, noPhotoView());
   assert.equal(noPhoto.page.data.markPoints.length, 0);
   assert.equal(noPhoto.page.data.markList.length, 0, '没有照片 ID 时不猜归属');
   const refusedEnter = await noPhoto.page.enterMarkMode();
@@ -1684,7 +1718,7 @@ test('T028 详情页：无图与原图缺失都有可见处理，且不丢已写
   assert.equal(storedMarks().marks.length, 1, '原标记不得被清掉');
 
   // 原图缺失（文件被系统清理）：点不显示，但文字清单仍能读回，写入口被收回。
-  const missing = await openRoutePage(route.id, missingPhotoView('photo-1'));
+  const missing = await openMarksPage(route.id, missingPhotoView('photo-1'));
   assert.equal(missing.page.data.markPoints.length, 0, '照片不可用时不上图');
   assert.equal(missing.page.data.markList.length, 1);
   assert.equal(missing.page.data.markList[0].textText, '左脚踩这里');
@@ -1713,7 +1747,7 @@ test('T028 详情页：读不到照片尺寸时可见提示，文字清单照常
   });
 
   delete geometry.images[PHOTO_MAIN];
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   assert.match(page.data.markLayoutError, /显示尺寸/);
   assert.equal(page.data.markPoints.length, 0, '没有布局时不上图');
   assert.equal(page.data.markList.length, 1, '文字清单照常可读');
@@ -1746,7 +1780,7 @@ test('T028 详情页：首次进入显示区还没布局好，主图加载完成
 
   // 量到空矩形（主图还没渲染出来）：不上图，但有可见原因，文字清单照常。
   geometry.rects[STAGE] = { left: 20, top: 300, width: 0, height: 0 };
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   assert.equal(page.data.markPoints.length, 0);
   assert.match(page.data.markLayoutError, /显示尺寸/);
   assert.equal(page.data.markList.length, 1);
@@ -1772,7 +1806,7 @@ test('T028 详情页：标记记录损坏时显示可见错误并收回写入口
   storage.set(MARKS_KEY, broken);
   const archiveBefore = rawOf(ARCHIVE_KEY);
 
-  const { page } = await openRoutePage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
   assert.equal(page.data.marksReady, false);
   assert.match(page.data.marksError, /损坏/);
   assert.equal(page.data.markList.length, 0);
@@ -1789,8 +1823,8 @@ test('T028 详情页：标记记录损坏时显示可见错误并收回写入口
   assert.equal(page.data.notFound, false);
 });
 
-test('T028 WXML 绑定核对：卡点入口绑定真实处理函数，图层与清单都在正式页面上', () => {
-  const wxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+test('T040 大图页与历史页绑定核对：标记入口绑定真实处理函数，历史只留缩略图与数量', () => {
+  const wxml = fs.readFileSync(MARKS_PAGE_WXML, 'utf8');
   const handlers = handlersIn(wxml);
   for (const handler of [
     'tapPhotoStage',
@@ -1805,26 +1839,37 @@ test('T028 WXML 绑定核对：卡点入口绑定真实处理函数，图层与�
     'deleteMarkPoint',
     'dismissMarkNotice',
     'dismissMarkSaveError',
-    'reloadMarkImage'
+    'reloadMarkImage',
+    'chooseRoutePhoto',
+    'confirmRoutePhoto',
+    'cancelRoutePhoto',
+    'removeRoutePhoto',
+    'previewRoutePhoto',
+    'retryRoutePhoto',
+    'dismissRoutePhotoFailure'
   ]) {
-    assert.ok(handlers.includes(handler), '线路详情页应绑定：' + handler);
-    assert.equal(typeof routeDefinition[handler], 'function', '缺少处理器：' + handler);
+    assert.ok(handlers.includes(handler), '大图页应绑定：' + handler);
+    assert.equal(typeof marksPageDefinition[handler], 'function', '缺少处理器：' + handler);
   }
   // 文字输入走 bindinput，图片加载完成后的补测量走 bindload，与点击事件分开核对。
   assert.match(wxml, /bindinput="onMarkTextInput"/);
-  assert.equal(typeof routeDefinition.onMarkTextInput, 'function');
+  assert.equal(typeof marksPageDefinition.onMarkTextInput, 'function');
   assert.match(wxml, /bindload="onMarkImageLoad"/);
-  assert.equal(typeof routeDefinition.onMarkImageLoad, 'function');
+  assert.equal(typeof marksPageDefinition.onMarkImageLoad, 'function');
 
-  // 每个绑定都必须有真实处理器（与 T018/T027 的既有约定一致）。
+  // 每个绑定都必须有真实处理器（与既有约定一致）。
   handlers.forEach(handler => {
-    assert.equal(typeof routeDefinition[handler], 'function', '绑定缺少处理器：' + handler);
+    assert.equal(typeof marksPageDefinition[handler], 'function', '绑定缺少处理器：' + handler);
   });
 
   // 图层、编辑区与文字清单的真实入口，以及按原图归一化保存的点位。
   [
     'route-photo-stage',
     'route-photo-main',
+    'route-photo-preview',
+    'route-photo-remove',
+    'route-photo-camera',
+    'route-photo-album',
     'mark-card',
     'mark-enter',
     'mark-editor',
@@ -1835,16 +1880,57 @@ test('T028 WXML 绑定核对：卡点入口绑定真实处理函数，图层与�
     'mark-delete',
     'mark-list'
   ].forEach(id => {
-    assert.ok(wxml.indexOf('id="' + id + '"') !== -1, '线路详情页缺少 ' + id);
+    assert.ok(wxml.indexOf('id="' + id + '"') !== -1, '大图页缺少 ' + id);
   });
   assert.match(wxml, /data-mark-id="\{\{item\.markId\}\}"/);
   assert.match(wxml, /style="left:\{\{item\.leftPx\}\}px; top:\{\{item\.topPx\}\}px;"/);
 
-  // 页面与标记层只走正式本机模块。
+  // 线路历史（T040）：有照片时只有可点击缩略图与「照片动作标记 · N 个」入口，
+  // 不再铺主图、标记编辑区、换图或移除按钮；无照片时保留添加入口。
+  const historyWxml = fs.readFileSync(ROUTE_WXML, 'utf8');
+  assert.match(historyWxml, /id="route-photo-thumb-link"[\s\S]{0,240}bindtap="openPhotoMarks"/);
+  assert.match(historyWxml, /id="route-photo-thumb"/);
+  assert.match(historyWxml, /id="photo-marks-entry"[\s\S]{0,240}bindtap="openPhotoMarks"/);
+  assert.match(historyWxml, /\{\{photoMarkCountText \|\| '照片动作标记'\}\}/);
+  assert.equal(historyWxml.indexOf('id="mark-card"'), -1, '历史不再铺标记编辑卡');
+  assert.equal(historyWxml.indexOf('id="route-photo-stage"'), -1, '历史不再铺大图标记图层');
+  assert.equal(historyWxml.indexOf('bindtap="removeRoutePhoto"'), -1, '换图与移除入口在大图页');
+  assert.equal(historyWxml.indexOf('bindtap="saveMarkDraft"'), -1);
+  assert.match(historyWxml, /id="route-photo-camera"[\s\S]{0,240}bindtap="chooseRoutePhoto"/);
+  const historyHandlers = handlersIn(historyWxml);
+  historyHandlers.forEach(handler => {
+    assert.equal(typeof routeDefinition[handler], 'function', '历史页绑定缺少处理器：' + handler);
+  });
+
+  // 两个页面都只走正式本机模块；标记图层样式在大图页。
+  assert.match(fs.readFileSync(MARKS_PAGE_JS, 'utf8'), /utils\/training-photo-marks/);
   assert.match(fs.readFileSync(ROUTE_JS, 'utf8'), /utils\/training-photo-marks/);
-  const wxss = fs.readFileSync(ROUTE_WXSS, 'utf8');
+  const wxss = fs.readFileSync(MARKS_PAGE_WXSS, 'utf8');
   assert.match(wxss, /\.photo-mark-stage\s*\{[^}]*position:\s*relative/);
   assert.match(wxss, /\.mark-pin\s*\{[^}]*position:\s*absolute/);
+
+  // 新路由与四件套入正式包，tabBar 与旧路由保持不变。
+  const appJson = JSON.parse(fs.readFileSync(path.join(ROOT, 'app.json'), 'utf8'));
+  assert.ok(
+    appJson.pages.includes('pages/training-photo-marks/training-photo-marks'),
+    '大图标记页必须注册进 app.json'
+  );
+  for (const ext of ['.js', '.json', '.wxml', '.wxss']) {
+    assert.ok(
+      fs.existsSync(path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks' + ext)),
+      '缺少大图标记页文件 training-photo-marks' + ext
+    );
+  }
+  assert.deepEqual(
+    appJson.tabBar.list.map(item => item.pagePath),
+    [
+      'pages/index/index',
+      'pages/record-list/record-list',
+      'pages/stats/stats',
+      'pages/profile/profile'
+    ],
+    'tabBar 相对基线不变'
+  );
 });
 
 test('T028 标记层与页面不接云、不写旧记录、不烧照片也不上传', () => {
@@ -1859,7 +1945,151 @@ test('T028 标记层与页面不接云、不写旧记录、不烧照片也不上
   assert.match(source, /store\.NAMESPACE \+ 'photo-marks'/);
   assert.equal(marks.MARKS_KEY, 'climbingNote.training.v1.photo-marks');
 
-  const pageSource = fs.readFileSync(ROUTE_JS, 'utf8');
-  assert.ok(!/wx\.cloud/.test(pageSource), '线路详情页不应直接用 wx.cloud');
-  assert.ok(!/uploadFile|uploadImage/.test(pageSource), '详情页不得上传照片或标记');
+  for (const pagePath of [ROUTE_JS, MARKS_PAGE_JS]) {
+    const pageSource = fs.readFileSync(pagePath, 'utf8');
+    assert.ok(!/wx\.cloud/.test(pageSource), pagePath + ' 不应直接用 wx.cloud');
+    assert.ok(!/uploadFile|uploadImage/.test(pageSource), pagePath + ' 不得上传照片或标记');
+  }
+});
+
+// ================================================================== *
+// 四、T040 页面分工：历史只留缩略图与数量，大图页按入口版本读取
+// ================================================================== *
+
+test('T040 历史：有图时显示缩略图与当前照片版本的标记数量，返回后刷新数量', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const where = { archiveId: archiveIdOf(), routeId: route.id, photoId: 'photo-1' };
+  marks.addMark(Object.assign({ x: 0.2, y: 0.4, kind: 'foot', text: '左脚踩这里' }, where));
+
+  const { page } = await openHistoryPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  assert.equal(page.data.photoMarkCount, 1);
+  assert.equal(page.data.photoMarkCountText, '照片动作标记 · 1 个');
+  assert.equal(page.data.photoMarksError, '');
+
+  // 从二级页保存回来后 onShow 重读：数量立刻变，历史不持有标记编辑状态。
+  marks.addMark(Object.assign({ x: 0.8, y: 0.6, kind: 'hand', text: '右手抓这个点' }, where));
+  page.onShow();
+  await settle();
+  assert.equal(page.data.photoMarkCount, 2);
+  assert.equal(page.data.photoMarkCountText, '照片动作标记 · 2 个');
+
+  // 照片已经不可用但记录还在：入口仍可打开，数量照常读回。
+  page._photoUi.set(missingPhotoView('photo-1'));
+  page.applyPhotoView();
+  await settle();
+  assert.equal(page.data.photoMarkCountText, '照片动作标记 · 2 个');
+
+  // 没有照片时不猜归属：不显示数量入口。
+  page._photoUi.set(noPhotoView());
+  page.applyPhotoView();
+  await settle();
+  assert.equal(page.data.photoMarkCount, 0);
+  assert.equal(page.data.photoMarkCountText, '');
+});
+
+test('T040 历史：缩略图入口按渲染这一刻的三个 ID 打开大图页，过期入口不再跳到另一张图', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page } = await openHistoryPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  const archiveId = archiveIdOf();
+
+  // 当前入口：带齐档案、线路与照片 ID 打开大图页。
+  page.openPhotoMarks(tapDataset({ archiveId, routeId: route.id, photoId: 'photo-1' }));
+  assert.equal(wxLog.navigations.length, 1);
+  assert.equal(
+    wxLog.navigations[0],
+    '/pages/training-photo-marks/training-photo-marks?archiveId=' +
+      encodeURIComponent(archiveId) +
+      '&routeId=' +
+      encodeURIComponent(route.id) +
+      '&photoId=photo-1'
+  );
+
+  // 另一页刚换了照片：旧入口不得按 photo-1 打开，也不得把操作落到 photo-2 上。
+  page._photoUi.set(savedPhotoView('photo-2', PHOTO_MAIN_2));
+  page.applyPhotoView();
+  await settle();
+  page.openPhotoMarks(tapDataset({ archiveId, routeId: route.id, photoId: 'photo-1' }));
+  assert.equal(wxLog.navigations.length, 1, '过期入口不得打开另一张图');
+  assert.match(page.data.notice, /已经变化/);
+});
+
+test('T040 大图页：按当前照片版本显示，入口照片已被更换时旧点不叠加也不写进新图', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  marks.addMark({
+    archiveId: archiveIdOf(),
+    routeId: route.id,
+    photoId: 'photo-1',
+    x: 0.2,
+    y: 0.4,
+    text: '旧照片的点'
+  });
+  marks.addMark({
+    archiveId: archiveIdOf(),
+    routeId: route.id,
+    photoId: 'photo-2',
+    x: 0.7,
+    y: 0.3,
+    text: '新照片的点'
+  });
+
+  // 入口带来的是 photo-1，但本机当前照片已经是 photo-2。
+  setImageSize(PHOTO_MAIN_2, 1200, 1600);
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-2', PHOTO_MAIN_2), 'photo-1');
+  assert.equal(page.data.routePhoto.photoId, 'photo-2');
+  assert.match(page.data.photoChangedNotice, /照片已经更换/);
+  assert.match(page.data.markHiddenText, /另有 1 条卡点属于这张线路的旧照片/, '入口照片的旧点不叠加在当前照片上');
+  assert.deepEqual(page.data.markList.map(item => item.textText), ['新照片的点']);
+  assert.equal(page.data.markPoints.length, 1);
+
+  // 落点保存写到当前照片 photo-2，旧照片上的点保持原值。
+  await page.enterMarkMode();
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  page.onMarkTextInput({ detail: { value: '在新图上新增' } });
+  assert.equal(page.saveMarkDraft().ok, true);
+  assert.equal(listedMarks(route.id, 'photo-2').length, 2);
+  assert.equal(listedMarks(route.id, 'photo-1').length, 1);
+  assert.equal(listedMarks(route.id, 'photo-1')[0].text, '旧照片的点');
+});
+
+test('T040 大图页：有未保存草稿时启用返回确认，保存后解除', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const { page } = await openMarksPage(route.id, savedPhotoView('photo-1', PHOTO_MAIN));
+  await page.enterMarkMode();
+  assert.equal(wxLog.unloadAlerts.length, 0, '还没落点时不打扰');
+
+  await page.tapPhotoStage(tapAt(75, 181.875));
+  assert.ok(page.data.markDraft);
+  const enabled = wxLog.unloadAlerts.filter(item => item.type === 'enable');
+  assert.equal(enabled.length, 1, '有草稿时应启用返回确认');
+  assert.match(enabled[0].message, /未保存/);
+
+  // 改一个字仍然算未保存；保存成功后解除。
+  page.onMarkTextInput({ detail: { value: '左脚踩这里' } });
+  page.saveMarkDraft();
+  assert.equal(page.data.markDraft, null);
+  assert.equal(wxLog.unloadAlerts.filter(item => item.type === 'disable').length >= 1, true);
+  page.onUnload();
+  assert.equal(wxLog.unloadAlerts.filter(item => item.type === 'enable').length, 1, '保存后不再重复启用');
+});
+
+test('T040 大图页：入口属于另一份本机档案时不展示、不受理写入', async () => {
+  const session = startAt('2026-11-09', 'A 馆');
+  const route = newRoute(session);
+  const page = createPage(marksPageDefinition);
+  page.onLoad({ archiveId: 'archive-other', routeId: route.id, photoId: 'photo-1' });
+  await settle();
+  assert.equal(page.data.ready, true);
+  assert.match(page.data.claimError, /另一份本机档案/);
+  assert.equal(page.data.route, null);
+  assert.equal(page.data.routePhoto, null);
+  assert.equal(page.data.markList.length, 0);
+
+  page.setData({ markMode: true });
+  const outcome = await page.tapPhotoStage(tapAt(75, 181.875));
+  assert.equal(outcome, null);
+  assert.equal(rawOf(MARKS_KEY), '', '不展示任何线路内容时也不写标记');
 });

@@ -84,6 +84,7 @@ const APPROVED_PAGE_DIRS = [
   'pages/training-summary',
   'pages/training-wishlist',
   'pages/training-route',
+  'pages/training-photo-marks',
   'pages/training-record',
   'pages/training-attempts',
   'pages/attempt-video',
