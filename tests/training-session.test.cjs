@@ -2438,7 +2438,7 @@ function rowOf(page) {
   return page.data.recentAttempt;
 }
 
-test('T033 最近一把操作区在结果按钮之后：写线路名、原序号与结果，撤回按钮只在这一把有效时出现', () => {
+test('T050 最新一把「更多」在结果按钮之后：菜单只列原资格允许的动作，撤回后原行给恢复', () => {
   const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
   const empty = openRecordPage();
   assert.equal(empty.data.recentAttempt, null, '这条线还没有已提交把次时不显示操作区');
@@ -2456,13 +2456,27 @@ test('T033 最近一把操作区在结果按钮之后：写线路名、原序号
   assert.equal(wxml.indexOf('id="record-links"'), -1, '现场入口区已移除');
   assert.doesNotMatch(wxml, /id="route-photo-card"/, '单线页不再铺照片卡');
 
-  // 最近一把那一行里，撤回与恢复是两个并排的独立槽：左槽撤回、右槽恢复。
-  const changeStart = wxml.indexOf('class="record-attempt-change"');
-  const undoSlotStart = wxml.indexOf('class="record-attempt-change-slot"');
-  const recoveryStart = wxml.indexOf('class="record-attempt-change-restore"');
-  assert.ok(changeStart !== -1 && undoSlotStart !== -1 && recoveryStart !== -1);
-  assert.ok(changeStart < undoSlotStart, '左槽先排撤回');
-  assert.ok(undoSlotStart < recoveryStart, '恢复是右槽里的另一个按钮');
+  // T050：最新一把右侧「更多」展开纵向菜单——「改为未完成」与「撤回误记」各占一整行，
+  // 撤回后原行直接给「恢复」；两个动作不会同时挂在同一个坐标上。
+  assert.match(
+    wxml,
+    /id="record-attempt-more-\{\{item\.id\}\}"[\s\S]{0,600}catchtap="toggleLatestMenu"/
+  );
+  const menuAt = wxml.indexOf('wx:elif="{{item.menuOpen}}"');
+  const menuCorrectAt = wxml.indexOf('id="correct-attempt-{{item.id}}"', menuAt);
+  const menuUndoAt = wxml.indexOf('id="undo-attempt-{{item.id}}"', menuAt);
+  const menuEndAt = wxml.indexOf('</view>', menuUndoAt);
+  assert.ok(menuAt > 0, '菜单只在展开时渲染');
+  assert.ok(menuCorrectAt > menuAt, '菜单里有「改为未完成」');
+  assert.ok(menuUndoAt > menuCorrectAt, '菜单里另有「撤回误记」');
+  const menuMarkup = wxml.slice(menuAt, menuEndAt);
+  assert.equal((menuMarkup.match(/<button/g) || []).length, 2, '菜单只放这一把可用的两个动作');
+  assert.match(menuMarkup, /bindtap="correctSend"/);
+  assert.match(menuMarkup, /bindtap="undoLatestAttempt"/);
+  assert.match(
+    wxml,
+    /wx:if="\{\{item\.isUndone\}\}"[\s\S]{0,600}id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,900}bindtap="restoreLatestAttempt"/
+  );
   assert.match(
     wxml,
     /id="undo-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}bindtap="undoLatestAttempt"/
@@ -2471,22 +2485,23 @@ test('T033 最近一把操作区在结果按钮之后：写线路名、原序号
     wxml,
     /id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}bindtap="restoreLatestAttempt"/
   );
-  // 已撤回时撤回按钮整个不渲染（位置留空），恢复按钮才出现：同一坐标不会被相反动作接管。
+  // 已撤回时撤回菜单项整个不渲染，恢复按钮才出现：同一坐标不会被相反动作接管。
   assert.match(wxml, /wx:if="\{\{item\.canUndo\}\}"[\s\S]{0,260}id="undo-attempt-/);
   assert.match(wxml, /wx:if="\{\{item\.canRestore\}\}"[\s\S]{0,260}id="restore-attempt-/);
 
-  // 行高固定：撤回按钮消失后这一行的高度不变，刚才点过的坐标留在原处、交给空位。
+  // 命中区固定：菜单项 48px、右侧「更多」44px，展开/收起不改结果按钮的位置。
   const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
-  const rowStyle = wxss.match(/\.record-attempt-change\s*\{[^}]*\}/);
-  assert.ok(rowStyle, '样式里应有 .record-attempt-change');
-  assert.match(rowStyle[0], /min-height:\s*44px/, '这一行与文字按钮同高（44px 逻辑像素），按钮消失后行高不变');
+  assert.match(wxss, /\.record-attempt-change \{[^}]*display:\s*flex/);
+  assert.match(wxss, /\.record-attempt-change \{[^}]*flex-direction:\s*column/);
+  assert.match(wxss, /\.record-attempt-menu-item \{[^}]*min-height:\s*48px/, '菜单项 48px 命中区');
+  assert.match(wxss, /\.record-attempt-more \{[^}]*min-height:\s*44px/, '「更多」44px 命中区');
   const buttonRule = wxss.match(
     /\.primary-button,\s*\.secondary-button,\s*\.text-button\s*\{[^}]*\}/
   );
   assert.ok(buttonRule && /min-height:\s*44px/.test(buttonRule[0]), '文字按钮的 44px 底限与这一行一致');
 
   const handlers = new Set(handlersIn(wxml));
-  for (const required of ['undoLatestAttempt', 'restoreLatestAttempt']) {
+  for (const required of ['toggleLatestMenu', 'undoLatestAttempt', 'restoreLatestAttempt']) {
     assert.ok(handlers.has(required), '单线页应绑定：' + required);
     assert.equal(typeof recordDefinition[required], 'function', required + ' 必须有页面方法');
   }

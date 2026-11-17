@@ -29,6 +29,12 @@
  * 的真实关联给同一个入口。入口只带这一行的四个原 ID 打开原把次视频页，复用既有的归属
  * 核对、索引只读与本机保存；页面不新增视频字段，也不改播放、索引与保存口径。
  *
+ * T050：最新一把右侧的「更多」只列这一把按原资格可用的动作——合资格完攀可「改为未完成」
+ * （本场把数不变），最近一把可「撤回误记」（本场少 1 把）。菜单展开态只存在本页
+ * （menuAttemptId，按原把次 ID），不落盘；撤回后原行保留「已撤回」并直接给「恢复」。
+ * 较早的合资格完攀仍从自己的详情更正。确认、原把校验、失败重试与连点保护全部沿用
+ * utils/training-record-actions.js 的既有实现。
+ *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
  * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
  */
@@ -70,6 +76,8 @@ Page({
     hasAttemptCards: false,
     // 展开态只在当前页面按原把次 ID 记一份（不落盘）：'' = 只有最新一把完整展示。
     expandedAttemptId: '',
+    // T050：最新一把右侧「更多」菜单的展开态（只存在本页，按原把次 ID，不落盘）。
+    menuAttemptId: '',
     // 行内备注编辑：只作用于所点那一把，保存/取消按原 attemptId 与编辑代次核对。
     noteEditor: null,
     pendingRows: [],
@@ -158,6 +166,7 @@ Page({
         attemptCards: [],
         hasAttemptCards: false,
         expandedAttemptId: '',
+        menuAttemptId: '',
         noteEditor: null,
         pendingRows: [],
         hasPending: false,
@@ -309,13 +318,23 @@ Page({
       expandedAttemptId = '';
     }
     this._latestAttemptId = latestAttemptId;
+    // T050：菜单展开态同样按原把次 ID 管理。最新一把换人、这一把被撤回或已没有可用
+    // 动作时收起菜单，旧菜单项不会留在新的一把上。
+    let menuAttemptId = this.data.menuAttemptId || '';
+    const menuRow = baseCards.find(item => item.id === menuAttemptId) || null;
+    if (!menuRow || !menuRow.isLatest || menuRow.isUndone || !menuRow.showMenu) {
+      menuAttemptId = '';
+    }
     const attemptCards = baseCards.map(item => {
       const expanded = item.isLatest || item.id === expandedAttemptId;
+      const menuOpen = Boolean(item.isLatest && item.id === menuAttemptId);
       return Object.assign({}, item, {
         expanded,
         // T049：旧行收起时只有这一把真有本机视频才显示小视频图标；展开后在原把详情里
         // 给「＋ 添加视频」或「回看视频」。图标只是提示，点按仍落到整行展开原把。
-        showVideoIcon: !expanded && Boolean(item.hasVideo) && Boolean(item.canOpenVideo)
+        showVideoIcon: !expanded && Boolean(item.hasVideo) && Boolean(item.canOpenVideo),
+        menuOpen,
+        menuLabel: menuOpen ? '收起' : '更多'
       });
     });
     // 编辑中的这一把若已不在可编辑列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
@@ -338,6 +357,7 @@ Page({
       attemptCards,
       hasAttemptCards: attemptCards.length > 0,
       expandedAttemptId,
+      menuAttemptId,
       noteEditor,
       pendingRows,
       hasPending: pendingRows.length > 0,
@@ -374,10 +394,51 @@ Page({
       this.refreshView();
       return;
     }
-    // 最新一把没有收起态：点它的行不改层级。
-    if (row.isLatest) return;
+    // 最新一把没有收起态：点它的行不改层级；菜单展开时点这一行只收起菜单。
+    if (row.isLatest) {
+      if (this.data.menuAttemptId === attemptId) {
+        this.setData({ menuAttemptId: '' });
+        this.refreshView();
+      }
+      return;
+    }
     this.setData({
-      expandedAttemptId: this.data.expandedAttemptId === attemptId ? '' : attemptId
+      expandedAttemptId: this.data.expandedAttemptId === attemptId ? '' : attemptId,
+      // 切换展开的原把时收起最新一把的菜单：菜单项始终只属于展开前的那一把。
+      menuAttemptId: ''
+    });
+    this.refreshView();
+  },
+
+  /**
+   * 最新一把右侧「更多」：只展开/收起菜单，不读写任何记录。
+   *
+   * 目标只认这一行带下来的原把次 ID 与归属；这一下若已不是本页最新一把、这一把已撤回
+   * 或已没有可用动作（换档、过期行、另一处写入换人），只提示并按最新档案刷新。菜单项
+   * 自己只渲染这一把按原资格可用的动作，真正的写入仍走 undoLatestAttempt / correctSend。
+   */
+  toggleLatestMenu(event) {
+    if (this.data.loadError || this.data.contextError) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
+    const stale =
+      !row ||
+      !row.isLatest ||
+      !row.showMenu ||
+      (dataset.archiveId && dataset.archiveId !== archiveId) ||
+      (dataset.sessionId && dataset.sessionId !== sessionId) ||
+      (dataset.routeId && dataset.routeId !== routeId);
+    if (stale) {
+      this.setData({ notice: '这一把当前没有可用的纠错动作，已按最新数据刷新。' });
+      this.refreshView();
+      return;
+    }
+    this.setData({
+      menuAttemptId: this.data.menuAttemptId === attemptId ? '' : attemptId
     });
     this.refreshView();
   },
@@ -394,6 +455,11 @@ Page({
     const editor = this.data.noteEditor;
     if (editor && editor.hasNote === undefined) {
       this.setData({ 'noteEditor.hasNote': Boolean(editor.text) });
+    }
+    // T050：打开备注编辑时收起「更多」菜单，避免菜单项留在编辑框旁边被误点。
+    if (editor && this.data.menuAttemptId) {
+      this.setData({ menuAttemptId: '' });
+      this.refreshView();
     }
     return outcome;
   },
@@ -476,21 +542,30 @@ Page({
     }
 
     const activeSession = this.data.activeSession || {};
-    return actions.confirmCorrection.call(this, {
-      attemptId,
-      routeId,
-      sessionId,
-      archiveId,
-      label: row.label,
-      contextText: [
-        activeSession.dateText || '',
-        activeSession.label || '',
-        activeSession.gymName ? '· ' + activeSession.gymName : ''
-      ]
-        .filter(Boolean)
-        .join(' '),
-      resultText: '完攀'
-    });
+    return actions.confirmCorrection
+      .call(this, {
+        attemptId,
+        routeId,
+        sessionId,
+        archiveId,
+        label: row.label,
+        contextText: [
+          activeSession.dateText || '',
+          activeSession.label || '',
+          activeSession.gymName ? '· ' + activeSession.gymName : ''
+        ]
+          .filter(Boolean)
+          .join(' '),
+        resultText: '完攀'
+      })
+      .then(result => {
+        // 更正真正落盘后收起菜单；取消或写失败都保留菜单，用户可在原处重试。
+        if (this._correctedRows && this._correctedRows[attemptId]) {
+          this.setData({ menuAttemptId: '' });
+          this.refreshView();
+        }
+        return result === undefined ? null : result;
+      });
   },
 
   // ---------------------------------------------------------------- 线路照片（T041）

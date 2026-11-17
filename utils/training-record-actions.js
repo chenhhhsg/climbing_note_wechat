@@ -14,6 +14,8 @@
  * 这里只补确认与准入判断，持久化、重试规则与线路历史的更正能力都保持原样。
  * T045：单线页现场直接列本场本线把次（最新在前，一把一框），每行只编辑所点那一把；
  * 派生在 attemptCardRows，写入口仍是本文件的同一份事件处理，不新增持久模型。
+ * T050：最新一把的更正与撤回收进右侧「更多」菜单，菜单只派生这一把按原资格可用的
+ * 动作；较早的合资格完攀仍从自己的详情更正；撤回后原行保留「已撤回」与「恢复」。
  *
  * 页面需要提供（与 T017 场内页同名）：
  *   this.archive、this.data.loadError、this.data.activeSession、this.data.selectedRoute、
@@ -957,6 +959,9 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
  * - 「改成未完成」与线路历史、本场逐把同一份资格（抱石、有效、已确认完攀）；
  * - 「这把多记了」（撤回）与「恢复这一把」只给最近一把，与 changeRecentAttempt 的
  *   原边界一致；重试沿用 recentAttemptView 的同一把、同一 opId 与渲染版本；
+ * - T050：最新一把的更正与撤回收进右侧「更多」菜单，菜单项只按这一把的原资格派生
+ *   （合资格完攀才给「改为未完成」，最近一把才给「撤回误记」）；菜单是否展开由页面
+ *   按原把次 ID 管理，本模块只给 menuOpen 的派生数据与可用动作。
  * - 行上的动作都带原把次 ID 与归属，只作用于所点这一把。
  *
  * videoLinks 由页面用 attemptVideo.videoLinkMap 一次读索引算出（本模块不反向依赖
@@ -1012,14 +1017,27 @@ function attemptCardRows(
     const correctionState = correctionStateOf(archive, page, attempt.id);
     const canUndo = Boolean(isRecent && recent.canUndo);
     const canRestore = Boolean(isRecent && recent.canRestore);
+    // T050：菜单项文案只按这一把的原资格派生；失败重试沿用同一把、同一 opId 的文案。
+    const correctText =
+      correctionState.state === 'retry' ? '重试改为未完成' : '改为未完成';
+    const undoText = canUndo ? (recent.retry ? '重试撤回误记' : '撤回误记') : '';
+    // 最新一把右侧的「更多」只在真有可用动作时出现；没有可用动作就没有菜单入口。
+    const showMenu = Boolean(isLatest && !undone && (correctable || canUndo));
 
     // 两种动作对把数的影响写在行里，不靠记忆或颜色猜。
     const hints = [];
     if (undone) {
       hints.push('已撤回：本场把数不含这一把；恢复后加回 1 把。');
-    } else {
-      if (correctable) hints.push('改成未完成：本场把数不变，完攀次数减 1。');
-      if (canUndo) hints.push('这把多记了：撤回后本场把数减 1。');
+    } else if (isLatest) {
+      if (correctable && canUndo) {
+        hints.push('「更多」：改为未完成（本场把数不变，完攀少 1）或撤回误记（本场少 1 把）。');
+      } else if (correctable) {
+        hints.push('「更多」：改为未完成（本场把数不变，完攀少 1）。');
+      } else if (canUndo) {
+        hints.push('「更多」：撤回误记（本场少 1 把）。');
+      }
+    } else if (correctable) {
+      hints.push('改为未完成：本场把数不变，完攀次数减 1。');
     }
 
     return {
@@ -1048,18 +1066,19 @@ function attemptCardRows(
       archiveId: archive.archiveId,
       correctionSupported,
       correctable,
-      correctText: correctionState.state === 'retry' ? '重试改成未完成' : '改成未完成',
+      correctText,
       correctStatusText: correctable ? '' : correctionState.statusText,
       correctIdleText: undone ? '已撤回，恢复后可改' : '',
-      // 撤回/恢复只出现在最近一把这一行：同一行里两个并排槽，互不接管坐标。
-      showChange: isRecent,
+      // 最新一把右侧「更多」：展开态与文案由页面按原把次 ID 填；这里只给可用动作。
+      showMenu,
+      menuOpen: false,
+      menuLabel: '',
       canUndo,
       canRestore,
-      undoText: canUndo
-        ? recent.retry
-          ? '重试这把多记了'
-          : '这把多记了'
-        : '',
+      undoText,
+      // 菜单项下方写明对把数的影响（把数不变 / 本场少 1 把）。
+      menuCorrectHint: '本场把数不变，完攀少 1。',
+      menuUndoHint: '本场有效把数减 1。',
       restoreText: canRestore ? recent.restoreText : '',
       expected: isRecent ? recent.expected : '',
       expectedRev: isRecent ? recent.expectedRev : 0,

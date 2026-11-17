@@ -695,7 +695,7 @@ function minHeightOf(wxss, selector) {
   return found ? found[1].trim() : '';
 }
 
-test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半的独立槽，命中矩形不相交，绑定都带原把次 ID', () => {
+test('T050 按钮位置可核：最新一把右侧「更多」展开纵向菜单，菜单项各自独立可点，撤回后原行给恢复', () => {
   // T036：结果、最近一把与撤回/恢复都在单线记录页；场内页只留本场线路列表入口。
   const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
   const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
@@ -718,50 +718,45 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   assert.doesNotMatch(sessionWxml, /class="result-button result-fail"/, '场内页不再内联结果按钮');
   assert.doesNotMatch(sessionWxml, /id="recent-attempt"/, '场内页不再内联最近一把');
 
-  // 最近一把那一行：两个兄弟槽，撤回在前（左槽），恢复在后（右槽），各占一半。
-  const rowAt = wxml.indexOf('class="record-attempt-change"');
-  const undoSlotAt = wxml.indexOf('class="record-attempt-change-slot"');
-  const undoAt = wxml.indexOf('id="undo-attempt-{{item.id}}"');
-  const restoreSlotAt = wxml.indexOf('class="record-attempt-change-restore"');
-  const restoreAt = wxml.indexOf('id="restore-attempt-{{item.id}}"');
-  assert.ok(rowAt !== -1 && undoSlotAt !== -1 && restoreSlotAt !== -1, '两个槽都在这一行里');
-  assert.ok(rowAt < undoSlotAt && undoSlotAt < undoAt, '左槽先放撤回');
-  assert.ok(undoAt < restoreSlotAt && restoreSlotAt < restoreAt, '右槽再放恢复');
-
-  // 两个动作各在自己的槽里：可用时是按钮，不可用时是**等宽等高的非交互空位**，
-  // 因此同一个坐标最多命中其中一个，撤回后也不会被相反动作接管。
-  for (const selector of ['.record-attempt-change-action', '.record-attempt-change-slot']) {
-    assert.match(declarationsOf(wxss, selector), /flex:\s*1 1 0/, selector + ' 与同排按钮等分宽度');
-  }
-  assert.match(declarationsOf(wxss, '.record-attempt-change-restore'), /flex:\s*1 1 0/);
-  assert.equal(
-    declarationsOf(wxss, '.record-attempt-change-slot'),
-    declarationsOf(wxss, '.record-attempt-change-restore'),
-    '左右两个槽同一套尺寸：各占一半、行高相同'
+  // T050：最新一把右侧「更多」展开后，菜单项各自独占一行；撤回与恢复按状态分别出现，
+  // 不共用同一个坐标。
+  assert.match(
+    wxml,
+    /id="record-attempt-more-\{\{item\.id\}\}"[\s\S]{0,600}catchtap="toggleLatestMenu"/,
+    '最新一把右侧有「更多」，只切换本页菜单'
   );
-  // 空位与实体按钮同高：按钮出现或消失都不改这一行的高度。
-  const slotHeight = minHeightOf(wxss, '.record-attempt-change-slot');
-  assert.ok(slotHeight, '这一行有固定行高');
-  assert.equal(minHeightOf(wxss, '.record-attempt-idle'), slotHeight, '空位与整行同高');
-  assert.equal(minHeightOf(wxss, '.secondary-button'), slotHeight, '两个动作的按钮基础高度与空位一致');
-  assert.match(wxml, /wx:else class="record-attempt-idle"/);
-  const idleViews = [...wxml.matchAll(/<view[^>]*class="record-attempt-idle"[^>]*>[\s\S]*?<\/view>/g)].map(
-    match => match[0]
+  const menuAt = wxml.indexOf('wx:elif="{{item.menuOpen}}"');
+  const menuCorrectAt = wxml.indexOf('id="correct-attempt-{{item.id}}"', menuAt);
+  const menuUndoAt = wxml.indexOf('id="undo-attempt-{{item.id}}"', menuAt);
+  const menuEndAt = wxml.indexOf('</view>', menuUndoAt);
+  assert.ok(menuAt > 0, '菜单只在展开时渲染');
+  assert.ok(menuCorrectAt > menuAt, '菜单里有「改为未完成」');
+  assert.ok(menuUndoAt > menuCorrectAt, '菜单里另有「撤回误记」');
+  const menuMarkup = wxml.slice(menuAt, menuEndAt);
+  assert.equal((menuMarkup.match(/<button/g) || []).length, 2, '菜单只放这一把可用的两个动作');
+  assert.match(menuMarkup, /bindtap="correctSend"/);
+  assert.match(menuMarkup, /bindtap="undoLatestAttempt"/);
+  assert.match(
+    wxml,
+    /wx:if="\{\{item\.isUndone\}\}"[\s\S]{0,600}id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,900}bindtap="restoreLatestAttempt"/,
+    '撤回后原行直接给「恢复」，不再藏进菜单'
   );
-  assert.equal(idleViews.length, 2, '两个槽各留一块空位（不可用的那一侧）');
-  // 空位不是控件：没有 bindtap，也不是 <button>。
-  for (const idle of idleViews) {
-    assert.doesNotMatch(idle, /bindtap=/, '空位是透明区域，没有任何绑定');
-  }
 
-  // 命中矩形不相交的根：这一行是 flex 排布（左一半、右一半），没有任何绝对定位把
-  // 两个动作叠到同一个坐标上。
+  // 菜单项是两个独立的全宽按钮，各占一整行、各自 48px 命中区；不用绝对定位叠放。
+  assert.match(declarationsOf(wxss, '.record-attempt-change'), /display:\s*flex/, '菜单是纵向 flex');
+  assert.match(declarationsOf(wxss, '.record-attempt-change'), /flex-direction:\s*column/);
+  assert.match(declarationsOf(wxss, '.record-attempt-menu-item'), /width:\s*100%/);
+  const menuItemHeight = minHeightOf(wxss, '.record-attempt-menu-item');
+  assert.ok(menuItemHeight, '菜单项有固定行高');
+  assert.equal(menuItemHeight, '48px', '菜单项 48px 命中区，两个宽度都够点');
   const changeCss = cssRules(wxss)
     .filter(rule => rule.selectors.some(selector => selector.indexOf('.record-attempt-change') === 0))
     .map(rule => rule.body)
     .join('\n');
-  assert.match(declarationsOf(wxss, '.record-attempt-change'), /display:\s*flex/, '这一行是 flex 行');
-  assert.doesNotMatch(changeCss, /position\s*:\s*(absolute|fixed)/, '这一行不用绝对定位叠放动作');
+  assert.doesNotMatch(changeCss, /position\s*:\s*(absolute|fixed)/, '菜单不用绝对定位叠放动作');
+  // 「更多」本身也有 44px 的独立命中区，不会与整行展开/视频入口抢坐标。
+  assert.match(declarationsOf(wxss, '.record-attempt-more'), /min-width:\s*44px/);
+  assert.match(declarationsOf(wxss, '.record-attempt-more'), /min-height:\s*44px/);
 
   // 统一列表的长名不截断：换行显示，行宽不随名称长短变化。
   assert.match(
@@ -3319,15 +3314,18 @@ test('T045 现场同页把次：最新在前、原编号稳定，编辑与视频
     page.data.attemptCards.some(row => /B 线备注|另一场备注/.test(row.note)),
     false
   );
-  // 按原资格：合资格完攀给「改成未完成」，最近一把给「这把多记了」，说明对把数的影响。
+  // 按原资格：最新一把的「更多」里才给「改为未完成」与「撤回误记」，说明对把数的影响。
   assert.equal(page.data.attemptCards[0].correctable, true);
-  assert.equal(page.data.attemptCards[0].correctText, '改成未完成');
+  assert.equal(page.data.attemptCards[0].correctText, '改为未完成');
   assert.equal(page.data.attemptCards[0].canUndo, true);
-  assert.equal(page.data.attemptCards[0].undoText, '这把多记了');
+  assert.equal(page.data.attemptCards[0].undoText, '撤回误记');
+  assert.equal(page.data.attemptCards[0].showMenu, true, '最新一把有可用的纠错动作时才给「更多」');
+  assert.equal(page.data.attemptCards[0].menuOpen, false, '默认不展开菜单');
   assert.match(page.data.attemptCards[0].actionHint, /把数不变/);
-  assert.match(page.data.attemptCards[0].actionHint, /撤回后本场把数减 1/);
+  assert.match(page.data.attemptCards[0].actionHint, /本场少 1 把/);
   assert.equal(page.data.attemptCards[1].canUndo, false, '撤回只给最近一把');
   assert.equal(page.data.attemptCards[1].undoText, '');
+  assert.equal(page.data.attemptCards[1].showMenu, false, '较早把次没有「更多」菜单');
 
   // 行内编辑：点哪一把就只打开哪一把，保存只改这一把。
   page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
@@ -3921,4 +3919,210 @@ test('T049 新、旧两把各自保存不同视频：换新把后层级切换、
     2,
     '另外两把的视频关联保持'
   );
+});
+
+// ------------------------------------------------------------------ *
+// T050 最新把次「更多」纠错菜单与原行恢复
+// ------------------------------------------------------------------ *
+
+/** 最新一把右侧「更多」的点击参数：只带这一行的原把次 ID 与归属。 */
+function moreEvent(row) {
+  return tapDataset({
+    attemptId: row.id,
+    archiveId: row.archiveId,
+    sessionId: row.sessionId,
+    routeId: row.routeId
+  });
+}
+
+test('T050 最新一把「更多」只列原资格允许的动作：切换不写盘、取消不写盘、确认只改结果', async () => {
+  const { session, route, attempts, saveThird } = seedInlineAttempts();
+  saveThird();
+  const page = openRecordFor(route.id, session.id);
+  const latest = page.data.attemptCards[0];
+  assert.equal(latest.id, attempts[2].id);
+  assert.equal(latest.showMenu, true);
+  assert.equal(latest.correctable, true);
+  assert.equal(latest.correctText, '改为未完成');
+  assert.match(latest.menuCorrectHint, /本场把数不变/);
+  assert.equal(latest.canUndo, true);
+  assert.equal(latest.undoText, '撤回误记');
+  assert.match(latest.menuUndoHint, /本场有效把数减 1/);
+  assert.equal(latest.canRestore, false);
+  assert.equal(page.data.attemptCards[1].showMenu, false, '较早把次没有「更多」');
+  assert.equal(page.data.menuAttemptId, '', '默认不展开菜单');
+  assert.equal(page.data.expandedAttemptId, '', '默认只有最新一把完整展示');
+
+  const raw = storage.get(ARCHIVE_KEY);
+
+  // 展开、收起只改本页展示：菜单里同时只命中这一把，旧把的菜单入口不出现。
+  page.toggleLatestMenu(moreEvent(latest));
+  assert.equal(page.data.menuAttemptId, latest.id);
+  assert.equal(page.data.attemptCards[0].menuOpen, true);
+  assert.equal(page.data.attemptCards[0].menuLabel, '收起');
+  page.toggleLatestMenu(moreEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.menuAttemptId, '');
+  assert.equal(page.data.attemptCards[0].menuOpen, false);
+  assert.equal(page.data.attemptCards[0].menuLabel, '更多');
+  assert.equal(storage.get(ARCHIVE_KEY), raw, '展开与收起一个字都不写');
+
+  // 切到旧把详情时收起菜单：菜单项始终只属于展开前的那一把。
+  page.toggleLatestMenu(moreEvent(latest));
+  page.toggleAttemptRow(
+    tapDataset({
+      attemptId: attempts[0].id,
+      archiveId: archiveOf().archiveId,
+      sessionId: session.id,
+      routeId: route.id
+    })
+  );
+  assert.equal(page.data.menuAttemptId, '', '切换旧把详情时菜单收起');
+  assert.equal(page.data.expandedAttemptId, attempts[0].id);
+
+  // 取消更正：一个字节都不写，菜单留在原处可再点。
+  page.toggleLatestMenu(moreEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.menuAttemptId, latest.id);
+  const rawBeforeCancel = storage.get(ARCHIVE_KEY);
+  queueModal('cancel');
+  assert.equal(
+    await page.correctSend(
+      tapDataset({
+        attemptId: latest.id,
+        routeId: route.id,
+        sessionId: session.id,
+        archiveId: archiveOf().archiveId
+      })
+    ),
+    null
+  );
+  assert.equal(storage.get(ARCHIVE_KEY), rawBeforeCancel, '取消更正不写盘');
+  assert.equal(page.data.menuAttemptId, latest.id, '取消后菜单仍在原处');
+  assert.equal(page.data.attemptCards[0].resultText, '完攀');
+
+  // 确认更正：只改结果，总把数不变、完攀少一；菜单收起，这一把不再给「改为未完成」。
+  queueModal('confirm');
+  await page.correctSend(
+    tapDataset({
+      attemptId: latest.id,
+      routeId: route.id,
+      sessionId: session.id,
+      archiveId: archiveOf().archiveId
+    })
+  );
+  assert.equal(page.data.routeCountText, '3 把', '总把数不变');
+  assert.equal(page.data.routeCompleted, false, '完攀少一');
+  const corrected = page.data.attemptCards[0];
+  assert.equal(corrected.id, latest.id, '仍是原把次');
+  assert.equal(corrected.resultText, '未完成');
+  assert.equal(corrected.note, '第三把现场备注', '备注不动');
+  assert.equal(corrected.correctable, false, '已改过的完攀不再提供「改为未完成」');
+  assert.equal(corrected.showMenu, true, '最近一把仍有「撤回误记」');
+  assert.equal(corrected.menuOpen, false, '更正成功后菜单收起');
+  assert.match(corrected.correctStatusText, /已改为未完成/);
+  assert.equal(page.data.menuAttemptId, '');
+
+  // 重开：原把次、原编号与更正回读都在，菜单默认收起。
+  const reopened = openRecordFor(route.id, session.id);
+  assert.equal(reopened.data.menuAttemptId, '');
+  assert.equal(reopened.data.attemptCards[0].id, latest.id);
+  assert.equal(reopened.data.attemptCards[0].resultText, '未完成');
+  assert.equal(reopened.data.attemptCards[0].correctable, false);
+  assert.deepEqual(
+    reopened.data.attemptCards.map(row => row.label),
+    ['第 3 把', '第 2 把', '第 1 把'],
+    '原编号保持'
+  );
+
+  // 撤回误记：有效计数少一，原行显示「已撤回」并给「恢复」；连点只落一次。
+  const beforeUndo = storage.get(ARCHIVE_KEY);
+  reopened.undoLatestAttempt(rowEvent(reopened.data.attemptCards[0]));
+  let undone = reopened.data.attemptCards[0];
+  assert.equal(undone.id, latest.id);
+  assert.equal(undone.isUndone, true);
+  assert.equal(undone.showMenu, false, '已撤回后不再给「更多」');
+  assert.equal(undone.canRestore, true);
+  assert.equal(undone.restoreText, '恢复这一把');
+  assert.equal(reopened.data.menuAttemptId, '');
+  assert.equal(reopened.data.routeCountText, '2 把');
+  assert.equal(undone.note, '第三把现场备注', '撤回保留原备注');
+  const afterUndo = storage.get(ARCHIVE_KEY);
+  reopened.undoLatestAttempt(rowEvent(undone));
+  assert.equal(storage.get(ARCHIVE_KEY), afterUndo, '连点撤回只落一次');
+  assert.equal(reopened.data.routeCountText, '2 把');
+
+  // 恢复：加回同一把，原 ID、原序号、备注与时间都不变。
+  reopened.restoreLatestAttempt(rowEvent(reopened.data.attemptCards[0]));
+  const restored = reopened.data.attemptCards[0];
+  assert.equal(restored.id, latest.id);
+  assert.equal(restored.isUndone, false);
+  assert.equal(restored.label, '第 3 把');
+  assert.equal(restored.note, '第三把现场备注');
+  assert.equal(restored.timeText, '09:20');
+  assert.equal(reopened.data.routeCountText, '3 把');
+  assert.notEqual(beforeUndo, afterUndo, '撤回确实写盘了');
+});
+
+test('T050 撤回误记失败保留同一把重试；失效菜单、重复点按与过期行都不落盘', () => {
+  const seeded = seedRopeAttempts(['fail', 'fail'], ['第一把备注', '']);
+  const page = openRecordFor(seeded.route.id, seeded.session.id);
+  const latest = page.data.attemptCards[0];
+  const raw = storage.get(ARCHIVE_KEY);
+  page.toggleLatestMenu(moreEvent(latest));
+  assert.equal(page.data.menuAttemptId, latest.id);
+  assert.equal(latest.correctable, false, '顶绳线的完攀不走「改为未完成」');
+  assert.equal(latest.canUndo, true);
+
+  // 失效点击：带另一份档案 ID 的一下不展开新菜单，也不落盘。
+  page.toggleLatestMenu(
+    tapDataset({
+      attemptId: latest.id,
+      archiveId: 'archive-of-another-profile',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(page.data.menuAttemptId, latest.id, '失效点击不改菜单展开态');
+  assert.ok(page.data.notice, '失效点击给出可见提示');
+  assert.equal(storage.get(ARCHIVE_KEY), raw, '失效点击不写盘');
+
+  // 写前失败：菜单项变成同一把的重试文案，把数与档案都按已落盘状态显示。
+  tick();
+  armSetFailAt(1);
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.match(page.data.storageError, /保存本机训练档案失败/);
+  assert.equal(page.data.routeCountText, '2 把', '没有落盘就不减把数');
+  const failedRow = page.data.attemptCards[0];
+  assert.equal(failedRow.id, latest.id);
+  assert.equal(failedRow.isUndone, false);
+  assert.equal(failedRow.undoText, '重试撤回误记');
+  assert.match(failedRow.stateText, /^撤回未保存/);
+  assert.equal(page.data.menuAttemptId, latest.id, '失败后菜单留在原处可重试');
+
+  // 原菜单项按同一把重试：只减这一把，菜单收起，原行换成「已撤回」与「恢复」。
+  armSetFailAt(0);
+  tick();
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.routeCountText, '1 把');
+  assert.equal(page.data.attemptCards[0].isUndone, true);
+  assert.equal(page.data.attemptCards[0].canRestore, true);
+  assert.equal(page.data.menuAttemptId, '', '撤回成功后菜单收起');
+
+  // 同一坐标重复点按：已撤回的一把不再结清第二次。
+  const bytesAfterUndo = storage.get(ARCHIVE_KEY);
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(storage.get(ARCHIVE_KEY), bytesAfterUndo, '重复点按不写盘');
+  assert.equal(page.data.routeCountText, '1 把');
+
+  // 恢复后另记一把换人，旧菜单的撤回目标过期：不落盘，只按最新档案刷新。
+  page.restoreLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  const staleUndo = rowEvent(page.data.attemptCards[0]);
+  tick();
+  recordThroughPage(page, 'fail');
+  assert.equal(page.data.attemptCards[0].label, '第 3 把');
+  const bytesAfterNew = storage.get(ARCHIVE_KEY);
+  page.undoLatestAttempt(staleUndo);
+  assert.equal(storage.get(ARCHIVE_KEY), bytesAfterNew, '过期目标不落盘');
+  assert.match(page.data.notice, /最近一把已经变了/);
+  assert.equal(page.data.routeCountText, '3 把');
 });

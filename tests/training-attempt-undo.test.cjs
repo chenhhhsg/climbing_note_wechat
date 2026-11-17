@@ -1587,8 +1587,8 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
   assert.equal(page.data.recentAttempt.correctable, true);
   assert.equal(page.data.recentAttempt.attemptId, send.id);
 
-  // WXML（T045 同页）：没有独立更正区；「改成未完成」就在这一把的卡框里，
-  // 撤回/恢复在同一卡框的下一行，且只绑真实处理器。
+  // WXML（T050 同页）：没有独立更正区；最新一把的更正与撤回收进右侧「更多」菜单，
+  // 较早的合资格完攀仍从自己的详情更正；撤回后原行直接给「恢复」。
   const wxml = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
     'utf8'
@@ -1597,18 +1597,39 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
   assert.equal(wxml.indexOf('点错了完攀'), -1, '不再有独立更正区的标题与提示');
   const cardAt = wxml.indexOf('id="record-attempts"');
   const slotAt = wxml.indexOf('class="record-attempt-correct-slot"');
-  const buttonAt = wxml.indexOf('id="correct-attempt-{{item.id}}"');
-  const idleAt = wxml.indexOf('id="record-attempt-correct-idle-{{item.id}}"');
+  const olderGateAt = wxml.indexOf('!item.isLatest && item.correctionSupported');
   const hintAt = wxml.indexOf('class="record-attempt-hint-slot"');
-  assert.ok(cardAt > 0 && slotAt > cardAt, '更正槽在这一把的卡框里');
-  assert.ok(buttonAt > slotAt, '可更正时槽里是按钮');
-  assert.ok(idleAt > buttonAt, '不可更正时同一槽里是只读文字');
+  assert.ok(cardAt > 0 && slotAt > cardAt, '较早把次的更正槽在卡框里');
+  assert.ok(olderGateAt > 0 && olderGateAt < slotAt, '更正槽只给较早的合资格把次');
   assert.ok(hintAt > slotAt, '把数影响的说明槽在更正槽之后');
   assert.match(
     wxml,
-    /id="correct-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}bindtap="correctSend"/
+    /wx:if="\{\{!item\.isLatest && item\.correctionSupported\}\}"[\s\S]{0,900}id="correct-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}bindtap="correctSend"/
   );
-  const idleBlock = wxml.slice(idleAt, idleAt + 240);
+  assert.match(
+    wxml,
+    /id="record-attempt-more-\{\{item\.id\}\}"[\s\S]{0,600}catchtap="toggleLatestMenu"/
+  );
+  const menuAt = wxml.indexOf('wx:elif="{{item.menuOpen}}"');
+  const menuCorrectAt = wxml.indexOf('id="correct-attempt-{{item.id}}"', menuAt);
+  const menuUndoAt = wxml.indexOf('id="undo-attempt-{{item.id}}"', menuAt);
+  const menuEndAt = wxml.indexOf('</view>', menuUndoAt);
+  assert.ok(menuAt > 0, '菜单只在展开时渲染');
+  assert.ok(menuCorrectAt > menuAt, '菜单里有「改为未完成」');
+  assert.ok(menuUndoAt > menuCorrectAt, '菜单里另有「撤回误记」');
+  const menuMarkup = wxml.slice(menuAt, menuEndAt);
+  assert.equal((menuMarkup.match(/<button/g) || []).length, 2, '菜单只放这一把可用的两个动作');
+  assert.match(menuMarkup, /data-archive-id="\{\{item\.archiveId\}\}"/);
+  assert.match(menuMarkup, /bindtap="correctSend"/);
+  assert.match(menuMarkup, /bindtap="undoLatestAttempt"/);
+  assert.match(
+    wxml,
+    /wx:if="\{\{item\.isUndone\}\}"[\s\S]{0,600}id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,900}bindtap="restoreLatestAttempt"/
+  );
+  const idleBlock = wxml.slice(
+    wxml.indexOf('id="record-attempt-correct-idle-{{item.id}}"'),
+    wxml.indexOf('id="record-attempt-correct-idle-{{item.id}}"') + 240
+  );
   assert.equal(/bindtap|catchtap/.test(idleBlock), false, '只读文字不可点，不会变成结果按钮');
   assert.match(idleBlock, /record-attempt-correct-idle/);
   assert.match(wxml, /item\.correctIdleText/, '惰性文案由同一把的状态派生');
@@ -1618,6 +1639,7 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
     'utf8'
   );
   assert.match(wxss, /\.record-attempt-correct-slot \{[^}]*min-height: 44px/, '更正槽 44px 固定');
+  assert.match(wxss, /\.record-attempt-menu-item \{[^}]*min-height: 48px/, '菜单项 48px 命中区');
   assert.match(wxss, /\.record-attempt-hint-slot \{[^}]*min-height: 32px/, '说明槽固定高度');
   assert.match(wxss, /\.result-button \{[^}]*min-height: 48px/, '结果按钮 48px');
   assert.match(wxss, /\.route-completed-panel,[\s\S]*?min-height: 48px/, '完攀面板同高');
