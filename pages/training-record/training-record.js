@@ -1,24 +1,23 @@
 /**
- * 单线记录页（T036）
+ * 单线记录页（T036 / T045）
  *
  * 从本场线路列表整行进入，或加线成功后直达。页面只服务**一条长期线路在**一场训练里
  * 的记录：按入口带下来的 archiveId + sessionId + routeId 核对归属，然后把这一条线的
- * 结果按钮、本场把数、最近一把的撤回／恢复与「更正结果」、待保存重试放在一页。
+ * 结果按钮、本场把数、本场本线把次（最新在前）与待保存重试放在一页。
  *
  * 数据归属：
  * - 入口缺参、场次/线路不存在、线路不属于这一场，或档案已经换成另一份时，页面只显示
  *   可见原因与返回路径，不展示别场别线的把次，也不接受任何写入；
- * - 把次、撤回状态、待保存与完攀判定全部来自 utils/training-store.js；写入、重试与
- *   按把更正走 utils/training-record-actions.js 的共用事件处理，与本场逐把页、线路
- *   历史页是同一份实现；
- * - 照片、卡点、跨天历史与清单操作不在这里重复，页面只提供「线路历史」入口。
+ * - 把次、撤回状态、待保存与完攀判定全部来自 utils/training-store.js；写入、重试、
+ *   按把备注与按把更正走 utils/training-record-actions.js 的共用事件处理，与本场逐把页、
+ *   线路历史页是同一份实现；
+ * - 照片、卡点、跨天历史与清单操作不在这里重复，页面只提供紧凑照片入口（T041）。
  *
- * T041 在本页首屏加一行紧凑的线路照片入口：现场记把时就地留一张。没有照片时给「添加线路
- * 照片」（拍照 / 相册），有照片时显示缩略图与当前照片版本的标记数量。照片的读写仍由
- * utils/training-photo-controller.js 的同一份控制器与照片服务完成，预览—确认—取消—失败
- * 重试的流程与线路历史页完全一致；照片文件与索引、场次、把次、备注都不经过本页另写一份。
- * 有照片时点这一行进原来的二级大图标记页（pages/training-photo-marks），按本机档案、
- * 长期线路与**当前**照片版本核对后才打开，换图与移除仍在二级页，不在首屏铺第二套编辑。
+ * T045：现场把次直接排在普通文档流里，最新在前、一把一框（复用 T044 配色与边框）。
+ * 每把显示原编号、结果、时间与已有备注；点这一行的「编辑」只打开这一把的备注，视频
+ * 沿用原把次视频页。合资格的完攀在行内给「改成未完成」，最近一把在行内给「这把多记了」
+ * / 「恢复这一把」，失败重试与撤回后的恢复都留在原框。现场不再有独立的「本场逐把」
+ * 跳转与「线路历史」入口；缩略图仍打开原来的二级大图标记页。
  *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
  * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
@@ -26,14 +25,14 @@
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
 const photoMarks = require('../../utils/training-photo-marks.js');
+const attemptVideo = require('../../utils/attempt-video.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 const {
   createTrainingPhotoController
 } = require('../../utils/training-photo-controller.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
-const ROUTE_URL = '/pages/training-route/training-route';
-const ATTEMPTS_URL = '/pages/training-attempts/training-attempts';
+const ATTEMPT_VIDEO_URL = '/pages/attempt-video/attempt-video';
 const PHOTO_MARKS_URL = '/pages/training-photo-marks/training-photo-marks';
 
 Page({
@@ -55,14 +54,19 @@ Page({
 
     attempts: [],
     hasAttempts: false,
+    // 现场把次（T045）：本场本线有效把次 + 刚撤回的最近一把，最新在前、一把一框。
+    attemptCards: [],
+    hasAttemptCards: false,
+    // 行内备注编辑：只作用于所点那一把，保存/取消按原 attemptId 与编辑代次核对。
+    noteEditor: null,
     pendingRows: [],
     hasPending: false,
     // 有未落盘的把次时锁定结果按钮：先在待保存行按同一操作重试，确认后才记下一把。
     resultLocked: false,
     resultLockHint: '',
 
-    // 最近一把的撤回、恢复与「更正结果」：结果按钮下方的固定操作区。null 表示不显示。
-    // 较早的合资格把次在本场逐把页各自一行处理，本页不再铺独立更正区。
+    // 最近一把（T033/T042）：只作为现场把次行的派生输入——最近一把那一行据此拿到
+    // 撤回/恢复的预期状态与版本、检索到同一把的重试 opId。null 表示没有可操作的最近一把。
     recentAttempt: null,
 
     // 线路主照片（T041）：现场入口只渲染控制器推导的状态。
@@ -136,6 +140,9 @@ Page({
         routeCountText: '0 把',
         attempts: [],
         hasAttempts: false,
+        attemptCards: [],
+        hasAttemptCards: false,
+        noteEditor: null,
         pendingRows: [],
         hasPending: false,
         resultLocked: false,
@@ -198,16 +205,18 @@ Page({
     };
 
     const labels = actions.attemptLabelMap(archive, session.id, route.id);
-    const attempts = store
-      .attemptsFor(archive, { sessionId: session.id, routeId: route.id })
-      .map(attempt => ({
-        id: attempt.id,
-        label: labels.get(attempt.id) || '',
-        resultText: actions.attemptResultText(attempt.result),
-        timeText: actions.timeText(attempt.createdAt),
-        note: attempt.note || '',
-        hasNote: Boolean(attempt.note)
-      }));
+    const savedRows = store.attemptsFor(archive, {
+      sessionId: session.id,
+      routeId: route.id
+    });
+    const attempts = savedRows.map(attempt => ({
+      id: attempt.id,
+      label: labels.get(attempt.id) || '',
+      resultText: actions.attemptResultText(attempt.result),
+      timeText: actions.timeText(attempt.createdAt),
+      note: attempt.note || '',
+      hasNote: Boolean(attempt.note)
+    }));
 
     // 待保存行：档案里的「进行中」操作 + 当前应用运行期里第一段写就失败、还没落盘的
     // 操作（换页回来仍按原 opId 重试；跨档案按 archiveId 隔离）。
@@ -250,8 +259,7 @@ Page({
     const routeCountText = pendingRows.length
       ? attempts.length + ' 把 · ' + pendingRows.length + ' 把待保存'
       : attempts.length + ' 把';
-    // 最近一把旁只放这一把自己的撤回／恢复与「更正结果」；较早的合资格把次与跨场候选
-    // 各有原来的目的地（本场逐把 / 线路历史），本页不再铺第二套更正区。
+    // 最近一把这一行仍是原边界：只有它能撤回/恢复；现场把次行据此给这一行两个并排槽。
     const recentAttempt = actions.recentAttemptView.call(
       this,
       archive,
@@ -260,6 +268,24 @@ Page({
       pendingRows,
       route
     );
+
+    // 现场把次行（T045）：视频关联状态只读索引，一次读给本场本线这些把次；
+    // 派生只读，行内动作仍由共用事件处理按原把次 ID 与归属落盘。
+    const videoLinks = attemptVideo.videoLinkMap(archive.archiveId, savedRows);
+    const attemptCards = actions.attemptCardRows(
+      archive,
+      activeSession,
+      selectedRoute,
+      route,
+      recentAttempt,
+      videoLinks,
+      this
+    );
+    // 编辑中的这一把若已不在可编辑列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
+    let noteEditor = this.data.noteEditor;
+    if (noteEditor && !attemptCards.some(item => item.id === noteEditor.attemptId && item.canEditNote)) {
+      noteEditor = null;
+    }
 
     this.setData({
       archiveId: archive.archiveId,
@@ -272,6 +298,9 @@ Page({
       routeCountText,
       attempts,
       hasAttempts: attempts.length > 0,
+      attemptCards,
+      hasAttemptCards: attemptCards.length > 0,
+      noteEditor,
       pendingRows,
       hasPending: pendingRows.length > 0,
       resultLocked,
@@ -282,41 +311,105 @@ Page({
     });
   },
 
-  // ---------------------------------------------------------------- 页面入口
+  // ---------------------------------------------------------------- 现场把次（T045）
 
   /**
-   * 本场逐把：只带这一场、这一条线的原 ID；逐把页按同一组参数再核对一次归属。
+   * 行内备注编辑：点的是哪一行就只打开哪一把，再点同一行不重置已输入的内容。
+   * 写入语义完全走共用的 actions.openNoteEditor：目标只认原 attemptId 与归属。
    */
-  openAttempts() {
+  openNoteEditor(event) {
+    const attemptId = event && event.currentTarget && event.currentTarget.dataset.attemptId;
+    const current = this.data.noteEditor;
+    if (current && attemptId && current.attemptId === attemptId) return;
+    const outcome = actions.openNoteEditor.call(this, event);
+    const editor = this.data.noteEditor;
+    if (editor && editor.hasNote === undefined) {
+      this.setData({ 'noteEditor.hasNote': Boolean(editor.text) });
+    }
+    return outcome;
+  },
+
+  /**
+   * 视频入口：只把这一行渲染时的原把次与归属带到原把次视频页。
+   * 打开前按最新档案再核对一次：这一把被撤回、换了档案或还没保存时不打开；
+   * 视频页会用同一组四个 ID 再核对一次。
+   */
+  openAttemptVideo(event) {
     if (this.data.loadError || this.data.contextError) return;
-    if (!this.archive || !this._session || !this._route) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    if (!archiveId || !sessionId || !routeId || !attemptId) {
+      this.setData({ notice: '无法定位这一把的原归属，请重试。' });
+      return;
+    }
+
+    const ids = { archiveId, sessionId, routeId, attemptId };
+    const context = attemptVideo.loadVideoContext(ids);
+    if (!context.ok) {
+      this.loadPage();
+      this.setData({ notice: context.error });
+      return;
+    }
+
     wx.navigateTo({
-      url:
-        ATTEMPTS_URL +
-        '?' +
-        actions.recordQueryString({
-          archiveId: this.archive.archiveId,
-          sessionId: this._session.id,
-          routeId: this._route.id
-        })
+      url: ATTEMPT_VIDEO_URL + '?' + attemptVideo.videoQueryString(ids),
+      fail: () => {
+        this.setData({ notice: '视频页没有打开，请再点一次。' });
+      }
     });
   },
 
   /**
-   * 线路历史：按原长期 routeId 进入照片、卡点、跨天历史与清单操作。
-   * 同时带上渲染这一页时的本机档案 ID：换了档案之后同名的 routeId 不能顶替原线路，
-   * 历史页已有入口归属核验（旧资料直达只带 routeId 的兼容路径不变）。
+   * 行内「改成未完成」（模板沿用 correctSend 这个绑定名）：先核对这一下仍指向本页
+   * 这一行可更正的完攀，再确认。
+   *
+   * 确认弹窗写明原把次的日期/场次/岩馆、原序号与原结果（完攀 → 未完成），取消时
+   * 一个字节都不写；确认后仍走 utils/training-record-actions.js 的同一份 correctSend，
+   * 只翻这一把，备注、视频关联与原序号都不变。连点同一把只弹一次确认；这一下若已
+   * 不属于本场这一条线，只提示并按最新档案刷新。本页界面不直接调用无确认的写入口。
    */
-  openRouteProfile() {
-    if (this.data.loadError || this.data.contextError) return;
-    const archiveId = this.archive && this.archive.archiveId;
-    const routeId = this._route && this._route.id;
-    if (!archiveId || !routeId) return;
-    wx.navigateTo({
-      url:
-        ROUTE_URL +
-        '?' +
-        actions.recordQueryString({ archiveId, routeId })
+  correctSend(event) {
+    if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    if (!row || !row.correctable || !archiveId || !sessionId || !routeId) {
+      this.setData({ notice: '这一把当前没有可更正的完攀，已按最新数据刷新。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    const stale =
+      (dataset.routeId && dataset.routeId !== routeId) ||
+      (dataset.sessionId && dataset.sessionId !== sessionId) ||
+      (dataset.archiveId && dataset.archiveId !== archiveId);
+    if (stale) {
+      this.setData({ notice: '这一下不属于本场这一条线的把次，没有改动任何记录。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+
+    const activeSession = this.data.activeSession || {};
+    return actions.confirmCorrection.call(this, {
+      attemptId,
+      routeId,
+      sessionId,
+      archiveId,
+      label: row.label,
+      contextText: [
+        activeSession.dateText || '',
+        activeSession.label || '',
+        activeSession.gymName ? '· ' + activeSession.gymName : ''
+      ]
+        .filter(Boolean)
+        .join(' '),
+      resultText: '完攀'
     });
   },
 
@@ -522,53 +615,12 @@ Page({
   undoLatestAttempt: actions.undoLatestAttempt,
   restoreLatestAttempt: actions.restoreLatestAttempt,
   changeRecentAttempt: actions.changeRecentAttempt,
+  // 行内备注（T045）：只作用于打开时的那一把，保存/取消按原 attemptId 与编辑代次核对。
+  onNoteInput: actions.onNoteInput,
+  cancelNote: actions.cancelNote,
+  saveNote: actions.saveNote,
 
-  // ---------------------------------------------------------------- 更正结果（T042）
-
-  /**
-   * 最近一把旁的「更正结果」（模板里沿用 correctSend 这个绑定名）：先核对这一下仍指向
-   * 当前这一把可更正的完攀，再确认。
-   *
-   * 确认弹窗写明原把次的日期/场次/岩馆、原序号与原结果（完攀 → 未完成），取消时一个
-   * 字节都不写；确认后仍走 utils/training-record-actions.js 的同一份 correctSend，
-   * 只翻这一把的结果、不改把数。连点同一把只弹一次确认；这一下若已不属于当前这一把，
-   * 只提示并按最新档案刷新。本页界面不再直接调用无确认的写入口。
-   */
-  correctSend(event) {
-    if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
-    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
-    const recent = this.data.recentAttempt;
-    const attemptId = dataset.attemptId || '';
-    const archiveId = (this.archive && this.archive.archiveId) || '';
-    if (!recent || !recent.correctable || !attemptId || recent.attemptId !== attemptId) {
-      this.setData({ notice: '这一把当前没有可更正的完攀，已按最新数据刷新。' });
-      this.refreshView();
-      return Promise.resolve(null);
-    }
-
-    const stale =
-      (dataset.routeId && dataset.routeId !== recent.routeId) ||
-      (dataset.sessionId && dataset.sessionId !== recent.sessionId) ||
-      (dataset.archiveId && dataset.archiveId !== recent.archiveId) ||
-      recent.routeId !== ((this._route && this._route.id) || '') ||
-      recent.sessionId !== ((this._session && this._session.id) || '') ||
-      recent.archiveId !== archiveId;
-    if (stale) {
-      this.setData({ notice: '这一下不属于当前这一把，没有改动任何记录。' });
-      this.refreshView();
-      return Promise.resolve(null);
-    }
-
-    return actions.confirmCorrection.call(this, {
-      attemptId,
-      routeId: recent.routeId,
-      sessionId: recent.sessionId,
-      archiveId: recent.archiveId,
-      label: recent.correctLabel,
-      contextText: recent.correctContextText,
-      resultText: '完攀'
-    });
-  },
+  // ---------------------------------------------------------------- 更正结果（T042 / T045）
 
   dismissNotice() {
     this.setData({ notice: '' });

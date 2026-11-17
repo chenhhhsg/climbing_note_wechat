@@ -528,7 +528,10 @@ test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真�
   // 单线页只提供紧凑的照片入口（T041）：首屏一行添加/缩略图，不铺整张照片卡，
   // 也不铺标记编辑；换图与移除仍在二级大图页。
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
-  assert.match(recordWxml, /id="open-route-profile"[\s\S]{0,80}bindtap="openRouteProfile"/);
+  // T045：现场不再有独立的「本场逐把」跳转与「线路历史」入口；缩略图仍进二级标记页。
+  assert.equal(recordWxml.indexOf('id="open-route-profile"'), -1, '现场不再有线路历史跳转');
+  assert.equal(recordWxml.indexOf('id="open-attempts"'), -1, '现场不再有独立逐把跳转');
+  assert.match(recordWxml, /id="record-attempts"/, '本场本线把次直接排在首屏文档流');
   assert.equal(recordWxml.indexOf('id="route-photo-card"'), -1, '单线页不再铺照片卡');
   assert.match(recordWxml, /id="record-photo"/);
   assert.equal(recordWxml.indexOf('id="route-photo-stage"'), -1, '单线页不铺标记图层');
@@ -1280,7 +1283,7 @@ test('T041 单线首屏照片入口：无图添加、预览确认、取消与写
   const archiveId = archiveOf().archiveId;
 
   // 首屏真实绑定：无图给拍照 / 相册，选图后预览确认，有图整行进二级标记页；
-  // 两种记把动作与最近一把都还在。
+  // 两种记把动作与本场本线把次区都还在（T045：把次直接排在同页）。
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
   assert.match(recordWxml, /id="record-photo-camera"[\s\S]{0,260}bindtap="chooseRecordPhoto"/);
   assert.match(recordWxml, /id="record-photo-album"[\s\S]{0,260}bindtap="chooseRecordPhoto"/);
@@ -1289,10 +1292,12 @@ test('T041 单线首屏照片入口：无图添加、预览确认、取消与写
   assert.match(recordWxml, /id="record-photo-entry"[\s\S]{0,400}bindtap="openRoutePhotoMarks"/);
   assert.ok(recordWxml.indexOf('id="record-fail"') !== -1, '未完成按钮仍在');
   assert.ok(recordWxml.indexOf('id="record-send"') !== -1, '完攀按钮仍在');
-  assert.ok(recordWxml.indexOf('id="recent-attempt"') !== -1, '最近一把仍在');
-  // 本任务涉及的现场入口与提示统一叫「线路历史」。
+  assert.ok(recordWxml.indexOf('id="record-attempts"') !== -1, '本场本线把次仍在本页');
+  // T045：现场不再有独立逐把跳转与线路历史入口，提示也不再指向它们。
+  assert.equal(recordWxml.indexOf('id="open-attempts"'), -1, '现场没有独立逐把跳转');
+  assert.equal(recordWxml.indexOf('id="open-route-profile"'), -1, '现场没有线路历史入口');
+  assert.equal(recordWxml.indexOf('线路历史（照片 · 卡点 · 跨天历史）›'), -1);
   assert.equal(recordWxml.indexOf('线路资料'), -1, '单线页不再写「线路资料」');
-  assert.match(recordWxml, /线路历史（照片 · 卡点 · 跨天历史）›/);
   assert.equal(
     fs.readFileSync(SESSION_WXML, 'utf8').indexOf('线路资料'),
     -1,

@@ -693,11 +693,10 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   const sessionWxml = fs.readFileSync(SESSION_WXML, 'utf8');
 
   const resultSend = wxml.indexOf('class="result-button result-send"');
-  const recent = wxml.indexOf('id="recent-attempt"');
-  const attemptsLink = wxml.indexOf('id="open-attempts"');
-  assert.ok(resultSend !== -1 && recent !== -1, '单线页有结果按钮与最近一把');
-  assert.ok(resultSend < recent, '撤回区在结果按钮之后');
-  assert.ok(recent < attemptsLink, '撤回区之后才是明细与资料入口');
+  const attemptsStart = wxml.indexOf('id="record-attempts"');
+  assert.ok(resultSend !== -1 && attemptsStart !== -1, '单线页有结果按钮与本场本线把次');
+  assert.ok(resultSend < attemptsStart, '本场本线把次在结果按钮之后');
+  assert.equal(wxml.indexOf('id="record-links"'), -1, '现场入口区已移除');
 
   // 场内页只有一个「本场线路」统一列表：整行点入单线记录，不在页内再铺一份结果区。
   const sessionRoutesAt = sessionWxml.indexOf('id="session-routes"');
@@ -710,37 +709,34 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   assert.doesNotMatch(sessionWxml, /class="result-button result-fail"/, '场内页不再内联结果按钮');
   assert.doesNotMatch(sessionWxml, /id="recent-attempt"/, '场内页不再内联最近一把');
 
-  // 同一行、两个兄弟槽：撤回在前（左槽），恢复在后（右槽）。
-  const rowAt = wxml.indexOf('class="recent-attempt-row"');
-  const undoSlotAt = wxml.indexOf('class="recent-attempt-slot"');
-  const undoAt = wxml.indexOf('id="undo-attempt-{{recentAttempt.attemptId}}"');
-  const restoreSlotAt = wxml.indexOf('class="recent-attempt-recovery"');
-  const restoreAt = wxml.indexOf('id="restore-attempt-{{recentAttempt.attemptId}}"');
-  const rowEndAt = wxml.indexOf('class="recent-attempt-info"');
+  // 最近一把那一行：两个兄弟槽，撤回在前（左槽），恢复在后（右槽），各占一半。
+  const rowAt = wxml.indexOf('class="record-attempt-change"');
+  const undoSlotAt = wxml.indexOf('class="record-attempt-change-slot"');
+  const undoAt = wxml.indexOf('id="undo-attempt-{{item.id}}"');
+  const restoreSlotAt = wxml.indexOf('class="record-attempt-change-restore"');
+  const restoreAt = wxml.indexOf('id="restore-attempt-{{item.id}}"');
   assert.ok(rowAt !== -1 && undoSlotAt !== -1 && restoreSlotAt !== -1, '两个槽都在这一行里');
   assert.ok(rowAt < undoSlotAt && undoSlotAt < undoAt, '左槽先放撤回');
   assert.ok(undoAt < restoreSlotAt && restoreSlotAt < restoreAt, '右槽再放恢复');
-  assert.ok(restoreAt < rowEndAt, '两个槽都在行内，行外的信息排在后面');
 
   // 两个动作各在自己的槽里：可用时是按钮，不可用时是**等宽等高的非交互空位**，
   // 因此同一个坐标最多命中其中一个，撤回后也不会被相反动作接管。
-  for (const selector of ['.recent-attempt-action', '.recent-attempt-restore']) {
+  for (const selector of ['.record-attempt-change-action', '.record-attempt-change-slot']) {
     assert.match(declarationsOf(wxss, selector), /flex:\s*1 1 0/, selector + ' 与同排按钮等分宽度');
   }
-  assert.match(declarationsOf(wxss, '.recent-attempt-slot'), /flex:\s*1 1 0/);
-  assert.match(declarationsOf(wxss, '.recent-attempt-recovery'), /flex:\s*1 1 0/);
+  assert.match(declarationsOf(wxss, '.record-attempt-change-restore'), /flex:\s*1 1 0/);
   assert.equal(
-    declarationsOf(wxss, '.recent-attempt-slot'),
-    declarationsOf(wxss, '.recent-attempt-recovery'),
+    declarationsOf(wxss, '.record-attempt-change-slot'),
+    declarationsOf(wxss, '.record-attempt-change-restore'),
     '左右两个槽同一套尺寸：各占一半、行高相同'
   );
   // 空位与实体按钮同高：按钮出现或消失都不改这一行的高度。
-  const slotHeight = minHeightOf(wxss, '.recent-attempt-slot');
+  const slotHeight = minHeightOf(wxss, '.record-attempt-change-slot');
   assert.ok(slotHeight, '这一行有固定行高');
-  assert.equal(minHeightOf(wxss, '.recent-attempt-idle'), slotHeight, '空位与整行同高');
+  assert.equal(minHeightOf(wxss, '.record-attempt-idle'), slotHeight, '空位与整行同高');
   assert.equal(minHeightOf(wxss, '.secondary-button'), slotHeight, '两个动作的按钮基础高度与空位一致');
-  assert.match(wxml, /wx:else class="recent-attempt-idle"/);
-  const idleViews = [...wxml.matchAll(/<view[^>]*class="recent-attempt-idle"[^>]*>[\s\S]*?<\/view>/g)].map(
+  assert.match(wxml, /wx:else class="record-attempt-idle"/);
+  const idleViews = [...wxml.matchAll(/<view[^>]*class="record-attempt-idle"[^>]*>[\s\S]*?<\/view>/g)].map(
     match => match[0]
   );
   assert.equal(idleViews.length, 2, '两个槽各留一块空位（不可用的那一侧）');
@@ -751,12 +747,12 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
 
   // 命中矩形不相交的根：这一行是 flex 排布（左一半、右一半），没有任何绝对定位把
   // 两个动作叠到同一个坐标上。
-  const recentCss = cssRules(wxss)
-    .filter(rule => rule.selectors.some(selector => selector.indexOf('.recent-attempt') === 0))
+  const changeCss = cssRules(wxss)
+    .filter(rule => rule.selectors.some(selector => selector.indexOf('.record-attempt-change') === 0))
     .map(rule => rule.body)
     .join('\n');
-  assert.match(declarationsOf(wxss, '.recent-attempt-row'), /display:\s*flex/, '这一行是 flex 行');
-  assert.doesNotMatch(recentCss, /position\s*:\s*(absolute|fixed)/, '这一行不用绝对定位叠放动作');
+  assert.match(declarationsOf(wxss, '.record-attempt-change'), /display:\s*flex/, '这一行是 flex 行');
+  assert.doesNotMatch(changeCss, /position\s*:\s*(absolute|fixed)/, '这一行不用绝对定位叠放动作');
 
   // 统一列表的长名不截断：换行显示，行宽不随名称长短变化。
   assert.match(
@@ -776,11 +772,11 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
   // 绑定与处理器：两个动作都带原把次 ID、归属、原档案 ID、预期状态与版本。
   assert.match(
     wxml,
-    /id="undo-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,80}bindtap="undoLatestAttempt"/
+    /id="undo-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,80}bindtap="undoLatestAttempt"/
   );
   assert.match(
     wxml,
-    /id="restore-attempt-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,400}data-expected-rev="\{\{recentAttempt\.expectedRev\}\}"[\s\S]{0,80}bindtap="restoreLatestAttempt"/
+    /id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,80}bindtap="restoreLatestAttempt"/
   );
   const handlers = new Set(handlersIn(wxml));
   for (const required of [
@@ -789,20 +785,22 @@ test('T033 按钮位置可核：撤回与恢复是同一行里两个各占一半
     'undoLatestAttempt',
     'restoreLatestAttempt',
     'correctSend',
-    'openAttempts',
-    'openRouteProfile'
+    'openNoteEditor',
+    'openAttemptVideo',
+    'saveNote',
+    'cancelNote'
   ]) {
     assert.ok(handlers.has(required), '单线页应绑定：' + required);
     assert.equal(typeof recordDefinition[required], 'function', required + ' 必须有页面方法');
   }
-  // T042：单线页不再有独立更正区；correctSend 这个绑定名保留，但页面入口先确认再落盘，
+  // T042/T045：单线页不再有独立更正区；行内「改成未完成」先确认再落盘，
   // 真正写入仍是 utils/training-record-actions.js 的同一份实现。
   assert.equal(wxml.indexOf('id="route-correction"'), -1, '单线页不再有独立更正区');
   assert.equal(typeof recordDefinition.correctSend, 'function', 'correctSend 入口存在');
   assert.match(
     wxml,
-    /id="correct-recent-\{\{recentAttempt\.attemptId\}\}"[\s\S]{0,500}bindtap="correctSend"/,
-    '最近一把旁的更正结果绑定 correctSend'
+    /id="correct-attempt-\{\{item\.id\}\}"[\s\S]{0,500}bindtap="correctSend"/,
+    '行内「改成未完成」先走确认'
   );
   const sessionHandlers = new Set(handlersIn(sessionWxml));
   for (const required of ['openAddRoute', 'pickGymRoute', 'openRecord']) {
@@ -1686,13 +1684,15 @@ test('T042 本场逐把的更正写失败保留同一把的重试入口，重试
   assert.equal(page.data.storageError, '');
 });
 
-test('T042 可见称呼统一为「本场逐把」：页面标题、单线页入口与说明', () => {
+test('T042/T045 可见称呼：本场逐把页标题保留，单线页把次直接同页显示', () => {
   const attemptsJson = JSON.parse(
     fs.readFileSync(path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.json'), 'utf8')
   );
   assert.equal(attemptsJson.navigationBarTitleText, '本场逐把');
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
-  assert.match(recordWxml, /id="open-attempts"[\s\S]{0,200}本场逐把（\{\{attempts\.length\}\} 把）/, '入口写「本场逐把」');
+  // T045：现场不再有「本场逐把」跳转入口；把次直接在同页列为本场本线把次。
+  assert.equal(recordWxml.indexOf('id="open-attempts"'), -1, '现场没有独立逐把跳转');
+  assert.match(recordWxml, /本场本线把次/, '现场把次区写明是本场本线');
   assert.doesNotMatch(recordWxml, /逐把明细/, '单线页不再用旧称呼');
   assert.doesNotMatch(recordWxml, /点错了完攀/, '单线页不再有独立更正区');
   const attemptsWxml = fs.readFileSync(ATTEMPTS_WXML, 'utf8');
@@ -1855,20 +1855,21 @@ test('T037 返工 单线与明细缺 archiveId 时只显示原因并拒绝写入
   assert.equal(ready.data.selectedRoute.id, routeId);
 });
 
-test('T036 返工 线路资料入口带原 archiveId：换档后同 routeId 不顶替', () => {
+test('T036/T045 现场不再有线路历史入口；原线路资料页仍按入口 archiveId 核对归属', () => {
   const flow = trainThroughPages('石间岩馆');
-  const page = openRecordFor(flow.aId, flow.sessionId);
+  openRecordFor(flow.aId, flow.sessionId);
   const routeArchiveId = archiveOf().archiveId;
 
-  page.openRouteProfile();
-  const url = wxLog.navigations.at(-1).url;
-  const parsed = new URL(url, 'https://example.invalid');
-  assert.equal(parsed.pathname, '/pages/training-route/training-route');
-  assert.equal(parsed.searchParams.get('archiveId'), routeArchiveId, '资料入口带原档案 ID');
-  assert.equal(parsed.searchParams.get('routeId'), flow.aId);
+  // T045：现场移除了「线路历史」跳转，也不再保留可点的方法绑定。
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const recordSource = fs.readFileSync(RECORD_JS, 'utf8');
+  assert.equal(recordWxml.indexOf('id="open-route-profile"'), -1, '现场没有线路历史入口');
+  assert.equal(recordWxml.indexOf('bindtap="openRouteProfile"'), -1);
+  assert.doesNotMatch(recordSource, /training-route\/training-route/, '单线页不再直达线路资料页');
+  assert.doesNotMatch(recordSource, /training-attempts\/training-attempts/, '单线页不再直达逐把页');
 
-  // 同一份档案：原资料页正常展示这条线。
-  const query = Object.fromEntries(parsed.searchParams.entries());
+  // 原线路资料页本身仍按入口带的原 archiveId 核对归属（旧入口/旧链接兼容读取）。
+  const query = { archiveId: routeArchiveId, routeId: flow.aId };
   const profile = createPage(routeDefinition);
   profile.onLoad(query);
   assert.equal(profile.data.claimError, '');
@@ -1882,11 +1883,6 @@ test('T036 返工 线路资料入口带原 archiveId：换档后同 routeId 不�
   blocked.onLoad(query);
   assert.match(blocked.data.claimError, /另一份本机档案/);
   assert.equal(blocked.data.route, null);
-  assert.match(
-    fs.readFileSync(RECORD_JS, 'utf8'),
-    /openRouteProfile\(\)[\s\S]{0,700}recordQueryString\(\{\s*archiveId,\s*routeId\s*\}\)/,
-    '单线页资料入口用带 archiveId 的查询串'
-  );
 });
 
 test('T036 返工 旧备注保存/取消事件不提交也不清除后来的草稿', () => {
@@ -2511,7 +2507,7 @@ test('T037 返工 显式切场次会更新列表显示目标，不靠临时回�
 // T041 现场首屏照片入口
 // ------------------------------------------------------------------ *
 
-test('T041 现场首屏：一行照片入口与两种记把动作、最近一把并存，提示统一叫线路历史', () => {
+test('T041 现场首屏：一行照片入口与两种记把动作、同页把次并存', () => {
   const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
   const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
   const source = fs.readFileSync(RECORD_JS, 'utf8');
@@ -2543,21 +2539,22 @@ test('T041 现场首屏：一行照片入口与两种记把动作、最近一把
     assert.equal(typeof recordDefinition[required], 'function', required + ' 必须有页面方法');
   }
 
-  // 第一屏仍是现场记录：两种记把动作与最近一把都在，照片入口夹在线路头与结果区之间。
+  // 第一屏仍是现场记录：两种记把动作与本场本线把次都在，照片入口夹在线路头与结果区之间。
   const photoAt = wxml.indexOf('id="record-photo"');
   const failAt = wxml.indexOf('id="record-fail"');
   const sendAt = wxml.indexOf('id="record-send"');
-  const recentAt = wxml.indexOf('id="recent-attempt"');
-  assert.ok(photoAt !== -1 && failAt !== -1 && sendAt !== -1 && recentAt !== -1);
+  const attemptsAt = wxml.indexOf('id="record-attempts"');
+  assert.ok(photoAt !== -1 && failAt !== -1 && sendAt !== -1 && attemptsAt !== -1);
   assert.ok(photoAt < failAt, '照片入口在结果按钮之前');
-  assert.ok(failAt < recentAt, '最近一把仍在结果按钮之后');
+  assert.ok(failAt < attemptsAt, '本场本线把次仍在结果按钮之后');
 
   // 首屏不铺第二套照片卡、标记图层或移除入口：这些仍在二级大图页。
   assert.equal(wxml.indexOf('id="route-photo-card"'), -1);
   assert.equal(wxml.indexOf('id="mark-card"'), -1);
   assert.equal(wxml.indexOf('bindtap="removeRoutePhoto"'), -1);
-  // 现场入口与提示统一叫「线路历史」，不再写「线路资料」。
-  assert.match(wxml, /线路历史（照片 · 卡点 · 跨天历史）›/);
+  // T045：现场不再有线路历史跳转，也不再写「线路资料」。
+  assert.equal(wxml.indexOf('id="open-route-profile"'), -1, '现场没有线路历史入口');
+  assert.equal(wxml.indexOf('线路历史（照片 · 卡点 · 跨天历史）›'), -1);
   assert.equal(wxml.indexOf('线路资料'), -1);
   assert.equal(source.indexOf('线路资料'), -1);
   assert.equal(fs.readFileSync(SESSION_WXML, 'utf8').indexOf('线路资料'), -1);
@@ -2731,4 +2728,235 @@ test('T044 逐把一把一框：完攀深绿、未完成深橙，描边 + 浅底
   assert.deepEqual(page.data.attempts.map(row => row.id), [first.attempt.id, second.attempt.id]);
   assert.deepEqual(page.data.attempts.map(row => row.resultText), ['未完成', '完攀']);
   assert.deepEqual(page.data.attempts.map(row => row.isSend), [false, true]);
+});
+
+// ------------------------------------------------------------------ *
+// T045 单线同页记把：最新在前、原行编辑、行内更正与撤回/恢复
+// ------------------------------------------------------------------ *
+
+/** 现场一次训练：A 线三把（第 3 把完攀带备注）。 */
+function seedInlineAttempts() {
+  const started = store.startSession({
+    gymName: '同页岩馆',
+    date: '2026-11-09',
+    now: new Date(2026, 10, 9, 8, 30)
+  });
+  assert.equal(started.ok, true, started.error);
+  const session = started.session;
+  const created = store.createRoute({
+    sessionId: session.id,
+    name: '同页 A 线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  assert.equal(created.ok, true, created.error);
+  const route = created.route;
+  const save = (result, note, at) => {
+    const outcome = store.saveAttempt({
+      sessionId: session.id,
+      routeId: route.id,
+      result,
+      note: note || '',
+      now: at
+    });
+    assert.equal(outcome.ok, true, outcome.error);
+    return outcome.attempt;
+  };
+  // 完攀会锁住这条抱石线，因此先把前两把交给调用方做异线/另一场的对照，
+  // 再在同一份档案上补第三把完攀。
+  const attempts = [
+    save('fail', '', new Date(2026, 10, 9, 9, 5)),
+    save('fail', '第二把现场备注', new Date(2026, 10, 9, 9, 10))
+  ];
+  return {
+    session,
+    route,
+    attempts,
+    saveThird: () =>
+      attempts.push(save('send', '第三把现场备注', new Date(2026, 10, 9, 9, 20)))
+  };
+}
+
+test('T045 现场同页把次：最新在前、原编号稳定，编辑与视频只作用于所点那一把', () => {
+  const { session, route, attempts, saveThird } = seedInlineAttempts();
+
+  // 同色同级另一条线、另一场同一长期线路：都不许串进本页。
+  const twin = store.createRoute({
+    sessionId: session.id,
+    name: '同色同级 B 线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  assert.equal(twin.ok, true, twin.error);
+  const twinSave = store.saveAttempt({
+    sessionId: session.id,
+    routeId: twin.route.id,
+    result: 'fail',
+    note: 'B 线备注',
+    now: new Date(2026, 10, 9, 9, 30)
+  });
+  assert.equal(twinSave.ok, true, twinSave.error);
+  const other = store.startSession({
+    gymName: '另一场馆',
+    date: '2026-11-10',
+    now: new Date(2026, 10, 10, 8, 0)
+  });
+  assert.equal(other.ok, true, other.error);
+  assert.equal(store.linkRouteToSession(other.session.id, route.id).ok, true);
+  const otherSave = store.saveAttempt({
+    sessionId: other.session.id,
+    routeId: route.id,
+    result: 'fail',
+    note: '另一场备注',
+    now: new Date(2026, 10, 10, 8, 20)
+  });
+  assert.equal(otherSave.ok, true, otherSave.error);
+
+  // 异线/另一场的对照已落盘，再补本线第三把完攀（抱石只允许一次有效完攀）。
+  saveThird();
+
+  const page = openRecordFor(route.id, session.id);
+  // 最新在前，原编号不因显示顺序或撤回而改变。
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.label),
+    ['第 3 把', '第 2 把', '第 1 把']
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.id),
+    [attempts[2].id, attempts[1].id, attempts[0].id]
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.resultText),
+    ['完攀', '未完成', '未完成']
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.timeText),
+    ['09:20', '09:10', '09:05']
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.note),
+    ['第三把现场备注', '第二把现场备注', '']
+  );
+  // 同色同级异线与另一场不串入。
+  assert.equal(
+    page.data.attemptCards.some(
+      row => row.id === twinSave.attempt.id || row.id === otherSave.attempt.id
+    ),
+    false,
+    '异线与另一场的把次不进入本页'
+  );
+  assert.equal(
+    page.data.attemptCards.some(row => /B 线备注|另一场备注/.test(row.note)),
+    false
+  );
+  // 按原资格：合资格完攀给「改成未完成」，最近一把给「这把多记了」，说明对把数的影响。
+  assert.equal(page.data.attemptCards[0].correctable, true);
+  assert.equal(page.data.attemptCards[0].correctText, '改成未完成');
+  assert.equal(page.data.attemptCards[0].canUndo, true);
+  assert.equal(page.data.attemptCards[0].undoText, '这把多记了');
+  assert.match(page.data.attemptCards[0].actionHint, /把数不变/);
+  assert.match(page.data.attemptCards[0].actionHint, /撤回后本场把数减 1/);
+  assert.equal(page.data.attemptCards[1].canUndo, false, '撤回只给最近一把');
+  assert.equal(page.data.attemptCards[1].undoText, '');
+
+  // 行内编辑：点哪一把就只打开哪一把，保存只改这一把。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.attemptId, attempts[0].id);
+  assert.equal(page.data.noteEditor.attemptLabel, '第 1 把');
+  page.onNoteInput({ detail: { value: '第一把补上的备注' } });
+  page.saveNote();
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    '第一把补上的备注'
+  );
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[2].id).note,
+    '第三把现场备注',
+    '没点的那一把备注不变'
+  );
+
+  // 视频沿用原把次视频页：四个 ID 一起带过去。
+  page.openAttemptVideo(tapDataset({ attemptId: attempts[1].id }));
+  const videoUrl = wxLog.navigations.at(-1).url;
+  const params = new URL(videoUrl, 'https://example.invalid').searchParams;
+  assert.equal(new URL(videoUrl, 'https://example.invalid').pathname, '/pages/attempt-video/attempt-video');
+  assert.equal(params.get('archiveId'), archiveOf().archiveId);
+  assert.equal(params.get('sessionId'), session.id);
+  assert.equal(params.get('routeId'), route.id);
+  assert.equal(params.get('attemptId'), attempts[1].id);
+});
+
+test('T045 行内改成未完成与撤回/恢复：总数、编号与备注保持，重开仍按原把次', async () => {
+  const { session, route, attempts, saveThird } = seedInlineAttempts();
+  saveThird();
+  let page = openRecordFor(route.id, session.id);
+  const third = attempts[2];
+
+  // 取消更正：一个字节都不写。
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  queueModal('cancel');
+  assert.equal(
+    await page.correctSend(tapDataset({ attemptId: third.id })),
+    null
+  );
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '取消不写盘');
+
+  // 确认更正：把数不变，完攀少一，原编号/备注/时间不动，原行变成只读回读。
+  const prompt = modalLog.calls.at(-1);
+  assert.match(prompt.content, /第 3 把/);
+  assert.match(prompt.content, /完攀/);
+  assert.match(prompt.content, /未完成/);
+  assert.match(prompt.content, /2026-11-09/);
+  await page.correctSend(tapDataset({ attemptId: third.id }));
+  assert.equal(page.data.routeCountText, '3 把', '更正保持总数');
+  assert.equal(page.data.routeCompleted, false, '完攀减一');
+  const corrected = page.data.attemptCards.find(row => row.id === third.id);
+  assert.equal(corrected.resultText, '未完成');
+  assert.equal(corrected.note, '第三把现场备注', '说明性字段不动');
+  assert.equal(corrected.correctable, false);
+  assert.match(corrected.correctStatusText, /已改为未完成/);
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.label),
+    ['第 3 把', '第 2 把', '第 1 把'],
+    '原编号保持'
+  );
+
+  // 重开：同一份档案读出同样的顺序、编号与备注。
+  page = openRecordFor(route.id, session.id);
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.id),
+    [attempts[2].id, attempts[1].id, attempts[0].id]
+  );
+  assert.equal(page.data.attemptCards[0].note, '第三把现场备注');
+  assert.equal(page.data.attemptCards[0].resultText, '未完成');
+
+  // 撤回最近一把：总数减一，这一把仍留在原框，恢复入口就在同一行。
+  const row = page.data.attemptCards[0];
+  page.undoLatestAttempt(rowEvent(row));
+  assert.equal(page.data.routeCountText, '2 把');
+  const undone = page.data.attemptCards.find(item => item.id === third.id);
+  assert.equal(undone.isUndone, true);
+  assert.equal(undone.canRestore, true);
+  assert.equal(undone.canEditNote, false, '已撤回的一把先恢复再改备注');
+  assert.equal(undone.canOpenVideo, false, '已撤回的一把先恢复再回看视频');
+  assert.equal(undone.note, '第三把现场备注', '撤回保留原备注');
+  assert.deepEqual(
+    page.data.attemptCards.map(item => item.label),
+    ['第 3 把', '第 2 把', '第 1 把'],
+    '撤回不整体前移编号'
+  );
+
+  // 恢复原把：加回同一把，编号、备注与时间都回到原样。
+  page.restoreLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.routeCountText, '3 把');
+  const restored = page.data.attemptCards.find(item => item.id === third.id);
+  assert.equal(restored.isUndone, false);
+  assert.equal(restored.canUndo, true);
+  assert.equal(restored.note, '第三把现场备注');
+  assert.equal(restored.timeText, '09:20');
 });

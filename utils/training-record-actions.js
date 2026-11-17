@@ -12,6 +12,8 @@
  * 事件处理；training-route 的「改为未完成」也指向同一份实现，避免两个不一致的写实现。
  * T042：更正的可见入口按把就近——最近一把在单线页旁、较早的把次在本场逐把那一行；
  * 这里只补确认与准入判断，持久化、重试规则与线路历史的更正能力都保持原样。
+ * T045：单线页现场直接列本场本线把次（最新在前，一把一框），每行只编辑所点那一把；
+ * 派生在 attemptCardRows，写入口仍是本文件的同一份事件处理，不新增持久模型。
  *
  * 页面需要提供（与 T017 场内页同名）：
  *   this.archive、this.data.loadError、this.data.activeSession、this.data.selectedRoute、
@@ -934,8 +936,117 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
     canUndo: !undone,
     undoText: retryOpId && !undone ? '重试撤回这一把' : '撤回这一把',
     canRestore: undone,
-    restoreText: retryOpId && undone ? '重试恢复这一把' : '恢复这一把'
+    restoreText: retryOpId && undone ? '重试恢复这一把' : '恢复这一把',
+    // 这一把当前沿用原 opId 重试：现场把次行据此换成同一把的重试文案。
+    retry: Boolean(retryOpId)
   };
+}
+
+/**
+ * 现场「本场本线把次」的行（T045）：普通文档流里最新在前，一把一框。
+ *
+ * 只读派生，不写盘：
+ * - 行＝这条线在本场的**有效把次**，外加「最近一把」这一行——它可能是刚撤回的那一把，
+ *   恢复入口要留在原框里；已撤回的较早把次不占据现场，旧档仍由原有入口读取；
+ * - 原编号来自 attemptLabelMap（含已撤回占位），结果、时间与备注逐把对应，不串到
+ *   同色同级异线或另一场；
+ * - 备注「编辑」与视频入口只给有效把次：撤回后档案层拒绝改备注、视频页拒绝打开，
+ *   先恢复这一把；
+ * - 「改成未完成」与线路历史、本场逐把同一份资格（抱石、有效、已确认完攀）；
+ * - 「这把多记了」（撤回）与「恢复这一把」只给最近一把，与 changeRecentAttempt 的
+ *   原边界一致；重试沿用 recentAttemptView 的同一把、同一 opId 与渲染版本；
+ * - 行上的动作都带原把次 ID 与归属，只作用于所点这一把。
+ *
+ * videoLinks 由页面用 attemptVideo.videoLinkMap 一次读索引算出（本模块不反向依赖
+ * 视频模块）；page 只用于读取本页实例的更正回读/失败重试标记。
+ */
+function attemptCardRows(archive, activeSession, selectedRoute, route, recentAttempt, videoLinks, page) {
+  if (!archive || !activeSession || !selectedRoute) return [];
+  const labels = attemptLabelMap(archive, activeSession.id, selectedRoute.id);
+  const correctionTargets = correctionTargetsForSession(
+    archive,
+    activeSession.id,
+    selectedRoute.id
+  );
+  const correctionSupported = route
+    ? store.isBoulderRoute(route)
+    : selectedRoute.climbType === '抱石';
+  const recent = recentAttempt || null;
+
+  const rows = store.attemptsFor(archive, {
+    sessionId: activeSession.id,
+    routeId: selectedRoute.id
+  });
+  // 刚撤回的那一把仍留在原框里（恢复入口就在这一行）；更早的已撤回把次不在这里。
+  if (recent && !rows.some(item => item.id === recent.attemptId)) {
+    const undone = (archive.attempts || []).find(item => item.id === recent.attemptId);
+    if (undone) rows.push(undone);
+  }
+  rows.sort((left, right) => (right.seq || 0) - (left.seq || 0));
+
+  const links = videoLinks || new Map();
+  return rows.map(attempt => {
+    const undone = store.isUndoneAttempt(attempt);
+    const isRecent = Boolean(recent && recent.attemptId === attempt.id);
+    const link = links.get(attempt.id) || {
+      hasVideo: false,
+      stateText: '未添加视频',
+      entryText: '添加视频 ›'
+    };
+    const correctable = Boolean(correctionTargets.get(attempt.id)) && !undone;
+    const correctionState = correctionStateOf(archive, page, attempt.id);
+    const canUndo = Boolean(isRecent && recent.canUndo);
+    const canRestore = Boolean(isRecent && recent.canRestore);
+
+    // 两种动作对把数的影响写在行里，不靠记忆或颜色猜。
+    const hints = [];
+    if (undone) {
+      hints.push('已撤回：本场把数不含这一把；恢复后加回 1 把。');
+    } else {
+      if (correctable) hints.push('改成未完成：本场把数不变，完攀次数减 1。');
+      if (canUndo) hints.push('这把多记了：撤回后本场把数减 1。');
+    }
+
+    return {
+      id: attempt.id,
+      attemptId: attempt.id,
+      label: labels.get(attempt.id) || '',
+      resultText: attemptResultText(attempt.result),
+      isSend: attempt.result === 'send',
+      isUndone: undone,
+      timeText: timeText(attempt.createdAt),
+      note: attempt.note || '',
+      hasNote: Boolean(attempt.note),
+      // 备注与视频只给有效把次：已撤回的一把被档案层与视频页按同一份规则拒绝。
+      canEditNote: !undone,
+      hasVideo: !undone && Boolean(link.hasVideo),
+      videoStateText: undone ? '已撤回 · 恢复后可回看' : link.stateText,
+      videoEntryText: link.entryText,
+      canOpenVideo: !undone,
+      routeId: attempt.routeId,
+      sessionId: attempt.sessionId,
+      archiveId: archive.archiveId,
+      correctionSupported,
+      correctable,
+      correctText: correctionState.state === 'retry' ? '重试改成未完成' : '改成未完成',
+      correctStatusText: correctable ? '' : correctionState.statusText,
+      correctIdleText: undone ? '已撤回，恢复后可改' : '',
+      // 撤回/恢复只出现在最近一把这一行：同一行里两个并排槽，互不接管坐标。
+      showChange: isRecent,
+      canUndo,
+      canRestore,
+      undoText: canUndo
+        ? recent.retry
+          ? '重试这把多记了'
+          : '这把多记了'
+        : '',
+      restoreText: canRestore ? recent.restoreText : '',
+      expected: isRecent ? recent.expected : '',
+      expectedRev: isRecent ? recent.expectedRev : 0,
+      stateText: isRecent ? recent.stateText : '',
+      actionHint: hints.join(' ')
+    };
+  });
 }
 
 /**
@@ -1178,13 +1289,19 @@ function changeRecentAttempt(event, action) {
  * 打开某一把的备注编辑：目标来自该行按钮带下来的原把次 ID，只在当前页面的
  * 逐把列表里找这一把；编辑记录同时记下打开时的档案 ID 与**本次编辑代次**，
  * 保存、取消与输入都按同一代次核对，旧编辑器的事件不会落到后来的草稿上。
+ *
+ * T045：单线页现场把次行在 attemptCards（最新在前），本场逐把页仍在 attempts；
+ * 两处都按同一个原 attemptId 定位，并用该行自己的 label/resultText 填编辑抬头。
  */
 function openNoteEditor(event) {
   if (this.data.contextError) return;
   const attemptId = event && event.currentTarget && event.currentTarget.dataset.attemptId;
   if (!attemptId || !this.data.selectedRoute) return;
-  const attempt = (this.data.attempts || []).find(item => item.id === attemptId);
+  const pool = (this.data.attempts || []).concat(this.data.attemptCards || []);
+  const attempt = pool.find(item => item.id === attemptId);
   if (!attempt) return;
+  // 已撤回的那一把按原边界不允许改备注：先恢复，恢复后编辑器从同一行再打开。
+  if (attempt.canEditNote === false) return;
 
   this._noteEditorSeq = (this._noteEditorSeq || 0) + 1;
   this.setData({
@@ -1400,6 +1517,7 @@ module.exports = {
   recordAttempt,
   retryPendingAttempt,
   recentAttemptView,
+  attemptCardRows,
   undoLatestAttempt,
   restoreLatestAttempt,
   changeRecentAttempt,
