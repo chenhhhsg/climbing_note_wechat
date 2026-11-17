@@ -808,7 +808,7 @@ test('T024-7 确认更换：忙碌态可见，成功后按读回的新片段切�
   assert.equal(page.data.savedVideo.revText, '2');
   assert.equal(page.data.playerKind, 'saved');
   assert.equal(page.data.playerSrc, USER_DATA_PATH + '/' + newClip.fileId);
-  assert.match(page.data.notice, /已更换为新的本机副本/);
+  assert.match(page.data.notice, /新副本保存在这台手机微信里的攀笔中/);
   assert.equal(calls.length, 1);
 });
 
@@ -988,7 +988,7 @@ test('T024-12 移除经明确确认：成功后清关联与播放器，原把次
   assert.equal(page.data.savedVideo, null);
   assert.equal(page.data.playerSrc, '');
   assert.equal(page.data.videoInstances.length, 0);
-  assert.match(page.data.notice, /已移除小程序内的本机副本/);
+  assert.match(page.data.notice, /已从这一把的攀笔中移除视频副本/);
   assert.match(page.data.notice, /系统相册里的原片都还在/);
   assert.equal(page.data.attempt.id, flow.attemptB.id, '原把次仍可访问');
   assert.equal(page.data.attempt.note, 'B 把的备注');
@@ -1097,7 +1097,7 @@ test('T024-14 首次保存：待确认片源可播放，确认后忙碌、成功
   assert.equal(page.data.savedVideo.clipId, 'clip-first');
   assert.equal(page.data.playerKind, 'saved');
   assert.equal(page.data.playerSrc, USER_DATA_PATH + '/' + newClip.fileId);
-  assert.match(page.data.notice, /已保存到本机/);
+  assert.match(page.data.notice, /视频已保存到这一把/);
   assert.equal(rawArchive(), archiveRaw, '保存视频不改训练档案');
 });
 
@@ -1221,6 +1221,13 @@ test('T024-17 WXML 绑定真实处理器：原生 video 事件、播放按钮与
   assert.match(wxml, /id="confirm-replace"/);
   assert.match(wxml, /id="cancel-replace"/);
   assert.match(wxml, /id="commit-preview"/);
+  assert.match(wxml, /保存到攀笔/, '首次保存按钮写「保存到攀笔」');
+  assert.match(wxml, /id="preview-save-hint"/);
+  assert.match(
+    wxml,
+    /视频副本保存在这台手机微信里的攀笔中，不上传云端。可从这一把的记录中回看。相册原片保留。/,
+    '首次预览旁说明副本位置、回看入口、相册原片与不上传'
+  );
   assert.match(wxml, /id="confirm-remove"/);
   assert.match(wxml, /id="confirm-remove-yes"/);
   assert.match(wxml, /id="confirm-remove-no"/);

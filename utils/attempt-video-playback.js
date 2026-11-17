@@ -41,7 +41,7 @@ const METHOD_REMOVE = 'remove';
 const OPERATION_METHODS = [METHOD_COMMIT, METHOD_REPLACE, METHOD_REMOVE];
 
 const UNAVAILABLE_MESSAGE =
-  '当前版本还不能保存或修改本机视频副本（本机保存服务未就绪）；已有视频仍可回看。';
+  '当前版本还不能保存或修改这台手机微信的攀笔中的视频副本（本机保存服务未就绪）；已有视频仍可回看。';
 
 // 显式实例由 setVideoStore 注入（测试与宿主）；生产默认走工厂，按 request.archiveId
 // 取对应档案的持久层。工厂在页面模块加载时注册，不写 storage、不碰文件。
@@ -250,7 +250,7 @@ function playbackErrorMessage(errMsg, kind) {
   const message = hasText(errMsg) ? errMsg : '未知错误';
   if (kind === KIND_SAVED) {
     return (
-      '这段本机视频打不开（' + message + '），可能已被清理或文件损坏；' +
+      '这段攀笔中的视频打不开（' + message + '），可能已被清理或文件损坏；' +
       '请从相册重新选择原片。原把次、备注与相册里的原片都还在。'
     );
   }
@@ -579,15 +579,15 @@ function operationSuccessText(kind, outcome) {
     ? '（写入回执不明确，已按本机索引读回确认）'
     : '';
   if (outcome && outcome.code === 'duplicate') {
-    return '这一把已经有本机副本，已按读回切换显示；没有写入第二份。' + suffix;
+    return '这一把的攀笔中已经有视频副本，已按读回切换显示；没有写入第二份。' + suffix;
   }
   if (kind === METHOD_COMMIT) {
-    return '已保存到本机：这一把现在可以从本机副本回看。' + suffix;
+    return '视频已保存到这一把。' + suffix;
   }
   if (kind === METHOD_REPLACE) {
-    return '已更换为新的本机副本；旧副本在确认没有引用后清理。' + suffix;
+    return '视频已更换到这一把：新副本保存在这台手机微信里的攀笔中；旧副本在确认没有引用后清理。' + suffix;
   }
-  return '已移除小程序内的本机副本；原把次、备注与系统相册里的原片都还在。' + suffix;
+  return '已从这一把的攀笔中移除视频副本；原把次、备注与系统相册里的原片都还在。' + suffix;
 }
 
 module.exports = {

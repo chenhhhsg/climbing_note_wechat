@@ -140,7 +140,7 @@
 
         <!-- 移除是明确的两步操作 -->
         <view wx:if="{{confirmRemove}}" id="confirm-remove" class="confirm-box">
-          <text class="confirm-text">只移除小程序里的本机副本；系统相册里的原片、这一把的记录与备注都保留。</text>
+          <text class="confirm-text">只移除这台手机微信的攀笔中的视频副本；系统相册里的原片、这一把的记录与备注都保留。</text>
           <view class="button-row">
             <button id="confirm-remove-yes" class="primary-button" bindtap="confirmRemove" disabled="{{busy}}">确认移除</button>
             <button id="confirm-remove-no" class="secondary-button" bindtap="cancelRemove" disabled="{{busy}}">取消</button>
@@ -156,7 +156,7 @@
         <text wx:if="{{preview.durationText}}" id="preview-duration" class="preview-meta">时长 {{preview.durationText}} 秒</text>
         <text wx:if="{{preview.dimensionText}}" class="preview-meta">{{preview.dimensionText}}</text>
         <text wx:if="{{preview.mode === 'replacement'}}" class="video-hint">确认之前不会改动关联；取消会回到原来那段视频，也不会创建文件。</text>
-        <text wx:else class="video-hint">这只是相册返回的临时文件，退出小程序后可能失效；保存后才会写入本机副本。</text>
+        <text wx:else id="preview-save-hint" class="video-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。可从这一把的记录中回看。相册原片保留。</text>
         <view class="button-row">
           <button
             wx:if="{{preview.mode === 'replacement'}}"
@@ -171,7 +171,7 @@
             class="primary-button"
             bindtap="commitPreview"
             disabled="{{busy}}"
-          >{{busy && opKind === 'commit' ? '正在保存…' : '保存到本机'}}</button>
+          >{{busy && opKind === 'commit' ? '正在保存…' : '保存到攀笔'}}</button>
           <button
             wx:if="{{preview.mode === 'replacement'}}"
             id="cancel-replace"
