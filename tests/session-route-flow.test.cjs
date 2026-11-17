@@ -88,12 +88,14 @@ function armRivalWriterAt(callNumber, rival) {
   fault.rival = rival;
 }
 
-const wxLog = { navigations: [], switches: [], toasts: [] };
+const wxLog = { navigations: [], switches: [], toasts: [], backs: [], redirects: [] };
 
 function resetWxLog() {
   wxLog.navigations = [];
   wxLog.switches = [];
   wxLog.toasts = [];
+  wxLog.backs = [];
+  wxLog.redirects = [];
 }
 
 // 更正确认弹窗（T042）：默认立刻「确认」；队列里可指定 cancel，用来核对取消不写盘。
@@ -137,6 +139,13 @@ global.wx = {
   },
   navigateTo(options) {
     wxLog.navigations.push(options);
+  },
+  // 返回与回退落点（T046）：正常路径退回上一页；没有上一页时按入口重建落点。
+  navigateBack(options) {
+    wxLog.backs.push(options || {});
+  },
+  redirectTo(options) {
+    wxLog.redirects.push(options);
   },
   switchTab(options) {
     wxLog.switches.push(options);
@@ -2624,9 +2633,44 @@ test('T043 记录 tab 一行直达原场小结，再回看原线路与跨日历�
   assert.equal(summaryPage.data.summaryCountText, '2 条线 · 4 把');
   assert.equal(summaryPage.data.summaryRows.length, 2);
 
-  // 从小结继续回看原线路：带原档案 ID 与原长期线路 ID。
+  // 从小结先看原场逐把（T046）：带原档案 ID、所看这一场的场次 ID 与长期线路 ID，
+  // 跨场历史不再由小结直接跳过去。
   resetWxLog();
   summaryPage.openSummaryRoute(tapDataset({ routeId: flow.aId }));
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-attempts/training-attempts?archiveId=' +
+      archiveId +
+      '&sessionId=' +
+      flow.sessionId +
+      '&routeId=' +
+      flow.aId +
+      '&from=summary'
+  ]);
+
+  // 本场逐把（真实页面）：只列这一场这一条线的三把，标明原日期、岩馆与场次。
+  const attemptsPage = createPage(attemptsDefinition);
+  attemptsPage.onLoad({
+    archiveId,
+    sessionId: flow.sessionId,
+    routeId: flow.aId,
+    from: 'summary'
+  });
+  assert.equal(attemptsPage.data.contextError, '');
+  assert.equal(attemptsPage.data.fromSummary, true);
+  assert.equal(attemptsPage.data.backLabel, '返回原场小结', '返回文案与实际落点一致');
+  assert.equal(attemptsPage.data.activeSession.id, flow.sessionId);
+  assert.equal(
+    attemptsPage.data.activeSession.dateText,
+    archiveBefore.sessions.find(item => item.id === flow.sessionId).date
+  );
+  assert.equal(attemptsPage.data.activeSession.gymName, '石间岩馆');
+  assert.equal(attemptsPage.data.activeSession.label, '第 1 场');
+  assert.equal(attemptsPage.data.attempts.length, 3, '只列这一场这一条线的把次');
+  assert.equal(attemptsPage.data.attempts[1].note, '第二把备注');
+
+  // 用户主动点「线路历史」才进跨场历史：带原档案 ID 与原长期线路 ID。
+  resetWxLog();
+  attemptsPage.openRouteHistory();
   assert.deepEqual(wxLog.navigations.map(item => item.url), [
     '/pages/training-route/training-route?archiveId=' + archiveId + '&routeId=' + flow.aId
   ]);
@@ -2653,6 +2697,284 @@ test('T043 记录 tab 一行直达原场小结，再回看原线路与跨日历�
   assert.equal(home.data.activeSession.id, flow.sessionId);
   assert.equal(home.data.activeSession.routeName, 'B 线');
   assert.equal(home.data.activeSession.attemptCountText, '4 把');
+
+  // 返回落点与文案对应（T046）：正常路径退回上一页（小结）；没有上一页时按原档案
+  // 与原场次重建小结页连接，而不是回到场内页。
+  resetWxLog();
+  attemptsPage.backToList();
+  assert.equal(wxLog.backs.length, 1, '正常路径是系统返回上一页');
+  assert.equal(wxLog.redirects.length, 0);
+  wxLog.backs[0].fail();
+  assert.deepEqual(wxLog.redirects.map(item => item.url), [
+    '/pages/training-summary/training-summary?archiveId=' +
+      archiveId +
+      '&sessionId=' +
+      flow.sessionId
+  ]);
+});
+
+// ------------------------------------------------------------------ *
+// T046 同一长期线路两场：小结 → 本场逐把 → 线路历史
+// ------------------------------------------------------------------ *
+
+test('T046 同一长期线路两场各有把次：从第一场小结只看到第一场原把次，主动进线路历史才看到两场', () => {
+  // 第一场：A 线三把（第 2 把带备注）、B 线一把；同日再开第二场，复用同一条 A 线记一把。
+  const sessionPage = startTrainingFromHome('石间岩馆');
+  const firstSessionId = sessionPage.data.activeSession.id;
+  const aId = addRouteThroughPage(sessionPage, 'A 线', { grade: 'V3' });
+  let record = openRecordFor(aId, firstSessionId);
+  recordThroughPage(record, 'fail');
+  recordThroughPage(record, 'fail');
+  recordThroughPage(record, 'fail');
+  const firstAttemptIds = attemptsOf(record).map(row => row.id);
+  addNoteThroughAttempts(firstSessionId, aId, firstAttemptIds[1], '第一场第二把');
+
+  const bId = addRouteThroughPage(sessionPage, 'B 线', { grade: 'V3' });
+  record = openRecordFor(bId, firstSessionId);
+  recordThroughPage(record, 'fail');
+  const bAttemptId = attemptsOf(record)[0].id;
+
+  const secondSessionId = startSessionOnSameDay(sessionPage, '石间岩馆');
+  assert.notEqual(secondSessionId, firstSessionId, '同馆同日两场各有原场次 ID');
+  // 复用同一条长期线路进第二场：本馆已有线路的正式入口。
+  addRouteThroughPage(sessionPage, null, { existing: aId });
+  record = openRecordFor(aId, secondSessionId);
+  recordThroughPage(record, 'send');
+  const secondAttemptId = attemptsOf(record)[0].id;
+  assert.equal(attemptsOf(record).length, 1, '第二场自己的一把');
+
+  const archive = archiveOf();
+  const archiveId = archive.archiveId;
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  const keysBefore = [...storage.keys()].sort();
+  const activeBefore = {
+    sessionId: archive.activeSessionId,
+    routeId: archive.activeRouteId
+  };
+  assert.equal(activeBefore.sessionId, secondSessionId, '当前场是第二场');
+
+  // 记录 tab：同日同馆两场各一行，原场次 ID 与场次序号都能区分。
+  const listPage = createPage(listDefinition);
+  listPage.refreshLocalHistory();
+  const rows = (listPage.data.sessionDays || []).flatMap(day =>
+    (day.gyms || []).flatMap(gym => gym.sessions || [])
+  );
+  const firstRow = rows.find(row => row.id === firstSessionId);
+  const secondRow = rows.find(row => row.id === secondSessionId);
+  assert.ok(firstRow && secondRow, '同日两场各保留原场次 ID');
+  assert.equal(firstRow.label, '第 1 场');
+  assert.equal(secondRow.label, '第 2 场');
+  assert.equal(firstRow.summaryText, '2 条线 · 4 把');
+  assert.equal(secondRow.summaryText, '1 条线 · 1 把 · 完攀 1 把');
+
+  // 第一场小结 → 点 A 线：带第一场的场次 ID，不拿当前（第二场）顶替。
+  resetWxLog();
+  listPage.goToSessionSummary(tapDataset({ sessionId: firstRow.id, archiveId: firstRow.archiveId }));
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-summary/training-summary?sessionId=' +
+      firstSessionId +
+      '&archiveId=' +
+      archiveId
+  ]);
+  const summaryPage = createPage(summaryPageDefinition);
+  summaryPage.onLoad({ sessionId: firstSessionId, archiveId });
+  resetWxLog();
+  summaryPage.openSummaryRoute(tapDataset({ routeId: aId }));
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-attempts/training-attempts?archiveId=' +
+      archiveId +
+      '&sessionId=' +
+      firstSessionId +
+      '&routeId=' +
+      aId +
+      '&from=summary'
+  ]);
+
+  // 本场逐把：只列第一场这一条线的三把，第二场那一把与同场 B 线都不串进来。
+  const firstAttempts = createPage(attemptsDefinition);
+  firstAttempts.onLoad({
+    archiveId,
+    sessionId: firstSessionId,
+    routeId: aId,
+    from: 'summary'
+  });
+  assert.equal(firstAttempts.data.contextError, '');
+  assert.equal(firstAttempts.data.fromSummary, true);
+  assert.equal(firstAttempts.data.backLabel, '返回原场小结');
+  assert.equal(firstAttempts.data.activeSession.dateText, firstRow.date);
+  assert.equal(firstAttempts.data.activeSession.gymName, '石间岩馆');
+  assert.equal(firstAttempts.data.activeSession.label, '第 1 场', '标明原场次序号');
+  assert.deepEqual(firstAttempts.data.attempts.map(row => row.id), firstAttemptIds);
+  assert.equal(firstAttempts.data.attempts[1].note, '第一场第二把');
+  assert.equal(
+    firstAttempts.data.attempts.some(row => row.id === secondAttemptId),
+    false,
+    '第二场的把次不出现在第一场的逐把里'
+  );
+  assert.equal(
+    firstAttempts.data.attempts.some(row => row.id === bAttemptId),
+    false,
+    '同场另一条线的把次不出现在这一条的逐把里'
+  );
+
+  // 第二场小结同样只看到第二场自己那一把：两场各归各的原场次身份。
+  const secondAttempts = createPage(attemptsDefinition);
+  secondAttempts.onLoad({
+    archiveId,
+    sessionId: secondSessionId,
+    routeId: aId,
+    from: 'summary'
+  });
+  assert.equal(secondAttempts.data.activeSession.label, '第 2 场');
+  assert.deepEqual(secondAttempts.data.attempts.map(row => row.id), [secondAttemptId]);
+
+  // 在本场逐把主动点「线路历史」：同一条长期线路的两场记录都在。
+  resetWxLog();
+  firstAttempts.openRouteHistory();
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-route/training-route?archiveId=' + archiveId + '&routeId=' + aId
+  ]);
+  const routePage = createPage(routeDefinition);
+  routePage.onLoad({ archiveId, routeId: aId });
+  assert.equal(routePage.data.notFound, false);
+  assert.equal(routePage.data.route.id, aId, '仍按同一长期线路 ID 读主照片与卡点');
+  const firstGroup = routePage.data.groups.find(item => item.sessionId === firstSessionId);
+  const secondGroup = routePage.data.groups.find(item => item.sessionId === secondSessionId);
+  assert.equal(firstGroup.attempts.length, 3);
+  assert.equal(firstGroup.attempts[1].note, '第一场第二把');
+  assert.equal(secondGroup.attempts.length, 1);
+  assert.equal(
+    routePage.data.groups.some(group =>
+      group.attempts.some(attempt => attempt.id === bAttemptId)
+    ),
+    false,
+    '同场另一条线的把次不并进这一条线的历史'
+  );
+
+  // 逐级返回的落点：逐把 → 原场小结（没有上一页时按原档案与原场次重建），
+  // 线路历史的正常路径仍是系统返回上一页（逐把）。
+  resetWxLog();
+  firstAttempts.backToList();
+  assert.equal(wxLog.backs.length, 1);
+  wxLog.backs[0].fail();
+  assert.deepEqual(wxLog.redirects.map(item => item.url), [
+    '/pages/training-summary/training-summary?archiveId=' +
+      archiveId +
+      '&sessionId=' +
+      firstSessionId
+  ]);
+
+  // 浏览全程零写入：档案逐字节不变，活动场与活动线路保持原值，不新增本机键。
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '小结与逐把、线路历史都不写档案');
+  assert.deepEqual([...storage.keys()].sort(), keysBefore, '浏览不新增本机键');
+  assert.equal(archiveOf().activeSessionId, activeBefore.sessionId);
+  assert.equal(archiveOf().activeRouteId, activeBefore.routeId);
+
+  // 返回首页继续原活动场与原线路（浏览不切换当前选择）。
+  const home = openHome();
+  home.refreshTrainingEntry();
+  assert.equal(home.data.activeSession.id, secondSessionId);
+  assert.equal(home.data.activeSession.routeName, 'A 线');
+  assert.equal(home.data.activeSession.attemptCountText, '1 把');
+});
+
+test('T046 缺归属与旧入口：不从当前场顶替，返回文案按实际入口', () => {
+  const sessionPage = startTrainingFromHome('缺参岩馆');
+  const sessionId = sessionPage.data.activeSession.id;
+  const aId = addRouteThroughPage(sessionPage, '缺参线', { grade: 'V3' });
+  const record = openRecordFor(aId, sessionId);
+  recordThroughPage(record, 'fail');
+  const archiveId = archiveOf().archiveId;
+  const rawBefore = storage.get(ARCHIVE_KEY);
+
+  // 小结入口缺档案归属：只给可见原因，不打开任何场次的逐把，也不写盘。
+  const summaryPage = createPage(summaryPageDefinition);
+  summaryPage.onLoad({ sessionId });
+  assert.equal(summaryPage.data.summaryReady, false);
+  resetWxLog();
+  summaryPage.openSummaryRoute(tapDataset({ routeId: aId }));
+  assert.equal(wxLog.navigations.length, 0, '缺档案归属不打开逐把');
+
+  // 逐把页缺档案参数：仿照小结入口，仍只显示原因与「返回原场小结」。
+  const missing = createPage(attemptsDefinition);
+  missing.onLoad({ sessionId, routeId: aId, from: 'summary' });
+  assert.match(missing.data.contextError, /缺少档案参数/);
+  assert.equal(missing.data.fromSummary, true);
+  assert.equal(missing.data.backLabel, '返回原场小结');
+  assert.equal(missing.data.attempts.length, 0);
+  missing.openRouteHistory();
+  assert.equal(wxLog.navigations.length, 0, '缺参时不打开线路历史');
+
+  // 旧入口（没有 from=summary）保持原返回文案与场内页落点，行为不变。
+  const legacy = createPage(attemptsDefinition);
+  legacy.onLoad({ archiveId, sessionId, routeId: aId });
+  assert.equal(legacy.data.contextError, '');
+  assert.equal(legacy.data.fromSummary, false);
+  assert.equal(legacy.data.backLabel, '返回单线记录');
+  resetWxLog();
+  legacy.backToList();
+  assert.equal(wxLog.backs.length, 1);
+  wxLog.backs[0].fail();
+  assert.deepEqual(wxLog.redirects.map(item => item.url), [
+    '/pages/training-session/training-session'
+  ]);
+
+  // 旧渲染的迟到点击带的是另一条线：只刷新本页，不打开线路历史。
+  resetWxLog();
+  legacy.openRouteHistory(tapDataset({ archiveId, routeId: 'route-of-another-line' }));
+  assert.equal(wxLog.navigations.length, 0, '过期入口不打开线路历史');
+  assert.match(legacy.data.notice, /不属于本页这一条线/);
+
+  // 同名异线：别的档案的同名 routeId 不会被拿来展示（串档只给原因）。
+  const foreign = createPage(attemptsDefinition);
+  foreign.onLoad({
+    archiveId: 'archive-of-another-profile',
+    sessionId,
+    routeId: aId,
+    from: 'summary'
+  });
+  assert.match(foreign.data.contextError, /另一份本机档案/);
+  assert.equal(foreign.data.attempts.length, 0);
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '缺参、串档与旧入口都不写档');
+});
+
+test('T046 本场逐把页：只读身份、线路历史入口与按入口的返回文案都在真实绑定里', () => {
+  const wxml = fs.readFileSync(ATTEMPTS_WXML, 'utf8');
+  const wxss = fs.readFileSync(ATTEMPTS_WXSS, 'utf8');
+  const source = fs.readFileSync(ATTEMPTS_JS, 'utf8');
+
+  // 原日期 · 岩馆 · 场次序号仍在本页头部，逐把只在它下面。
+  assert.match(
+    wxml,
+    /id="attempts-session-meta"[\s\S]{0,120}\{\{activeSession\.dateText\}\}[\s\S]{0,60}\{\{activeSession\.gymName\}\}[\s\S]{0,60}\{\{activeSession\.label\}\}/
+  );
+  // 线路历史入口：用户主动点开，带本页的原档案 ID 与长期线路 ID。
+  assert.match(
+    wxml,
+    /id="open-route-history"[\s\S]{0,300}data-archive-id="\{\{archiveId\}\}"[\s\S]{0,220}bindtap="openRouteHistory"/
+  );
+  assert.equal(typeof attemptsDefinition.openRouteHistory, 'function');
+  assert.match(source, /pages\/training-route\/training-route/);
+  // 入口排在把次列表之前、线路头之后：先认归属，再决定要不要进跨场历史。
+  const routeAt = wxml.indexOf('id="attempts-route"');
+  const historyAt = wxml.indexOf('id="open-route-history"');
+  const listAt = wxml.indexOf('id="attempts-list"');
+  assert.ok(routeAt !== -1 && historyAt !== -1 && listAt !== -1);
+  assert.ok(routeAt < historyAt && historyAt < listAt);
+
+  // 返回文案随入口变化（小结入口 → 返回原场小结），错误卡与页底都用同一份文案。
+  assert.match(wxml, /id="attempts-back"[\s\S]{0,120}\{\{backLabel\}\}/);
+  assert.match(wxml, /id="attempts-back-foot"[\s\S]{0,120}\{\{backLabel\}\}/);
+  assert.match(wxml, /id="attempts-context-error"[\s\S]{0,400}\{\{contextErrorHint\}\}/);
+  assert.equal(typeof attemptsDefinition.entryCopy, 'function');
+
+  // 只读页：没有 storage 写入，也没有云与文件系统调用。
+  assert.doesNotMatch(source, /setStorageSync|wx\.cloud|getFileSystemManager/);
+  // 线路历史入口的命中区与文字样式沿用本页文字按钮（至少 44px）。
+  assert.match(
+    wxss,
+    /\.attempts-history-action \{[\s\S]{0,200}min-height: 44px|\.text-button \{[\s\S]{0,120}min-height: 44px/
+  );
 });
 
 // ------------------------------------------------------------------ *

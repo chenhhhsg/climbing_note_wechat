@@ -22,12 +22,18 @@
  * 唯一的写入口是勾选「下次想爬」：只走 T027 的清单接口，按 archiveId + 长期线路 ID 定位，
  * 只改清单里的这一条，线路、照片、把次、备注、场次与其他收藏一律不动。写失败不报已保存，
  * 勾选框显示的实际保存状态取自落盘后的重读，可原地再点一次重试。
+ *
+ * T046 点线先看原场逐把：小结里的每一条线带**原档案 ID + 所看这一场的场次 ID + 长期线路
+ * ID** 进入现有「本场逐把」页，先核对这一条线在这一场里的原把次，不直接跳到跨场历史；
+ * 跨场历史改由逐把页主动点「线路历史」进入。这里只做导航，不写任何数据；缺归属（没有
+ * 档案 ID 或没有所看场次）时只给可见原因，不拿当前场次或同名线路顶替。
  */
 const store = require('../../utils/training-store.js');
 const wishlist = require('../../utils/training-wishlist.js');
 const { buildSessionSummary } = require('../../utils/training-session-summary.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
+const ATTEMPTS_URL = '/pages/training-attempts/training-attempts';
 
 Page({
   data: {
@@ -465,27 +471,36 @@ Page({
   },
 
   /**
-   * 从小结回看原线：按长期线路 ID 打开线路详情，看原照片、卡点与跨日历史。
-   * 只读打开，不新建场次、不改当前线路，也不写任何键。
+   * 从小结看原场逐把（T046）：带上**这一页正在看的那一场**的原档案 ID、场次 ID 与长期
+   * 线路 ID，进入现有「本场逐把」页先看这一场这一条线的原把次、原备注与原把视频；
+   * 跨场历史由逐把页主动点「线路历史」进入，这里不再直接跳跨场历史。
+   *
+   * 只读打开：不新建场次、不改当前线路，也不写任何键。缺档案归属或缺所看场次时只给
+   * 可见原因——不拿当前活动场次、也不拿同名线路顶替，避免看到别场别的把次。
    */
   openSummaryRoute(event) {
     if (this.data.loadError || !this.data.summaryReady) return;
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const routeId = dataset.routeId;
     if (!routeId) return;
-    // 新入口带明示归属：渲染这一页所用的档案 ID + 长期线路 ID 一起带过去，
-    // 资料页按它核对入口是否还属于本机现在这一份档案；换档后的迟到点击不会打开别的档。
     const archiveId = (this.archive && this.archive.archiveId) || '';
-    if (!archiveId) {
-      this.setData({ notice: '这份小结没有可用的本机档案归属，暂不打开线路历史。' });
+    const sessionId = this.data.summarySessionId || this._viewSessionId || '';
+    if (!archiveId || !sessionId) {
+      this.setData({ notice: '这份小结没有可用的档案或场次归属，暂不打开本场逐把。' });
       return;
     }
+    // 归属一起带过去：逐把页按同一组 archiveId + sessionId + routeId 再核对一次。
+    // from=summary 让逐把页把返回落点写成「原场小结」，与实际返回的上一页一致。
     wx.navigateTo({
       url:
-        '/pages/training-route/training-route?archiveId=' +
+        ATTEMPTS_URL +
+        '?archiveId=' +
         encodeURIComponent(archiveId) +
+        '&sessionId=' +
+        encodeURIComponent(sessionId) +
         '&routeId=' +
-        encodeURIComponent(routeId)
+        encodeURIComponent(routeId) +
+        '&from=summary'
     });
   },
 
