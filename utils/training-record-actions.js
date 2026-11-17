@@ -943,13 +943,13 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
 }
 
 /**
- * 现场「本场本线把次」的行（T045）：普通文档流里最新在前，一把一框。
+ * 现场「本场本线把次」的行（T045 / T048）：普通文档流里最新在前，一把一框。
  *
  * 只读派生，不写盘：
  * - 行＝这条线在本场的**有效把次**，外加「最近一把」这一行——它可能是刚撤回的那一把，
  *   恢复入口要留在原框里；已撤回的较早把次不占据现场，旧档仍由原有入口读取；
- * - 原编号来自 attemptLabelMap（含已撤回占位），结果、时间与备注逐把对应，不串到
- *   同色同级异线或另一场；
+ * - T048：按原序号倒序后，第一行是最新一把（isLatest，始终完整展示）；更早的把次各占
+ *   一行紧凑短行；是否展开由页面按原把次 ID 决定，本模块不保存任何展开状态；
  * - 备注「编辑」与视频入口只给有效把次：撤回后档案层拒绝改备注、视频页拒绝打开，
  *   先恢复这一把；
  * - 「改成未完成」与线路历史、本场逐把同一份资格（抱石、有效、已确认完攀）；
@@ -958,9 +958,18 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
  * - 行上的动作都带原把次 ID 与归属，只作用于所点这一把。
  *
  * videoLinks 由页面用 attemptVideo.videoLinkMap 一次读索引算出（本模块不反向依赖
- * 视频模块）；page 只用于读取本页实例的更正回读/失败重试标记。
+ * 视频模块）；page 只用于读取本页实例的更正回读/失败重试标记。展开态不在本模块：
+ * 页面按原把次 ID 决定每一行是否 expanded，这里只给出最新一把与原序号顺序。
  */
-function attemptCardRows(archive, activeSession, selectedRoute, route, recentAttempt, videoLinks, page) {
+function attemptCardRows(
+  archive,
+  activeSession,
+  selectedRoute,
+  route,
+  recentAttempt,
+  videoLinks,
+  page
+) {
   if (!archive || !activeSession || !selectedRoute) return [];
   const labels = attemptLabelMap(archive, activeSession.id, selectedRoute.id);
   const correctionTargets = correctionTargetsForSession(
@@ -985,9 +994,11 @@ function attemptCardRows(archive, activeSession, selectedRoute, route, recentAtt
   rows.sort((left, right) => (right.seq || 0) - (left.seq || 0));
 
   const links = videoLinks || new Map();
-  return rows.map(attempt => {
+  return rows.map((attempt, index) => {
     const undone = store.isUndoneAttempt(attempt);
     const isRecent = Boolean(recent && recent.attemptId === attempt.id);
+    // T048：原序号倒序后第一行就是最新一把，始终完整展示；更早的把次默认收成短行。
+    const isLatest = index === 0;
     const link = links.get(attempt.id) || {
       hasVideo: false,
       stateText: '未添加视频',
@@ -1014,6 +1025,9 @@ function attemptCardRows(archive, activeSession, selectedRoute, route, recentAtt
       resultText: attemptResultText(attempt.result),
       isSend: attempt.result === 'send',
       isUndone: undone,
+      // T048：最新一把完整卡；更早的把次是紧凑短行，点行按原把次 ID 展开/收起。
+      isLatest,
+      canToggle: !isLatest,
       timeText: timeText(attempt.createdAt),
       note: attempt.note || '',
       hasNote: Boolean(attempt.note),

@@ -34,6 +34,7 @@ const MARKS_PAGE_JS = path.join(ROOT, 'pages', 'training-photo-marks', 'training
 const MARKS_PAGE_WXML = path.join(ROOT, 'pages', 'training-photo-marks', 'training-photo-marks.wxml');
 const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
 const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
+const RECORD_WXSS = path.join(ROOT, 'pages', 'training-record', 'training-record.wxss');
 const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.js');
 const PROFILE_JS = path.join(ROOT, 'pages', 'profile', 'profile.js');
 const PROFILE_WXML = path.join(ROOT, 'pages', 'profile', 'profile.wxml');
@@ -1434,4 +1435,111 @@ test('T041 同名 B 线、切档与迟到选图回调互不改写，当前线只
   await settle();
   assert.equal(storage.get(ARCHIVE_KEY), rawAfterSwap, '换档后迟到照片操作不写档案');
   assert.equal(photoIndex(), null, '换档后迟到照片操作不写索引');
+});
+
+// ------------------------------------------------------------------ *
+// T048 单线逐把紧凑布局：最新完整卡与旧把短行的原生样式与绑定
+// ------------------------------------------------------------------ *
+
+/** 去掉注释后按选择器取声明块（同一选择器多次出现按 CSS 顺序合并）。 */
+function t048Declarations(wxss, selector) {
+  const clean = wxss.replace(/\/\*[\s\S]*?\*\//g, '');
+  return [...clean.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(match => match[1].split(',').map(text => text.trim()).includes(selector))
+    .map(match => match[2])
+    .join('\n');
+}
+
+function t048MinHeight(wxss, selector) {
+  const found = t048Declarations(wxss, selector).match(/min-height\s*:\s*([^;]+)/);
+  return found ? found[1].trim() : '';
+}
+
+test('T048 最新卡约 100px、旧把短行约 48px：边框、结果色与时间仍在，摘要单行省略', () => {
+  const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
+
+  // 高度层级：最新一把完整卡明显高于旧把次的短行（样稿参考 100px / 48px）。
+  const latestHeight = t048MinHeight(wxss, '.record-attempt-latest');
+  const compactHeight = t048MinHeight(wxss, '.record-attempt-compact');
+  assert.equal(latestHeight, '100px', '最新一把完整卡的最低高度');
+  assert.equal(compactHeight, '48px', '旧把次短行的最低高度');
+  assert.ok(parseFloat(latestHeight) > parseFloat(compactHeight), '完整卡明显高于短行');
+
+  // 短行保留独立边框与左侧结果色边缘，仍是一行一条、不靠绝对定位叠放。
+  const compact = t048Declarations(wxss, '.record-attempt-compact');
+  assert.match(compact, /border-left-width:\s*4px/, '短行左侧加粗的结果色边缘');
+  assert.match(compact, /display:\s*flex/);
+  assert.match(compact, /min-height:\s*48px/);
+  assert.doesNotMatch(compact, /position\s*:\s*(absolute|fixed)/, '短行不用绝对定位');
+  // 结果文字底色仍是墨绿／岩橙，短行沿用同一套。
+  assert.match(t048Declarations(wxss, '.record-attempt-result-send'), /background-color:\s*#1F5948/);
+  assert.match(t048Declarations(wxss, '.record-attempt-result-fail'), /background-color:\s*#B04A1C/);
+
+  // 最新一把的长备注摘要只占一行：不换行、超出省略；展开旧把次才看全文。
+  const summary = t048Declarations(wxss, '.record-attempt-note-summary');
+  assert.match(summary, /white-space:\s*nowrap/);
+  assert.match(summary, /overflow:\s*hidden/);
+  assert.match(summary, /text-overflow:\s*ellipsis/);
+  assert.match(
+    wxml,
+    /id="record-attempt-note-\{\{item\.id\}\}"[\s\S]{0,160}class="record-attempt-note\{\{item\.isLatest \? ' record-attempt-note-summary' : ''\}\}"/,
+    '只有最新一把的备注走单行摘要样式'
+  );
+
+  // 最新/旧把的层级由数据驱动：最新一把带 record-attempt-latest，其余是短行。
+  assert.match(
+    wxml,
+    /class="record-attempt \{\{item\.isSend \? 'record-attempt-send' : 'record-attempt-fail'\}\}[\s\S]{0,260}\{\{item\.isLatest \? ' record-attempt-latest' : ' record-attempt-older'\}\}\{\{item\.expanded \? ' record-attempt-open' : ' record-attempt-compact'\}\}"/
+  );
+
+  // 短行整行可点：带原把次 ID 与本页归属，绑定真实处理器；最新一把没有展开标记。
+  assert.match(
+    wxml,
+    /class="record-attempt-headline\{\{item\.canToggle \? ' record-attempt-headline-toggle' : ''\}\}"[\s\S]{0,260}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,120}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-session-id="\{\{item\.sessionId\}\}"[\s\S]{0,120}data-route-id="\{\{item\.routeId\}\}"[\s\S]{0,80}bindtap="toggleAttemptRow"/
+  );
+  assert.match(
+    wxml,
+    /wx:if="\{\{item\.canToggle\}\}"[\s\S]{0,160}id="record-attempt-toggle-\{\{item\.id\}\}"[\s\S]{0,120}\{\{item\.expanded \? '▾' : '›'\}\}/
+  );
+  assert.equal(typeof recordDefinition.toggleAttemptRow, 'function', '展开/收起有真实页面方法');
+});
+
+test('T048 展开块保留原按把入口：备注全文、编辑、视频、更正与撤回/恢复都只作用于这一把', () => {
+  const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const attemptsAt = wxml.indexOf('id="record-attempts"');
+  assert.ok(attemptsAt !== -1);
+  const section = wxml.slice(attemptsAt);
+
+  // 详情都收在「这一把展开」里：备注全文、编辑、视频、注明、更正、撤回/恢复、备注编辑器。
+  const expandAt = section.indexOf('wx:if="{{item.expanded}}"');
+  assert.ok(expandAt !== -1, '详情按展开态渲染');
+  for (const marker of [
+    'id="record-attempt-note-{{item.id}}"',
+    'id="edit-note-{{item.id}}"',
+    'id="record-video-state-{{item.id}}"',
+    'id="correct-attempt-{{item.id}}"',
+    'class="record-attempt-change"',
+    'id="undo-attempt-{{item.id}}"',
+    'id="restore-attempt-{{item.id}}"',
+    'id="note-editor"',
+    'id="save-note"',
+    'id="cancel-note"'
+  ]) {
+    assert.ok(section.indexOf(marker) > expandAt, marker + ' 在展开块里');
+  }
+  // 行首的序号、结果与时间留在短行本身，收起时仍可辨认。
+  const headlineEnd = section.indexOf(expandAt);
+  const headline = section.slice(0, headlineEnd);
+  assert.match(headline, /id="record-attempt-label-\{\{item\.id\}\}"/);
+  assert.match(headline, /record-attempt-result-send|record-attempt-result-fail/);
+  assert.match(headline, /class="record-attempt-time"/);
+
+  // 首屏记把与照片入口不被紧凑布局挤走。
+  const source = fs.readFileSync(RECORD_WXML, 'utf8');
+  assert.ok(source.indexOf('id="record-photo"') < source.indexOf('id="record-fail"'));
+  assert.ok(source.indexOf('id="record-send"') < attemptsAt, '结果按钮仍在把次之前');
+  for (const handler of new Set(handlersIn(source))) {
+    assert.equal(typeof recordDefinition[handler], 'function', '单线页绑定缺少处理器：' + handler);
+  }
 });
