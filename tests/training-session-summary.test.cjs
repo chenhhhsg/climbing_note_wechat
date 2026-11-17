@@ -885,17 +885,21 @@ test('R3 独立小结页：只读回看入口能换看别的场次，也能回�
   assert.equal(boulderRow.stateText, '已完攀');
   assert.equal(boulderRow.pickable, false, '已完攀的线仍不出勾选入口');
 
-  // 从小结回到昨天那条线的原照片（同一个长期线路 ID）。
+  // 从小结先看昨天那条线的原场逐把（T046）：带原档案、所看这一场与长期线路 ID，
+  // 且标明入口来自小结；跨场历史改由逐把页主动点「线路历史」进入。
   resetWxLog();
   page.openSummaryRoute(tapDataset({ routeId: boulder.id }));
   assert.deepEqual(wxLog.navigations, [
-    '/pages/training-route/training-route?archiveId=' +
+    '/pages/training-attempts/training-attempts?archiveId=' +
       archiveId +
+      '&sessionId=' +
+      yesterday.id +
       '&routeId=' +
-      boulder.id
+      boulder.id +
+      '&from=summary'
   ]);
 
-  // 从详情页返回本页（onShow 重算）：仍停在所选的昨天那一场。
+  // 从逐把页返回本页（onShow 重算）：仍停在所选的昨天那一场。
   page.onShow();
   assert.equal(page.data.summarySessionId, yesterday.id, '返回后仍是所看的场次');
   assert.equal(page.data.summaryCountText, '2 条线 · 3 把 · 完攀 1 把');
@@ -1489,4 +1493,27 @@ test('T044 小结一线一卡：每条线一张中性细边框卡并留卡间间
     [a.id, b.id].sort(),
     '两条同色同级线都在小结里，各占一张卡'
   );
+});
+
+// ------------------------------------------------------------------ *
+// T046 小结点线先进本场逐把
+// ------------------------------------------------------------------ *
+
+test('T046 小结点线先进本场逐把：入口文案与绑定一致，跨场历史不再由小结直达', () => {
+  const wxml = fs.readFileSync(SUMMARY_PAGE_WXML, 'utf8');
+  const source = fs.readFileSync(SUMMARY_PAGE_JS, 'utf8');
+
+  // 每条线的入口写的是「本场逐把」，绑定的仍是原长期 routeId。
+  assert.match(
+    wxml,
+    /id="summary-open-\{\{item\.routeId\}\}"[\s\S]{0,200}本场逐把 ›/
+  );
+  assert.match(wxml, /data-route-id="\{\{item\.routeId\}\}"\s*bindtap="openSummaryRoute"/);
+  // 同一位置说明：跨场历史在逐把页里主动点开。
+  assert.match(wxml, /id="summary-route-hint"[\s\S]{0,120}线路历史/);
+
+  // 小结页只带原档案、所看场次与线路 ID 进入本场逐把，不再直接打开跨场历史。
+  assert.match(source, /pages\/training-attempts\/training-attempts/);
+  assert.match(source, /from=summary/);
+  assert.doesNotMatch(source, /training-route\/training-route/, '跨场历史改由逐把页主动打开');
 });

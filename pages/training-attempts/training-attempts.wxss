@@ -1,8 +1,9 @@
 /**
- * 本场逐把页样式（T036 / T042 / T044）
+ * 本场逐把页样式（T036 / T042 / T044 / T046）
  * 与单线记录页同一套配色；备注编辑、更正结果与原把次行一一对应。
  * T044：一把一框——完攀深绿、未完成深橙，卡框描边与浅色底同色系，结果用深底白字
  * 并写明「完攀 / 未完成」；这套卡框供 T045 现场复用。
+ * T046：线路头下面加一行「线路历史」入口（主动点开才进跨场历史），页底返回文案随入口变化。
  */
 
 page {
@@ -141,6 +142,60 @@ page {
   line-height: 1.5;
   color: #53615B;
   word-break: break-all;
+}
+
+/* 小结入口打开时的来源说明（T046）：只读回看这一场这一条线。 */
+.attempts-origin {
+  margin-top: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #745241;
+}
+
+/* 线路历史入口（T046）：跨场记录、主照片与卡点都在那一页，由用户主动点开。 */
+.attempts-history {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16rpx;
+  margin: 0 0 20rpx;
+  padding: 16rpx 22rpx;
+  background: #FFFFFF;
+  border: 1px solid #D7DED9;
+  border-radius: 8rpx;
+}
+
+.attempts-history-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.attempts-history-title {
+  font-size: 28rpx;
+  font-weight: 700;
+  color: #182421;
+}
+
+.attempts-history-hint {
+  margin-top: 4rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #53615B;
+  word-break: break-all;
+}
+
+.attempts-history-action {
+  flex: none;
+  margin: 0;
+  padding: 0 8rpx;
+  font-size: 26rpx;
+  color: #1F5948;
+}
+
+/* 页底返回：按钮文案随入口写成「返回原场小结 / 返回单线记录」。 */
+.attempts-back-section {
+  margin-top: 20rpx;
 }
 
 /* 逐把 */

@@ -1,11 +1,13 @@
 <!--
-  本场逐把（T036 / T042）
+  本场逐把（T036 / T042 / T046）
   只列所选场次与长期线路的已提交把次；按原序号、结果、备注对齐，给指定把次补/改备注。
   保存、取消与失败重试都只影响原 attemptId；撤回与恢复在单线记录页。
   T023：每一行还显示这一把的视频关联状态与文字入口，选片与待确认预览在视频页。
   T042：符合条件的完攀在自己那一行给「更正结果」，确认后只翻这一把的结果。
   T044：每一把一张卡框——完攀用深绿、未完成用深橙，卡框描边与浅色底同色系，
   结果用深底白字并写明「完攀 / 未完成」；同一套卡框供 T045 现场复用。
+  T046：从小结点线先进本页看这一场这一条线的原把次（标明原日期、岩馆与场次），
+  跨场历史再由本页主动点「线路历史」进入；返回文案与实际落点一致。
 -->
 <view class="page">
   <view wx:if="{{loadError}}" id="load-error" class="card error-card">
@@ -19,8 +21,8 @@
     <view wx:if="{{contextError}}" id="attempts-context-error" class="card error-card">
       <text class="error-title">这个入口不能用来查看明细</text>
       <text class="error-text">{{contextError}}</text>
-      <text class="error-hint">没有改动任何数据；请从单线记录页重新进入。</text>
-      <button id="attempts-back" class="secondary-button" bindtap="backToList">返回单线记录</button>
+      <text class="error-hint">{{contextErrorHint}}</text>
+      <button id="attempts-back" class="secondary-button" bindtap="backToList">{{backLabel}}</button>
     </view>
 
     <block wx:if="{{ready && !contextError}}">
@@ -46,11 +48,30 @@
             <text class="attempts-route-name">{{selectedRoute.name}}</text>
             <text class="attempts-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · 本场 {{attempts.length}} 把</text>
             <text id="attempts-session-meta" class="attempts-session-meta">{{activeSession.dateText}} · {{activeSession.gymName}} · {{activeSession.label}}</text>
+            <text wx:if="{{fromSummary}}" id="attempts-origin" class="attempts-origin">从原场小结打开 · 只读回看这一场这一条线的原把次</text>
           </view>
         </view>
 
+        <!--
+          线路历史（T046）：跨场记录、主照片与卡点都在那一页；由用户在本页主动点开，
+          带原档案 ID 与长期线路 ID，打开本身不写档案。
+        -->
+        <view id="attempts-history" class="attempts-history">
+          <view class="attempts-history-info">
+            <text class="attempts-history-title">线路历史</text>
+            <text class="attempts-history-hint">这条长期线路的跨场记录、主照片与卡点</text>
+          </view>
+          <button
+            id="open-route-history"
+            class="text-button attempts-history-action"
+            data-archive-id="{{archiveId}}"
+            data-route-id="{{selectedRoute.id}}"
+            bindtap="openRouteHistory"
+          >线路历史 ›</button>
+        </view>
+
         <view wx:if="{{!hasAttempts}}" id="attempts-empty" class="empty-attempts">
-          <text>这一场这一条线还没有已提交把次。回到单线记录页记第一把。</text>
+          <text>{{emptyStateText}}</text>
         </view>
 
         <!--
@@ -152,7 +173,11 @@
           </view>
         </view>
 
-        <text class="attempts-foot-hint">这里只列这一场这一条线的有效把次；撤回、恢复与结果记录在单线记录页，完攀可在这一行更正结果。</text>
+        <text class="attempts-foot-hint">这里只列这一场这一条线的有效把次；撤回、恢复与结果记录在单线记录页，完攀可在这一行更正结果。照片、卡点与跨场记录在「线路历史」里。</text>
+        <!-- 返回文案与实际落点一致（T046）：小结入口回到原场小结，别处入口回到单线记录。 -->
+        <view class="attempts-back-section">
+          <button id="attempts-back-foot" class="secondary-button" bindtap="backToList">{{backLabel}}</button>
+        </view>
       </block>
     </block>
   </block>

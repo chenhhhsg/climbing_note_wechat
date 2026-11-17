@@ -19,6 +19,12 @@
  * T023 在每一行加视频关联状态与文字入口：点的是哪一行，就只带那一把的原 attemptId
  * 与档案、场次、线路进入视频页；视频入口独立于整行补备注（catchtap），选片与预览
  * 都在视频页，本页不读写任何视频文件或索引。
+ *
+ * T046 从原场小结进入：小结里的线路带 archiveId + sessionId + routeId + from=summary
+ * 打开本页，先看这一场这一条线的原把次。本页的返回文案按入口写成「返回原场小结」，
+ * 且真的回到原场小结（正常路径是系统返回；没有可返回的页面时按原档案与原场次重建
+ * 小结页连接）。跨场历史改由本页主动点「线路历史」进入，带同一个原档案 ID 与长期
+ * 线路 ID，照片、卡点与跨场记录都在那一页。打开本页与点「线路历史」都不写任何数据。
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
@@ -27,6 +33,8 @@ const { climbTypeOf } = require('../../utils/training-rules.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
 const ATTEMPT_VIDEO_URL = '/pages/attempt-video/attempt-video';
+const ROUTE_URL = '/pages/training-route/training-route';
+const SUMMARY_URL = '/pages/training-summary/training-summary';
 
 Page({
   data: {
@@ -39,6 +47,13 @@ Page({
     archiveId: '',
     activeSession: null,
     selectedRoute: null,
+
+    // T046：按入口写返回文案——从原场小结进来就写「返回原场小结」，真的回到那一页；
+    // 其它来源（旧链接/单线记录）保持原来的返回本场文案。
+    fromSummary: false,
+    backLabel: '返回单线记录',
+    contextErrorHint: '没有改动任何数据；请从单线记录页重新进入。',
+    emptyStateText: '这一场这一条线还没有已提交把次。回到单线记录页记第一把。',
 
     attempts: [],
     hasAttempts: false,
@@ -54,6 +69,8 @@ Page({
     this._correctionPrompt = null;
     this._unloaded = false;
     this._context = actions.parseRecordQuery(query);
+    // T046 入口来源：只影响本页的返回文案与回退落点，不参与把次归属。
+    this._fromSummary = Boolean(query && (query.from === 'summary' || query.source === 'summary'));
     this.loadPage();
   },
 
@@ -68,7 +85,30 @@ Page({
     this._correctionPrompt = null;
   },
 
+  /**
+   * 入口相关的展示文案（T046）：返回标签、错误提示与空态只按入口决定，并且与实际
+   * 返回的落点一一对应——从原场小结进来就写「返回原场小结」，别处进来仍写单线记录。
+   */
+  entryCopy() {
+    if (!this._fromSummary) {
+      return {
+        fromSummary: false,
+        backLabel: '返回单线记录',
+        contextErrorHint: '没有改动任何数据；请从单线记录页重新进入。',
+        emptyStateText: '这一场这一条线还没有已提交把次。回到单线记录页记第一把。'
+      };
+    }
+    return {
+      fromSummary: true,
+      backLabel: '返回原场小结',
+      contextErrorHint: '没有改动任何数据；请从原场小结重新进入。',
+      emptyStateText: '这一场这一条线还没有已提交把次；回原场小结看这一场的其它线路。'
+    };
+  },
+
   loadPage() {
+    // 返回文案先按入口定下来：下面各个分支只改内容，不改「返回哪里」。
+    this.setData(this.entryCopy());
     const context = actions.loadRecordContext(this._context);
     if (!context.ok) {
       this.archive = context.archive || null;
@@ -183,14 +223,89 @@ Page({
   },
 
   /**
-   * 返回单线记录：正常路径是系统返回；缺参/失效时给一个可点的出口。
+   * 返回入口（T046）：正常路径是系统返回上一页；从原场小结进来就真的回到那一页。
+   *
+   * 没有可返回的页面时（例如直接进入本页），按同一入口重建落点：小结入口用原档案
+   * 与原场次重新打开小结页，其它来源仍回到正式场内页。只做页面跳转，不写任何数据。
+   */
+  backFallbackUrl() {
+    if (!this._fromSummary) return SESSION_URL;
+    const archiveId = this._context.archiveId || '';
+    const sessionId = this._context.sessionId || '';
+    if (!archiveId || !sessionId) return SESSION_URL;
+    return (
+      SUMMARY_URL +
+      '?archiveId=' +
+      encodeURIComponent(archiveId) +
+      '&sessionId=' +
+      encodeURIComponent(sessionId)
+    );
+  },
+
+  /**
+   * 返回：有上一页就退回去（小结 → 逐把 → 线路历史逐级都是同一份页面栈），
+   * 没有可返回的页面时按入口落到原场小结或场内页。
    */
   backToList() {
-    if (typeof wx !== 'undefined' && typeof wx.navigateBack === 'function') {
-      wx.navigateBack({ delta: 1 });
+    const fallback = this.backFallbackUrl();
+    const canBack = typeof wx !== 'undefined' && typeof wx.navigateBack === 'function';
+    if (canBack) {
+      wx.navigateBack({
+        delta: 1,
+        fail: () => {
+          if (typeof wx.redirectTo === 'function') wx.redirectTo({ url: fallback });
+        }
+      });
       return;
     }
-    wx.redirectTo({ url: SESSION_URL });
+    if (typeof wx !== 'undefined' && typeof wx.redirectTo === 'function') {
+      wx.redirectTo({ url: fallback });
+    }
+  },
+
+  /**
+   * 线路历史（T046）：从本场逐把主动进入这一条长期线路的跨场历史（照片、卡点、跨日
+   * 记录）。带原档案 ID 与长期线路 ID，线路页按同一份归属核对；打开本身不写档案、
+   * 不改当前场次与当前线路，也不改原把次。
+   *
+   * 打开前按最新档案再核对一次这一次入口的归属：场次/线路失效或已换档时只给原因并
+   * 刷新本页，不拿别的场次或同名线路顶替；这一下若指向另一条线/另一份档案（旧渲染
+   * 的迟到点击），同样只刷新、不打开。
+   */
+  openRouteHistory(event) {
+    if (this.data.loadError || this.data.contextError) return;
+    const context = actions.loadRecordContext(this._context);
+    if (!context.ok) {
+      this.loadPage();
+      this.setData({ notice: context.error });
+      return;
+    }
+    const archiveId = (context.archive && context.archive.archiveId) || '';
+    const routeId = (context.route && context.route.id) || '';
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const stale =
+      (dataset.archiveId && dataset.archiveId !== archiveId) ||
+      (dataset.routeId && dataset.routeId !== routeId);
+    if (stale) {
+      this.loadPage();
+      this.setData({ notice: '这一下不属于本页这一条线，未打开线路历史。' });
+      return;
+    }
+    if (!archiveId || !routeId) {
+      this.setData({ notice: '无法定位这条线路的原归属，暂不打开线路历史。' });
+      return;
+    }
+    wx.navigateTo({
+      url:
+        ROUTE_URL +
+        '?archiveId=' +
+        encodeURIComponent(archiveId) +
+        '&routeId=' +
+        encodeURIComponent(routeId),
+      fail: () => {
+        this.setData({ notice: '线路历史没有打开，请再点一次。' });
+      }
+    });
   },
 
   dismissNotice() {

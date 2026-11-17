@@ -1,8 +1,10 @@
 <!--
-  本次小结独立页（T034）
+  本次小结独立页（T034 / T046）
   从场内页的小结入口按 archiveId + sessionId 进入，只读回看这一次训练：
   本场线路数、有效把数、完攀把数与各线分项，未完成的线可就地勾进本馆「下次想爬」。
   只读本机档案：不改当前场次、不结束也不新建场次、不写训练。
+  T046：点一条线先带原档案、场次与线路 ID 进入「本场逐把」看这一场这一条线的原把次；
+  跨场历史由逐把页主动点「线路历史」进入，本页不再直接跳跨场历史。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -90,6 +92,8 @@
         >回到本场小结（{{activeSessionLabel}}）</button>
         <text wx:if="{{summaryPendingText}}" id="summary-pending" class="summary-pending">{{summaryPendingText}}</text>
         <text wx:if="{{summaryWishlistError}}" id="summary-wishlist-error" class="summary-error-text">{{summaryWishlistError}}</text>
+        <!-- T046：每条线的入口先看这一场的原把次；跨场历史在逐把页里主动点开。 -->
+        <text wx:if="{{hasSummaryRows}}" id="summary-route-hint" class="summary-hint">点线路先看这一场这一条线的逐把、备注与视频；跨场历史在逐把页的「线路历史」里。</text>
 
         <view wx:if="{{summaryEmpty}}" id="summary-empty" class="empty-attempts">
           <text>本场还没有已保存的把次；记完一把再回来看小结。</text>
@@ -138,7 +142,7 @@
                 class="text-button summary-open"
                 data-route-id="{{item.routeId}}"
                 bindtap="openSummaryRoute"
-              >回看原线 ›</button>
+              >本场逐把 ›</button>
             </view>
           </view>
         </block>
