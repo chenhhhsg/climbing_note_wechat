@@ -2280,3 +2280,72 @@ test('T037 返工 显式切场次会更新列表显示目标，不靠临时回�
   assert.equal(archiveOf().activeSessionId, first.session.id);
   assert.equal(archiveOf().sessions.length, 2, '切场次不新建场次');
 });
+
+// ------------------------------------------------------------------ *
+// T041 现场首屏照片入口
+// ------------------------------------------------------------------ *
+
+test('T041 现场首屏：一行照片入口与两种记把动作、最近一把并存，提示统一叫线路历史', () => {
+  const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
+  const source = fs.readFileSync(RECORD_JS, 'utf8');
+
+  // 无图给「添加线路照片」（拍照 / 相册），选图后预览确认；有图整行进二级标记页。
+  [
+    'record-photo',
+    'record-photo-entry',
+    'record-photo-thumb',
+    'record-photo-camera',
+    'record-photo-album',
+    'record-photo-preview-image',
+    'record-photo-confirm',
+    'record-photo-cancel',
+    'record-photo-retry'
+  ].forEach(id => {
+    assert.ok(wxml.indexOf('id="' + id + '"') !== -1, '单线首屏缺少 ' + id);
+  });
+  const handlers = new Set(handlersIn(wxml));
+  for (const required of [
+    'chooseRecordPhoto',
+    'confirmRecordPhoto',
+    'cancelRecordPhoto',
+    'retryRecordPhoto',
+    'dismissRecordPhotoFailure',
+    'openRoutePhotoMarks'
+  ]) {
+    assert.ok(handlers.has(required), '单线首屏应绑定：' + required);
+    assert.equal(typeof recordDefinition[required], 'function', required + ' 必须有页面方法');
+  }
+
+  // 第一屏仍是现场记录：两种记把动作与最近一把都在，照片入口夹在线路头与结果区之间。
+  const photoAt = wxml.indexOf('id="record-photo"');
+  const failAt = wxml.indexOf('id="record-fail"');
+  const sendAt = wxml.indexOf('id="record-send"');
+  const recentAt = wxml.indexOf('id="recent-attempt"');
+  assert.ok(photoAt !== -1 && failAt !== -1 && sendAt !== -1 && recentAt !== -1);
+  assert.ok(photoAt < failAt, '照片入口在结果按钮之前');
+  assert.ok(failAt < recentAt, '最近一把仍在结果按钮之后');
+
+  // 首屏不铺第二套照片卡、标记图层或移除入口：这些仍在二级大图页。
+  assert.equal(wxml.indexOf('id="route-photo-card"'), -1);
+  assert.equal(wxml.indexOf('id="mark-card"'), -1);
+  assert.equal(wxml.indexOf('bindtap="removeRoutePhoto"'), -1);
+  // 现场入口与提示统一叫「线路历史」，不再写「线路资料」。
+  assert.match(wxml, /线路历史（照片 · 卡点 · 跨天历史）›/);
+  assert.equal(wxml.indexOf('线路资料'), -1);
+  assert.equal(source.indexOf('线路资料'), -1);
+  assert.equal(fs.readFileSync(SESSION_WXML, 'utf8').indexOf('线路资料'), -1);
+
+  // 紧凑入口的可点区域：照片来源与确认按钮至少 44px；缩略图 56px 小图。
+  assert.equal(minHeightOf(wxss, '.record-photo-source'), '44px');
+  assert.equal(minHeightOf(wxss, '.record-photo-confirm'), '44px');
+  assert.match(declarationsOf(wxss, '.record-photo-thumb'), /width:\s*56px/);
+  assert.match(declarationsOf(wxss, '.record-photo-thumb'), /height:\s*56px/);
+
+  // 复用同一份照片控制器与照片服务：本页不另写索引、压缩或文件，也不接云。
+  assert.match(source, /utils\/training-photo-controller/);
+  assert.match(source, /createTrainingPhotoController/);
+  assert.match(source, /utils\/training-photo-marks/);
+  assert.doesNotMatch(source, /getFileSystemManager|copyFile|compressImage/);
+  assert.doesNotMatch(source, /wx\.cloud/);
+});

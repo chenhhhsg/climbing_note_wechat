@@ -10,19 +10,31 @@
  *   可见原因与返回路径，不展示别场别线的把次，也不接受任何写入；
  * - 把次、撤回状态、待保存与完攀判定全部来自 utils/training-store.js；写入、重试与
  *   按把更正走 utils/training-record-actions.js 的共用事件处理，与逐把明细页、线路
- *   资料页是同一份实现；
- * - 照片、卡点、跨天历史与清单操作不在这里重复，页面只提供「线路资料」入口。
+ *   历史页是同一份实现；
+ * - 照片、卡点、跨天历史与清单操作不在这里重复，页面只提供「线路历史」入口。
+ *
+ * T041 在本页首屏加一行紧凑的线路照片入口：现场记把时就地留一张。没有照片时给「添加线路
+ * 照片」（拍照 / 相册），有照片时显示缩略图与当前照片版本的标记数量。照片的读写仍由
+ * utils/training-photo-controller.js 的同一份控制器与照片服务完成，预览—确认—取消—失败
+ * 重试的流程与线路历史页完全一致；照片文件与索引、场次、把次、备注都不经过本页另写一份。
+ * 有照片时点这一行进原来的二级大图标记页（pages/training-photo-marks），按本机档案、
+ * 长期线路与**当前**照片版本核对后才打开，换图与移除仍在二级页，不在首屏铺第二套编辑。
  *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
  * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
+const photoMarks = require('../../utils/training-photo-marks.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
+const {
+  createTrainingPhotoController
+} = require('../../utils/training-photo-controller.js');
 
 const SESSION_URL = '/pages/training-session/training-session';
 const ROUTE_URL = '/pages/training-route/training-route';
 const ATTEMPTS_URL = '/pages/training-attempts/training-attempts';
+const PHOTO_MARKS_URL = '/pages/training-photo-marks/training-photo-marks';
 
 Page({
   data: {
@@ -56,7 +68,15 @@ Page({
     correctionPlaceholder: false,
 
     // 最近一把的撤回与恢复：结果按钮下方的固定操作区。null 表示不显示。
-    recentAttempt: null
+    recentAttempt: null,
+
+    // 线路主照片（T041）：现场入口只渲染控制器推导的状态。
+    // null = 本页不展示（缺参、串档或还没读档）；其余状态与线路历史页同一套。
+    recordPhoto: null,
+    // 照片动作标记只读当前照片版本的数量，编辑在二级大图页。
+    photoMarkCount: 0,
+    photoMarkCountText: '',
+    photoMarksError: ''
   },
 
   onLoad(query) {
@@ -69,14 +89,28 @@ Page({
     this._correctedRows = {};
     this._correctionFailures = {};
     this._recentStatus = null;
+    // 照片控制器只在本页创建一次；照片读写全在控制器里，页面不另存文件或索引。
+    this._photoUi = null;
+    this._unloaded = false;
     this._context = actions.parseRecordQuery(query);
     this.loadPage();
+    this.loadRecordPhoto();
   },
 
   onShow() {
     if (!this.data.ready) return;
-    // 从明细或资料返回、或页面重新显示：按最新档案重算同一场同一线。
+    // 从明细或线路历史返回、或页面重新显示：按最新档案重算同一场同一线。
+    // 照片也重读一次，与线路历史页、二级大图页看到的是同一张主照片与同一版标记。
     this.loadPage();
+    this.loadRecordPhoto();
+  },
+
+  /**
+   * 离开页面：照片控制器自身的迟到回调据此不再改页面。
+   * 照片与标记的写入都在控制器与二级页里完成，本页不持有标记编辑状态。
+   */
+  onUnload() {
+    this._unloaded = true;
   },
 
   /**
@@ -110,7 +144,12 @@ Page({
         resultLockHint: '',
         correctionRows: [],
         correctionStatusText: '',
-        recentAttempt: null
+        recentAttempt: null,
+        // 入口/档案不可用：不展示任何照片，也不受理照片写入。
+        recordPhoto: null,
+        photoMarkCount: 0,
+        photoMarkCountText: '',
+        photoMarksError: ''
       });
       return;
     }
@@ -211,7 +250,7 @@ Page({
       }));
     const pendingRows = fromArchive.concat(localOnly);
 
-    // 按把「改为未完成」：只列本场这条线仍可更正的已确认完攀；跨天历史在资料页更正。
+    // 按把「改为未完成」：只列本场这条线仍可更正的已确认完攀；跨天历史在线路历史页更正。
     const correctionRows = store
       .routeCorrectionTargets(archive, route.id)
       .filter(target => target.sessionId === session.id)
@@ -305,9 +344,9 @@ Page({
   },
 
   /**
-   * 线路资料：按原长期 routeId 进入照片、卡点、跨天历史与清单操作。
+   * 线路历史：按原长期 routeId 进入照片、卡点、跨天历史与清单操作。
    * 同时带上渲染这一页时的本机档案 ID：换了档案之后同名的 routeId 不能顶替原线路，
-   * 资料页已有入口归属核验（旧资料直达只带 routeId 的兼容路径不变）。
+   * 历史页已有入口归属核验（旧资料直达只带 routeId 的兼容路径不变）。
    */
   openRouteProfile() {
     if (this.data.loadError || this.data.contextError) return;
@@ -320,6 +359,190 @@ Page({
         '?' +
         actions.recordQueryString({ archiveId, routeId })
     });
+  },
+
+  // ---------------------------------------------------------------- 线路照片（T041）
+
+  /**
+   * 照片控制器只在本页创建一次；档案 ID 由控制器从本机档案读取。
+   * 打开本页本身不写照片，只有用户点按拍照/相册/确认才动文件与索引。
+   */
+  initPhotoUi() {
+    if (!this._photoUi) {
+      this._photoUi = createTrainingPhotoController(this, {
+        onChange: () => this.applyPhotoView(),
+        onNotice: text => this.setData({ notice: text })
+      });
+    }
+    return Promise.resolve(this._photoUi.init());
+  },
+
+  /**
+   * 读回这条线的当前主照片。缺参、串档或档案换成另一份时不读、不展示，
+   * 也不受理任何照片写入（控制器按档案代次拒掉迟到回调）。
+   */
+  loadRecordPhoto() {
+    const routeId = this._route && this._route.id;
+    if (this.data.loadError || this.data.contextError || !routeId) {
+      if (this._photoUi) this._photoUi.clear();
+      this.setData({
+        recordPhoto: null,
+        photoMarkCount: 0,
+        photoMarkCountText: '',
+        photoMarksError: ''
+      });
+      return Promise.resolve();
+    }
+    // 先过一遍 initPhotoUi：档案 ID 变化（重置本机档案）后照片服务要跟上。
+    return Promise.resolve(this.initPhotoUi()).then(() => {
+      if (!this._photoUi) return;
+      return this._photoUi.load([routeId]).then(() => this.applyPhotoView());
+    });
+  },
+
+  /**
+   * 只更新当前线路的照片展示，并按当前照片版本重读标记数量；不改任何已保存数据。
+   */
+  applyPhotoView() {
+    const routeId = this._route && this._route.id;
+    if (!this._photoUi || !routeId || !this.archive) return;
+    const view = this._photoUi.view(routeId);
+    this.setData({ recordPhoto: view });
+    this.refreshPhotoMarkCount();
+  },
+
+  /** 当前照片版本：档案 + 线路 + 当前照片 ID；缺一不读数量。 */
+  photoMarkTarget() {
+    const view = this.data.recordPhoto || {};
+    return {
+      archiveId: (this.archive && this.archive.archiveId) || '',
+      routeId: (this._route && this._route.id) || '',
+      photoId: view.photoId || ''
+    };
+  },
+
+  /**
+   * 只读当前照片上的标记数量：与线路历史页读同一份标记记录。
+   * 损坏或版本不支持时显示可见原因，不显示 0 个的假成功。打开本页与从二级页返回都走这里。
+   */
+  refreshPhotoMarkCount() {
+    const target = this.photoMarkTarget();
+    if (!target.archiveId || !target.routeId || !target.photoId) {
+      this.setData({ photoMarkCount: 0, photoMarkCountText: '', photoMarksError: '' });
+      return;
+    }
+    const listed = photoMarks.listMarks(target);
+    if (!listed.ok) {
+      this.setData({
+        photoMarkCount: 0,
+        photoMarkCountText: '',
+        photoMarksError: listed.error
+      });
+      return;
+    }
+    this.setData({
+      photoMarkCount: listed.marks.length,
+      photoMarkCountText: '照片动作标记 · ' + listed.marks.length + ' 个',
+      photoMarksError: ''
+    });
+  },
+
+  /**
+   * 打开原来的二级大图标记页：带齐本机档案、长期线路与**当前**照片 ID。
+   * 入口带的是渲染那一刻的三个 ID；与当前照片版本不一致（二级页刚换了照片）时只刷新
+   * 并提示，不再按旧照片打开，避免把操作落到另一张图上。
+   */
+  openRoutePhotoMarks(event) {
+    if (this.data.loadError || this.data.contextError) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const routeId = (this._route && this._route.id) || '';
+    const photoId = (this.data.recordPhoto && this.data.recordPhoto.photoId) || '';
+    if (!archiveId || !routeId || !photoId) {
+      this.loadRecordPhoto();
+      this.setData({ notice: '这条线路当前没有可打开的照片，请先添加照片。' });
+      return;
+    }
+    const stale =
+      (dataset.archiveId && dataset.archiveId !== archiveId) ||
+      (dataset.routeId && dataset.routeId !== routeId) ||
+      (dataset.photoId && dataset.photoId !== photoId);
+    if (stale) {
+      this.loadRecordPhoto();
+      this.setData({ notice: '照片或线路已经变化，请按当前缩略图重新进入。' });
+      return;
+    }
+    wx.navigateTo({
+      url:
+        PHOTO_MARKS_URL +
+        '?archiveId=' +
+        encodeURIComponent(archiveId) +
+        '&routeId=' +
+        encodeURIComponent(routeId) +
+        '&photoId=' +
+        encodeURIComponent(photoId),
+      fail: () => {
+        this.setData({ notice: '大图标记页没有打开，请再点一次缩略图。' });
+      }
+    });
+  },
+
+  /**
+   * 照片事件的归属：只认本页这一条线。
+   * 入口不属于当前档案，或带的是另一条线（同名 B 线、换页后的旧事件）时拿不到 routeId，
+   * 控制器不会收到写入请求。
+   */
+  photoRouteId(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const routeId = (this._route && this._route.id) || '';
+    if (!routeId) return '';
+    if (dataset.routeId && dataset.routeId !== routeId) return '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (dataset.archiveId && dataset.archiveId !== archiveId) return '';
+    return routeId;
+  },
+
+  chooseRecordPhoto(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const source = dataset.source;
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId || (source !== 'camera' && source !== 'album')) {
+      return Promise.resolve();
+    }
+    return this._photoUi.choose(routeId, source);
+  },
+
+  confirmRecordPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.confirm(routeId);
+  },
+
+  cancelRecordPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    // 取消预览只丢掉临时路径：照片索引、主图与既有卡点都不变。
+    this._photoUi.cancelPreview(routeId);
+    this.applyPhotoView();
+  },
+
+  retryRecordPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.retry(routeId);
+  },
+
+  dismissRecordPhotoFailure(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return;
+    this._photoUi.dismiss(routeId);
+    this.applyPhotoView();
+  },
+
+  reloadRecordPhoto(event) {
+    const routeId = this.photoRouteId(event);
+    if (!this._photoUi || !routeId) return Promise.resolve();
+    return this._photoUi.load([routeId]).then(() => this.applyPhotoView());
   },
 
   /**
