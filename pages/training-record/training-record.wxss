@@ -504,6 +504,20 @@ page {
   color: #53615B;
 }
 
+/* T049：旧行收起时仅有本机视频才出现的小视频图标；只作提示，点按仍由整行展开原把 */
+.record-attempt-video-icon {
+  flex: none;
+  box-sizing: border-box;
+  min-width: 40rpx;
+  padding: 2rpx 8rpx;
+  border: 1rpx solid #B7683D;
+  border-radius: 6rpx;
+  font-size: 20rpx;
+  line-height: 1.4;
+  text-align: center;
+  color: #B7683D;
+}
+
 .record-attempt-send {
   background-color: #EAF2EC;
   border-color: #1F5948;
@@ -621,10 +635,27 @@ page {
   color: #53615B;
 }
 
-/* 视频关联状态与文字入口（T023）：入口独立于「编辑备注」，写在行尾 */
+/* 备注与视频入口同一行（T049）：备注占满左侧，入口固定在右侧同一个槽位；
+   无备注时入口仍靠右，添加与回看只换文字、不换位置也不换高度。 */
+.record-attempt-detail {
+  display: flex;
+  align-items: flex-start;
+  gap: 12rpx;
+  margin: 4rpx 0 8rpx;
+}
+
+.record-attempt-detail .record-attempt-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+}
+
+/* 视频关联状态与文字入口（T023 / T049）：入口独立于「编辑备注」，靠右同一槽位 */
 .record-attempt-video {
+  flex: none;
   display: flex;
   align-items: center;
+  margin-left: auto;
 }
 
 .record-attempt-video-state {

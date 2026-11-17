@@ -131,6 +131,8 @@
         <text id="saved-size" class="preview-meta">大小 {{savedVideo.sizeText}}</text>
         <text wx:if="{{savedVideo.revText}}" id="saved-rev" class="preview-meta">片段版本 {{savedVideo.revText}}</text>
         <text wx:if="{{!savedVideo.locatable}}" id="saved-unlocatable" class="error-text">{{savedVideo.unresolvedText}}</text>
+        <!-- T049：回看时也写明副本只在这台手机上，与预览、确认移除与相册保留的说明同一口径 -->
+        <text id="saved-storage-hint" class="video-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。系统相册里的原片保留。</text>
         <text wx:if="{{hasPreview}}" class="video-hint">上面只是新片的待确认预览；确认更换前，关联仍是现在这段视频。</text>
 
         <view wx:if="{{!hasPreview}}" class="button-row">

@@ -974,3 +974,36 @@ test('T047 视频空态：先预览、确认后保存本机副本，保存与取
   assert.match(videoWxml, /bindtap="togglePlay"/);
   assert.match(videoWxml, /bindtap="askRemove"/);
 });
+
+test('T049 视频页在回看、无片与保存前都写明本机保存位置与相册原片保留', () => {
+  const videoWxml = fs.readFileSync(VIDEO_WXML, 'utf8');
+  const savedAt = videoWxml.indexOf('id="video-saved"');
+  const previewAt = videoWxml.indexOf('id="video-preview"');
+  const emptyAt = videoWxml.indexOf('id="video-choose"');
+  assert.ok(savedAt !== -1 && savedAt < previewAt && previewAt < emptyAt, '三段说明都在');
+
+  // 回看已保存副本时也说明：副本只在这台手机微信的攀笔中，不上传，相册原片保留。
+  assert.match(videoWxml.slice(savedAt, previewAt), /id="saved-storage-hint"[\s\S]{0,120}视频副本保存在这台手机微信里的攀笔中，不上传云端。系统相册里的原片保留。/, '已保存卡片写明本机位置');
+
+  // 无片空态与保存前预览维持同一口径：先说预览、再说确认后保存本机副本。
+  assert.match(
+    videoWxml.slice(emptyAt),
+    /id="choose-empty-hint"[\s\S]{0,160}确认后在这台手机的攀笔里保存一份副本/,
+    '无片空态写明本机保存位置'
+  );
+  assert.match(
+    videoWxml,
+    /id="preview-save-hint"[^>]*>视频副本保存在这台手机微信里的攀笔中，不上传云端。/,
+    '保存前预览写明本机保存位置'
+  );
+
+  // 移除仍是明确的两步操作，只移除这台手机上的副本，相册原片、记录与备注保留。
+  assert.match(
+    videoWxml,
+    /只移除这台手机微信的攀笔中的视频副本；系统相册里的原片、这一把的记录与备注都保留。/,
+    '移除确认沿用同一份本机与相册原片口径'
+  );
+  // 这些说明都是页面静态文案：不新增存储键、字段或页面方法。
+  const videoJs = fs.readFileSync(VIDEO_JS, 'utf8');
+  assert.doesNotMatch(videoJs, /saved-storage-hint|storageHint/, '不靠额外数据字段拼说明');
+});

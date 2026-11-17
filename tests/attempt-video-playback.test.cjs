@@ -1261,3 +1261,95 @@ test('T024-18 本单仍不写 storage、不碰文件系统：持久副本只经�
     assert.doesNotMatch(source, /devtools\//, name + ' 不得引用打包时被排除的 devtools 路径');
   }
 });
+
+// ------------------------------------------------------------------ *
+// T049 新、旧两把各自的本机视频
+// ------------------------------------------------------------------ */
+
+test('T049 新、旧两把各存不同视频：各按原把播放自己的副本，取消更换不动另一把', () => {
+  const flow = seedTwoAttempts();
+  const clipA = {
+    clipId: 'clip-t049-a',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptA.id,
+    rev: 1,
+    fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-t049-a.mp4',
+    bytes: 640 * 1024
+  };
+  const clipB = {
+    clipId: 'clip-t049-b',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    rev: 1,
+    fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-t049-b.mp4',
+    bytes: 320 * 1024
+  };
+  writeClips([clipA, clipB]);
+  const indexRaw = storage.get(attemptVideo.VIDEO_INDEX_KEY);
+  const archiveRaw = rawArchive();
+
+  // 各自的视频页只读回自己那一把的片段，播放器拼的是自己的文件。
+  const pageA = openVideoPage(idsOf(flow, flow.attemptA));
+  assert.equal(pageA.data.attempt.id, flow.attemptA.id);
+  assert.equal(pageA.data.hasSavedVideo, true);
+  assert.equal(pageA.data.savedVideo.clipId, clipA.clipId);
+  assert.equal(pageA.data.playerSrc, USER_DATA_PATH + '/' + clipA.fileId);
+
+  const pageB = openVideoPage(idsOf(flow, flow.attemptB));
+  assert.equal(pageB.data.attempt.id, flow.attemptB.id);
+  assert.equal(pageB.data.savedVideo.clipId, clipB.clipId);
+  assert.equal(pageB.data.playerSrc, USER_DATA_PATH + '/' + clipB.fileId);
+
+  // 重开（新的页面实例）仍按原把读回同一段副本，互不顶替。
+  assert.equal(
+    openVideoPage(idsOf(flow, flow.attemptA)).data.playerSrc,
+    USER_DATA_PATH + '/' + clipA.fileId
+  );
+  assert.equal(
+    openVideoPage(idsOf(flow, flow.attemptB)).data.playerSrc,
+    USER_DATA_PATH + '/' + clipB.fileId
+  );
+
+  // A 上取消更换：预览丢弃，A 回到自己的旧片；B 的关联与索引逐字节不变。
+  const calls = installStore({});
+  chooseSuccess(VIDEO_A);
+  pageA.choosePreview();
+  assert.equal(pageA.data.hasPreview, true);
+  assert.equal(pageA.data.playerSrc, VIDEO_A.tempFilePath, '预览期间播放的是待确认的新片');
+  pageA.cancelReplace();
+  assert.equal(pageA.data.hasPreview, false);
+  assert.equal(pageA.data.playerSrc, USER_DATA_PATH + '/' + clipA.fileId);
+  assert.equal(calls.length, 0, '取消更换不调用持久层');
+  assert.equal(storage.get(attemptVideo.VIDEO_INDEX_KEY), indexRaw, '取消不改索引');
+  assert.equal(rawArchive(), archiveRaw, '取消不改训练档案');
+  assert.equal(pageB.data.savedVideo.clipId, clipB.clipId, '另一把的关联保持');
+  assert.equal(pageB.data.attempt.note, 'B 把的备注');
+  assert.equal(
+    attemptVideo.videoClipView(flow.archiveId, flow.attemptB.id).clip.clipId,
+    clipB.clipId,
+    '另一把的当前片段仍是自己那条'
+  );
+
+  // A 提交更换后只有 A 换片：重开两页仍各播自己的当前片段。
+  const replacedA = {
+    clipId: 'clip-t049-a2',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptA.id,
+    rev: 2,
+    fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-t049-a2.mp4',
+    bytes: 512 * 1024
+  };
+  writeClips([replacedA, clipB]);
+  const afterA = openVideoPage(idsOf(flow, flow.attemptA));
+  const afterB = openVideoPage(idsOf(flow, flow.attemptB));
+  assert.equal(afterA.data.savedVideo.clipId, replacedA.clipId);
+  assert.equal(afterA.data.playerSrc, USER_DATA_PATH + '/' + replacedA.fileId);
+  assert.equal(afterB.data.savedVideo.clipId, clipB.clipId, '新把没有被A的更换顶替');
+  assert.equal(afterB.data.playerSrc, USER_DATA_PATH + '/' + clipB.fileId);
+});
