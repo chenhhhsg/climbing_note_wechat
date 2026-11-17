@@ -263,14 +263,14 @@
           本场本线把次（T045）：普通文档流里直接列出，最新在前，一把一框。
           卡框沿用 T044 的配色与边框（完攀深绿、未完成深橙）；每行只用这一行带下来的
           原把次 ID 与归属：
-          - 「编辑」只展开这一行的备注编辑器，保存/取消只改这一把；
+          - 「编辑」只展开这一行的备注编辑器，保存/取消只改这一把；备注为空也显示同一入口；
           - 视频入口沿用原把次视频页（四个 ID 再核对）；
           - 合资格的完攀给「改成未完成」，最近一把给「这把多记了」/「恢复这一把」，
             失败重试与恢复都留在原框；两个动作各占一个并排槽，坐标互不接管。
         -->
         <view wx:if="{{hasAttemptCards}}" id="record-attempts" class="record-attempts">
           <view class="record-attempts-head">
-            <text class="record-attempts-title">本场本线把次</text>
+            <text class="record-attempts-title">本场逐把</text>
             <text class="record-attempts-hint">最新在前 · 共 {{attempts.length}} 把</text>
           </view>
 
@@ -307,7 +307,7 @@
                   class="text-button record-attempt-edit"
                   data-attempt-id="{{item.id}}"
                   catchtap="openNoteEditor"
-                >{{item.hasNote ? '编辑 ›' : '补备注 ›'}}</button>
+                >编辑 ›</button>
                 <text
                   wx:else
                   id="record-attempt-note-locked-{{item.id}}"

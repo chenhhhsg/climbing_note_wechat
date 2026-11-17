@@ -13,6 +13,8 @@
  * - 相册单选（一个选项对象）、取消与失败后的重选、连点与迟到回调、离页；
  * - 本单不创建持久文件或索引：running 期间 storage 写入为零，视频索引键不被创建；
  * - 视频索引只读：T026 写入后列表自动显示「已添加视频」，索引损坏不影响列表。
+ * - T047：空态选片卡先说明「选片后先预览」与「确认后保存本机副本」，保存按钮
+ *   仍是「保存到攀笔」，保存/取消、播放与移除的绑定不变。
  *
  * 真实相册、真实解码、冷启动与两处入口的可见布局交给整项 QA 与手机复验（待验）。
  *
@@ -943,4 +945,32 @@ test('T023-13 视频索引只读：T026 写入后列表与视频页自动显示�
     openRoutePage(flow.route.id, flow.archiveId).data.groups[0].attempts[0].videoStateText,
     '视频关联不可读'
   );
+});
+
+test('T047 视频空态：先预览、确认后保存本机副本，保存与取消维持原绑定', () => {
+  const videoWxml = fs.readFileSync(VIDEO_WXML, 'utf8');
+  const emptyStart = videoWxml.indexOf('wx:if="{{!hasSavedVideo && !hasPreview}}"');
+  const emptyEnd = videoWxml.indexOf('video-foot-hint');
+  assert.ok(emptyStart !== -1 && emptyStart < emptyEnd, '缺空态选片卡');
+  const emptyCard = videoWxml.slice(emptyStart, emptyEnd);
+
+  assert.match(emptyCard, /id="video-choose"/);
+  assert.match(emptyCard, /从相册选一段视频/, '空态标题保留');
+  assert.match(
+    emptyCard,
+    /选片后先预览。确认后在这台手机的攀笔里保存一份副本/,
+    '空态先说先预览、再说确认后保存本机副本'
+  );
+  assert.match(emptyCard, /只选视频、单选、只从相册取/, '相册单选口径保留');
+  assert.match(emptyCard, /保存前不会写入本机，也不上传/, '保存前不落盘、不上传的说明保留');
+  assert.match(emptyCard, /id="choose-video"/);
+  assert.match(emptyCard, /bindtap="choosePreview"/);
+
+  // 保存按钮文案仍是「保存到攀笔」；保存、取消与播放/移除的绑定不变。
+  assert.match(videoWxml, /id="commit-preview"[\s\S]{0,300}保存到攀笔/, '保存按钮仍写「保存到攀笔」');
+  assert.match(videoWxml, /id="cancel-preview"/);
+  assert.match(videoWxml, /bindtap="commitPreview"/);
+  assert.match(videoWxml, /bindtap="cancelPreview"/);
+  assert.match(videoWxml, /bindtap="togglePlay"/);
+  assert.match(videoWxml, /bindtap="askRemove"/);
 });

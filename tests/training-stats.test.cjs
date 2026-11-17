@@ -10,6 +10,8 @@
  * - 旧云汇总只读回看、不计入本机数字；断网、旧云拒绝、空数据、迟到回执都不遮挡本机读数；
  * - 损坏档案显示读取失败并保留原字节，与真实空档可区分；
  * - 只进入/刷新/离开统计不写盘：训练档案、照片索引、自测存储逐字节不变，也不碰文件系统。
+ * - T047：四个统计标题改为「完攀把数」「把次完攀率」「最高尝试难度」「各岩馆尝试把数」，
+ *   只改可见文案；同一夹具下的完攀把数、分母、难度与岩馆计数保持改动前的数字。
  *
  * 刻意不提供 wx.cloud：统计页的本机读数不得依赖云能力，旧云汇总失败只影响它自己那一段。
  * 真机底部 tab、手机字号与云环境实读留给负责人整体验收（待验）。
@@ -262,7 +264,7 @@ test('R1 统计 tab 与页面四件套保持原样，统计页只读本机档案
   assert.match(source, /require\('\.\.\/\.\.\/utils\/training-store'\)/, '统计页必须复用本机档案只读入口');
 });
 
-test('R1 统计页文案：本机区块在前、旧云单列在后，最高难度分 V 级与 YDS', () => {
+test('R1 统计页文案：本机区块在前、旧云单列在后，最高尝试难度分 V 级与 YDS', () => {
   const wxml = fs.readFileSync(STATS_WXML, 'utf8');
   assert.ok(
     wxml.indexOf('本机把数') !== -1 && wxml.indexOf('旧云记录') !== -1,
@@ -272,12 +274,77 @@ test('R1 统计页文案：本机区块在前、旧云单列在后，最高难�
     wxml.indexOf('本机把数') < wxml.indexOf('旧云记录'),
     '本机结果必须排在旧云来源之前'
   );
-  assert.match(wxml, /V 级/, '最高难度须标出 V 级');
-  assert.match(wxml, /YDS/, '最高难度须标出 YDS');
+  assert.match(wxml, /V 级/, '最高尝试难度须标出 V 级');
+  assert.match(wxml, /YDS/, '最高尝试难度须标出 YDS');
   assert.match(wxml, /本月按训练日期算/, '本月读数须说明按把次所属训练日期计算');
   assert.match(wxml, /id="stats-empty"/, '需要可辨别的空档空态');
   assert.match(wxml, /id="archive-error"/, '需要可辨别的读取失败态');
   assert.match(wxml, /id="legacy-error"/, '旧云失败要有单列的错误态');
+});
+
+test('T047 四个统计标题各自贴着对应读数，旧标题不再出现', () => {
+  const wxml = fs.readFileSync(STATS_WXML, 'utf8');
+
+  // 标题与数字一一对应：不能把「完攀把数」挂到总把数或本月把数上。
+  assert.match(
+    wxml,
+    /<text class="stat-number">\{\{sendCount\}\}<\/text>\s*<text class="stat-label">完攀把数<\/text>/,
+    '「完攀把数」对应完攀把次 sendCount'
+  );
+  assert.match(
+    wxml,
+    /<text class="stat-number">\{\{totalAttempts\}\}<\/text>\s*<text class="stat-label">本机把数<\/text>/,
+    '总把数仍是同一分母的本机把数'
+  );
+  assert.match(
+    wxml,
+    /<text class="stat-label">本月把数<\/text>/,
+    '本月把数标题保持原样'
+  );
+  assert.match(
+    wxml,
+    /<text class="stat-number">\{\{completionRate\}\}%<\/text>\s*<text class="stat-label">把次完攀率<\/text>/,
+    '「把次完攀率」对应同一分母的 completionRate'
+  );
+
+  // 最高尝试难度仍按抱石 V 级与绳攀 YDS 分列。
+  const gradeStart = wxml.indexOf('最高尝试难度');
+  const gradeSection = wxml.slice(gradeStart, wxml.indexOf('线路类型'));
+  assert.ok(gradeStart !== -1 && gradeStart < wxml.indexOf('线路类型'), '缺「最高尝试难度」段落');
+  assert.match(gradeSection, /\{\{boulderMaxGrade\}\}/, '抱石最高难度仍来自 boulderMaxGrade');
+  assert.match(gradeSection, /\{\{ropeMaxGrade\}\}/, '绳攀最高难度仍来自 ropeMaxGrade');
+
+  // 各岩馆尝试把数仍是按岩馆分组的尝试把次。
+  const gymStart = wxml.indexOf('gymRows.length');
+  const gymSection = wxml.slice(gymStart, wxml.indexOf('旧云记录（只读）'));
+  assert.ok(gymStart !== -1 && gymStart < wxml.indexOf('旧云记录（只读）'), '缺岩馆分布段落');
+  assert.match(gymSection, /<view class="section-title">各岩馆尝试把数<\/view>/);
+  assert.match(gymSection, /\{\{item\.count\}\}把/);
+
+  // 旧标题已去掉；完成状态里的「完攀」条与本月说明不跟着改。
+  assert.doesNotMatch(wxml, /<text class="stat-label">完攀<\/text>/);
+  assert.doesNotMatch(wxml, /<text class="stat-label">完成率<\/text>/);
+  assert.doesNotMatch(wxml, /<view class="section-title">最高难度<\/view>/);
+  assert.doesNotMatch(wxml, /常去岩馆/);
+  assert.match(wxml, /<text class="bar-label">完攀<\/text>/, '完成状态里的完攀条保持不变');
+  assert.match(wxml, /本月按训练日期算：\{\{monthAttempts\}\} 把 · 完成率 \{\{monthCompletionRate\}\}%/, '本月说明保持不变');
+});
+
+test('T047 同一夹具下四个标题对应的数字与改动前一致', async () => {
+  seedThreeAttempts();
+
+  const page = openStats();
+  await flush();
+
+  // 完攀把数、分母、难度与岩馆计数都沿用现有汇总，不因改标题而变。
+  assert.equal(page.data.totalAttempts, 3, '本机把数（分母）仍是 3');
+  assert.equal(page.data.sendCount, 1, '完攀把数仍是 1');
+  assert.equal(page.data.completionRate, 33, '把次完攀率仍是 1/3 → 33%');
+  assert.equal(page.data.boulderMaxGrade, 'V3', '最高尝试难度仍是抱石 V3');
+  assert.equal(page.data.ropeMaxGrade, '', '本档仍没有绳攀线路');
+  assert.deepEqual(page.data.gymRows, [
+    { name: '据点的岩馆', count: 3, percentage: 100 }
+  ], '各岩馆尝试把数仍是 3 把');
 });
 
 // ------------------------------------------------------------------ *

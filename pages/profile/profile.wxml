@@ -17,7 +17,7 @@
       </view>
       <view class="user-detail">
         <text class="username">点击登录</text>
-        <text class="user-desc">登录后同步数据</text>
+        <text class="user-desc">设置微信昵称和头像，用于在攀笔显示个人资料；新的训练记录保存在这台手机的攀笔中。</text>
       </view>
     </view>
   </view>

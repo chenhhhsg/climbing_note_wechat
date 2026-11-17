@@ -38,11 +38,11 @@
           </view>
           <view class="stat-card">
             <text class="stat-number">{{sendCount}}</text>
-            <text class="stat-label">完攀</text>
+            <text class="stat-label">完攀把数</text>
           </view>
           <view class="stat-card highlight">
             <text class="stat-number">{{completionRate}}%</text>
-            <text class="stat-label">完成率</text>
+            <text class="stat-label">把次完攀率</text>
           </view>
         </view>
 
@@ -72,9 +72,9 @@
           <text class="month-note">本月按训练日期算：{{monthAttempts}} 把 · 完成率 {{monthCompletionRate}}%</text>
         </view>
 
-        <!-- 最高难度：V 级与 YDS 分开显示，不混成一条 -->
+        <!-- 最高尝试难度：V 级与 YDS 分开显示，不混成一条 -->
         <view class="section-card">
-          <view class="section-title">最高难度</view>
+          <view class="section-title">最高尝试难度</view>
           <view wx:if="{{hasMaxGrade}}" class="grade-list">
             <view wx:if="{{boulderMaxGrade}}" class="grade-row">
               <text class="grade-kind">抱石 · V 级</text>
@@ -108,9 +108,9 @@
           </view>
         </view>
 
-        <!-- 常去岩馆：按场次所属岩馆关联 -->
+        <!-- 各岩馆尝试把数：按场次所属岩馆关联，行内为尝试把次 -->
         <view wx:if="{{gymRows.length > 0}}" class="section-card">
-          <view class="section-title">常去岩馆</view>
+          <view class="section-title">各岩馆尝试把数</view>
           <view class="location-list">
             <view
               wx:for="{{gymRows}}"

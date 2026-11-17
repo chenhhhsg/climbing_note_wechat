@@ -301,11 +301,16 @@ Page({
       archive,
       summary.routes.map(row => row.routeId)
     );
+    const archiveId = (archive && archive.archiveId) || '';
     const rows = summary.routes.map(row => {
       const entry = membership.ok ? membership.entries.get(row.routeId) || null : null;
       const archived = Boolean(entry && entry.archived);
       const checked = Boolean(entry) && !archived;
       return Object.assign({}, row, {
+        // 行事件的原归属（T046）：渲染这一行时的档案 ID、所看场次的场次 ID 与长期
+        // 线路 ID 一起带到按钮上，迟到送达的别场行事件不会借用当前所看场次。
+        archiveId,
+        sessionId: summary.sessionId,
         // canPick 只表示「现在能不能点」：未完成 + 清单可读；pickable 是本场状态。
         canPick: row.pickable && membership.ok,
         checked,
@@ -471,33 +476,56 @@ Page({
   },
 
   /**
-   * 从小结看原场逐把（T046）：带上**这一页正在看的那一场**的原档案 ID、场次 ID 与长期
-   * 线路 ID，进入现有「本场逐把」页先看这一场这一条线的原把次、原备注与原把视频；
-   * 跨场历史由逐把页主动点「线路历史」进入，这里不再直接跳跨场历史。
+   * 从小结看原场逐把（T046）：按钮事件带着**渲染这一行时**的原档案 ID、所看场次的场次
+   * ID 与长期线路 ID 进入现有「本场逐把」页，先看这一场这一条线的原把次、原备注与原把
+   * 视频；跨场历史由逐把页主动点「线路历史」进入，这里不再直接跳跨场历史。
    *
-   * 只读打开：不新建场次、不改当前线路，也不写任何键。缺档案归属或缺所看场次时只给
-   * 可见原因——不拿当前活动场次、也不拿同名线路顶替，避免看到别场别的把次。
+   * 归属必须是事件显式带来的三个 ID，且与本页**当前渲染**的档案、所看场次和实际线路行
+   * 逐一核对：第一场行按钮的事件若在小结切到第二场后才送达，事件里的 sessionId 仍是第
+   * 一场，与当前渲染的第二场不同，整条拒掉——绝不拿 this.data.summarySessionId 顶替。
+   * 缺项、串档、失效场次或同名异线同样只给可见原因。
+   *
+   * 只读打开：不新建场次、不改当前线路，也不写任何键。
    */
   openSummaryRoute(event) {
     if (this.data.loadError || !this.data.summaryReady) return;
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const routeId = dataset.routeId;
-    if (!routeId) return;
-    const archiveId = (this.archive && this.archive.archiveId) || '';
-    const sessionId = this.data.summarySessionId || this._viewSessionId || '';
-    if (!archiveId || !sessionId) {
-      this.setData({ notice: '这份小结没有可用的档案或场次归属，暂不打开本场逐把。' });
+    const claimedArchiveId = dataset.archiveId;
+    const claimedSessionId = dataset.sessionId;
+    // 旧渲染或迟到事件没带齐归属：不猜当前场次，也不打开任何逐把。
+    if (!routeId || !claimedArchiveId || !claimedSessionId) {
+      this.setData({ notice: '这个入口没有带完整的档案、场次或线路归属，暂不打开本场逐把。' });
       return;
     }
+
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = this.data.summarySessionId || '';
+    const row = (this.data.summaryRows || []).find(item => item.routeId === routeId);
+    if (
+      !archiveId ||
+      !sessionId ||
+      claimedArchiveId !== archiveId ||
+      claimedSessionId !== sessionId ||
+      !row ||
+      row.archiveId !== claimedArchiveId ||
+      row.sessionId !== claimedSessionId
+    ) {
+      this.setData({
+        notice: '这个入口与本页正在看的小结不一致（档案、场次或线路已变），不打开本场逐把。'
+      });
+      return;
+    }
+
     // 归属一起带过去：逐把页按同一组 archiveId + sessionId + routeId 再核对一次。
     // from=summary 让逐把页把返回落点写成「原场小结」，与实际返回的上一页一致。
     wx.navigateTo({
       url:
         ATTEMPTS_URL +
         '?archiveId=' +
-        encodeURIComponent(archiveId) +
+        encodeURIComponent(claimedArchiveId) +
         '&sessionId=' +
-        encodeURIComponent(sessionId) +
+        encodeURIComponent(claimedSessionId) +
         '&routeId=' +
         encodeURIComponent(routeId) +
         '&from=summary'
