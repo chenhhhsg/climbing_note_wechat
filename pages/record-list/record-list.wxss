@@ -262,7 +262,7 @@
   color: #606d61;
 }
 
-/* 本机训练历史（T018） */
+/* 本机训练历史（T043：日期 → 岩馆 → 原场次一行） */
 .local-history {
   margin-bottom: 40rpx;
 }
@@ -287,66 +287,62 @@
   color: #606d61;
 }
 
-.local-route-card {
-  background-color: #fffcf3;
-  border-radius: 16rpx;
-  padding: 26rpx;
-  margin-bottom: 16rpx;
-  box-shadow: none;
+.local-day {
+  margin-bottom: 24rpx;
 }
 
-.local-route-main {
-  display: flex;
-  align-items: center;
-}
-
-.local-route-swatch {
-  width: 24rpx;
-  height: 24rpx;
-  border-radius: 50%;
-  margin-right: 16rpx;
-}
-
-.local-route-info {
-  flex: 1;
-}
-
-.local-route-name {
+.local-day-date {
   display: block;
-  font-size: 30rpx;
+  font-size: 28rpx;
   font-weight: bold;
   color: #173d32;
+  padding: 8rpx 4rpx;
 }
 
-.local-route-meta {
+.local-gym {
+  margin-bottom: 12rpx;
+  padding: 12rpx 20rpx 16rpx;
+  background-color: #fffcf3;
+  border-radius: 6rpx;
+  border: 1px solid #d8d9c9;
+}
+
+.local-gym-name {
   display: block;
-  font-size: 24rpx;
+  font-size: 26rpx;
   color: #526157;
-  margin-top: 4rpx;
+  padding: 4rpx 0 8rpx;
 }
 
-.local-route-gym {
-  display: block;
-  font-size: 24rpx;
-  color: #606d61;
-  margin-top: 4rpx;
-}
-
-.local-route-stats {
+.local-session-row {
   display: flex;
-  justify-content: space-between;
   align-items: baseline;
-  margin-top: 16rpx;
-  padding-top: 16rpx;
+  justify-content: space-between;
+  padding: 16rpx 4rpx;
   border-top: 1rpx solid #dcdccc;
 }
 
-.local-route-last {
-  font-size: 24rpx;
-  color: #526157;
+.local-session-main {
+  display: flex;
+  align-items: baseline;
 }
 
-.local-route-count {
+.local-session-label {
+  font-family: "Songti SC", "SimSun", serif;
+  font-size: 34rpx;
+  color: #173d32;
+}
+
+.local-session-state {
+  margin-left: 12rpx;
+  padding: 2rpx 12rpx;
+  border-radius: 8rpx;
+  font-size: 22rpx;
+  background-color: #f3edda;
+  color: #745241;
+}
+
+.local-session-count {
   font-size: 24rpx;
   color: #173d32;
 }
@@ -357,5 +353,4 @@
 }
 
 /* 岩馆手册 */
-.local-route-card,.record-card { border-radius:6rpx; border:1px solid #d8d9c9; }
-.local-route-name { font-family:"Songti SC","SimSun",serif; font-size:34rpx; }
+.record-card { border-radius:6rpx; border:1px solid #d8d9c9; }

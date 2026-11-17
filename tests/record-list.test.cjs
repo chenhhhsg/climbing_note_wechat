@@ -180,6 +180,13 @@ function idsOf(page) {
   return page.data.records.map(record => record._id);
 }
 
+/** T043：把「日期 → 岩馆 → 原场次」三层列表摊平，便于按原场次 ID 核对。 */
+function sessionRows(page) {
+  return (page.data.sessionDays || []).flatMap(day =>
+    (day.gyms || []).flatMap(gym => gym.sessions || [])
+  );
+}
+
 // ---- L01 ----
 test('L01 首次进入 onLoad/onShow 只请求一次第一页并显示空态', async () => {
   resetWxLog();
@@ -623,16 +630,20 @@ test('WXML 条件分支、事件名与页面方法一致', () => {
   assert.match(wxml, /wx:for="\{\{item\.images\}\}"/);
   // T018：旧记录区与本机训练历史分开显示
   assert.match(wxml, /还没有旧记录/);
-  assert.match(wxml, /bindtap="goToRouteDetail"/);
-  assert.match(wxml, /data-route-id="\{\{item\.id\}\}"/);
   assert.match(wxml, /还没有本机训练记录/);
   assert.match(wxml, /\{\{cloudErrorTitle \|\| '加载失败'\}\}/);
+  // T043：本机区是原场次列表，点一场直达原场小结。
+  assert.match(wxml, /bindtap="goToSessionSummary"/);
+  assert.match(wxml, /data-session-id="\{\{session\.id\}\}"/);
+  assert.match(wxml, /data-archive-id="\{\{session\.archiveId\}\}"/);
+  assert.match(wxml, /\{\{session\.summaryText\}\}/);
+  assert.doesNotMatch(wxml, /bindtap="goToRouteDetail"/);
 
   for (const methodName of [
     'retryRefresh',
     'retryLoadMore',
     'goToDetail',
-    'goToRouteDetail',
+    'goToSessionSummary',
     'goToAddRecord'
   ]) {
     assert.equal(typeof pageDefinition[methodName], 'function', `${methodName} 应为页面方法`);
@@ -642,11 +653,11 @@ test('WXML 条件分支、事件名与页面方法一致', () => {
   assert.equal(pageConfig.enablePullDownRefresh, true);
 });
 
-// ---- T018：本机训练历史入口 ----
-test('T018 记录 tab 分出本机训练历史与旧记录两条入口，ID 路由互不混用', async () => {
+// ---- T018/T043：本机训练历史入口 ----
+test('T043 记录 tab 的本机区按原场次列出，点一场用原档案 ID 与原场次 ID 进小结', async () => {
   resetWxLog();
   const seeded = seedLocalHistory();
-  // 还没有逐把记录的线路不算本机训练历史
+  // 还没有逐把记录的线路不算该场小结的线路数
   const emptyRoute = store.createRoute({
     sessionId: seeded.session.id,
     name: '还没记过的线',
@@ -663,22 +674,31 @@ test('T018 记录 tab 分出本机训练历史与旧记录两条入口，ID 路�
 
   assert.equal(page.data.archiveError, '');
   assert.equal(page.data.hasLocalHistory, true);
-  assert.equal(page.data.localRoutes.length, 1, '只有记过把次的线路进本机历史');
-  assert.equal(page.data.localRoutes[0].id, seeded.route.id, '按长期线路 ID 展示');
-  assert.equal(page.data.localRoutes[0].name, '蓝色动态线');
-  assert.equal(page.data.localRoutes[0].gymName, '粉袋岩馆');
-  assert.equal(page.data.localRoutes[0].countText, '1 天 · 1 场 · 1 把');
-  assert.equal(page.data.localRoutes[0].lastDateText, '2020-04-02 第 1 场');
+  const rows = sessionRows(page);
+  assert.equal(rows.length, 1, '一个原场次一行');
+  assert.equal(rows[0].id, seeded.session.id, '按原场次 ID 展示');
+  assert.equal(rows[0].label, '第 1 场', '沿用现有场次标识');
+  assert.equal(rows[0].gymName, '粉袋岩馆');
+  assert.equal(rows[0].routeCount, 1, '线路数取该场小结的同一份只读计数');
+  assert.equal(rows[0].attemptCount, 1);
+  assert.equal(rows[0].summaryText, '1 条线 · 1 把');
+  assert.equal(rows[0].isEmpty, false);
 
-  // 旧记录仍按原 _id 完整显示，计数与本机历史互不混用
+  // 旧记录仍按原 _id 完整显示，计数与本机场次互不混用
   assert.equal(page.data.records.length, 1);
   assert.equal(page.data.records[0]._id, 'route-1');
   assert.equal(page.data.records[0].attempts, 5);
 
-  page.goToRouteDetail({ currentTarget: { dataset: { routeId: seeded.route.id } } });
+  // 点场次行：只带原档案 ID 与原场次 ID 打开现有小结页。
+  page.goToSessionSummary({
+    currentTarget: { dataset: { sessionId: rows[0].id, archiveId: rows[0].archiveId } }
+  });
   assert.equal(
     wxLog.navigations.at(-1).url,
-    '/pages/training-route/training-route?routeId=' + seeded.route.id
+    '/pages/training-summary/training-summary?sessionId=' +
+      seeded.session.id +
+      '&archiveId=' +
+      store.loadState().archive.archiveId
   );
   page.goToDetail({ currentTarget: { dataset: { id: 'route-1' } } });
   assert.equal(wxLog.navigations.at(-1).url, '/pages/record-detail/record-detail?id=route-1');
@@ -703,14 +723,14 @@ test('T018 旧云请求迟到或失败都不遮住本机训练历史，迟到回
 
   // 云请求还没回来：本机训练历史已经可用
   assert.equal(page.data.loading, true);
-  assert.equal(page.data.localRoutes.length, 1);
+  assert.equal(sessionRows(page).length, 1);
   assert.equal(page.data.hasLocalHistory, true);
 
   pending[0].reject(Object.assign(new Error('云不可用'), { code: 'CLOUD_UNAVAILABLE' }));
   await showPromise;
 
   assert.equal(page.data.cloudKind, 'unavailable');
-  assert.equal(page.data.localRoutes.length, 1, '旧云不可用不影响本机历史');
+  assert.equal(sessionRows(page).length, 1, '旧云不可用不影响本机历史');
 
   // 旧请求迟到返回：不得覆盖更新的状态，也不动本机历史
   const first = page.onShow();
@@ -722,7 +742,7 @@ test('T018 旧云请求迟到或失败都不遮住本机训练历史，迟到回
   pending[1].resolve({ data: [makeRecord('stale')] });
   await first;
   assert.deepEqual(idsOf(page), ['new'], '迟到回执不覆盖新结果');
-  assert.equal(page.data.localRoutes.length, 1);
+  assert.equal(sessionRows(page).length, 1);
 });
 
 test('T018 旧云有数据 / 空库 / 拒绝访问 / 云不可用 / 读取失败五种状态可区分，且都不写本机档案', async () => {
@@ -745,7 +765,7 @@ test('T018 旧云有数据 / 空库 / 拒绝访问 / 云不可用 / 读取失败
   assert.equal(page.data.cloudKind, 'empty');
   assert.equal(page.data.isEmpty, true);
   assert.equal(page.data.loadError, false);
-  assert.equal(page.data.localRoutes.length, 1, '空库不影响本机训练历史');
+  assert.equal(sessionRows(page).length, 1, '空库不影响本机训练历史');
 
   // 拒绝访问
   useDb(() => Promise.reject(
@@ -766,7 +786,7 @@ test('T018 旧云有数据 / 空库 / 拒绝访问 / 云不可用 / 读取失败
   await page.onShow();
   assert.equal(page.data.cloudKind, 'unavailable');
   assert.equal(page.data.cloudErrorTitle, '云环境不可用');
-  assert.equal(page.data.localRoutes.length, 1, '旧云不可用时本机历史照常可用');
+  assert.equal(sessionRows(page).length, 1, '旧云不可用时本机历史照常可用');
 
   // 一般读取失败
   useDb(() => Promise.reject(new Error('offline')));
@@ -789,11 +809,136 @@ test('T018 本机档案损坏时本机历史区可见报错，旧记录仍按原
   await page.onShow();
 
   assert.equal(page.data.archiveError, store.ARCHIVE_BROKEN);
-  assert.equal(page.data.localRoutes.length, 0);
+  assert.equal(sessionRows(page).length, 0);
   assert.equal(page.data.hasLocalHistory, false);
   assert.equal(page.data.records.length, 1, '本机档案损坏不影响旧记录区');
 
   await page.retryRefresh();
   assert.deepEqual(calls.map(call => call.page), [1, 1]);
   assert.equal(storage.get(ARCHIVE_KEY), corruptRaw, '不得覆盖或清空损坏的原档案');
+});
+
+// ---- T043：原场次列表的分组、顺序与直达小结 ----
+const summaryUtil = require(path.join(ROOT, 'utils', 'training-session-summary.js'));
+
+/**
+ * T043 夹具：两个日期、同日两家同名岩馆、同馆两场（含空场）与跨午夜把次。
+ * 直接写正式 v1 档案（不经过页面），只用于只读展示。
+ */
+function seedSessionListFixture() {
+  const archive = store.createEmptyArchive('archive-t043-fixture');
+  archive.gyms = [
+    { id: 'gym-1', name: '同名岩馆', createdAt: '2020-04-30T00:00:00.000Z' },
+    { id: 'gym-2', name: '同名岩馆', createdAt: '2020-04-30T00:00:00.000Z' },
+    { id: 'gym-3', name: '另一岩馆', createdAt: '2020-04-30T00:00:00.000Z' }
+  ];
+  archive.sessions = [
+    { id: 'session-1', seq: 1, gymId: 'gym-1', date: '2020-05-01', createdAt: '2020-05-01T21:50:00.000Z' },
+    { id: 'session-2', seq: 2, gymId: 'gym-1', date: '2020-05-02', createdAt: '2020-05-02T23:50:00.000Z' },
+    { id: 'session-3', seq: 3, gymId: 'gym-2', date: '2020-05-02', createdAt: '2020-05-02T10:00:00.000Z' },
+    // 同馆同日第二场：还没有已保存把次，列表按空场口径显示。
+    { id: 'session-4', seq: 4, gymId: 'gym-1', date: '2020-05-02', createdAt: '2020-05-02T20:00:00.000Z' },
+    { id: 'session-5', seq: 5, gymId: 'gym-3', date: '2020-05-03', createdAt: '2020-05-03T09:00:00.000Z' }
+  ];
+  archive.routes = [
+    { id: 'route-1', seq: 1, gymId: 'gym-1', name: '蓝色动态线', climbType: '抱石', grade: 'V3', colorName: '蓝色', colorHex: '#2f6fe4', createdAt: '2020-05-01T21:55:00.000Z' },
+    { id: 'route-2', seq: 2, gymId: 'gym-2', name: '红色横移线', climbType: '抱石', grade: 'V2', colorName: '红色', colorHex: '#d64545', createdAt: '2020-05-02T10:05:00.000Z' },
+    { id: 'route-3', seq: 3, gymId: 'gym-3', name: '顶绳耐力线', climbType: '顶绳', grade: '5.10a', colorName: '', colorHex: '', createdAt: '2020-05-03T09:05:00.000Z' }
+  ];
+  archive.sessionRoutes = [
+    { sessionId: 'session-1', routeId: 'route-1', addedAt: '2020-05-01T21:55:00.000Z' },
+    { sessionId: 'session-2', routeId: 'route-1', addedAt: '2020-05-02T23:55:00.000Z' },
+    { sessionId: 'session-3', routeId: 'route-2', addedAt: '2020-05-02T10:05:00.000Z' },
+    { sessionId: 'session-5', routeId: 'route-3', addedAt: '2020-05-03T09:05:00.000Z' }
+  ];
+  archive.attempts = [
+    { id: 'attempt-1', seq: 1, sessionId: 'session-1', routeId: 'route-1', result: 'fail', note: '', createdAt: '2020-05-01T22:00:00.000Z' },
+    // 跨午夜：把次创建在 5 月 3 日凌晨，仍归 5 月 2 日那一场。
+    { id: 'attempt-2', seq: 2, sessionId: 'session-2', routeId: 'route-1', result: 'fail', note: '跨午夜那一把', createdAt: '2020-05-03T00:10:00.000Z' },
+    { id: 'attempt-3', seq: 3, sessionId: 'session-3', routeId: 'route-2', result: 'send', note: '', createdAt: '2020-05-02T10:20:00.000Z' },
+    { id: 'attempt-4', seq: 4, sessionId: 'session-5', routeId: 'route-3', result: 'fail', note: '', createdAt: '2020-05-03T09:20:00.000Z' },
+    { id: 'attempt-5', seq: 5, sessionId: 'session-5', routeId: 'route-3', result: 'fail', note: '', createdAt: '2020-05-03T09:40:00.000Z' }
+  ];
+  archive.activeSessionId = 'session-4';
+  archive.activeRouteId = '';
+  storage.set(ARCHIVE_KEY, JSON.stringify(archive));
+  return archive;
+}
+
+test('T043 两个日期、同日两家同名岩馆、同馆两场与跨午夜：日期倒序、组与行不串', async () => {
+  resetWxLog();
+  const fixture = seedSessionListFixture();
+  // 旧云不可用也不影响本机场次列表与小节读数。
+  useDb(() => Promise.reject(Object.assign(new Error('云不可用'), { code: 'CLOUD_UNAVAILABLE' })));
+
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  const page = createPage();
+  await page.onShow();
+
+  assert.equal(page.data.archiveError, '');
+  assert.equal(page.data.hasLocalHistory, true);
+  assert.equal(page.data.cloudKind, 'unavailable', '旧云失败不遮住本机场次列表');
+
+  // 日期倒序；同日按岩馆 ID 分组，组序由组内最新场次决定。
+  assert.deepEqual(
+    page.data.sessionDays.map(day => day.date),
+    ['2020-05-03', '2020-05-02', '2020-05-01']
+  );
+  const secondDay = page.data.sessionDays[1];
+  assert.deepEqual(
+    secondDay.gyms.map(gym => [gym.gymId, gym.gymName]),
+    [
+      ['gym-1', '同名岩馆'],
+      ['gym-2', '同名岩馆']
+    ],
+    '同日两家同名岩馆按原岩馆 ID 各成一组，不并组'
+  );
+  assert.deepEqual(
+    secondDay.gyms[0].sessions.map(session => session.id),
+    ['session-4', 'session-2'],
+    '同馆两场按原场次顺序倒序'
+  );
+  assert.deepEqual(
+    sessionRows(page).map(row => row.id),
+    ['session-5', 'session-4', 'session-2', 'session-3', 'session-1'],
+    '每个原场次 ID 恰好一行'
+  );
+
+  // 每行摘要与该场小结一致（线路数与有效把数都取同一份只读计数）。
+  const archive = store.loadState().archive;
+  sessionRows(page).forEach(row => {
+    const summary = summaryUtil.buildSessionSummary(archive, row.id);
+    assert.equal(row.summaryText, summary.summaryText, row.id + ' 的摘要把数');
+    assert.equal(row.routeCount, summary.routeCount);
+    assert.equal(row.attemptCount, summary.attemptCount);
+    assert.equal(row.archiveId, fixture.archiveId);
+  });
+
+  // 跨午夜那一把仍归 5 月 2 日那一场，不跑到 5 月 3 日。
+  const crossMidnight = sessionRows(page).find(row => row.id === 'session-2');
+  assert.equal(crossMidnight.attemptCount, 1);
+  assert.equal(crossMidnight.summaryText, '1 条线 · 1 把');
+
+  // 零把场次沿用现有空场小结口径。
+  const empty = sessionRows(page).find(row => row.id === 'session-4');
+  assert.equal(empty.isEmpty, true);
+  assert.equal(empty.stateText, '空场');
+  assert.equal(empty.summaryText, '0 条线 · 0 把');
+
+  // 点不同场次行进入各自小结：原档案 ID + 原场次 ID。
+  page.goToSessionSummary({
+    currentTarget: { dataset: { sessionId: 'session-2', archiveId: crossMidnight.archiveId } }
+  });
+  page.goToSessionSummary({
+    currentTarget: { dataset: { sessionId: 'session-5', archiveId: crossMidnight.archiveId } }
+  });
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-summary/training-summary?sessionId=session-2&archiveId=' + fixture.archiveId,
+    '/pages/training-summary/training-summary?sessionId=session-5&archiveId=' + fixture.archiveId
+  ]);
+
+  // 浏览全过程只读：档案逐字节不变，当前场次与当前线路都不被浏览改写。
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '浏览场次列表不改写本机档案');
+  assert.equal(store.loadState().archive.activeSessionId, 'session-4');
+  assert.equal(store.loadState().archive.activeRouteId, '');
 });

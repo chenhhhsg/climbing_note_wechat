@@ -198,6 +198,13 @@ function handlersIn(source) {
   return [...source.matchAll(/(?:bind|catch)tap="([^"]+)"/g)].map(match => match[1]);
 }
 
+/** T043：把记录 tab 的「日期 → 岩馆 → 原场次」列表摊平，便于按原场次 ID 核对。 */
+function sessionRows(page) {
+  return (page.data.sessionDays || []).flatMap(day =>
+    (day.gyms || []).flatMap(gym => gym.sessions || [])
+  );
+}
+
 // ---- 页面打开入口 ----
 function openRoutePage(routeId) {
   const page = createPage(routeDefinition);
@@ -393,7 +400,7 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
   }
 
   const listHandlers = new Set(handlersIn(listWxml));
-  for (const required of ['goToRouteDetail', 'goToDetail', 'retryRefresh', 'retryLoadMore']) {
+  for (const required of ['goToSessionSummary', 'goToDetail', 'retryRefresh', 'retryLoadMore']) {
     assert.ok(listHandlers.has(required), '记录列表应有绑定：' + required);
   }
   for (const handler of listHandlers) {
@@ -405,10 +412,11 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
     assert.equal(typeof detailDefinition[handler], 'function', '旧记录详情绑定缺少处理器：' + handler);
   }
 
-  // 本机线路走 routeId（training-route），旧记录走原 _id（record-detail）。
-  assert.match(fs.readFileSync(LIST_JS, 'utf8'), /\/pages\/training-route\/training-route\?routeId=/);
+  // 本机场次走原档案 + 原场次 ID 进小结（T043），旧记录走原 _id（record-detail）。
+  assert.match(fs.readFileSync(LIST_JS, 'utf8'), /\/pages\/training-summary\/training-summary\?/);
   assert.match(fs.readFileSync(LIST_JS, 'utf8'), /\/pages\/record-detail\/record-detail\?id=/);
-  assert.match(listWxml, /data-route-id="\{\{item\.id\}\}"/);
+  assert.match(listWxml, /data-session-id="\{\{session\.id\}\}"/);
+  assert.match(listWxml, /data-archive-id="\{\{session\.archiveId\}\}"/);
   assert.match(listWxml, /data-id="\{\{item\._id\}\}"/);
   // 跨日回看按场次分组，历史里原把次旁的更正控件带自己的原把次与归属
   assert.match(routeWxml, /id="history-group-\{\{item\.sessionId\}\}"/);
@@ -1406,7 +1414,7 @@ test('R3 找不到线路、档案损坏与缺少 routeId 时状态可区分，�
 // 记录 tab：本机训练历史入口与旧记录入口分开
 // ------------------------------------------------------------------ *
 
-test('R6 记录 tab 列出本机训练历史并按 routeId 进详情；同字 ID 的旧汇总走原 ID 路由', async () => {
+test('R6 记录 tab 按原场次列出本机历史并直达原场小结；同字 ID 的旧汇总走原 ID 路由', async () => {
   const today = store.todayLocalDate();
   const session = startAt(today, '粉袋岩馆');
   const route = newRoute(session, { name: '蓝色动态线' });
@@ -1436,19 +1444,29 @@ test('R6 记录 tab 列出本机训练历史并按 routeId 进详情；同字 ID
 
   assert.equal(page.data.archiveError, '');
   assert.equal(page.data.hasLocalHistory, true);
-  assert.equal(page.data.localRoutes.length, 1);
-  assert.equal(page.data.localRoutes[0].id, 'route-1');
-  assert.equal(page.data.localRoutes[0].name, '蓝色动态线');
-  assert.equal(page.data.localRoutes[0].gymName, '粉袋岩馆');
-  assert.equal(page.data.localRoutes[0].countText, '1 天 · 1 场 · 1 把');
-  assert.equal(page.data.localRoutes[0].lastDateText, today + ' 第 1 场');
+  const rows = sessionRows(page);
+  assert.equal(rows.length, 1, '一个原场次一行');
+  assert.equal(rows[0].id, session.id, '按原场次 ID 展示');
+  assert.equal(rows[0].label, '第 1 场', '沿用现有场次标识');
+  assert.equal(rows[0].gymName, '粉袋岩馆');
+  assert.equal(rows[0].routeCount, 1);
+  assert.equal(rows[0].attemptCount, 1);
+  assert.equal(rows[0].summaryText, '1 条线 · 1 把');
 
   assert.equal(page.data.records.length, 1, '旧记录仍按原 _id 显示');
   assert.equal(page.data.cloudKind, 'ok');
 
-  // 两条入口的路由参数不同：本机线路走 routeId，旧记录走原 _id。
-  page.goToRouteDetail(tapDataset({ routeId: 'route-1' }));
-  assert.equal(wxLog.navigations.at(-1).url, '/pages/training-route/training-route?routeId=route-1');
+  // 两条入口的路由参数不同：本机场次走 archiveId + sessionId，旧记录走原 _id。
+  page.goToSessionSummary(
+    tapDataset({ sessionId: session.id, archiveId: archiveOf().archiveId })
+  );
+  assert.equal(
+    wxLog.navigations.at(-1).url,
+    '/pages/training-summary/training-summary?sessionId=' +
+      session.id +
+      '&archiveId=' +
+      archiveOf().archiveId
+  );
   page.goToDetail(tapDataset({ id: 'route-1' }));
   assert.equal(wxLog.navigations.at(-1).url, '/pages/record-detail/record-detail?id=route-1');
 
@@ -1478,7 +1496,7 @@ test('R6 旧云四种状态可区分：有数据 / 空库 / 拒绝访问 / 云�
   assert.equal(empty.data.cloudKind, 'empty');
   assert.equal(empty.data.isEmpty, true);
   assert.equal(empty.data.loadError, false);
-  assert.equal(empty.data.localRoutes.length, 1, '空库不影响本机历史');
+  assert.equal(sessionRows(empty).length, 1, '空库不影响本机历史');
 
   // 拒绝访问
   useCloudRecords(() => Promise.reject(Object.assign(new Error('database permission denied'), { errCode: -502003 })));
@@ -1487,7 +1505,7 @@ test('R6 旧云四种状态可区分：有数据 / 空库 / 拒绝访问 / 云�
   assert.equal(denied.data.cloudKind, 'denied');
   assert.equal(denied.data.cloudErrorTitle, '没有访问旧记录的权限');
   assert.match(denied.data.cloudErrorHint, /本机训练历史/);
-  assert.equal(denied.data.localRoutes.length, 1);
+  assert.equal(sessionRows(denied).length, 1);
 
   // 云环境不可用
   useCloudRecords(() => Promise.reject(db.cloudUnavailable()));
@@ -1496,7 +1514,7 @@ test('R6 旧云四种状态可区分：有数据 / 空库 / 拒绝访问 / 云�
   assert.equal(unavailable.data.cloudKind, 'unavailable');
   assert.equal(unavailable.data.cloudErrorTitle, '云环境不可用');
   assert.equal(unavailable.data.loadError, true);
-  assert.equal(unavailable.data.localRoutes.length, 1);
+  assert.equal(sessionRows(unavailable).length, 1);
 
   // 一般读取失败
   useCloudRecords(() => Promise.reject(new Error('offline')));
@@ -1536,8 +1554,8 @@ test('R6 旧库读失败不触发回写、清空或覆盖本机档案；本机�
 
   await page.retryRefresh();
   assert.equal(rawArchive(), rawBefore);
-  assert.equal(page.data.localRoutes.length, 1, '旧库失败时本机历史照常可用');
-  assert.equal(page.data.localRoutes[0].countText, '1 天 · 1 场 · 1 把');
+  assert.equal(sessionRows(page).length, 1, '旧库失败时本机历史照常可用');
+  assert.equal(sessionRows(page)[0].summaryText, '1 条线 · 1 把');
 
   // 本机档案损坏：本机历史区显示可见错误，旧记录区照常按原 _id 读取。
   const corruptRaw = '{ 坏 JSON';
@@ -1548,7 +1566,7 @@ test('R6 旧库读失败不触发回写、清空或覆盖本机档案；本机�
   const broken = openListPage();
   await broken.onShow();
   assert.equal(broken.data.archiveError, store.ARCHIVE_BROKEN);
-  assert.equal(broken.data.localRoutes.length, 0);
+  assert.equal(sessionRows(broken).length, 0);
   assert.equal(broken.data.records.length, 1, '本机档案损坏不影响旧记录区');
   assert.equal(storage.get(ARCHIVE_KEY), corruptRaw, '损坏档案保持原样');
 });
@@ -1609,7 +1627,7 @@ test('R6 旧详情按原 _id 读原字段与图片：「尝试 5 次、完成」
   const list = openListPage();
   await list.onShow();
   assert.equal(list.data.records.length, 1);
-  assert.equal(list.data.localRoutes.length, 0, '旧汇总不计入本机训练历史');
+  assert.equal(sessionRows(list).length, 0, '旧汇总不计入本机训练历史');
   assert.equal(list.data.hasLocalHistory, false);
 });
 
@@ -1719,8 +1737,8 @@ test('R5 完全没有 wx.cloud 时：本机历史、线路详情与当天再记�
   const list = openListPage();
   await list.onShow();
   assert.equal(list.data.cloudKind, 'unavailable');
-  assert.equal(list.data.localRoutes.length, 1, '断网时本机历史照常可用');
-  assert.equal(list.data.localRoutes[0].name, '蓝色动态线');
+  assert.equal(sessionRows(list).length, 1, '断网时本机历史照常可用');
+  assert.equal(sessionRows(list)[0].gymName, '断网岩馆');
 
   const detail = openRoutePage(route.id);
   assert.equal(detail.data.loadError, '');

@@ -24,6 +24,10 @@
  * 场次不存在时 known:false；线路已不在档案里的把次仍计入把数与完攀把数（与底部全档案
  * 统计共用同一口径，因此两处各场把数一致），只是不参与去重线路，另行记在
  * orphanAttemptCount 里，不猜、不补归属。
+ *
+ * T043 在同一份只读计数上加 buildSessionList：底栏「记录」按原日期与原岩馆 ID 列出
+ * 场次（一个原场次一行），每行直接复用 buildSessionSummary 的线路数与有效把数，
+ * 点行用原档案 ID + 原场次 ID 打开小结页。列表本身不建场次、不改当前选择、不写盘。
  */
 const store = require('./training-store.js');
 const rules = require('./training-rules.js');
@@ -199,6 +203,112 @@ function buildSessionSummary(archive, sessionId) {
   };
 }
 
+/**
+ * 底栏「记录」的本机场次列表（T043，只读）。
+ *
+ * 回看一次训练先看到「哪一天、哪家岩馆、第几场」，而不是先找线路：
+ * - 日期新在前；
+ * - 同一天按**原岩馆 ID** 分组（同名岩馆是两家，不按名字并组），组序由组内最新一场
+ *   （原场次序号最大）决定，同日不会因为后来补看别的岩馆而抖；
+ * - 组内按原场次顺序倒序，一个原场次 ID 恰好一行；
+ * - 每行读的就是 buildSessionSummary 的同一份只读小结计数（线路数与有效把数），
+ *   零把的场次沿用空场口径（isEmpty + 「0 条线 · 0 把」），不另算一份。
+ *
+ * 跨午夜的把次仍归它创建时的那一场：分组只看场次的本地日期，不看把次的创建时间。
+ * 完全只读：不读盘、不写盘、不建场次、不改当前场次与线路。
+ *
+ * 返回 { days, dayCount, gymCount, sessionCount }，days 每项：
+ * { date, gyms: [{ gymId, gymName, sessions: [row] }] }；row 见 sessionRow。
+ */
+function sessionRow(archive, session, summary) {
+  const isEmpty = summary.isEmpty;
+  return {
+    id: session.id,
+    // 原档案 ID 随行渲染：点这一行直接带它进小结页，换档后由小结页按既有错误路径处理。
+    archiveId: (archive && archive.archiveId) || '',
+    date: summary.date || session.date,
+    seq: session.seq,
+    gymId: summary.gymId || session.gymId,
+    gymName: summary.gymName,
+    // 现有场次标识（同一天内按原序号排出的第 N 场），与小结页一致。
+    label: summary.label,
+    routeCount: summary.routeCount,
+    routeCountText: summary.routeCountText,
+    attemptCount: summary.attemptCount,
+    attemptCountText: summary.attemptCountText,
+    sendCount: summary.sendCount,
+    sendCountText: summary.sendCountText,
+    // 与小结页标题同一份文案：「2 条线 · 3 把 · 完攀 1 把」，空场是「0 条线 · 0 把」。
+    summaryText: summary.summaryText,
+    isEmpty,
+    stateText: isEmpty ? '空场' : ''
+  };
+}
+
+function buildSessionList(archive) {
+  const sessions = archive && Array.isArray(archive.sessions) ? archive.sessions : [];
+  const summaries = new Map();
+  const summaryFor = session => {
+    if (!summaries.has(session.id)) {
+      summaries.set(session.id, buildSessionSummary(archive, session.id));
+    }
+    return summaries.get(session.id);
+  };
+
+  // 先按「原日期 → 原岩馆 ID」归组；场次日期是创建时记下的本地日期，跨午夜不改归属。
+  const byDate = new Map();
+  sessions.forEach(session => {
+    if (!byDate.has(session.date)) byDate.set(session.date, new Map());
+    const byGym = byDate.get(session.date);
+    if (!byGym.has(session.gymId)) byGym.set(session.gymId, []);
+    byGym.get(session.gymId).push(session);
+  });
+
+  const days = [...byDate.entries()]
+    .sort((left, right) => right[0].localeCompare(left[0]))
+    .map(([date, byGym]) => {
+      const groups = [...byGym.entries()].map(([gymId, groupSessions]) => {
+        const rows = groupSessions
+          .slice()
+          .sort((left, right) => (right.seq || 0) - (left.seq || 0))
+          .map(session => sessionRow(archive, session, summaryFor(session)));
+        return {
+          gymId,
+          gymName: rows.length > 0 ? rows[0].gymName : '',
+          // 同日岩馆组的展示顺序只看组内最新一场的原场次序号。
+          newestSeq: groupSessions.reduce(
+            (max, session) => Math.max(max, session.seq || 0),
+            0
+          ),
+          sessions: rows
+        };
+      });
+
+      groups.sort(
+        (left, right) =>
+          right.newestSeq - left.newestSeq ||
+          (left.gymId < right.gymId ? -1 : left.gymId > right.gymId ? 1 : 0)
+      );
+
+      return {
+        date,
+        gyms: groups.map(group => ({
+          gymId: group.gymId,
+          gymName: group.gymName,
+          sessions: group.sessions
+        }))
+      };
+    });
+
+  return {
+    days,
+    dayCount: days.length,
+    gymCount: days.reduce((sum, day) => sum + day.gyms.length, 0),
+    sessionCount: sessions.length
+  };
+}
+
 module.exports = {
-  buildSessionSummary
+  buildSessionSummary,
+  buildSessionList
 };

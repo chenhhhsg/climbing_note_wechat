@@ -36,6 +36,7 @@ const ATTEMPTS_JS = path.join(ROOT, 'pages', 'training-attempts', 'training-atte
 const ATTEMPTS_WXML = path.join(ROOT, 'pages', 'training-attempts', 'training-attempts.wxml');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
 const LIST_JS = path.join(ROOT, 'pages', 'record-list', 'record-list.js');
+const SUMMARY_PAGE_JS = path.join(ROOT, 'pages', 'training-summary', 'training-summary.js');
 const STATS_JS = path.join(ROOT, 'pages', 'stats', 'stats.js');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
@@ -182,6 +183,7 @@ const recordDefinition = capturePage(RECORD_JS);
 const attemptsDefinition = capturePage(ATTEMPTS_JS);
 const routeDefinition = capturePage(ROUTE_JS);
 const listDefinition = capturePage(LIST_JS);
+const summaryPageDefinition = capturePage(SUMMARY_PAGE_JS);
 const statsDefinition = capturePage(STATS_JS);
 
 /** 页面实例替身：支持 wx 的 setData 数据路径写法（如 'noteEditor.text'）。 */
@@ -1005,7 +1007,10 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
     const built = summary.buildSessionSummary(archive, flow.sessionId);
     const rowA = built.routes.find(row => row.routeId === flow.aId);
     const listed = wishlist.listWishlist(archive).items.find(item => item.routeId === flow.aId);
-    const listA = listPage.data.localRoutes.find(item => item.id === flow.aId);
+    // T043：记录 tab 按原场次一行，读数取同一份只读小结计数。
+    const listRow = (listPage.data.sessionDays || [])
+      .flatMap(day => (day.gyms || []).flatMap(gym => gym.sessions || []))
+      .find(item => item.id === flow.sessionId);
     return {
       sessionPage: page,
       homeAttempts: home.data.activeSession.attemptCountText,
@@ -1019,7 +1024,7 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
       statsAttempts: statsPage.data.totalAttempts,
       statsSends: statsPage.data.sendCount,
       routeDetailAttempts: routePage.data.attemptCount,
-      listCountText: listA.countText
+      listCountText: listRow && listRow.summaryText
     };
   }
 
@@ -1041,7 +1046,7 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
   assert.equal(before.statsAttempts, 4);
   assert.equal(before.statsSends, 0);
   assert.equal(before.routeDetailAttempts, 3);
-  assert.equal(before.listCountText, '1 天 · 1 场 · 3 把');
+  assert.equal(before.listCountText, '2 条线 · 4 把');
 
   // 2) 撤回 A 的第 3 把：所有读数端同步减一，最近有效备注跳到第 2 把。
   page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
@@ -1056,7 +1061,7 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
   assert.equal(afterUndo.wishlistNote, '第二把备注');
   assert.equal(afterUndo.statsAttempts, 3);
   assert.equal(afterUndo.routeDetailAttempts, 2);
-  assert.equal(afterUndo.listCountText, '1 天 · 1 场 · 2 把');
+  assert.equal(afterUndo.listCountText, '2 条线 · 3 把');
 
   // 3) 恢复同一把：全部读数回到撤回前，原 ID、原序号与原备注都在。
   page.restoreLatestAttempt(rowEvent(page.data.recentAttempt));
@@ -2568,4 +2573,86 @@ test('T041 现场首屏：一行照片入口与两种记把动作、最近一把
   assert.match(source, /utils\/training-photo-marks/);
   assert.doesNotMatch(source, /getFileSystemManager|copyFile|compressImage/);
   assert.doesNotMatch(source, /wx\.cloud/);
+});
+
+// ------------------------------------------------------------------ *
+// T043 底栏记录：一场一行 → 原场小结 → 原线路与跨日历史（只读）
+// ------------------------------------------------------------------ *
+
+test('T043 记录 tab 一行直达原场小结，再回看原线路与跨日历史：当前场与线路不变、零写入', () => {
+  const flow = trainThroughPages('石间岩馆');
+  const archiveBefore = archiveOf();
+  const archiveId = archiveBefore.archiveId;
+  const activeBefore = {
+    sessionId: archiveBefore.activeSessionId,
+    routeId: archiveBefore.activeRouteId
+  };
+  const rawBefore = storage.get(ARCHIVE_KEY);
+
+  // 记录 tab：本机区是原场次列表，这一场两线四把。
+  const listPage = createPage(listDefinition);
+  listPage.refreshLocalHistory();
+  const rows = (listPage.data.sessionDays || []).flatMap(day =>
+    (day.gyms || []).flatMap(gym => gym.sessions || [])
+  );
+  assert.equal(rows.length, 1, '一次训练一个原场次一行');
+  const row = rows[0];
+  assert.equal(row.id, flow.sessionId);
+  assert.equal(row.label, '第 1 场');
+  assert.equal(row.gymName, '石间岩馆');
+  assert.equal(row.routeCount, 2);
+  assert.equal(row.attemptCount, 4);
+  assert.equal(row.summaryText, '2 条线 · 4 把');
+  assert.equal(row.archiveId, archiveId);
+
+  // 点行：原档案 ID + 原场次 ID 打开现有小结页。
+  resetWxLog();
+  listPage.goToSessionSummary(
+    tapDataset({ sessionId: row.id, archiveId: row.archiveId })
+  );
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-summary/training-summary?sessionId=' +
+      flow.sessionId +
+      '&archiveId=' +
+      archiveId
+  ]);
+
+  // 打开小结（真实页面）：读数与该场小结同一份，不展示别的场次。
+  const summaryPage = createPage(summaryPageDefinition);
+  summaryPage.onLoad({ sessionId: flow.sessionId, archiveId });
+  assert.equal(summaryPage.data.summaryReady, true);
+  assert.equal(summaryPage.data.summaryError, '');
+  assert.equal(summaryPage.data.summarySessionId, flow.sessionId);
+  assert.equal(summaryPage.data.summaryCountText, '2 条线 · 4 把');
+  assert.equal(summaryPage.data.summaryRows.length, 2);
+
+  // 从小结继续回看原线路：带原档案 ID 与原长期线路 ID。
+  resetWxLog();
+  summaryPage.openSummaryRoute(tapDataset({ routeId: flow.aId }));
+  assert.deepEqual(wxLog.navigations.map(item => item.url), [
+    '/pages/training-route/training-route?archiveId=' + archiveId + '&routeId=' + flow.aId
+  ]);
+
+  // 原线历史仍显示原线路、原场次分组与该场三把（含原备注）。
+  const routePage = createPage(routeDefinition);
+  routePage.onLoad({ archiveId, routeId: flow.aId });
+  assert.equal(routePage.data.notFound, false);
+  assert.equal(routePage.data.route.id, flow.aId);
+  const group = routePage.data.groups.find(item => item.sessionId === flow.sessionId);
+  assert.ok(group, '跨日历史里仍按原场次分组');
+  assert.equal(group.attempts.length, 3);
+  assert.equal(group.attempts[1].note, '第二把备注');
+
+  // 浏览全过程只读：档案逐字节不变，活动场与活动线路都保持原值。
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '浏览记录、小结与原线不改写档案');
+  assert.equal(archiveOf().activeSessionId, activeBefore.sessionId);
+  assert.equal(archiveOf().activeRouteId, activeBefore.routeId);
+
+  // 返回首页仍继续原来的活动场与活动线路（浏览不切换当前选择）。
+  const home = openHome();
+  home.refreshTrainingEntry();
+  assert.equal(home.data.hasActiveSession, true);
+  assert.equal(home.data.activeSession.id, flow.sessionId);
+  assert.equal(home.data.activeSession.routeName, 'B 线');
+  assert.equal(home.data.activeSession.attemptCountText, '4 把');
 });
