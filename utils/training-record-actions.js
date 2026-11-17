@@ -289,10 +289,11 @@ function completionText(completion) {
 }
 
 /**
- * 「第 N 把」：同一场次同一线路内按把次序号排出的**稳定原序号**。
- * 已保存（含已撤回的那一把）与仍待确认的把次共用序号，因此重试后编号稳定，不会因为
- * 补齐而跳号；撤回一把后序号也不整体前移——撤回第 3 把之后再记的一把是第 4 把，原来
- * 的第 3 把还是第 3 把（判定只有档案层那一份 attemptOrdinalMap，不拿全局 seq 当编号）。
+ * 「第 N 把」：同一场次同一线路内按有效把次顺序排出的**显示序号**。
+ * 已保存的有效把次与仍待确认的一把共用同一份顺序，因此重试后编号稳定、不会跳号；
+ * 已撤回的一把不占号——撤回第 2 把之后再成功记入一把，新一把就是第 2 把，恢复原来的
+ * 第 2 把时它又接回原号（判定只有档案层那一份 attemptOrdinalMap，不拿全局 seq 当编号）。
+ * 现场、归档逐把、线路历史、视频标题与纠错确认都读取这一份投影。
  */
 function attemptLabelMap(archive, sessionId, routeId) {
   const ordinals = store.attemptOrdinalMap(archive, sessionId, routeId, { includePending: true });
@@ -306,8 +307,9 @@ function attemptLabelMap(archive, sessionId, routeId) {
  * **已提交**把次——连已撤回的那一把一起看，撤回后这一行留在原处，恢复入口就落在
  * 原来那一把上，不会被悄悄换成前一把。
  *
- * 返回 { attempt, number }：attempt 是原把次；number 是它的**原序号**（按序号在本场
- * 本线路里排位，含已撤回的把次），撤回前后都是同一个数。没有已提交把次时返回 null。
+ * 返回 { attempt, number }：attempt 是原把次；number 是它的**显示序号**（有效把次顺序，
+ * 已撤回时是恢复后会回到的位置号），与逐把列表、历史、视频标题同一份投影。
+ * 没有已提交把次时返回 null。
  * 只读派生：不看行下标、名称与当前可见行，也不把档案里「待保存」的那一条算进来。
  */
 function recentAttemptTarget(archive, sessionId, routeId) {
@@ -1065,9 +1067,13 @@ function attemptCardRows(
       timeText: timeText(attempt.createdAt),
       note: attempt.note || '',
       hasNote: Boolean(attempt.note),
+      // 较早把次展开后的备注入口：有正文给「改备注」，没有给「补备注」。
+      noteActionText: attempt.note ? '改备注' : '补备注',
       // 备注与视频只给有效把次：已撤回的一把被档案层与视频页按同一份规则拒绝。
       canEditNote: !undone,
       hasVideo,
+      // 旧详情的可见文案里不再出现视频状态（「回看视频」本身就说明有片）；这里只留作
+      // 数据，供页面按需读取。
       videoStateText: undone ? '已撤回 · 恢复后可回看' : link.stateText,
       // T049：本页视频入口按该把的真实关联给文案（无片「＋ 添加视频」、有片「回看视频」），
       // 添加与回看共用同一个槽位，页面只换文字，不另立按钮或另一处坐标。
@@ -1081,6 +1087,12 @@ function attemptCardRows(
       correctText,
       correctStatusText: correctable ? '' : correctionState.statusText,
       correctIdleText: undone ? '已撤回，恢复后可改' : '',
+      // 较早把次的更正槽只在真有动作、回读或说明时渲染：未完成的把次不留 44px 空槽。
+      showCorrectionSlot: Boolean(
+        !isLatest &&
+          correctionSupported &&
+          (correctable || correctionState.statusText || undone)
+      ),
       // 最新一把右侧「更多」：展开态与文案由页面按原把次 ID 填；这里只给可用动作。
       showMenu,
       menuOpen: false,

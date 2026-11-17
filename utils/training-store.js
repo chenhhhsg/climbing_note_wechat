@@ -211,26 +211,43 @@ function requestedAttemptRev(data) {
 }
 
 /**
- * 「第 N 把」的**稳定原序号**（T030–T033 返工）：同一次训练、同一条线路里按把次
- * 序号（seq）排出的位置，**已撤回的那一把照样占位**，所以撤回第 3 把之后新记的一把
- * 是第 4 把、原来的第 3 把也还是第 3 把——序号不会因为撤回而整体前移。
+ * 「第 N 把」的**显示序号**：同一场次、同一条线路里，按把次序号（seq）排出的位置，
+ * 但只给**有效把次**连续编号——已撤回的那一把不占号，所以撤回第 2 把之后再成功记入
+ * 一把，新一把显示「第 2 把」，恢复原来的第 2 把时它又接回原号。
  *
- * 这是「单场单线的原序号」，不是档案里的全局 seq：别的场次、别的线路不参与，也
- * 不会拿全局 seq 直接当编号显示。pendingSaves 只在页面展示待保存行时并入
- * （options.includePending），已落盘的历史只用已提交把次。
+ * 这只是显示口径：档案里的原 ID、seq 与归属不动，备注和视频仍按原把次 ID 索引；
+ * 编号只读推导，不写档案、不迁移旧数据。
+ *
+ * 已撤回但仍留在页面上的那一把（最近一次撤回的行原位保留「恢复」）拿**恢复位置号**：
+ * 恢复后它会回到的顺序，例如第 2 把撤回后显示「第 2 把」，但它不计入有效把数，也不让
+ * 其他有效把次跳号。pendingSaves 只在页面展示待保存行时并入
+ * （options.includePending）：待保存的一把按它落盘后占据的有效顺序显示（通常就是下一个号）。
+ *
+ * 现场逐把、归档逐把、线路历史、视频标题与纠错确认都读取这一份投影，不各自编号。
  */
 function attemptOrdinalMap(archive, sessionId, routeId, options) {
-  const rows = ((archive && archive.attempts) || [])
-    .filter(item => item.sessionId === sessionId && item.routeId === routeId)
-    .map(item => ({ id: item.id, seq: item.seq || 0 }));
-  if (options && options.includePending) {
-    ((archive && archive.pendingSaves) || [])
-      .filter(item => item.sessionId === sessionId && item.routeId === routeId)
-      .forEach(item => rows.push({ id: item.opId, seq: item.seq || 0 }));
-  }
+  const inScope = item => item.sessionId === sessionId && item.routeId === routeId;
+  const attempts = ((archive && archive.attempts) || []).filter(inScope);
+  const pending = options && options.includePending
+    ? ((archive && archive.pendingSaves) || []).filter(inScope)
+    : [];
+  // 有效把次与待保存的一把一起按 seq 排；已撤回的不参与计数，只按同一顺序占一个
+  // 恢复位置。sort 在 Node 与小程序运行时都是稳定排序，同 seq 的旧档按原顺序读。
+  const rows = attempts
+    .map(item => ({ id: item.id, seq: item.seq || 0, counted: isEffectiveAttempt(item) }))
+    .concat(pending.map(item => ({ id: item.opId, seq: item.seq || 0, counted: true })));
   rows.sort((left, right) => left.seq - right.seq);
   const ordinals = new Map();
-  rows.forEach((row, index) => ordinals.set(row.id, index + 1));
+  let counted = 0;
+  rows.forEach(row => {
+    if (row.counted) {
+      counted += 1;
+      ordinals.set(row.id, counted);
+    } else {
+      // 恢复位置号：恢复后它接在已经数过的有效把次后面；不增加有效计数。
+      ordinals.set(row.id, counted + 1);
+    }
+  });
   return ordinals;
 }
 
@@ -771,8 +788,8 @@ function routeCompletion(archive, routeId, options) {
 
 /**
  * 「改为未完成」的行体：原把次 ID、归属与说明（日期/场次/第几把）。
- * 「第几把」用的是这一把在**本场次本线路**里的稳定原序号（撤回也占位），因此撤回
- * 一把后显示的编号不会整体前移、恢复后又回到原来的位置（见 attemptOrdinalMap）。
+ * 「第几把」用的是这一把在**本场次本线路**里的显示序号（只数有效把次，见
+ * attemptOrdinalMap），因此确认弹窗里的编号与现场、历史、视频标题完全一致。
  */
 function correctionRow(archive, attempt) {
   const session = findById(archive.sessions, attempt.sessionId);
@@ -857,8 +874,8 @@ function routeCorrectionRows(archive, routeId, correctedIds) {
  *
  * 只列**有效把次**（T032）：已撤回的那一把不进历史、不计把数与完攀，恢复后又回到原来的
  * 序号位置。整条线都把次都撤回时，这次训练不再出现在历史里。显示用的「第 N 把」是这一把
- * 在本场次本线路里的稳定原序号（撤回的那一把照样占位，见 attemptOrdinalMap），因此撤回
- * 第 3 把后再记一把，历史里的新一把是第 4 把而不是第 3 把。
+ * 在本场次本线路里的显示序号（只数有效把次，见 attemptOrdinalMap），因此撤回第 2 把
+ * 后再记一把，历史里的新一把是第 2 把，与现场逐把、视频标题一致。
  *
  * 返回 { known, routeId, route, groups, dayCount, sessionCount, attemptCount,
  *        sendCount, completion }；线路不存在时 known:false、groups 为空。
@@ -901,8 +918,8 @@ function routeHistory(archive, routeId) {
       const ordered = entry.attempts
         .slice()
         .sort((left, right) => (left.seq || 0) - (right.seq || 0));
-      // 「第 N 把」用本场次本线路的稳定原序号（撤回也占位），不是这一份列表里的下标：
-      // 撤回第 3 把之后新记的一把仍是第 4 把，历史里不会少一个号。
+      // 「第 N 把」用本场次本线路的显示序号（只数有效把次），不是这一份列表里的下标：
+      // 撤回第 2 把之后新记的一把就是第 2 把，历史里不留空号，也不与现场编号打架。
       const ordinals = attemptOrdinalMap(archive, entry.session.id, route.id);
       return {
         sessionId: entry.session.id,

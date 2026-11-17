@@ -37,6 +37,13 @@
  *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
  * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
+ *
+ * T048 返工：旧把展开只保留「头部（原序、结果、时间、收起）＋ 有备注时的原正文 ＋
+ * 下一行同排的备注入口与视频入口」，不再另挂视频状态文字；点「补备注／改备注」时，
+ * 就地编辑区紧跟头部替换操作行，输入框约两行高、长文在框内滚动，取消与保存紧随其后。
+ * 未完成的旧行不留空纠错槽：纠错区由 showFix / showCorrectionSlot 按是否真有动作、
+ * 只读回读或状态反馈派生。显示编号（「第 N 把」）只数本场本线的有效把次——撤回的那一把
+ * 不占号，现场、归档逐把、线路历史、视频标题与纠错确认共用档案层同一份投影。
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
@@ -330,6 +337,13 @@ Page({
       const menuOpen = Boolean(item.isLatest && item.id === menuAttemptId);
       return Object.assign({}, item, {
         expanded,
+        // 纠错区只在真有动作、只读回读或状态反馈时渲染：较早的未完成把次不留空纠错槽，
+        // 最新一把则在菜单收起、未撤回、无回读与提示时整块不出现。
+        showFix: Boolean(
+          item.isLatest
+            ? item.isUndone || menuOpen || item.stateText || item.correctStatusText
+            : item.showCorrectionSlot || item.stateText
+        ),
         // T049：旧行收起时只有这一把真有本机视频才显示小视频图标；展开后在原把详情里
         // 给「＋ 添加视频」或「回看视频」。图标只是提示，点按仍落到整行展开原把。
         showVideoIcon: !expanded && Boolean(item.hasVideo) && Boolean(item.canOpenVideo),

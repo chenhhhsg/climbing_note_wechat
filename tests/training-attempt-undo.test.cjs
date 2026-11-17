@@ -1468,24 +1468,33 @@ test('T032 没带 opId 的新一把另取唯一 ID：不顶替已撤回的同名
   }
 });
 
-test('T032 单场单线稳定原序号：撤回第 3 把后新记的一把是第 4 把，历史与更正行共用同一份标号', () => {
+test('T032 显示序号只数有效把次：撤回第 3 把后新记的一把是第 3 把，历史与更正行共用同一份标号', () => {
   const seeded = seedThreeAttempts();
   const scope = { routeId: seeded.route.id, sessionId: seeded.session.id };
   assert.equal(
     store.undoAttempt(seeded.third.id, { opId: 'ordinal-undo', ...scope }).code,
     'undone'
   );
-  const fourth = addAttempt(seeded.session, seeded.route, 'fail', '撤回后的新一把', new Date(2026, 10, 9, 10, 30));
+  const next = addAttempt(seeded.session, seeded.route, 'fail', '撤回后的新一把', new Date(2026, 10, 9, 10, 30));
 
-  // 已撤回的那一把照样占着原序号：新一把接第 4 把，不被撤回挤成第 3 把。
+  // 已撤回的那一把不占有效编号：新一把接第 3 把（档案里的原 seq / ID 不动）。
   const ordinals = store.attemptOrdinalMap(archiveOf(), seeded.session.id, seeded.route.id);
   assert.equal(ordinals.get(seeded.first.id), 1);
   assert.equal(ordinals.get(seeded.second.id), 2);
-  assert.equal(ordinals.get(seeded.third.id), 3, '已撤回的第 3 把仍是第 3 把');
-  assert.equal(ordinals.get(fourth.id), 4);
+  assert.equal(ordinals.get(next.id), 3, '撤回后新记的一把就是第 3 把，不跳号');
+  assert.equal(
+    ordinals.get(seeded.third.id),
+    3,
+    '已撤回的那一把给恢复位置号（恢复后回到第 3 把），但不占有效计数'
+  );
   assert.equal(ordinals.get(seeded.neighborAttempt.id), undefined, '别的线路不参与本线的编号');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === next.id).seq > seeded.third.seq,
+    true,
+    '内部 seq 仍按原算法递增（不因显示编号回收或重用），只有显示编号变了'
+  );
 
-  // 跨日历史用同一份标号，且只列有效把次（第 1、2、4 把）。
+  // 跨日历史用同一份标号，且只列有效把次（第 1、2、新第 3 把）。
   const history = store.routeHistory(archiveOf(), seeded.route.id);
   const group = history.groups.find(item => item.sessionId === seeded.session.id);
   assert.deepEqual(
@@ -1493,17 +1502,17 @@ test('T032 单场单线稳定原序号：撤回第 3 把后新记的一把是第
     [
       [seeded.first.id, '第 1 把'],
       [seeded.second.id, '第 2 把'],
-      [fourth.id, '第 4 把']
+      [next.id, '第 3 把']
     ]
   );
   assert.equal(history.attemptCount, 3, '已撤回的那一把不贡献把数');
 
-  // 「改为未完成」的行体（抱石唯一完攀）也用同一份稳定原序号。
-  const send = addAttempt(seeded.session, seeded.route, 'send', '第五把完攀', new Date(2026, 10, 9, 10, 40));
+  // 「改为未完成」的行体（抱石唯一完攀）也用同一份显示序号。
+  const send = addAttempt(seeded.session, seeded.route, 'send', '第四把完攀', new Date(2026, 10, 9, 10, 40));
   const targets = store.routeCorrectionTargets(archiveOf(), seeded.route.id);
   assert.equal(targets.length, 1);
   assert.equal(targets[0].attemptId, send.id);
-  assert.equal(targets[0].label, '第 5 把');
+  assert.equal(targets[0].label, '第 4 把');
 });
 
 test('T032 已结清凭据的只读查询：只认这次操作自己的 opId，别的不认领也不写盘', () => {

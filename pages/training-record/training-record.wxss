@@ -696,6 +696,33 @@ page {
   margin: 0;
 }
 
+/* 较早把次展开（T048 返工）：备注正文在上，下一行同排「补备注／改备注」与
+   「＋ 添加视频／回看视频」。备注入口靠左、视频入口靠右，两个都是独立可点目标；
+   有片时入口自己写「回看视频」，不再另挂视频状态文字。 */
+.record-attempt-detail-older {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.record-attempt-detail-older .record-attempt-note {
+  margin: 0 0 4rpx;
+}
+
+.record-attempt-detail-older .record-attempt-detail-actions {
+  width: 100%;
+  margin-left: 0;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+}
+
+/* 旧行的两个文字入口都按内容宽度排在同一行，320 宽也不换行、不互相覆盖。 */
+.record-attempt-detail-older .record-attempt-edit {
+  flex: none;
+  width: auto;
+  padding: 0 8rpx;
+  white-space: nowrap;
+}
+
 /* 「编辑」与视频入口同属右侧一组：备注占剩余宽度，缩窄时只省略备注，两个入口不重叠。 */
 .record-attempt-detail-actions {
   flex: none;
@@ -705,19 +732,13 @@ page {
   margin-left: auto;
 }
 
-/* 视频关联状态与文字入口（T023 / T049）：入口独立于「编辑备注」，靠右同一槽位 */
+/* 视频文字入口（T023 / T049）：入口独立于备注入口，靠右同一个槽位；
+   有片「回看视频」、无片「＋ 添加视频」，不再另外渲染一行关联状态。 */
 .record-attempt-video {
   flex: none;
   display: flex;
   align-items: center;
   margin-left: auto;
-}
-
-.record-attempt-video-state {
-  font-size: 22rpx;
-  line-height: 1.5;
-  color: #53615B;
-  margin-right: 12rpx;
 }
 
 .record-attempt-video-action {
@@ -866,7 +887,9 @@ page {
 
 .note-input {
   width: 100%;
-  min-height: 140rpx;
+  /* 微信原生 textarea 自带 150px 默认高度：这里由行内 height（约两行）覆盖；
+     长内容在输入框内部滚动，「取消」「保存备注」始终跟在下面。 */
+  min-height: 0;
   background-color: #F2F4F3;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;

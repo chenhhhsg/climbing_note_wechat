@@ -1517,7 +1517,7 @@ test('T048 展开块保留原按把入口：备注全文、编辑、视频、更
   for (const marker of [
     'id="record-attempt-note-{{item.id}}"',
     'id="edit-note-{{item.id}}"',
-    'id="record-video-state-{{item.id}}"',
+    'id="record-open-video-{{item.id}}"',
     'id="correct-attempt-{{item.id}}"',
     'class="record-attempt-change"',
     'id="undo-attempt-{{item.id}}"',
@@ -1528,6 +1528,12 @@ test('T048 展开块保留原按把入口：备注全文、编辑、视频、更
   ]) {
     assert.ok(section.indexOf(marker) > expandAt, marker + ' 在展开块里');
   }
+  // 旧详情不再渲染视频关联状态文字：有片就写「回看视频」。
+  assert.equal(
+    wxml.indexOf('id="record-video-state-{{item.id}}"'),
+    -1,
+    '不再有额外的视频状态文字'
+  );
   // 行首的序号、结果与时间留在短行本身，收起时仍可辨认。
   const headlineEnd = section.indexOf(expandAt);
   const headline = section.slice(0, headlineEnd);
@@ -1556,10 +1562,10 @@ test('T049 最新卡备注右侧固定视频入口，添加与回看共用同一
   const section = wxml.slice(attemptsAt);
 
   // 备注与视频入口在同一个详情行：备注在左、入口靠右；无备注时入口仍靠右。
-  const detailAt = section.indexOf('class="record-attempt-detail"');
+  const detailAt = section.indexOf('class="record-attempt-detail{{');
   assert.ok(detailAt !== -1, '备注与视频入口共用一个详情行');
   const actionsAt = section.indexOf('class="record-attempt-actions"', detailAt);
-  const detail = section.slice(detailAt, actionsAt);
+  const detail = section.slice(detailAt, actionsAt > detailAt ? actionsAt : detailAt + 2400);
   assert.match(detail, /id="record-attempt-note-\{\{item\.id\}\}"/, '备注仍在详情行里');
   assert.match(
     detail,
@@ -1578,12 +1584,8 @@ test('T049 最新卡备注右侧固定视频入口，添加与回看共用同一
   const entryCount = (section.match(/id="record-open-video-\{\{item\.id\}\}"/g) || []).length;
   assert.equal(entryCount, 1, '添加与回看共用同一个入口');
   assert.doesNotMatch(detail, /wx:if="\{\{item\.hasVideo\}\}"/, '不按有片与否拆出第二个按钮');
-  // 最新一把只显示动作本身；关联状态只给展开的旧把。
-  assert.match(
-    detail,
-    /wx:if="\{\{!item\.isLatest\}\}"[\s\S]{0,160}id="record-video-state-\{\{item\.id\}\}"/,
-    '关联状态只给旧把展开'
-  );
+  // 最新一把与旧把都只显示动作本身：有片就写「回看视频」，不再另挂关联状态文字。
+  assert.doesNotMatch(section, /record-video-state/, '展开详情里没有多余的视频状态文字');
 
   // 收起态只有一个小视频图标，且只在展开块之外的整行里；入口本身只在展开块里。
   const firstExpandAt = section.indexOf('wx:if="{{item.expanded}}"');
@@ -1611,4 +1613,89 @@ test('T049 最新卡备注右侧固定视频入口，添加与回看共用同一
   assert.match(t048Declarations(wxss, '.record-attempt-video'), /margin-left:\s*auto/);
   assert.match(t048Declarations(wxss, '.record-attempt-video'), /flex:\s*none/);
   assert.match(t048Declarations(wxss, '.record-attempt-video-icon'), /border/, '图标有可见边框');
+});
+
+// ------------------------------------------------------------------ *
+// T048 返工：旧把就地备注编辑区与两行输入高度
+// ------------------------------------------------------------------ *
+
+test('T048 旧把备注：编辑区紧跟头部替换操作行，输入约两行，取消/保存紧随其后', () => {
+  const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
+  const attemptsAt = wxml.indexOf('id="record-attempts"');
+  assert.ok(attemptsAt !== -1);
+  const section = wxml.slice(attemptsAt);
+
+  const expandAt = section.indexOf('wx:if="{{item.expanded}}"');
+  const editorAt = section.indexOf('id="note-editor"');
+  const detailAt = section.indexOf('class="record-attempt-detail{{');
+  assert.ok(expandAt > 0, '展开块起点');
+  assert.ok(editorAt > expandAt, '备注编辑区在展开块里');
+  assert.ok(detailAt > editorAt, '编辑区紧接头部，排在平常态详情之前');
+  // 编辑区与平常态详情互斥：同一把不会同时出现原正文、操作行与输入框。
+  assert.match(
+    section.slice(editorAt - 200, detailAt),
+    /wx:if="\{\{noteEditor && noteEditor\.attemptId === item\.id\}\}"[\s\S]*<block wx:else>/,
+    '打开编辑时替换原来的详情操作行'
+  );
+
+  // 输入框：微信原生 textarea 的 150px 默认高度由行内 height 覆盖为约两行，长内容框内滚动。
+  const inputAt = section.indexOf('id="note-input"');
+  assert.ok(inputAt > editorAt);
+  const input = section.slice(inputAt - 320, inputAt + 520);
+  assert.match(input, /class="note-input"/);
+  assert.match(input, /style="height: 132rpx;"/, '行内高度覆盖原生 150px 默认值');
+  assert.match(input, /cursor-spacing="24"/, '软键盘弹出时输入框与键盘留出间距');
+  assert.match(input, /data-attempt-id="\{\{noteEditor\.attemptId\}\}"/, '输入框绑定打开时的那一把');
+  assert.match(input, /data-edit-version="\{\{noteEditor\.version\}\}"/, '输入框绑定本次编辑代次');
+  assert.match(input, /bindinput="onNoteInput"/);
+  const noteCss = t048Declarations(wxss, '.note-input');
+  assert.match(noteCss, /min-height:\s*0/, '旧的 140rpx 最小高度已让位给行内约两行高度');
+  assert.doesNotMatch(noteCss, /min-height:\s*140rpx/);
+
+  // 「取消」「保存备注」紧跟输入框下方，保留常用点按目标。
+  const cancelAt = section.indexOf('id="cancel-note"');
+  const saveAt = section.indexOf('id="save-note"');
+  assert.ok(cancelAt > inputAt, '取消在输入框之后');
+  assert.ok(saveAt > cancelAt, '保存备注与取消同排、紧随其后');
+  assert.match(section.slice(inputAt, saveAt + 200), /class="button-row"/);
+  assert.equal(
+    t048MinHeight(wxss, '.primary-button'),
+    '44px',
+    '保存备注保留 44px 常用点按高度'
+  );
+  assert.equal(t048MinHeight(wxss, '.secondary-button'), '44px', '取消保留 44px 常用点按高度');
+
+  // 旧把平常态：备注正文在上，下一行同排备注入口与视频入口，不换行也不互相覆盖。
+  const olderCss = t048Declarations(wxss, '.record-attempt-detail-older');
+  assert.match(olderCss, /flex-direction:\s*column/);
+  const olderActionsCss = t048Declarations(
+    wxss,
+    '.record-attempt-detail-older .record-attempt-detail-actions'
+  );
+  assert.match(olderActionsCss, /width:\s*100%/);
+  assert.match(olderActionsCss, /justify-content:\s*space-between/);
+  assert.match(olderActionsCss, /margin-left:\s*0/);
+  assert.match(olderActionsCss, /flex-wrap:\s*nowrap/);
+  assert.match(
+    t048Declarations(wxss, '.record-attempt-detail-older .record-attempt-edit'),
+    /white-space:\s*nowrap/
+  );
+  // 旧行有备注才显示原正文；无备注不渲染空的备注节点。
+  assert.match(
+    section,
+    /wx:if="\{\{item\.hasNote\}\}"\s*id="record-attempt-note-\{\{item\.id\}\}"/,
+    '备注正文由 hasNote 决定是否渲染'
+  );
+  // 未完成旧行不留空纠错槽：整块纠错区由页面派生 showFix 控制。
+  assert.match(
+    section,
+    /wx:if="\{\{item\.showFix\}\}"\s*class="record-attempt-fix"/,
+    '纠错区只在真有内容时渲染'
+  );
+  assert.match(
+    section,
+    /wx:if="\{\{item\.showCorrectionSlot\}\}"\s*class="record-attempt-correct-slot"/,
+    '更正槽只在真有动作/回读/说明时渲染'
+  );
 });

@@ -1140,3 +1140,42 @@ test('T048 320/390 窄屏：本场逐把仍是单列文档流，最新卡与旧�
   assert.ok(cards.every(row => row.timeText), '每把都有时间');
   assert.equal(page.data.expandedAttemptId, '');
 });
+
+test('T048 返工 320 窄屏：旧把备注入口与视频入口同排不换行，编辑区按 rpx 缩放约两行', () => {
+  const recordWxml = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
+    'utf8'
+  );
+  const recordWxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
+    'utf8'
+  );
+
+  // 旧把展开后：备注入口靠左、视频入口靠右，同排不换行，两个宽度都够点。
+  const olderActions = declarationsOf(
+    recordWxss,
+    '.record-attempt-detail-older .record-attempt-detail-actions'
+  );
+  assert.match(olderActions, /flex-wrap:\s*nowrap/);
+  assert.match(olderActions, /justify-content:\s*space-between/);
+  assert.doesNotMatch(olderActions, /(^|;)\s*width\s*:\s*\d+px/, '不写死 px 宽度');
+  assert.match(
+    declarationsOf(recordWxss, '.record-attempt-detail-older .record-attempt-edit'),
+    /white-space:\s*nowrap/
+  );
+  assert.match(
+    declarationsOf(recordWxss, '.record-attempt-video-action'),
+    /min-height:\s*44px/,
+    '视频入口保留 44px 可点高度'
+  );
+
+  // 备注输入约两行：行内高度用 rpx 随屏宽缩放，不再回到原生 150px。
+  assert.match(recordWxml, /style="height: 132rpx;"/, '行内高度按 rpx 缩放');
+  assert.doesNotMatch(
+    recordWxss,
+    /\.note-input\s*\{[^}]*height:\s*\d+px/,
+    '输入高度不写死 px'
+  );
+  const section = recordWxml.slice(recordWxml.indexOf('id="record-attempts"'));
+  assert.doesNotMatch(section, /<scroll-view/, '展开区仍在普通文档流里');
+});

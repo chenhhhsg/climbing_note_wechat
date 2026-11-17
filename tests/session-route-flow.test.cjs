@@ -1099,41 +1099,41 @@ test('T030–T033 完整训练逐项对账：撤回后与恢复后，场内/首�
 
 
 // ------------------------------------------------------------------ *
-// T030–T033 返工：稳定原序号、过期事件与换档后的迟到重试
+// T030–T033 返工：有效把次连续显示编号、过期事件与换档后的迟到重试
 // ------------------------------------------------------------------ *
 
-test('T033 撤回第 3 把后再记一把：新一把是第 4 把，原第 3 把不挪号（场内行与线路历史一致）', () => {
+test('T033 撤回第 3 把后再记一把：新一把是第 3 把，现场与线路历史连续编号（显示号不吃撤回占位）', () => {
   const flow = trainThroughPages('石间岩馆');
   const page = flow.page;
   const thirdId = flow.aAttempts[2];
   switchTo(page, flow.aId);
   assert.equal(page.data.recentAttempt.expectedRev, 0, '还没动过的这一把版本是 0');
 
-  // 记第 4 把前先撤回第 3 把：撤回的那一把照样占着原序号。
+  // 记新一把前先撤回第 3 把：撤回只去掉这一把的有效计数，不再占一个显示号。
   page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
   assert.equal(page.data.routeCountText, '2 把');
   recordThroughPage(page, 'fail');
   const fourth = attemptsOf(page).at(-1);
   assert.notEqual(fourth.id, thirdId);
-  assert.equal(page.data.routeCountText, '3 把', '有效把数是第 1、2 与新的第 4 把，被撤回的第 3 把不算');
+  assert.equal(page.data.routeCountText, '3 把', '有效把数是第 1、2 与新的第 3 把，被撤回的那一把不算');
 
-  // 场内「最近一把」与逐把列表都按稳定原序号标号：第 4 把不会被撤回挤成第 3 把。
+  // 现场「最近一把」与逐把列表都按有效把次顺序标号：新一把显示第 3 把。
   assert.equal(page.data.recentAttempt.attemptId, fourth.id);
-  assert.equal(page.data.recentAttempt.titleText, '刚才 · A 线 第 4 把 · 未完成');
-  assert.equal(page.data.attempts.at(-1).label, '第 4 把');
+  assert.equal(page.data.recentAttempt.titleText, '刚才 · A 线 第 3 把 · 未完成');
+  assert.equal(page.data.attempts.at(-1).label, '第 3 把');
 
-  // 跨日线路历史用同一份标号：第 4 把仍是第 4 把，原第 3 把的号也不动。
+  // 跨日线路历史用同一份标号：有效三把连续编号，不跳号。
   const routePage = createPage(routeDefinition);
   routePage.onLoad({ routeId: flow.aId });
   const group = routePage.data.groups.find(item => item.sessionId === flow.sessionId);
   const labels = Object.fromEntries(group.attempts.map(item => [item.id, item.label]));
-  assert.equal(labels[fourth.id], '第 4 把');
-  assert.equal(labels[thirdId], undefined, '已撤回的第 3 把不进有效历史');
-  assert.equal(group.attempts.length, 3, '历史只列有效把次（第 1、2、4 把）');
+  assert.equal(labels[fourth.id], '第 3 把');
+  assert.equal(labels[thirdId], undefined, '已撤回的那一把不进有效历史');
+  assert.equal(group.attempts.length, 3, '历史只列有效把次（第 1、2、新第 3 把）');
   assert.deepEqual(
     group.attempts.map(item => item.label),
-    ['第 1 把', '第 2 把', '第 4 把'],
-    '序号是稳定原序号，不拿可见下标当编号'
+    ['第 1 把', '第 2 把', '第 3 把'],
+    '显示号按有效顺序连续，不拿撤回占位或可见下标当编号'
   );
 });
 
@@ -1704,10 +1704,10 @@ test('T042/T045 可见称呼：本场逐把页标题保留，单线页把次直�
   assert.equal(attemptsTitle[1], '本场逐把', '现场把次区可见标题为「本场逐把」');
   assert.match(
     recordWxml,
-    /id="edit-note-\{\{item\.id\}\}"[\s\S]{0,400}catchtap="openNoteEditor"\s*>编辑 ›<\/button>/,
-    '每个有效把次进入同一编辑函数，按钮固定显示「编辑 ›」'
+    /id="edit-note-\{\{item\.id\}\}"[\s\S]{0,400}catchtap="openNoteEditor"[\s\S]{0,120}\{\{item\.isLatest \? '编辑 ›' : item\.noteActionText\}\}/,
+    '每个有效把次进入同一编辑函数；最新一把「编辑 ›」，较早把次按有无正文给「改备注／补备注」'
   );
-  assert.doesNotMatch(recordWxml, /补备注 ›/, '既有备注为空也不改变行内入口文案');
+  assert.doesNotMatch(recordWxml, /补备注 ›/, '较早把次不再写成「补备注 ›」');
   assert.doesNotMatch(recordWxml, /逐把明细/, '单线页不再用旧称呼');
   assert.doesNotMatch(recordWxml, /点错了完攀/, '单线页不再有独立更正区');
   const attemptsWxml = fs.readFileSync(ATTEMPTS_WXML, 'utf8');
@@ -3578,8 +3578,9 @@ test('T048 撤回第 3 把后再记一把失败：原第 3 把留在原卡，待
   assert.equal(withdrawn.isUndone, true);
   assert.equal(withdrawn.canRestore, true, '没有待保存时恢复入口照旧可用');
   assert.equal(withdrawn.note, '第三把备注');
+  assert.equal(withdrawn.label, '第 3 把', '已撤回的一把显示恢复位置号，不占有效计数');
 
-  // 记第 4 把未完成，第二段写盘失败：这一把进入待保存，不生成新卡。
+  // 记新一把未完成，第二段写盘失败：这一把进入待保存，不生成新卡。
   tick();
   armSetFailAt(2); // 第一段待保存标记已落盘，第二段提交失败
   page.recordAttempt(tapResult('fail'));
@@ -3587,12 +3588,17 @@ test('T048 撤回第 3 把后再记一把失败：原第 3 把留在原卡，待
   assert.equal(page.data.pendingRows.length, 1, '失败的那一把在待保存行');
   assert.equal(page.data.hasPending, true);
   assert.equal(page.data.routeCountText, '2 把 · 1 把待保存', '有效计数不变');
+  assert.equal(
+    page.data.pendingRows[0].label,
+    '第 3 把',
+    '待保存显示号按有效顺序走：落盘后就是第 3 把'
+  );
 
   const expectOriginalCards = () => {
     assert.deepEqual(
       page.data.attemptCards.map(row => row.label),
       ['第 3 把', '第 2 把', '第 1 把'],
-      '撤回的那一把保留原层级与编号'
+      '撤回的那一把保留恢复位置号，其他有效把次不跳号'
     );
     assert.deepEqual(
       page.data.attemptCards.map(row => row.id),
@@ -3611,12 +3617,12 @@ test('T048 撤回第 3 把后再记一把失败：原第 3 把留在原卡，待
 
   expectOriginalCards();
 
-  // 冷重开（新页面实例读同一份档案）仍是同一层级：#3 完整卡，#4 仍待保存。
+  // 冷重开（新页面实例读同一份档案）仍是同一层级：撤回行还是完整卡，新一把仍待保存。
   page = openRecordFor(seeded.route.id, seeded.session.id);
   assert.equal(page.data.pendingRows.length, 1, '待保存意图重开后仍在');
   expectOriginalCards();
 
-  // 按原待保存行重试成功：只有第 4 把一条置顶；不再处于恢复范围的旧撤回把按原规则离开现场。
+  // 按原待保存行重试成功：只有新一把一条置顶；不再处于恢复范围的旧撤回把按原规则离开现场。
   const opId = page.data.pendingRows[0].opId;
   tick();
   page.retryPendingAttempt(
@@ -3631,29 +3637,364 @@ test('T048 撤回第 3 把后再记一把失败：原第 3 把留在原卡，待
   assert.equal(page.data.hasPending, false);
   assert.equal(page.data.routeCountText, '3 把');
   assert.equal(page.data.attemptCards.length, 3);
-  assert.equal(page.data.attemptCards[0].label, '第 4 把', '第 4 把置顶');
+  assert.equal(page.data.attemptCards[0].label, '第 3 把', '新一把按有效顺序显示第 3 把');
   assert.equal(page.data.attemptCards[0].isLatest, true);
   assert.equal(page.data.attemptCards[0].isUndone, false);
   assert.equal(
-    page.data.attemptCards.filter(row => row.label === '第 4 把').length,
+    page.data.attemptCards.filter(row => row.label === '第 3 把').length,
     1,
-    '重试成功只落一把'
+    '重试成功只落一把，显示号也只出现一次'
   );
   assert.deepEqual(
     page.data.attemptCards.map(row => row.id),
     [page.data.attemptCards[0].id, seeded.attempts[1].id, seeded.attempts[0].id],
-    '第 4 把之后按原序号倒序，旧撤回把不再占据现场'
+    '新一把置顶，其后按有效顺序倒序，旧撤回把不再占据现场'
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.label),
+    ['第 3 把', '第 2 把', '第 1 把'],
+    '撤回第 3 把后新记的一把接第 3 把，原第 1、2 把不动'
   );
   assert.equal(
     page.data.attemptCards.some(row => row.id === seeded.attempts[2].id),
     false,
-    '已撤回且不再是最近一把的第 3 把按原规则离开现场'
+    '已撤回且不再是最近一把的原第 3 把按原规则离开现场'
   );
   // 其他场次/线路与存储不变：原把次仍按原 ID 留在档案里。
   assert.equal(
     archiveOf().attempts.find(item => item.id === seeded.attempts[2].id).note,
     '第三把备注'
   );
+});
+
+// ------------------------------------------------------------------ *
+// T048/T050 返工：撤回后新记的显示编号按有效顺序连续（各展示端共用一份投影）
+// ------------------------------------------------------------------ *
+
+test('T048 撤回第 2 把后重记一把：新 ID 显示第 2 把，原第 1 把、备注与两段视频归属不串', () => {
+  const seeded = seedRopeAttempts(['fail', 'fail'], ['第一把备注', '第二把备注'], {
+    gymName: '岩馆 T050 重记'
+  });
+  const firstId = seeded.attempts[0].id;
+  const secondId = seeded.attempts[1].id;
+  const archiveId = archiveOf().archiveId;
+  writeT049VideoClips([
+    {
+      clipId: 'clip-rework-first',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id,
+      attemptId: firstId
+    },
+    {
+      clipId: 'clip-rework-second',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id,
+      attemptId: secondId
+    }
+  ]);
+  const indexRaw = storage.get(VIDEO_INDEX_KEY);
+
+  const page = openRecordFor(seeded.route.id, seeded.session.id);
+  assert.deepEqual(page.data.attemptCards.map(row => row.label), ['第 2 把', '第 1 把']);
+  assert.equal(page.data.attemptCards[0].videoEntryText, '回看视频', '第 2 把自己有片');
+  assert.equal(page.data.attemptCards[1].note, '第一把备注');
+
+  // 撤回第 2 把：原行留在原处并显示恢复位置号；有效把数只剩 1。
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.routeCountText, '1 把');
+  const withdrawn = page.data.attemptCards.find(row => row.id === secondId);
+  assert.equal(withdrawn.isUndone, true);
+  assert.equal(withdrawn.label, '第 2 把', '已撤回行显示恢复位置号，不占有效计数');
+  assert.equal(withdrawn.note, '第二把备注', '撤回保留原备注');
+  assert.equal(withdrawn.canOpenVideo, false, '撤回期间视频入口按原规则收起');
+  assert.equal(page.data.attemptCards.find(row => row.id === firstId).label, '第 1 把');
+
+  // 记新一把未完成，第二段写盘失败：只进入待保存，不凭空多出有效把。
+  tick();
+  armSetFailAt(2);
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  assert.equal(page.data.routeCountText, '1 把 · 1 把待保存');
+  assert.equal(page.data.pendingRows[0].label, '第 2 把', '待保存显示号按落盘后的有效顺序');
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.label),
+    ['第 2 把', '第 1 把'],
+    '失败期间已有最新撤回行保持原位'
+  );
+
+  // 冷重开：待保存意图与编号都不变。
+  let reopened = openRecordFor(seeded.route.id, seeded.session.id);
+  assert.equal(reopened.data.pendingRows.length, 1);
+  assert.equal(reopened.data.pendingRows[0].label, '第 2 把');
+  assert.equal(
+    reopened.data.attemptCards.find(row => row.id === secondId).label,
+    '第 2 把'
+  );
+
+  // 重试成功：只落一条，新一把显示第 2 把，原第 2 把按规则离开现场。
+  const opId = reopened.data.pendingRows[0].opId;
+  tick();
+  reopened.retryPendingAttempt(
+    tapDataset({
+      opId,
+      archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(reopened.data.hasPending, false);
+  assert.equal(reopened.data.routeCountText, '2 把');
+  const fresh = reopened.data.attemptCards[0];
+  assert.notEqual(fresh.id, secondId, '新一把另取唯一 ID，不复用已撤回的原 ID');
+  assert.notEqual(fresh.id, firstId);
+  assert.equal(fresh.label, '第 2 把', '新一把显示第 2 把');
+  assert.equal(fresh.isUndone, false);
+  assert.equal(fresh.videoEntryText, '＋ 添加视频', '新一把没有借用原第 2 把的视频');
+  assert.deepEqual(
+    reopened.data.attemptCards.map(row => [row.label, row.id]),
+    [
+      ['第 2 把', fresh.id],
+      ['第 1 把', firstId]
+    ],
+    '有效顺序连续编号，原第 1 把不挪号'
+  );
+  assert.equal(
+    reopened.data.attemptCards.some(row => row.id === secondId),
+    false,
+    '已撤回且不再是最近一把的原第 2 把离开现场'
+  );
+
+  // 原第 1 把的备注与视频、原第 2 把的档案记录都保持原 ID。
+  const firstCard = reopened.data.attemptCards.find(row => row.id === firstId);
+  assert.equal(firstCard.note, '第一把备注');
+  assert.equal(firstCard.videoEntryText, '回看视频');
+  const persistedSecond = archiveOf().attempts.find(item => item.id === secondId);
+  assert.equal(persistedSecond.note, '第二把备注');
+  assert.equal(
+    typeof persistedSecond.undoneAt,
+    'string',
+    '已撤回的原第 2 把仍按原 ID 留在档案里（含撤回标记）'
+  );
+  assert.equal(storage.get(VIDEO_INDEX_KEY), indexRaw, '编号变化不写视频索引');
+
+  // 归档逐把与线路历史共用同一份显示编号。
+  const attemptsPage = openAttemptsFor(seeded.session.id, seeded.route.id);
+  assert.deepEqual(
+    attemptsPage.data.attempts.map(row => row.label),
+    ['第 1 把', '第 2 把']
+  );
+  const routePage = createPage(routeDefinition);
+  routePage.onLoad({ routeId: seeded.route.id });
+  const group = routePage.data.groups.find(item => item.sessionId === seeded.session.id);
+  assert.deepEqual(
+    group.attempts.map(item => [item.label, item.id]),
+    [
+      ['第 1 把', firstId],
+      ['第 2 把', fresh.id]
+    ]
+  );
+  assert.equal(group.countText, '2 把');
+});
+
+test('T048 撤回第 2 把后重记完攀：新一把同样显示第 2 把，直接恢复原第 2 把接回原 ID 与附件', () => {
+  const seeded = seedRopeAttempts(['fail', 'send'], ['第一把备注', '第二把备注'], {
+    gymName: '岩馆 T050 重记完攀'
+  });
+  const firstId = seeded.attempts[0].id;
+  const secondId = seeded.attempts[1].id;
+  writeT049VideoClips([
+    {
+      clipId: 'clip-rework-send-second',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id,
+      attemptId: secondId
+    }
+  ]);
+  const page = openRecordFor(seeded.route.id, seeded.session.id);
+
+  // 撤回第 2 把后先不重记，直接恢复：接回原 ID、原备注与原视频，编号与把数回到原样。
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.routeCountText, '1 把');
+  page.restoreLatestAttempt(rowEvent(page.data.attemptCards.find(row => row.id === secondId)));
+  const restored = page.data.attemptCards[0];
+  assert.equal(restored.id, secondId, '恢复接回原第 2 把');
+  assert.equal(restored.label, '第 2 把');
+  assert.equal(restored.note, '第二把备注');
+  assert.equal(restored.videoEntryText, '回看视频', '视频仍按原把次 ID 关联');
+  assert.equal(page.data.routeCountText, '2 把');
+
+  // 再撤回第 2 把，换记一把完攀：新一把显示第 2 把，原第 1 把不动。
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  tick();
+  recordThroughPage(page, 'send');
+  assert.equal(page.data.routeCountText, '2 把');
+  const freshSend = page.data.attemptCards[0];
+  assert.equal(freshSend.isSend, true);
+  assert.equal(freshSend.label, '第 2 把');
+  assert.notEqual(freshSend.id, secondId);
+  assert.equal(
+    page.data.attemptCards.find(row => row.id === firstId).label,
+    '第 1 把'
+  );
+
+  // 完攀的确认与回读也读同一份显示编号：补记完攀成第 2 把。
+  const routePage = createPage(routeDefinition);
+  routePage.onLoad({ routeId: seeded.route.id });
+  const group = routePage.data.groups.find(item => item.sessionId === seeded.session.id);
+  assert.deepEqual(
+    group.attempts.map(item => item.label),
+    ['第 1 把', '第 2 把']
+  );
+});
+
+test('T050 撤回第 2 把后重记完攀：纠错确认写明新的第 2 把，原已撤回第 2 把不被顶替', async () => {
+  const started = store.startSession({
+    gymName: '岩馆 T050 纠错',
+    now: new Date(2026, 10, 11, 9, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const sessionId = started.archive.activeSessionId;
+  const created = store.createRoute({
+    sessionId,
+    name: 'T050 抱石线',
+    climbType: '抱石',
+    grade: 'V3',
+    colorName: '蓝色'
+  });
+  assert.equal(created.ok, true, created.error);
+  const routeId = created.route.id;
+  const first = store.saveAttempt({ sessionId, routeId, result: 'fail', note: '第一把' });
+  assert.equal(first.ok, true, first.error);
+  const second = store.saveAttempt({ sessionId, routeId, result: 'send', note: '第二把完攀' });
+  assert.equal(second.ok, true, second.error);
+
+  let page = openRecordFor(routeId, sessionId);
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  assert.equal(page.data.routeCountText, '1 把');
+  tick();
+  recordThroughPage(page, 'send');
+  assert.equal(page.data.routeCountText, '2 把');
+  const fresh = page.data.attemptCards[0];
+  assert.equal(fresh.label, '第 2 把');
+  assert.equal(fresh.correctable, true, '抱石线新的唯一完攀按原资格可更正');
+
+  // 取消：一个字节都不写，确认里写的也是新的第 2 把。
+  const rawBefore = storage.get(ARCHIVE_KEY);
+  queueModal('cancel');
+  await page.correctSend(tapDataset({ attemptId: fresh.id }));
+  const prompt = modalLog.calls.at(-1);
+  assert.match(prompt.content, /第 2 把/, '确认弹窗用显示编号');
+  assert.equal(prompt.content.includes('第一把'), false, '不把原第 1 把说成目标');
+  assert.equal(storage.get(ARCHIVE_KEY), rawBefore, '取消不写盘');
+
+  // 确认更正：只翻这一把，把数不变；原已撤回的第 2 把仍按原 ID 在档案里。
+  queueModal('confirm');
+  await page.correctSend(tapDataset({ attemptId: fresh.id }));
+  assert.equal(page.data.routeCountText, '2 把');
+  page = openRecordFor(routeId, sessionId);
+  assert.equal(page.data.attemptCards[0].id, fresh.id);
+  assert.equal(page.data.attemptCards[0].label, '第 2 把');
+  assert.equal(page.data.attemptCards[0].resultText, '未完成');
+  const stillUndone = archiveOf().attempts.find(item => item.id === second.attempt.id);
+  assert.equal(typeof stillUndone.undoneAt, 'string');
+  assert.equal(stillUndone.note, '第二把完攀');
+  assert.equal(archiveOf().attempts.find(item => item.id === first.attempt.id).note, '第一把');
+});
+
+test('T048 旧把展开三态：无备注有片「补备注」、长备注「改备注」、无片「＋ 添加视频」，未完成行不留空纠错槽', () => {
+  const { session, route, attempts, saveThird } = seedInlineAttempts();
+  saveThird();
+  const longNote = '第二把左脚先上高，右手换到外侧后再把身体往墙里收，最后一步不要急着伸手。';
+  assert.equal(store.setAttemptNote(attempts[1].id, { note: longNote }).ok, true);
+  writeT049VideoClips([
+    {
+      clipId: 'clip-older-has-video',
+      sessionId: session.id,
+      routeId: route.id,
+      attemptId: attempts[0].id
+    }
+  ]);
+
+  const page = openRecordFor(route.id, session.id);
+  const rowOf = id => page.data.attemptCards.find(row => row.id === id);
+
+  // 展开第 1 把（无备注、有片）与第 2 把（长备注、无片），两把各自展示原把详情。
+  toggleRow(page, attempts[0]);
+  const bare = rowOf(attempts[0].id);
+  assert.equal(bare.expanded, true);
+  assert.equal(bare.hasNote, false, '没有备注时不渲染原正文');
+  assert.equal(bare.noteActionText, '补备注');
+  assert.equal(bare.videoEntryText, '回看视频', '有片用回看入口，不另挂状态文字');
+  assert.equal('videoStateText' in bare, true, '状态文字只留作数据，不进入旧详情');
+
+  toggleRow(page, attempts[1]);
+  const noted = rowOf(attempts[1].id);
+  assert.equal(noted.expanded, true);
+  assert.equal(rowOf(attempts[0].id).expanded, false, '同一时刻只展开一把旧行');
+  assert.equal(noted.hasNote, true);
+  assert.equal(noted.note, longNote, '长备注按原文给出');
+  assert.equal(noted.noteActionText, '改备注');
+  assert.equal(noted.videoEntryText, '＋ 添加视频', '无片给添加入口');
+
+  // 抱石线的未完成把次没有可更正项：整块纠错区不渲染，不留 44px 空槽。
+  for (const row of [bare, noted]) {
+    assert.equal(row.correctionSupported, true, '抱石线仍按原资格支持更正');
+    assert.equal(row.correctable, false, '未完成把次不可更正');
+    assert.equal(row.showCorrectionSlot, false, '没有动作/回读/说明时不渲染更正槽');
+    assert.equal(row.showFix, false, '未完成旧行没有纠错区');
+  }
+
+  // 最新一把（已完攀）在菜单收起时也不渲染纠错区，菜单入口仍在头部。
+  const latest = page.data.attemptCards[0];
+  assert.equal(latest.isLatest, true);
+  assert.equal(latest.showMenu, true, '合资格完攀仍有「更多」');
+  assert.equal(latest.menuOpen, false);
+  assert.equal(latest.showFix, false, '菜单收起时不留空纠错区');
+
+  // 打开旧把备注：编辑器只绑这一把；取消不改备注、不改展开态、不写盘。
+  const raw = storage.get(ARCHIVE_KEY);
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.attemptId, attempts[0].id);
+  assert.equal(page.data.noteEditor.attemptLabel, '第 1 把');
+  page.onNoteInput({ detail: { value: '取消掉的这一句' } });
+  page.cancelNote({
+    currentTarget: {
+      dataset: {
+        attemptId: page.data.noteEditor.attemptId,
+        editVersion: page.data.noteEditor.version
+      }
+    }
+  });
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(storage.get(ARCHIVE_KEY), raw, '取消一个字节都不写');
+  assert.equal(page.data.expandedAttemptId, attempts[1].id, '取消后仍停在原来展开的旧把');
+
+  // 更早把次上的陈旧保存事件不会写到这一把：代次不符时拒绝。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  const staleVersion = page.data.noteEditor.version;
+  page.cancelNote(tapDataset({ attemptId: attempts[1].id, editVersion: staleVersion }));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  page.onNoteInput({ detail: { value: '这一把补上的备注' } });
+  page.saveNote(
+    tapDataset({ attemptId: attempts[1].id, editVersion: staleVersion })
+  );
+  assert.match(page.data.notice, /已经失效/);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[1].id).note,
+    longNote,
+    '旧编辑器的保存不落到另一把'
+  );
+  page.saveNote(tapDataset({
+    attemptId: page.data.noteEditor.attemptId,
+    editVersion: page.data.noteEditor.version
+  }));
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    '这一把补上的备注',
+    '保存只改打开时的那一把'
+  );
+  assert.equal(rowOf(attempts[0].id).note, '这一把补上的备注');
+  assert.equal(rowOf(attempts[0].id).noteActionText, '改备注', '保存后入口跟着变成改备注');
 });
 
 test('T048 同线另一场不串入：只列入口那一场这一条线的原把次，各页面展开态互不影响', () => {
