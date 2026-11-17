@@ -715,12 +715,21 @@ page {
   flex-wrap: nowrap;
 }
 
-/* 旧行的两个文字入口都按内容宽度排在同一行，320 宽也不换行、不互相覆盖。 */
+/* 旧行的两个文字入口都按内容宽度排在同一行，320 宽也不换行、不互相覆盖。
+   「补备注／改备注」三字文字实测只有 39px 宽（T048–T050 R1 原生点按区返工），
+   这里按已知实际布局补最小宽度，保证至少 44×44 的常用点按目标；min-width 不打乱
+   同一行的内容宽度排布，也不影响最新一把的「编辑 ›」。 */
 .record-attempt-detail-older .record-attempt-edit {
   flex: none;
   width: auto;
+  min-width: 44px;
   padding: 0 8rpx;
   white-space: nowrap;
+}
+
+/* 视频入口同排右侧：实测 49px 已够，仍写死最小宽度做保护，避免文案变短后掉到 44 以下。 */
+.record-attempt-detail-older .record-attempt-video-action {
+  min-width: 44px;
 }
 
 /* 「编辑」与视频入口同属右侧一组：备注占剩余宽度，缩窄时只省略备注，两个入口不重叠。 */
