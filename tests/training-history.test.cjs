@@ -346,7 +346,9 @@ test('T018-2 WXML 绑定都有真实处理器，两条入口的 ID 路由互不�
     'correctSend',
     'recordAgain',
     'chooseSessionForAgain',
-    'cancelSessionPicker'
+    'cancelSessionPicker',
+    'openRecordFromHistory',
+    'openAttemptVideoFromHistory'
   ]) {
     assert.ok(routeHandlers.has(required), '线路详情页应有绑定：' + required);
   }
@@ -531,6 +533,61 @@ test('R3 第二天从历史打开原线，在新场次记完攀：两天两场�
   assert.equal(sibling[0].sessionId, session1.id);
   const siblingDetail = openRoutePage(routeB.id);
   assert.equal(siblingDetail.data.summaryText, '1 天 · 1 场 · 1 把');
+});
+
+test('T023 跨日历史每把显示视频关联状态与文字入口：按原场次与原把次进入视频页', () => {
+  const day1 = '2020-04-02';
+  const day2 = '2020-04-05';
+  const session1 = startAt(day1, '视频粉袋岩馆');
+  const route = newRoute(session1, { name: '跨日视频线' });
+  const firstAttempt = record(session1, route, 'fail', '', day1 + 'T10:00:00');
+  const targetAttempt = record(session1, route, 'fail', '要补视频的这一把', day1 + 'T10:20:00');
+  const session2 = startAt(day2, '视频粉袋岩馆');
+  assert.equal(store.linkRouteToSession(session2.id, route.id).ok, true);
+  record(session2, route, 'fail', '', day2 + 'T09:00:00');
+
+  const page = openRoutePage(route.id);
+  assert.equal(page.data.groups.length, 2, '两天各自成组');
+  const originalGroup = page.data.groups.find(group => group.sessionId === session1.id);
+  assert.ok(originalGroup, '原场次分组仍在');
+  assert.deepEqual(
+    originalGroup.attempts.map(item => item.id),
+    [firstAttempt.id, targetAttempt.id]
+  );
+  for (const row of originalGroup.attempts) {
+    assert.equal(row.hasVideo, false, '本单还没有持久关联');
+    assert.equal(row.videoStateText, '未添加视频');
+    assert.equal(row.videoEntryText, '添加视频 ›');
+  }
+
+  // 跨日回看：带这一组的原场次、当前长期线路与这一把的原 attemptId。
+  resetWxLog();
+  page.openAttemptVideoFromHistory(
+    tapDataset({
+      attemptId: targetAttempt.id,
+      sessionId: originalGroup.sessionId,
+      routeId: route.id
+    })
+  );
+  assert.equal(wxLog.navigations.length, 1);
+  const navUrl = wxLog.navigations[0].url;
+  assert.match(navUrl, /^\/pages\/attempt-video\/attempt-video\?/);
+  assert.match(navUrl, new RegExp('archiveId=' + encodeURIComponent(archiveOf().archiveId)));
+  assert.match(navUrl, new RegExp('sessionId=' + session1.id));
+  assert.match(navUrl, new RegExp('routeId=' + route.id));
+  assert.match(navUrl, new RegExp('attemptId=' + targetAttempt.id));
+
+  // 入口属于另一份档案：不按同名场次/线路打开视频页，也不写盘。
+  const rawBefore = rawArchive();
+  resetWxLog();
+  const claimedPage = createPage(routeDefinition);
+  claimedPage.onLoad({ routeId: route.id, archiveId: 'archive-of-another-profile' });
+  assert.match(claimedPage.data.claimError, /另一份本机档案/);
+  claimedPage.openAttemptVideoFromHistory(
+    tapDataset({ attemptId: targetAttempt.id, sessionId: session1.id, routeId: route.id })
+  );
+  assert.equal(wxLog.navigations.length, 0, '归属不符时不打开视频页');
+  assert.equal(rawArchive(), rawBefore, '归属不符时任何操作都不写档');
 });
 
 test('R3 跨日详情把第三把改为未完成：仍三把零完攀，原时间/场次/备注都在；再完攀后四把一完攀', () => {
