@@ -29,21 +29,21 @@
  * 的真实关联给同一个入口。入口只带这一行的四个原 ID 打开原把次视频页，复用既有的归属
  * 核对、索引只读与本机保存；页面不新增视频字段，也不改播放、索引与保存口径。
  *
- * T050：最新一把右侧的「更多」只列这一把按原资格可用的动作——合资格完攀可「改为未完成」
- * （本场把数不变），最近一把可「撤回误记」（本场少 1 把）。菜单展开态只存在本页
- * （menuAttemptId，按原把次 ID），不落盘；撤回后原行保留「已撤回」并直接给「恢复」。
- * 较早的合资格完攀仍从自己的详情更正。确认、原把校验、失败重试与连点保护全部沿用
- * utils/training-record-actions.js 的既有实现。
+ * T050：最新一把右侧原本收着「更多」纠错菜单；现场试用返工后改为一个文字按钮「撤销」，
+ * 按一下直接撤回当前这一把（沿用档案层的两段写、原把校验与失败重试）。现场不再有
+ * 「改为未完成」菜单、较早把次的行内更正入口，也没有撤销后的「恢复」按钮；更正仍按
+ * 原范围在线路历史与本场逐把页处理。撤销成功后这一把离开本场有效记录与逐把列表，
+ * 总数减一，前一把只补位显示；下一次成功记把前不出现撤销入口，避免同一坐标连点把
+ * 前一把也撤掉。撤销唯一有效完攀后，抱石限制随档案层的有效集合自动解除、可以重记。
  *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
- * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
+ * 刷新，因此撤销、待保存重试与重记的结果在两边一致。
  *
  * T048 返工：旧把展开只保留「头部（原序、结果、时间、收起）＋ 有备注时的原正文 ＋
- * 下一行同排的备注入口与视频入口」，不再另挂视频状态文字；点「补备注／改备注」时，
- * 就地编辑区紧跟头部替换操作行，输入框约两行高、长文在框内滚动，取消与保存紧随其后。
- * 未完成的旧行不留空纠错槽：纠错区由 showFix / showCorrectionSlot 按是否真有动作、
- * 只读回读或状态反馈派生。显示编号（「第 N 把」）只数本场本线的有效把次——撤回的那一把
- * 不占号，现场、归档逐把、线路历史、视频标题与纠错确认共用档案层同一份投影。
+ * 下一行同排的备注入口与视频入口」，不再另挂视频状态文字；点「备注」时就地编辑区紧跟
+ * 头部替换操作行，输入框约两行高、长文在框内滚动，取消与保存紧随其后。未完成的旧行
+ * 不留空纠错槽（现场也不再渲染更正入口）。显示编号（「第 N 把」）只数本场本线的有效
+ * 把次——撤回的那一把不占号，现场、归档逐把、线路历史与视频标题共用档案层同一份投影。
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
@@ -57,6 +57,24 @@ const {
 const SESSION_URL = '/pages/training-session/training-session';
 const ATTEMPT_VIDEO_URL = '/pages/attempt-video/attempt-video';
 const PHOTO_MARKS_URL = '/pages/training-photo-marks/training-photo-marks';
+// 撤销成功会收起旧卡、重新排布结果区；同一触点的第二次点按可能落到刚出现的结果按钮。
+// 只拦「真实撤销坐标附近、很短时间内的结果事件」，不拦位置明显不同的立即重记，也不拦
+// 没有触点信息的程序化调用（测试与数据层直接驱动）。
+const UNDO_REBOUND_WINDOW_MS = 600;
+const UNDO_REBOUND_RADIUS_PX = 44;
+
+/** 取 tap 事件里真实触点坐标（微信 tap 的 detail 带页面坐标 x/y）；没有就返回 null。 */
+function tapPoint(event) {
+  const detail = (event && event.detail) || {};
+  const x = Number(detail.x);
+  const y = Number(detail.y);
+  return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+}
+
+/** 事件时间戳；没有就用本机时钟（只在两次事件都带时间戳时比较同一个时钟）。 */
+function tapTime(event) {
+  return event && Number.isFinite(event.timeStamp) ? event.timeStamp : null;
+}
 
 Page({
   data: {
@@ -83,8 +101,6 @@ Page({
     hasAttemptCards: false,
     // 展开态只在当前页面按原把次 ID 记一份（不落盘）：'' = 只有最新一把完整展示。
     expandedAttemptId: '',
-    // T050：最新一把右侧「更多」菜单的展开态（只存在本页，按原把次 ID，不落盘）。
-    menuAttemptId: '',
     // 行内备注编辑：只作用于所点那一把，保存/取消按原 attemptId 与编辑代次核对。
     noteEditor: null,
     pendingRows: [],
@@ -120,6 +136,11 @@ Page({
     this._recentStatus = null;
     // 上一次渲染时置顶的原把次 ID：新一把落盘成功后上一把自动收成短行（只改本页展示）。
     this._latestAttemptId = '';
+    // 本页已经成功撤销过的原把次（原把次 ID + 点击时渲染的版本）：同一按钮的退化事件
+    // 不再进共用实现，既不会把「已撤销第 N 把」换成别的提示，也不会落到补位的前一把上。
+    this._undoneAttempts = Object.create(null);
+    // 最近一次成功撤销的真实触点：只用于拦截同一触点的短时「结果」回弹。
+    this._undoRebound = null;
     // 照片控制器只在本页创建一次；照片读写全在控制器里，页面不另存文件或索引。
     this._photoUi = null;
     this._unloaded = false;
@@ -173,7 +194,6 @@ Page({
         attemptCards: [],
         hasAttemptCards: false,
         expandedAttemptId: '',
-        menuAttemptId: '',
         noteEditor: null,
         pendingRows: [],
         hasPending: false,
@@ -325,30 +345,18 @@ Page({
       expandedAttemptId = '';
     }
     this._latestAttemptId = latestAttemptId;
-    // T050：菜单展开态同样按原把次 ID 管理。最新一把换人、这一把被撤回或已没有可用
-    // 动作时收起菜单，旧菜单项不会留在新的一把上。
-    let menuAttemptId = this.data.menuAttemptId || '';
-    const menuRow = baseCards.find(item => item.id === menuAttemptId) || null;
-    if (!menuRow || !menuRow.isLatest || menuRow.isUndone || !menuRow.showMenu) {
-      menuAttemptId = '';
-    }
     const attemptCards = baseCards.map(item => {
       const expanded = item.isLatest || item.id === expandedAttemptId;
-      const menuOpen = Boolean(item.isLatest && item.id === menuAttemptId);
       return Object.assign({}, item, {
         expanded,
-        // 纠错区只在真有动作、只读回读或状态反馈时渲染：较早的未完成把次不留空纠错槽，
-        // 最新一把则在菜单收起、未撤回、无回读与提示时整块不出现。
-        showFix: Boolean(
-          item.isLatest
-            ? item.isUndone || menuOpen || item.stateText || item.correctStatusText
-            : item.showCorrectionSlot || item.stateText
-        ),
+        // T050 返工：撤销入口只给「最新一把且它仍是最近一把」——撤销成功后最近一把
+        // 已经变成刚撤回的那一把（它不在现场列表里），前一把虽然补位成最新一把，
+        // 却不会再拿到撤销入口；必须再成功记一把才有新的可撤销目标。这样同一个坐标
+        // 的第二击不会把前一把也撤掉，写失败时原行仍保留「重试撤销」。
+        showWithdraw: Boolean(item.isLatest && item.canUndo),
         // T049：旧行收起时只有这一把真有本机视频才显示小视频图标；展开后在原把详情里
         // 给「＋ 添加视频」或「回看视频」。图标只是提示，点按仍落到整行展开原把。
-        showVideoIcon: !expanded && Boolean(item.hasVideo) && Boolean(item.canOpenVideo),
-        menuOpen,
-        menuLabel: menuOpen ? '收起' : '更多'
+        showVideoIcon: !expanded && Boolean(item.hasVideo) && Boolean(item.canOpenVideo)
       });
     });
     // 编辑中的这一把若已不在可编辑列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
@@ -371,7 +379,6 @@ Page({
       attemptCards,
       hasAttemptCards: attemptCards.length > 0,
       expandedAttemptId,
-      menuAttemptId,
       noteEditor,
       pendingRows,
       hasPending: pendingRows.length > 0,
@@ -408,51 +415,10 @@ Page({
       this.refreshView();
       return;
     }
-    // 最新一把没有收起态：点它的行不改层级；菜单展开时点这一行只收起菜单。
-    if (row.isLatest) {
-      if (this.data.menuAttemptId === attemptId) {
-        this.setData({ menuAttemptId: '' });
-        this.refreshView();
-      }
-      return;
-    }
+    // 最新一把没有收起态：点它的行不改层级，也不触发任何写入。
+    if (row.isLatest) return;
     this.setData({
-      expandedAttemptId: this.data.expandedAttemptId === attemptId ? '' : attemptId,
-      // 切换展开的原把时收起最新一把的菜单：菜单项始终只属于展开前的那一把。
-      menuAttemptId: ''
-    });
-    this.refreshView();
-  },
-
-  /**
-   * 最新一把右侧「更多」：只展开/收起菜单，不读写任何记录。
-   *
-   * 目标只认这一行带下来的原把次 ID 与归属；这一下若已不是本页最新一把、这一把已撤回
-   * 或已没有可用动作（换档、过期行、另一处写入换人），只提示并按最新档案刷新。菜单项
-   * 自己只渲染这一把按原资格可用的动作，真正的写入仍走 undoLatestAttempt / correctSend。
-   */
-  toggleLatestMenu(event) {
-    if (this.data.loadError || this.data.contextError) return;
-    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
-    const attemptId = dataset.attemptId || '';
-    const archiveId = (this.archive && this.archive.archiveId) || '';
-    const sessionId = (this._session && this._session.id) || '';
-    const routeId = (this._route && this._route.id) || '';
-    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
-    const stale =
-      !row ||
-      !row.isLatest ||
-      !row.showMenu ||
-      (dataset.archiveId && dataset.archiveId !== archiveId) ||
-      (dataset.sessionId && dataset.sessionId !== sessionId) ||
-      (dataset.routeId && dataset.routeId !== routeId);
-    if (stale) {
-      this.setData({ notice: '这一把当前没有可用的纠错动作，已按最新数据刷新。' });
-      this.refreshView();
-      return;
-    }
-    this.setData({
-      menuAttemptId: this.data.menuAttemptId === attemptId ? '' : attemptId
+      expandedAttemptId: this.data.expandedAttemptId === attemptId ? '' : attemptId
     });
     this.refreshView();
   },
@@ -469,11 +435,6 @@ Page({
     const editor = this.data.noteEditor;
     if (editor && editor.hasNote === undefined) {
       this.setData({ 'noteEditor.hasNote': Boolean(editor.text) });
-    }
-    // T050：打开备注编辑时收起「更多」菜单，避免菜单项留在编辑框旁边被误点。
-    if (editor && this.data.menuAttemptId) {
-      this.setData({ menuAttemptId: '' });
-      this.refreshView();
     }
     return outcome;
   },
@@ -523,13 +484,12 @@ Page({
   },
 
   /**
-   * 行内「改成未完成」（模板沿用 correctSend 这个绑定名）：先核对这一下仍指向本页
-   * 这一行可更正的完攀，再确认。
+   * 「改成未完成」的确认接线（T042，模板沿用 correctSend 这个绑定名）。
    *
-   * 确认弹窗写明原把次的日期/场次/岩馆、原序号与原结果（完攀 → 未完成），取消时
-   * 一个字节都不写；确认后仍走 utils/training-record-actions.js 的同一份 correctSend，
-   * 只翻这一把，备注、视频关联与原序号都不变。连点同一把只弹一次确认；这一下若已
-   * 不属于本场这一条线，只提示并按最新档案刷新。本页界面不直接调用无确认的写入口。
+   * T050 返工（现场）：单线记录页不再渲染更正入口——更正的可见范围只在线路历史与本场
+   * 逐把页。这里保留原有的确认接线，供页面既有的确认/回读逻辑与旧读数复用；真正的写入
+   * 仍是 utils/training-record-actions.js 的同一份 correctSend，不新增第二套持久模型。
+   * 确认弹窗写明原把次的日期/场次/岩馆、原序号与原结果，取消时一个字节都不写。
    */
   correctSend(event) {
     if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
@@ -573,9 +533,8 @@ Page({
         resultText: '完攀'
       })
       .then(result => {
-        // 更正真正落盘后收起菜单；取消或写失败都保留菜单，用户可在原处重试。
+        // 更正真正落盘后就地重读；取消或写失败都保留原读数，用户可在原处重试。
         if (this._correctedRows && this._correctedRows[attemptId]) {
-          this.setData({ menuAttemptId: '' });
           this.refreshView();
         }
         return result === undefined ? null : result;
@@ -779,9 +738,101 @@ Page({
 
   // ---------------------------------------------------------------- 共用事件
 
-  recordAttempt: actions.recordAttempt,
+  /**
+   * 记一把：目标与两段写仍走共用实现；这里只补一层现场坐标兜底。
+   *
+   * 撤销成功会收起旧卡、把完攀面板换成结果按钮，页面整体重排；同一根手指的第二次
+   * 点按可能落在刚出现的结果区。只有「真实撤销触点附近、短时间内的结果事件」才吞掉
+   * 这一下（不写盘、不改提示）；位置明显不同的立即重记、没有触点信息的程序化调用都
+   * 照常交给共用实现。
+   */
+  recordAttempt(event) {
+    if (this._isUndoRebound(event)) return;
+    this._undoRebound = null;
+    return actions.recordAttempt.call(this, event);
+  },
+
+  /** 记下成功撤销时的真实触点；没有坐标的事件（程序化调用）不启用坐标兜底。 */
+  _rememberUndoTap(event) {
+    const point = tapPoint(event);
+    if (!point) return;
+    this._undoRebound = {
+      x: point.x,
+      y: point.y,
+      at: tapTime(event),
+      wallAt: Date.now()
+    };
+  },
+
+  /** 这一下结果事件是不是刚成功撤销的那根手指在同一位置、短时间内的回弹。 */
+  _isUndoRebound(event) {
+    const rebound = this._undoRebound;
+    if (!rebound) return false;
+    const point = tapPoint(event);
+    if (!point) return false;
+    const at = tapTime(event);
+    const elapsed =
+      rebound.at !== null && at !== null ? at - rebound.at : Date.now() - rebound.wallAt;
+    if (!(elapsed >= 0 && elapsed <= UNDO_REBOUND_WINDOW_MS)) return false;
+    const dx = point.x - rebound.x;
+    const dy = point.y - rebound.y;
+    return Math.sqrt(dx * dx + dy * dy) <= UNDO_REBOUND_RADIUS_PX;
+  },
+
   retryPendingAttempt: actions.retryPendingAttempt,
-  undoLatestAttempt: actions.undoLatestAttempt,
+  // 撤销（T050 返工）：目标、预期状态/版本、失败重试与连点保护都沿用共用实现；这里只补
+  // 现场的「已撤销第 N 把」提示（见下方 wrapper）。restoreLatestAttempt 保留为页面方法，
+  // 现场不再渲染「恢复」按钮，恢复只用于既有读数与旧测试驱动档案层的原把身份。
+  undoLatestAttempt(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    // 本页已经成功撤销过的同一把：原按钮的重复/迟到事件不再交给共用实现。它既不会把
+    // 「已撤销第 N 把」换成「最近一把变了」，也不会落到只补位的前一把上。原把次之后若
+    // 被别处恢复，重新渲染的按钮会带新的版本（expectedRev），这里不会拦。
+    const previous = attemptId
+      ? (this._undoneAttempts || (this._undoneAttempts = Object.create(null)))[attemptId]
+      : null;
+    const expectedRev =
+      dataset.expectedRev === undefined || dataset.expectedRev === null
+        ? ''
+        : String(dataset.expectedRev);
+    if (
+      previous &&
+      previous.expectedRev === expectedRev &&
+      previous.expected === (dataset.expected || '')
+    ) {
+      return { ok: true, changed: false, code: 'already-undone' };
+    }
+    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
+    const outcome = actions.undoLatestAttempt.call(this, event);
+    // 写失败时共用实现按档案层原语义说「撤回未保存」；现场实际控件是原行的「重试撤销」，
+    // 这里把提示换成同一个控件名，存储失败与后续重试仍走共用实现。
+    if (outcome && outcome.code === 'write-failed') {
+      this.setData({
+        notice: '撤销未保存，可在原行点「重试撤销」按同一把重试。'
+      });
+      return outcome;
+    }
+    // 只认「这次调用确实把这一把撤回了」：重复点按（already undone）、写失败、
+    // 过期点击与「盘上已是撤回态但不是这次写的」都保留共用实现自己的提示。
+    if (!row || !row.label || !outcome || !outcome.changed) return outcome;
+    // 同一原按钮的后续事件（重复点按、迟到点击）按原 ID 识别，不再进共用实现。
+    this._undoneAttempts[attemptId] = {
+      expectedRev,
+      expected: dataset.expected || ''
+    };
+    // 撤销成功可能让同一触点下方换成结果按钮：记下真实触点，只拦短时同点回弹。
+    this._rememberUndoTap(event);
+    // 回执丢失但盘上确实带着这次操作的凭据：仍报「已撤销第 N 把」，同时保留「回执丢失」
+    // 这一句，避免把一次没收到回执的写入说成一次干净的成功。
+    this.setData({
+      notice:
+        outcome.code === 'write-failed-recovered'
+          ? '已撤销' + row.label + '（回执丢失，已按最新档案确认）'
+          : '已撤销' + row.label
+    });
+    return outcome;
+  },
   restoreLatestAttempt: actions.restoreLatestAttempt,
   changeRecentAttempt: actions.changeRecentAttempt,
   // 行内备注（T045）：只作用于打开时的那一把，保存/取消按原 attemptId 与编辑代次核对。

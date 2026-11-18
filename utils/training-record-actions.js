@@ -14,8 +14,10 @@
  * 这里只补确认与准入判断，持久化、重试规则与线路历史的更正能力都保持原样。
  * T045：单线页现场直接列本场本线把次（最新在前，一把一框），每行只编辑所点那一把；
  * 派生在 attemptCardRows，写入口仍是本文件的同一份事件处理，不新增持久模型。
- * T050：最新一把的更正与撤回收进右侧「更多」菜单，菜单只派生这一把按原资格可用的
- * 动作；较早的合资格完攀仍从自己的详情更正；撤回后原行保留「已撤回」与「恢复」。
+ * T050 返工（现场）：最新一把右侧改成一个文字「撤销」，按一下直接撤回这一把；已撤回
+ * 的一把离开现场有效列表，前一把只补位显示，下一次成功记把前不再出现撤销入口。现场
+ * 不再有「更多」纠正菜单、行内更正与「恢复」按钮；更正仍按原范围在线路历史与
+ * 本场逐把页处理，档案层的撤回/恢复能力与持久凭据完全沿用。
  *
  * 页面需要提供（与 T017 场内页同名）：
  *   this.archive、this.data.loadError、this.data.activeSession、this.data.selectedRoute、
@@ -950,20 +952,20 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
  * 现场「本场本线把次」的行（T045 / T048）：普通文档流里最新在前，一把一框。
  *
  * 只读派生，不写盘：
- * - 行＝这条线在本场的**有效把次**，外加「最近一把」这一行——它可能是刚撤回的那一把，
- *   恢复入口要留在原框里；已撤回的较早把次不占据现场，旧档仍由原有入口读取；
+ * - 行＝这条线在本场的**有效把次**；已撤回的一把不占据现场，旧档仍由原有入口读取；
  * - T048：按原序号倒序后，第一行是最新一把（isLatest，始终完整展示）；更早的把次各占
  *   一行紧凑短行；是否展开由页面按原把次 ID 决定，本模块不保存任何展开状态；
  * - 备注「编辑」与视频入口只给有效把次：撤回后档案层拒绝改备注、视频页拒绝打开，
  *   先恢复这一把；
  * - T049：视频入口按该把的真实关联给「＋ 添加视频」或「回看视频」，只换文案不换槽位；
  *   旧行收起时是否显示小视频图标由页面按展开态决定（本模块只给出 hasVideo）；
- * - 「改成未完成」与线路历史、本场逐把同一份资格（抱石、有效、已确认完攀）；
- * - 「这把多记了」（撤回）与「恢复这一把」只给最近一把，与 changeRecentAttempt 的
- *   原边界一致；重试沿用 recentAttemptView 的同一把、同一 opId 与渲染版本；
- * - T050：最新一把的更正与撤回收进右侧「更多」菜单，菜单项只按这一把的原资格派生
- *   （合资格完攀才给「改为未完成」，最近一把才给「撤回误记」）；菜单是否展开由页面
- *   按原把次 ID 管理，本模块只给 menuOpen 的派生数据与可用动作。
+ * - T050 返工（现场）：已撤回的一把不再占据现场列表——撤销成功后这一把移出本场有效
+ *   记录与逐把列表，前一把只补位显示；恢复能力仍留在档案层，本页不再给入口；
+ * - 「撤销」只给最近一把（与 changeRecentAttempt 的原边界一致），重试沿用
+ *   recentAttemptView 的同一把、同一 opId 与渲染版本；写失败时原行保留可重试文案；
+ * - 现场不再提供更正菜单或行内更正入口：更正只在线路历史与本场逐把页按原范围处理；
+ *   这里仍按原资格派生 correctable 等只读字段，供页面原有的确认入口与旧读数复用，
+ *   但不渲染成现场动作；
  * - 行上的动作都带原把次 ID 与归属，只作用于所点这一把。
  *
  * videoLinks 由页面用 attemptVideo.videoLinkMap 一次读索引算出（本模块不反向依赖
@@ -990,28 +992,14 @@ function attemptCardRows(
     ? store.isBoulderRoute(route)
     : selectedRoute.climbType === '抱石';
   const recent = recentAttempt || null;
-  // 待保存时 recentAttemptView 整体收起（不开放撤回/恢复动作），但「最近一把是谁」的
-  // 展示身份仍按同场同线的最新已提交原把取——撤回的那一把要留在原层级与原编号上，
-  // 不能因为下一把还没落盘就整卡消失、把前一把错误提升为最新。这里只补展示身份，
-  // 动作仍由 pending 门禁关闭（canUndo / canRestore 都来自上面那一份 recent）。
-  const latestCommitted = recent
-    ? null
-    : recentAttemptTarget(archive, activeSession.id, selectedRoute.id);
 
+  // T050 返工（现场）：只列**有效把次**。已撤回的一把按规则离开现场列表，前一把补位；
+  // 「最近一把」的撤回资格仍由 recentAttemptView 判定（它连已撤回的那一把一起看，因此
+  // 撤销成功后前一把不会立刻变成可撤销目标——必须有新的把次成功落盘才恢复入口）。
   const rows = store.attemptsFor(archive, {
     sessionId: activeSession.id,
     routeId: selectedRoute.id
   });
-  // 刚撤回的那一把仍留在原框里（恢复入口就在这一行）；更早的已撤回把次不在这里。
-  const keptAttemptId = recent
-    ? recent.attemptId
-    : latestCommitted
-      ? latestCommitted.attempt.id
-      : '';
-  if (keptAttemptId && !rows.some(item => item.id === keptAttemptId)) {
-    const kept = (archive.attempts || []).find(item => item.id === keptAttemptId);
-    if (kept && store.isUndoneAttempt(kept)) rows.push(kept);
-  }
   rows.sort((left, right) => (right.seq || 0) - (left.seq || 0));
 
   const links = videoLinks || new Map();
@@ -1030,29 +1018,16 @@ function attemptCardRows(
     const hasVideo = !undone && Boolean(link.hasVideo);
     const correctionState = correctionStateOf(archive, page, attempt.id);
     const canUndo = Boolean(isRecent && recent.canUndo);
-    const canRestore = Boolean(isRecent && recent.canRestore);
-    // T050：菜单项文案只按这一把的原资格派生；失败重试沿用同一把、同一 opId 的文案。
+    // T050 返工：现场只剩一个文字动作「撤销」；写失败后同一把改成「重试撤销」。
+    const undoText = canUndo ? (recent.retry ? '重试撤销' : '撤销') : '';
     const correctText =
       correctionState.state === 'retry' ? '重试改为未完成' : '改为未完成';
-    const undoText = canUndo ? (recent.retry ? '重试撤回误记' : '撤回误记') : '';
-    // 最新一把右侧的「更多」只在真有可用动作时出现；没有可用动作就没有菜单入口。
-    const showMenu = Boolean(isLatest && !undone && (correctable || canUndo));
-
-    // 两种动作对把数的影响写在行里，不靠记忆或颜色猜。
-    const hints = [];
-    if (undone) {
-      hints.push('已撤回：本场把数不含这一把；恢复后加回 1 把。');
-    } else if (isLatest) {
-      if (correctable && canUndo) {
-        hints.push('「更多」：改为未完成（本场把数不变，完攀少 1）或撤回误记（本场少 1 把）。');
-      } else if (correctable) {
-        hints.push('「更多」：改为未完成（本场把数不变，完攀少 1）。');
-      } else if (canUndo) {
-        hints.push('「更多」：撤回误记（本场少 1 把）。');
-      }
-    } else if (correctable) {
-      hints.push('改为未完成：本场把数不变，完攀次数减 1。');
-    }
+    // 失败重试的说明只跟着最近一把的同一份 opId 状态走；成功后由页面给「已撤销第 N 把」。
+    const stateText = isRecent
+      ? recent.retry
+        ? '撤销未保存 · 点「重试撤销」按同一把重试'
+        : recent.stateText
+      : '';
 
     return {
       id: attempt.id,
@@ -1067,8 +1042,8 @@ function attemptCardRows(
       timeText: timeText(attempt.createdAt),
       note: attempt.note || '',
       hasNote: Boolean(attempt.note),
-      // 较早把次展开后的备注入口：有正文给「改备注」，没有给「补备注」。
-      noteActionText: attempt.note ? '改备注' : '补备注',
+      // T050 返工：最新与展开的旧把统一成一个入口「备注」，不再区分补/改。
+      noteActionText: '备注',
       // 备注与视频只给有效把次：已撤回的一把被档案层与视频页按同一份规则拒绝。
       canEditNote: !undone,
       hasVideo,
@@ -1082,32 +1057,24 @@ function attemptCardRows(
       routeId: attempt.routeId,
       sessionId: attempt.sessionId,
       archiveId: archive.archiveId,
+      // 以下为只读派生：现场不再渲染更正入口，但页面原有的确认入口与旧读数仍读同一份
+      // 资格（抱石、有效、已确认完攀），不另立第二套判断。
       correctionSupported,
       correctable,
       correctText,
       correctStatusText: correctable ? '' : correctionState.statusText,
       correctIdleText: undone ? '已撤回，恢复后可改' : '',
-      // 较早把次的更正槽只在真有动作、回读或说明时渲染：未完成的把次不留 44px 空槽。
       showCorrectionSlot: Boolean(
         !isLatest &&
           correctionSupported &&
           (correctable || correctionState.statusText || undone)
       ),
-      // 最新一把右侧「更多」：展开态与文案由页面按原把次 ID 填；这里只给可用动作。
-      showMenu,
-      menuOpen: false,
-      menuLabel: '',
+      // T050 返工：最新一把可撤销时给一个文字「撤销」；页面据此渲染。
       canUndo,
-      canRestore,
       undoText,
-      // 菜单项下方写明对把数的影响（把数不变 / 本场少 1 把）。
-      menuCorrectHint: '本场把数不变，完攀少 1。',
-      menuUndoHint: '本场有效把数减 1。',
-      restoreText: canRestore ? recent.restoreText : '',
       expected: isRecent ? recent.expected : '',
       expectedRev: isRecent ? recent.expectedRev : 0,
-      stateText: isRecent ? recent.stateText : '',
-      actionHint: hints.join(' ')
+      stateText
     };
   });
 }
@@ -1127,6 +1094,15 @@ function restoreLatestAttempt(event) {
 }
 
 /**
+ * 撤回 / 恢复的结果摘要（页面只读用来判断「这一把是不是这次操作真的改了」）：
+ * changed 只在**这次调用**确实把这一把写到目标状态时为 true；重复点击、无可用动作、
+ * 写失败与「盘上已经是目标状态但不是这次写的」都不算。
+ */
+function changeOutcome(ok, changed, code) {
+  return { ok: Boolean(ok), changed: Boolean(changed), code: code || '' };
+}
+
+/**
  * 撤回 / 恢复共用的一段：两个入口只在动作本身不同，目标核对、预期状态与预期版本、
  * 去重凭据、失败重试与「只按已落盘状态显示」完全相同。
  *
@@ -1139,16 +1115,18 @@ function restoreLatestAttempt(event) {
  * + rev），不是计时防抖。
  */
 function changeRecentAttempt(event, action) {
-  if (this.data.loadError || this.data.contextError) return;
+  if (this.data.loadError || this.data.contextError) {
+    return changeOutcome(false, false, 'blocked');
+  }
   const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
   const attemptId = dataset.attemptId;
-  if (!attemptId) return;
+  if (!attemptId) return changeOutcome(false, false, 'missing');
 
   const loaded = store.loadState();
   if (!loaded.ok) {
     this.setData({ storageError: loaded.error });
     this.refreshView();
-    return;
+    return changeOutcome(false, false, 'unreadable');
   }
   const archive = loaded.archive;
   this.archive = archive;
@@ -1173,7 +1151,7 @@ function changeRecentAttempt(event, action) {
       notice: '这一把属于原来的本机档案，这次' + noun + '没有生效，已按当前档案刷新。'
     });
     this.refreshView();
-    return;
+    return changeOutcome(false, false, 'archive-mismatch');
   }
 
   // 已经切到别的场次/线路：这一行渲染时的归属不再是当前画面，旧事件一律拒绝。
@@ -1193,7 +1171,7 @@ function changeRecentAttempt(event, action) {
       notice: '已经切到别的场次或线路，这次' + noun + '没有生效，已按最新档案刷新。'
     });
     this.refreshView();
-    return;
+    return changeOutcome(false, false, 'scope-mismatch');
   }
 
   if (hasPendingOnRoute(archive, sessionId, routeId)) {
@@ -1202,7 +1180,7 @@ function changeRecentAttempt(event, action) {
       notice: '这条线还有一把没保存：先在「待保存」行重试保存，再' + noun + '。'
     });
     this.refreshView();
-    return;
+    return changeOutcome(false, false, 'pending');
   }
 
   const target = recentAttemptTarget(archive, sessionId, routeId);
@@ -1213,7 +1191,7 @@ function changeRecentAttempt(event, action) {
       notice: '最近一把已经变了，已按最新档案刷新；' + noun + '只在最近这一把上生效。'
     });
     this.refreshView();
-    return;
+    return changeOutcome(false, false, 'target-changed');
   }
 
   // 已经是要的状态（撤回一个已撤回的、恢复一个有效的）：不写盘，只说明下一步。
@@ -1224,11 +1202,11 @@ function changeRecentAttempt(event, action) {
     this.setData({
       storageError: '',
       notice: asUndo
-        ? '这一把已经撤回，可用下方的「恢复这一把」找回。'
+        ? '这一把已经撤回，本场这里没有可再撤销的目标。'
         : '这一把已经在本场里了，不用再恢复。'
     });
     this.refreshView();
-    return;
+    return changeOutcome(true, false, 'noop');
   }
 
   // 重试沿用的原请求：档案里已落盘的 pending 标记优先，其次是当前应用运行期里
@@ -1263,7 +1241,7 @@ function changeRecentAttempt(event, action) {
     this._recentStatus = { attemptId, undone: asUndo };
     this.setData({ storageError: '', notice: '' });
     this.refreshView();
-    return;
+    return changeOutcome(true, !outcome.duplicate, outcome.code);
   }
 
   if (outcome.code === 'write-failed' || outcome.code === 'unreadable') {
@@ -1295,7 +1273,7 @@ function changeRecentAttempt(event, action) {
           notice: noun + '已经落盘（回执丢失），已按最新档案确认。'
         });
         this.refreshView();
-        return;
+        return changeOutcome(true, true, 'write-failed-recovered');
       }
       if (stateMatches) {
         forgetFailedChange(originArchiveId, attemptId, action);
@@ -1314,7 +1292,7 @@ function changeRecentAttempt(event, action) {
               '写入的；已按最新档案显示。'
         });
         this.refreshView();
-        return;
+        return changeOutcome(false, false, 'state-matches');
       }
     }
     // 确实没落盘：保留原动作与同一个 opId 的重试入口。第一段写就失败时档案里没有
@@ -1334,7 +1312,7 @@ function changeRecentAttempt(event, action) {
       notice: noun + '未保存，可再点一次「重试' + noun + '这一把」。'
     });
     this.refreshView();
-    return;
+    return changeOutcome(false, false, 'write-failed');
   }
 
   // 守卫拒绝、过期的点击或这一把已不存在：不动任何数据，也不沿用旧 opId。
@@ -1344,6 +1322,7 @@ function changeRecentAttempt(event, action) {
     notice: outcome.error || '这次' + noun + '没有生效，已按最新档案刷新。'
   });
   this.refreshView();
+  return changeOutcome(false, false, outcome.code || 'rejected');
 }
 
 // ---------------------------------------------------------------- 逐把备注

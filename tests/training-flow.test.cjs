@@ -1505,29 +1505,34 @@ test('T048 最新卡约 100px、旧把短行约 48px：边框、结果色与时�
   assert.equal(typeof recordDefinition.toggleAttemptRow, 'function', '展开/收起有真实页面方法');
 });
 
-test('T048 展开块保留原按把入口：备注全文、编辑、视频、更正与撤回/恢复都只作用于这一把', () => {
+test('T048 展开块保留原按把入口：备注全文、备注、视频都只作用于这一把；撤销在头部', () => {
   const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
   const attemptsAt = wxml.indexOf('id="record-attempts"');
   assert.ok(attemptsAt !== -1);
   const section = wxml.slice(attemptsAt);
 
-  // 详情都收在「这一把展开」里：备注全文、编辑、视频、注明、更正、撤回/恢复、备注编辑器。
+  // 详情都收在「这一把展开」里：备注全文、备注入口、视频、备注编辑器。
   const expandAt = section.indexOf('wx:if="{{item.expanded}}"');
   assert.ok(expandAt !== -1, '详情按展开态渲染');
   for (const marker of [
     'id="record-attempt-note-{{item.id}}"',
     'id="edit-note-{{item.id}}"',
     'id="record-open-video-{{item.id}}"',
-    'id="correct-attempt-{{item.id}}"',
-    'class="record-attempt-change"',
-    'id="undo-attempt-{{item.id}}"',
-    'id="restore-attempt-{{item.id}}"',
     'id="note-editor"',
     'id="save-note"',
     'id="cancel-note"'
   ]) {
     assert.ok(section.indexOf(marker) > expandAt, marker + ' 在展开块里');
   }
+  // T050 返工：撤销在最新一把的头部（不在展开详情里），现场没有更正菜单与恢复按钮。
+  const withdrawAt = section.indexOf('id="record-attempt-withdraw-{{item.id}}"');
+  assert.ok(withdrawAt > 0, '最新一把有「撤销」');
+  assert.ok(withdrawAt < expandAt, '撤销在头部行，不在展开详情里');
+  assert.doesNotMatch(
+    section,
+    /correct-attempt-|record-attempt-change|undo-attempt-|restore-attempt-/,
+    '现场不再有更正菜单、旧撤回/恢复入口'
+  );
   // 旧详情不再渲染视频关联状态文字：有片就写「回看视频」。
   assert.equal(
     wxml.indexOf('id="record-video-state-{{item.id}}"'),
@@ -1687,15 +1692,15 @@ test('T048 旧把备注：编辑区紧跟头部替换操作行，输入约两行
     /wx:if="\{\{item\.hasNote\}\}"\s*id="record-attempt-note-\{\{item\.id\}\}"/,
     '备注正文由 hasNote 决定是否渲染'
   );
-  // 未完成旧行不留空纠错槽：整块纠错区由页面派生 showFix 控制。
+  // 未完成旧行不留空纠错槽：现场只保留撤销失败时的重试说明，不再渲染更正槽。
   assert.match(
     section,
-    /wx:if="\{\{item\.showFix\}\}"\s*class="record-attempt-fix"/,
-    '纠错区只在真有内容时渲染'
+    /wx:if="\{\{item\.stateText\}\}"\s*class="record-attempt-fix"/,
+    '重试说明只在真有状态时渲染'
   );
-  assert.match(
+  assert.doesNotMatch(
     section,
-    /wx:if="\{\{item\.showCorrectionSlot\}\}"\s*class="record-attempt-correct-slot"/,
-    '更正槽只在真有动作/回读/说明时渲染'
+    /showCorrectionSlot|correct-attempt-/,
+    '现场不再渲染更正槽与更正按钮'
   );
 });

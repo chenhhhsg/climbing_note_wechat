@@ -1,16 +1,20 @@
 <!--
   单线记录页（T036 / T041 现场照片入口 / T045 现场逐把同页 / T048 紧凑逐把 / T049 视频入口
-  / T050「更多」纠错菜单）
+  / T050 撤销）
   按 archiveId + sessionId + routeId 进入一条长期线路在某一场的记录：
   首屏一行线路照片入口、结果按钮、待保存重试，普通文档流下直接列本场本线把次
-  （最新在前、一把一框），每行只编辑所点那一把，更正/撤回/恢复都在原框。
-  最新一把右侧「更多」只列这一把按原资格可用的动作；撤回后原行显示「已撤回」与「恢复」，
-  较早的合资格完攀从自己的详情更正。
+  （最新在前、一把一框），每行只编辑所点那一把。
+  最新一把右侧给一个文字「撤销」：按一下直接撤回当前这一把；已撤回的一把移出逐把列表，
+  前一把只补位显示，下一次成功记把前不再出现撤销入口。现场不再有「更多」纠错菜单、
+  「改为未完成」与撤销后的「恢复」按钮，较早把次也没有行内更正入口；更正仍在线路历史
+  与本场逐把页按原范围处理。
   最新一把的备注右侧固定视频入口（无片「＋ 添加视频」、有片「回看视频」）；
   旧行收起仅在已有视频时显示小视频图标，展开后按该把的真实关联给同一入口。
+  最新一把与展开的旧把统一用「备注」入口：点击仍在原把次打开输入区，有备注就带出原文，
+  保存只更新该把；输入区标题「备注」，保存按钮「保存备注」。
   旧行展开（T048 返工）：头部保留原序、结果、时间与收起；有备注才显示原正文，下一行
-  同排「补备注／改备注」与视频入口；点备注入口时，就地编辑区紧接头部替换操作行，输入约
-  两行、长文框内滚动，取消与保存紧随其后。纠错区只在真有动作、回读或反馈时渲染。
+  同排「备注」与视频入口；点备注入口时，就地编辑区紧接头部替换操作行，输入约
+  两行、长文框内滚动，取消与保存紧随其后。
   照片、卡点与跨天历史仍在原来的二级大图标记页；现场不再有独立逐把与线路历史跳转。
 -->
 <view class="page">
@@ -272,10 +276,10 @@
           最新一把完整展示结果、时间与一行备注；更早的把次各占一条紧凑短行，保留边框、
           原序号、结果色（墨绿完攀／岩橙未完成）与时间，点行只展开/收起这一把。
           卡框沿用 T044 的配色与边框；每行只用这一行带下来的原把次 ID 与归属：
-          - 展开后「编辑」只打开这一行的备注编辑器，保存/取消只改这一把；备注为空也显示同一入口；
+          - 最新一把与展开的旧把统一用「备注」入口，保存/取消只改这一把；备注为空也显示同一入口；
           - 视频入口沿用原把次视频页（四个 ID 再核对）；
-          - 合资格的完攀给「改成未完成」，最近一把给「这把多记了」/「恢复这一把」，
-            失败重试与恢复都留在原框；两个动作各占一个并排槽，坐标互不接管。
+          - 最新一把右侧只给一个文字「撤销」；写失败时同一位置换成「重试撤销」并保留原把。
+            撤销成功后这一把离开列表，前一把只补位显示；现场没有更正菜单或「恢复」按钮。
         -->
         <view wx:if="{{hasAttemptCards}}" id="record-attempts" class="record-attempts">
           <view class="record-attempts-head">
@@ -287,7 +291,7 @@
             wx:for="{{attemptCards}}"
             wx:key="id"
             id="record-attempt-{{item.id}}"
-            class="record-attempt {{item.isSend ? 'record-attempt-send' : 'record-attempt-fail'}}{{item.isUndone ? ' record-attempt-undone' : ''}}{{item.isLatest ? ' record-attempt-latest' : ' record-attempt-older'}}{{item.expanded ? ' record-attempt-open' : ' record-attempt-compact'}}"
+            class="record-attempt {{item.isSend ? 'record-attempt-send' : 'record-attempt-fail'}}{{item.isLatest ? ' record-attempt-latest' : ' record-attempt-older'}}{{item.expanded ? ' record-attempt-open' : ' record-attempt-compact'}}"
           >
             <view class="record-attempt-main">
               <view
@@ -302,24 +306,22 @@
                 <text
                   class="record-attempt-result {{item.isSend ? 'record-attempt-result-send' : 'record-attempt-result-fail'}}"
                 >{{item.resultText}}</text>
-                <text
-                  wx:if="{{item.isUndone}}"
-                  id="record-attempt-undone-{{item.id}}"
-                  class="record-attempt-undone-tag"
-                >已撤回</text>
                 <text class="record-attempt-time">{{item.timeText}}</text>
-                <!-- T050：最新一把右侧「更多」只展开这一把按原资格可用的动作；展开/收起
-                     只改本页展示，不写任何记录。已撤回时不再出现菜单入口。 -->
+                <!-- T050 返工：最新一把右侧只留一个小号文字「撤销」；按一下直接撤回当前这一把。
+                     44×44 的最小命中区不随文案变短而缩小，也不与整行展开、视频图标抢坐标。
+                     撤销成功后这一把离开列表，前一把补位时不会再渲染撤销入口。 -->
                 <button
-                  wx:if="{{item.showMenu}}"
-                  id="record-attempt-more-{{item.id}}"
-                  class="record-attempt-more"
+                  wx:if="{{item.showWithdraw}}"
+                  id="record-attempt-withdraw-{{item.id}}"
+                  class="record-attempt-withdraw"
                   data-attempt-id="{{item.id}}"
                   data-archive-id="{{item.archiveId}}"
                   data-session-id="{{item.sessionId}}"
                   data-route-id="{{item.routeId}}"
-                  catchtap="toggleLatestMenu"
-                >{{item.menuLabel}}{{item.menuOpen ? ' ▴' : ' ▾'}}</button>
+                  data-expected="{{item.expected}}"
+                  data-expected-rev="{{item.expectedRev}}"
+                  catchtap="undoLatestAttempt"
+                >{{item.undoText}}</button>
                 <!-- T049：旧行收起时只有这一把已有本机视频才出现小视频图标；
                      图标不单独接收点按，点按仍落到整行展开原把详情。 -->
                 <text
@@ -337,7 +339,7 @@
               <block wx:if="{{item.expanded}}">
               <!--
                 开备注（T048 返工）：就地编辑区紧接这一把的头部，替换原来的详情操作行
-                （原备注正文与「补/改备注」「添加/回看视频」不再重复渲染）。输入框约两行高，
+                （原备注正文与「备注」「添加/回看视频」不再重复渲染）。输入框约两行高，
                 长内容在框内滚动；「取消」「保存备注」紧跟输入框，保留常用可点高度。
               -->
               <view
@@ -345,6 +347,7 @@
                 id="note-editor"
                 class="note-editor"
               >
+                <text id="note-editor-title" class="note-title">备注 · {{noteEditor.attemptLabel}}</text>
                 <textarea
                   id="note-input"
                   class="note-input"
@@ -376,7 +379,7 @@
               </view>
 
               <!--
-                平常态：只有真有备注时显示原正文；下一行同排「补备注／改备注」与
+                平常态：只有真有备注时显示原正文；下一行同排「备注」与
                 「＋ 添加视频／回看视频」。已有视频用「回看视频」本身表达，不再另挂状态文字。
                 最新一把的备注仍是单行摘要、入口靠右；较早把次备注换行、两个入口在下一行。
               -->
@@ -389,14 +392,15 @@
                   >{{item.note}}</text>
 
                   <view class="record-attempt-detail-actions">
-                    <!-- 备注入口：最新一把保持「编辑 ›」，较早把次按有无正文给「改备注／补备注」。 -->
+                    <!-- T050 返工：最新一把与展开的旧把都用「备注」：点击只打开这一把，
+                         有备注就带出原文；空备注也给同一个入口。 -->
                     <button
                       wx:if="{{item.canEditNote}}"
                       id="edit-note-{{item.id}}"
                       class="text-button record-attempt-edit"
                       data-attempt-id="{{item.id}}"
                       catchtap="openNoteEditor"
-                    >{{item.isLatest ? '编辑 ›' : item.noteActionText}}</button>
+                    >{{item.noteActionText}} ›</button>
 
                     <!-- T049：视频入口固定在同一槽位，无片「＋ 添加视频」，有片「回看视频」。 -->
                     <view wx:if="{{item.canOpenVideo}}" class="record-attempt-video">
@@ -412,128 +416,17 @@
                     </view>
                   </view>
                 </view>
-
-                <!-- 已撤回：备注先恢复再改（同一段说明保留，不再挂视频状态文字）。 -->
-                <view wx:if="{{!item.canEditNote}}" class="record-attempt-actions">
-                  <text
-                    id="record-attempt-note-locked-{{item.id}}"
-                    class="record-attempt-note-locked"
-                  >已撤回 · 恢复后可改备注</text>
-                </view>
               </block>
               </block>
             </view>
 
-            <block wx:if="{{item.expanded}}">
-            <!-- 纠错区只在真有动作、只读回读或状态反馈时渲染；未完成的把次不留空槽。 -->
-            <view wx:if="{{item.showFix}}" class="record-attempt-fix">
-              <!-- 较早把次（T050）：更正只从自己的详情发起，资格与确认仍是同一份实现 -->
-              <block wx:if="{{!item.isLatest && item.correctionSupported}}">
-                <view wx:if="{{item.showCorrectionSlot}}" class="record-attempt-correct-slot">
-                  <button
-                    wx:if="{{item.correctable}}"
-                    id="correct-attempt-{{item.id}}"
-                    class="secondary-button record-attempt-correct"
-                    data-attempt-id="{{item.id}}"
-                    data-route-id="{{item.routeId}}"
-                    data-session-id="{{item.sessionId}}"
-                    data-archive-id="{{item.archiveId}}"
-                    bindtap="correctSend"
-                  >{{item.correctText}}</button>
-                  <text
-                    wx:elif="{{item.correctStatusText}}"
-                    id="corrected-attempt-{{item.id}}"
-                    class="record-attempt-correct-state"
-                  >{{item.correctStatusText}}</text>
-                  <text
-                    wx:elif="{{item.correctIdleText}}"
-                    id="record-attempt-correct-idle-{{item.id}}"
-                    class="record-attempt-correct-idle"
-                  >{{item.correctIdleText}}</text>
-                </view>
-              </block>
-
-              <!--
-                最新一把（T050）：右侧「更多」展开后只列这一把按原资格可用的动作，每项
-                独占一行、各自可点；撤回后原行保留「已撤回」，并在同一框里给「恢复」。
-                菜单只在展开态渲染，收起时不影响卡高与上方结果按钮的位置。
-              -->
-              <view
-                wx:if="{{item.isLatest && (item.isUndone || item.menuOpen)}}"
-                class="record-attempt-change"
-              >
-                <block wx:if="{{item.isUndone}}">
-                  <button
-                    wx:if="{{item.canRestore}}"
-                    id="restore-attempt-{{item.id}}"
-                    class="secondary-button record-attempt-restore"
-                    data-attempt-id="{{item.id}}"
-                    data-route-id="{{item.routeId}}"
-                    data-session-id="{{item.sessionId}}"
-                    data-archive-id="{{item.archiveId}}"
-                    data-expected="{{item.expected}}"
-                    data-expected-rev="{{item.expectedRev}}"
-                    bindtap="restoreLatestAttempt"
-                  >{{item.restoreText}}</button>
-                </block>
-                <block wx:elif="{{item.menuOpen}}">
-                  <button
-                    wx:if="{{item.correctable}}"
-                    id="correct-attempt-{{item.id}}"
-                    class="record-attempt-menu-item"
-                    data-attempt-id="{{item.id}}"
-                    data-route-id="{{item.routeId}}"
-                    data-session-id="{{item.sessionId}}"
-                    data-archive-id="{{item.archiveId}}"
-                    bindtap="correctSend"
-                  >
-                    <text class="record-attempt-menu-title">{{item.correctText}}</text>
-                    <text class="record-attempt-menu-hint">{{item.menuCorrectHint}}</text>
-                  </button>
-                  <button
-                    wx:if="{{item.canUndo}}"
-                    id="undo-attempt-{{item.id}}"
-                    class="record-attempt-menu-item"
-                    data-attempt-id="{{item.id}}"
-                    data-route-id="{{item.routeId}}"
-                    data-session-id="{{item.sessionId}}"
-                    data-archive-id="{{item.archiveId}}"
-                    data-expected="{{item.expected}}"
-                    data-expected-rev="{{item.expectedRev}}"
-                    bindtap="undoLatestAttempt"
-                  >
-                    <text class="record-attempt-menu-title">{{item.undoText}}</text>
-                    <text class="record-attempt-menu-hint">{{item.menuUndoHint}}</text>
-                  </button>
-                </block>
-              </view>
-
-              <!-- 更正已落盘：原位只读回读，行不上移，同一坐标不会被下一把接管 -->
+            <!-- 撤销未保存：原行保留这一把，撤销入口在同一位置换成「重试撤销」。 -->
+            <view wx:if="{{item.stateText}}" class="record-attempt-fix">
               <text
-                wx:if="{{item.isLatest && !item.correctable && item.correctStatusText}}"
-                id="corrected-attempt-{{item.id}}"
-                class="record-attempt-correct-state"
-              >{{item.correctStatusText}}</text>
-
-              <text
-                wx:if="{{item.stateText}}"
                 id="record-attempt-state-{{item.id}}"
                 class="record-attempt-status"
               >{{item.stateText}}</text>
-              <!-- 两种动作对把数的影响写在同一行里；说明槽固定高度，动作切换不抖。
-                   最新一把平常态不再重复一遍「更多」里的说明（菜单项自己写清后果），
-                   只在已撤回（恢复入口旁）和较早把次的更正按钮旁保留。 -->
-              <view
-                wx:if="{{item.actionHint && (!item.isLatest || item.isUndone)}}"
-                class="record-attempt-hint-slot"
-              >
-                <text
-                  id="record-attempt-hint-{{item.id}}"
-                  class="record-attempt-hint"
-                >{{item.actionHint}}</text>
-              </view>
             </view>
-            </block>
           </view>
         </view>
 
@@ -541,7 +434,7 @@
           <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
         </view>
 
-        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开旧行时，有备注才显示原正文，下一行「补备注／改备注」和「＋ 添加视频／回看视频」各是一次点按。最新一把右侧「更多」只列这一把可用的纠错：合资格完攀可「改为未完成」（本场把数不变），最近一把可「撤回误记」（本场少 1 把），撤回后在原行给「恢复」。较早的合资格完攀在自己详情里更正。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。点「补备注／改备注」就在原把头部下方编辑这一把；照片与卡点在照片缩略图里。</text>
+        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开后，有备注才显示原正文；最新一把和旧把都用「备注」入口，点开就在原把头部下方编辑这一把，保存只改这一把。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。最新一把右侧的「撤销」按一下就撤回这一把（本场少 1 把）；撤销成功后这一把移出列表，前一把只补位显示，再成功记一把才出现新的撤销入口，写失败时原行保留「重试撤销」。照片与卡点在照片缩略图里。</text>
       </block>
     </block>
   </block>

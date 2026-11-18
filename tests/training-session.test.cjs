@@ -352,15 +352,13 @@ test('R1 WXML 里的每个按钮绑定都有真实处理器，导航目标指向
     assert.equal(typeof sessionDefinition[handler], 'function', '场内页绑定缺少处理器：' + handler);
   }
 
-  // T036/T045：记录、待保存重试、行内备注、按把更正与撤回/恢复都在单线页；
-  // 现场不再有独立逐把跳转与线路历史入口，绑定与处理器必须真实存在。
+  // T036/T045/T050 返工：记录、待保存重试、行内备注、撤销与视频都在单线页；现场不再有
+  // 更正菜单或「恢复」按钮，绑定与处理器必须真实存在。
   const recordHandlers = new Set(handlersIn(fs.readFileSync(RECORD_WXML, 'utf8')));
   for (const required of [
     'recordAttempt',
     'retryPendingAttempt',
     'undoLatestAttempt',
-    'restoreLatestAttempt',
-    'correctSend',
     'openNoteEditor',
     'saveNote',
     'cancelNote',
@@ -2438,7 +2436,7 @@ function rowOf(page) {
   return page.data.recentAttempt;
 }
 
-test('T050 最新一把「更多」在结果按钮之后：菜单只列原资格允许的动作，撤回后原行给恢复', () => {
+test('T050 返工 最新一把右侧直接给「撤销」：现场无纠错菜单与恢复按钮，动作带齐原把与版本', () => {
   const seeded = seedTraining({ gymName: '岩馆 T033', routeName: 'T033 A 线' });
   const empty = openRecordPage();
   assert.equal(empty.data.recentAttempt, null, '这条线还没有已提交把次时不显示操作区');
@@ -2456,55 +2454,50 @@ test('T050 最新一把「更多」在结果按钮之后：菜单只列原资格
   assert.equal(wxml.indexOf('id="record-links"'), -1, '现场入口区已移除');
   assert.doesNotMatch(wxml, /id="route-photo-card"/, '单线页不再铺照片卡');
 
-  // T050：最新一把右侧「更多」展开纵向菜单——「改为未完成」与「撤回误记」各占一整行，
-  // 撤回后原行直接给「恢复」；两个动作不会同时挂在同一个坐标上。
+  // T050 返工：最新一把右侧只有一个文字「撤销」，按一下直接撤回这一把；现场没有
+  // 「更多」菜单、行内更正或撤销后的「恢复」按钮。动作带齐原把次、归属与渲染时的版本。
   assert.match(
     wxml,
-    /id="record-attempt-more-\{\{item\.id\}\}"[\s\S]{0,600}catchtap="toggleLatestMenu"/
-  );
-  const menuAt = wxml.indexOf('wx:elif="{{item.menuOpen}}"');
-  const menuCorrectAt = wxml.indexOf('id="correct-attempt-{{item.id}}"', menuAt);
-  const menuUndoAt = wxml.indexOf('id="undo-attempt-{{item.id}}"', menuAt);
-  const menuEndAt = wxml.indexOf('</view>', menuUndoAt);
-  assert.ok(menuAt > 0, '菜单只在展开时渲染');
-  assert.ok(menuCorrectAt > menuAt, '菜单里有「改为未完成」');
-  assert.ok(menuUndoAt > menuCorrectAt, '菜单里另有「撤回误记」');
-  const menuMarkup = wxml.slice(menuAt, menuEndAt);
-  assert.equal((menuMarkup.match(/<button/g) || []).length, 2, '菜单只放这一把可用的两个动作');
-  assert.match(menuMarkup, /bindtap="correctSend"/);
-  assert.match(menuMarkup, /bindtap="undoLatestAttempt"/);
-  assert.match(
-    wxml,
-    /wx:if="\{\{item\.isUndone\}\}"[\s\S]{0,600}id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,900}bindtap="restoreLatestAttempt"/
+    /id="record-attempt-withdraw-\{\{item\.id\}\}"[\s\S]{0,600}catchtap="undoLatestAttempt"/
   );
   assert.match(
     wxml,
-    /id="undo-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}bindtap="undoLatestAttempt"/
+    /id="record-attempt-withdraw-\{\{item\.id\}\}"[\s\S]{0,600}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,260}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}catchtap="undoLatestAttempt"/
   );
-  assert.match(
+  assert.doesNotMatch(wxml, /record-attempt-more|toggleLatestMenu|menuOpen/, '不再有「更多」菜单');
+  assert.doesNotMatch(wxml, /correct-attempt-|bindtap="correctSend"/, '不再有更正入口');
+  assert.doesNotMatch(wxml, /restore-attempt-|bindtap="restoreLatestAttempt"/, '不再有恢复按钮');
+  assert.doesNotMatch(
     wxml,
-    /id="restore-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-attempt-id="\{\{item\.id\}\}"[\s\S]{0,260}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}data-expected="\{\{item\.expected\}\}"[\s\S]{0,120}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,120}bindtap="restoreLatestAttempt"/
+    /record-attempt-correct-slot|record-attempt-hint-slot/,
+    '不再留纠错槽'
   );
-  // 已撤回时撤回菜单项整个不渲染，恢复按钮才出现：同一坐标不会被相反动作接管。
-  assert.match(wxml, /wx:if="\{\{item\.canUndo\}\}"[\s\S]{0,260}id="undo-attempt-/);
-  assert.match(wxml, /wx:if="\{\{item\.canRestore\}\}"[\s\S]{0,260}id="restore-attempt-/);
+  // 最新与旧把统一走同一个「备注」入口。
+  assert.match(wxml, /catchtap="openNoteEditor"[\s\S]{0,80}\{\{item\.noteActionText\}\} ›/);
 
-  // 命中区固定：菜单项 48px、右侧「更多」44px，展开/收起不改结果按钮的位置。
+  // 命中区固定：撤销 44×44；结果按钮与文字按钮的 44px 底限仍与这一行一致。
   const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
-  assert.match(wxss, /\.record-attempt-change \{[^}]*display:\s*flex/);
-  assert.match(wxss, /\.record-attempt-change \{[^}]*flex-direction:\s*column/);
-  assert.match(wxss, /\.record-attempt-menu-item \{[^}]*min-height:\s*48px/, '菜单项 48px 命中区');
-  assert.match(wxss, /\.record-attempt-more \{[^}]*min-height:\s*44px/, '「更多」44px 命中区');
+  assert.match(wxss, /\.record-attempt-withdraw \{[^}]*min-height:\s*44px/, '「撤销」44px 命中区');
+  assert.match(wxss, /\.record-attempt-withdraw \{[^}]*min-width:\s*44px/, '「撤销」44px 命中宽度');
   const buttonRule = wxss.match(
     /\.primary-button,\s*\.secondary-button,\s*\.text-button\s*\{[^}]*\}/
   );
   assert.ok(buttonRule && /min-height:\s*44px/.test(buttonRule[0]), '文字按钮的 44px 底限与这一行一致');
+  assert.equal(
+    /record-attempt-more|record-attempt-menu-item|record-attempt-correct/.test(wxss),
+    false,
+    '菜单与更正样式已移除'
+  );
 
   const handlers = new Set(handlersIn(wxml));
-  for (const required of ['toggleLatestMenu', 'undoLatestAttempt', 'restoreLatestAttempt']) {
+  for (const required of ['undoLatestAttempt', 'openNoteEditor']) {
     assert.ok(handlers.has(required), '单线页应绑定：' + required);
     assert.equal(typeof recordDefinition[required], 'function', required + ' 必须有页面方法');
   }
+  assert.equal(handlers.has('toggleLatestMenu'), false, '现场不再绑定菜单');
+  assert.equal(handlers.has('restoreLatestAttempt'), false, '现场不再绑定恢复');
+  // 档案层的恢复能力仍保留在共用实现里（现场不渲染入口）。
+  assert.equal(typeof recordDefinition.restoreLatestAttempt, 'function');
 
   const page = openRecordPage();
   const row = rowOf(page);
@@ -2513,10 +2506,11 @@ test('T050 最新一把「更多」在结果按钮之后：菜单只列原资格
   assert.equal(row.sessionId, seeded.session.id);
   assert.equal(row.titleText, '刚才 · T033 A 线 第 3 把 · 未完成');
   assert.match(row.metaText, /岩馆 T033/, '写明当前场次与岩馆');
-  assert.equal(row.expected, 'effective', '撤回按钮带着渲染这一行时的预期状态');
+  assert.equal(row.expected, 'effective', '撤销按钮带着渲染这一行时的预期状态');
   assert.equal(row.canUndo, true);
   assert.equal(row.canRestore, false);
-  assert.equal(row.undoText, '撤回这一把');
+  assert.equal(page.data.attemptCards[0].showWithdraw, true, '最新一把渲染出「撤销」');
+  assert.equal(page.data.attemptCards[0].undoText, '撤销');
   assert.equal(page.data.routeCountText, '3 把');
   assert.equal(page.data.attempts.length, 3);
 });
@@ -2589,7 +2583,8 @@ test('T033 在最近一行撤回回到 2、同处主动恢复回到 3：ID、原
   const writesAfterUndo = fault.setCount;
   page.undoLatestAttempt(attemptRowEvent(undoRow));
   assert.equal(fault.setCount, writesAfterUndo, '原坐标重复点击不产生第二次撤回');
-  assert.match(page.data.notice, /已经撤回/);
+  // T050 返工：同一原按钮的重放不再进共用实现，保留「已撤销第 3 把」。
+  assert.equal(page.data.notice, '已撤销第 3 把');
   assert.equal(rowOf(page).attemptId, saved[2].id);
   assert.equal(savedAttempts(seeded.session.id, seeded.route.id).filter(item => item.undoneAt).length, 1);
 
@@ -2744,12 +2739,14 @@ test('T033 撤回写盘失败显示失败与原操作重试，把数只按已落
   armSetFailAt(1);
   page.undoLatestAttempt(attemptRowEvent(rowOf(page)));
   assert.match(page.data.storageError, /保存本机训练档案失败/);
-  assert.match(page.data.notice, /重试撤回这一把/);
+  // T050 返工：现场提示与实际控件「重试撤销」用同一个名字。
+  assert.match(page.data.notice, /重试撤销/);
+  assert.doesNotMatch(page.data.notice, /重试撤回这一把/);
   assert.equal(page.data.routeCountText, '3 把', '没有落盘就不减把数');
   assert.equal(page.data.attempts.length, 3);
   assert.equal(rowOf(page).attemptId, third.id);
   assert.equal(rowOf(page).canUndo, true);
-  assert.equal(rowOf(page).undoText, '重试撤回这一把');
+  assert.equal(page.data.attemptCards[0].undoText, '重试撤销');
   assert.match(rowOf(page).stateText, /^撤回未保存/);
   assert.equal(archiveOf().pendingUndos.length, 0, '第一段失败不留进行中标记');
   assert.equal(
