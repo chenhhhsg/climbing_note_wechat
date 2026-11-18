@@ -460,12 +460,48 @@ page {
   color: #53615B;
 }
 
-/* 一张卡就是一把：中性细边框兜底，结果色由 -send / -fail 覆盖（T044 同一套色）。 */
+/* 一张卡就是一把：中性细边框兜底，结果色由 -send / -fail 覆盖（T044 同一套色）。
+   T048：最新一把保持完整卡（约 100px 起），更早的把次收成约 48px 的短行。 */
 .record-attempt {
   background-color: #FFFFFF;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;
   padding: 16rpx 20rpx;
+}
+
+/* 最新一把：结果、时间与一行备注完整展示，明显高于旧把次的短行 */
+.record-attempt-latest {
+  min-height: 100px;
+}
+
+/* 旧把次短行：保留边框、序号、结果、时间；结果色仍是墨绿／岩橙，左侧加粗边缘标记。
+   点行只展开/收起这一把（状态在页面内按原把次 ID 管理），不写任何数据。 */
+.record-attempt-compact {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  box-sizing: border-box;
+  min-height: 48px;
+  padding: 0 12px;
+  border-left-width: 4px;
+}
+
+.record-attempt-compact .record-attempt-main {
+  justify-content: center;
+}
+
+.record-attempt-compact .record-attempt-headline {
+  flex-wrap: nowrap;
+  min-height: 44px;
+}
+
+/* 旧把次的展开／收起标记：只在短行出现，最新一把没有收起态 */
+.record-attempt-caret {
+  flex: none;
+  margin-left: 8rpx;
+  font-size: 28rpx;
+  line-height: 1;
+  color: #53615B;
 }
 
 .record-attempt-send {
@@ -552,6 +588,16 @@ page {
   line-height: 1.6;
   color: #53615B;
   word-break: break-all;
+}
+
+/* 最新一把的备注摘要只占一行（T048）：超出用省略号，展开旧把次详情才看全文 */
+.record-attempt-note-summary {
+  display: block;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: normal;
 }
 
 .record-attempt-actions {

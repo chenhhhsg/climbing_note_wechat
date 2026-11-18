@@ -3426,3 +3426,241 @@ test('T045 行内改成未完成与撤回/恢复：总数、编号与备注保�
   assert.equal(restored.note, '第三把现场备注');
   assert.equal(restored.timeText, '09:20');
 });
+
+// ------------------------------------------------------------------ *
+// T048 单线逐把紧凑布局：最新一把置顶、上一把自动收成短行
+// ------------------------------------------------------------------ *
+
+/** 一条顶绳线（可重复完攀）＋按顺序记下的把次，全部走正式档案层。 */
+function seedRopeAttempts(results, notes, options) {
+  const config = options || {};
+  const started = store.startSession({
+    gymName: config.gymName || '岩馆 T048',
+    now: new Date(2026, 10, 10, 18, 0)
+  });
+  const created = store.createRoute({
+    sessionId: started.archive.activeSessionId,
+    name: config.routeName || 'T048 顶绳线',
+    climbType: '顶绳',
+    grade: '5.10a',
+    colorName: '蓝色'
+  });
+  assert.equal(created.ok, true, created.error);
+  const attempts = results.map((result, index) => {
+    const saved = store.saveAttempt({
+      sessionId: started.archive.activeSessionId,
+      routeId: created.route.id,
+      result,
+      note: notes && notes[index] ? notes[index] : '',
+      now: new Date(2026, 10, 10, 18, 5 + index * 4)
+    });
+    assert.equal(saved.ok, true, saved.error);
+    return saved.attempt;
+  });
+  return { session: store.loadState().archive.sessions[0], route: created.route, attempts };
+}
+
+function toggleRow(page, row) {
+  return page.toggleAttemptRow(
+    tapDataset({
+      attemptId: row.id || row.attemptId,
+      archiveId: archiveOf().archiveId,
+      sessionId: page.data.activeSession.id,
+      routeId: page.data.selectedRoute.id
+    })
+  );
+}
+
+test('T048 第 4 把保存成功后置顶，第 3 把自动收成短行；展开的旧行随之收起，原编号与备注不变', () => {
+  const seeded = seedRopeAttempts(['fail', 'send', 'fail'], ['', '第二把备注', '第三把备注']);
+  const page = openRecordFor(seeded.route.id, seeded.session.id);
+  assert.equal(page.data.attemptCards.length, 3);
+
+  // 先展开第 1 把：旧行详情按原把次打开。
+  toggleRow(page, seeded.attempts[0]);
+  assert.equal(page.data.expandedAttemptId, seeded.attempts[0].id);
+
+  // 记第 4 把（页面入口）。
+  tick();
+  recordThroughPage(page, 'fail');
+  const cards = page.data.attemptCards;
+  assert.equal(cards.length, 4, '成功保存只多一把');
+  assert.equal(cards[0].label, '第 4 把', '第 4 把置顶');
+  assert.equal(cards[0].isLatest, true);
+  assert.equal(cards[0].expanded, true, '新的一把完整展示');
+  assert.equal(cards[1].id, seeded.attempts[2].id, '上一把仍在原位置');
+  assert.equal(cards[1].label, '第 3 把', '原编号不变');
+  assert.equal(cards[1].note, '第三把备注', '原备注不变');
+  assert.equal(cards[1].expanded, false, '上一把自动收成短行');
+  assert.equal(cards[1].canToggle, true);
+  assert.equal(page.data.expandedAttemptId, '', '新一把落盘后展开态回到只有最新一把');
+  assert.equal(
+    page.data.attemptCards.filter(row => row.expanded).length,
+    1,
+    '同一时刻只有最新一把完整展示'
+  );
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.id),
+    [cards[0].id, seeded.attempts[2].id, seeded.attempts[1].id, seeded.attempts[0].id],
+    '按原序号倒序'
+  );
+});
+
+test('T048 保存失败与取消不生成新卡、保持原展开；重试成功只切换一次', () => {
+  const seeded = seedRopeAttempts(['fail', 'fail', 'fail'], ['', '', '第三把备注']);
+  const page = openRecordFor(seeded.route.id, seeded.session.id);
+  toggleRow(page, seeded.attempts[0]);
+  const expandedBefore = page.data.expandedAttemptId;
+  const latestBefore = page.data.attemptCards[0].id;
+
+  // 写前失败：这一把留在「待保存」，不生成第 4 张卡，最新一把与展开态都保持原样。
+  tick();
+  armSetFailAt(1);
+  page.recordAttempt(tapResult('fail'));
+  armSetFailAt(0);
+  assert.equal(page.data.pendingRows.length, 1, '失败的那一把在待保存行');
+  assert.equal(page.data.attemptCards.length, 3, '失败不生成新卡');
+  assert.equal(page.data.attemptCards[0].id, latestBefore, '最新一把没有换人');
+  assert.equal(page.data.expandedAttemptId, expandedBefore, '失败不改展开态');
+  assert.equal(page.data.attemptCards.find(row => row.id === expandedBefore).expanded, true);
+
+  // 取消备注编辑：展开的旧行仍留在原处，不写盘、不生成新卡，待保存的一把照旧。
+  page.openNoteEditor(tapDataset({ attemptId: seeded.attempts[0].id }));
+  assert.equal(page.data.noteEditor.attemptId, seeded.attempts[0].id);
+  page.onNoteInput({ detail: { value: '还没保存的草稿' } });
+  const bytesBeforeCancel = storage.get(ARCHIVE_KEY);
+  page.cancelNote(
+    tapDataset({
+      attemptId: page.data.noteEditor.attemptId,
+      editVersion: page.data.noteEditor.version
+    })
+  );
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(page.data.attemptCards.length, 3, '取消不生成新卡');
+  assert.equal(page.data.expandedAttemptId, expandedBefore, '取消不改展开态');
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBeforeCancel, '取消一个字都不写');
+
+  // 按原待保存行重试成功：第 4 把置顶，上一把收成短行，展开的旧行也收起。
+  const opId = page.data.pendingRows[0].opId;
+  tick();
+  page.retryPendingAttempt(
+    tapDataset({
+      opId,
+      archiveId: archiveOf().archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.hasPending, false);
+  assert.equal(page.data.attemptCards.length, 4, '重试成功只多一把');
+  assert.equal(page.data.attemptCards[0].isLatest, true);
+  assert.equal(page.data.attemptCards[1].id, seeded.attempts[2].id, '原来最新的一把收成短行');
+  assert.equal(page.data.attemptCards[1].expanded, false);
+  assert.equal(page.data.expandedAttemptId, '');
+
+  // 再刷新（返回本页 / onShow）也不多切一次：最新一把仍是同一把，旧行保持短行。
+  const latestAfterRetry = page.data.attemptCards[0].id;
+  page.refreshView();
+  page.onShow();
+  assert.equal(page.data.attemptCards[0].id, latestAfterRetry);
+  assert.equal(page.data.attemptCards[1].expanded, false);
+  assert.equal(page.data.attemptCards.filter(row => row.expanded).length, 1, '仍然只有最新一把完整');
+});
+
+test('T048 同线另一场不串入：只列入口那一场这一条线的原把次，各页面展开态互不影响', () => {
+  const seeded = seedRopeAttempts(['fail', 'fail'], ['', '第一场第二把备注'], {
+    gymName: '岩馆 T048 隔离'
+  });
+  const archive = archiveOf();
+  const firstSessionId = seeded.session.id;
+  const firstAttemptIds = seeded.attempts.map(attempt => attempt.id);
+
+  // 开始第二场，把同一条长期线路关联进来，再记两把。
+  const second = store.startSession({ gymName: '岩馆 T048 隔离', now: new Date(2026, 10, 10, 20, 0) });
+  assert.equal(second.ok, true, second.error);
+  const secondSessionId = second.archive.activeSessionId;
+  const linked = store.linkRouteToSession(secondSessionId, seeded.route.id);
+  assert.equal(linked.ok, true, linked.error);
+  const secondAttempts = ['fail', 'send'].map((result, index) => {
+    const saved = store.saveAttempt({
+      sessionId: secondSessionId,
+      routeId: seeded.route.id,
+      result,
+      note: '第二场第' + (index + 1) + '把',
+      now: new Date(2026, 10, 10, 20, 5 + index * 3)
+    });
+    assert.equal(saved.ok, true, saved.error);
+    return saved.attempt;
+  });
+
+  const firstPage = openRecordFor(seeded.route.id, firstSessionId);
+  toggleRow(firstPage, seeded.attempts[0]);
+  assert.equal(firstPage.data.expandedAttemptId, seeded.attempts[0].id);
+
+  // 第二场同一条线：只列第二场自己的两把，原序号从这一场重新数。
+  const secondPage = openRecordFor(seeded.route.id, secondSessionId);
+  assert.deepEqual(
+    secondPage.data.attemptCards.map(row => row.id),
+    [secondAttempts[1].id, secondAttempts[0].id],
+    '同线另一场不串入'
+  );
+  assert.deepEqual(secondPage.data.attemptCards.map(row => row.label), ['第 2 把', '第 1 把']);
+  assert.equal(secondPage.data.expandedAttemptId, '', '新页面没有继承另一场的展开态');
+  assert.equal(
+    secondPage.data.attemptCards.some(row => firstAttemptIds.includes(row.id)),
+    false,
+    '第一场的原把次不出现在这一场'
+  );
+
+  // 第二场再记一把：第一场页面刷新后仍是原两把，展开态也留在原来那一把。
+  const saved = store.saveAttempt({
+    sessionId: secondSessionId,
+    routeId: seeded.route.id,
+    result: 'fail',
+    note: '',
+    now: new Date(2026, 10, 10, 20, 20)
+  });
+  assert.equal(saved.ok, true, saved.error);
+  firstPage.refreshView();
+  assert.deepEqual(
+    firstPage.data.attemptCards.map(row => row.id),
+    [seeded.attempts[1].id, seeded.attempts[0].id]
+  );
+  assert.equal(firstPage.data.expandedAttemptId, seeded.attempts[0].id);
+  assert.equal(
+    firstPage.data.attemptCards.find(row => row.id === seeded.attempts[0].id).expanded,
+    true,
+    '另一场新增把次不改这一场的展开态'
+  );
+
+  // 同场另一条线同样不串入：它在自己的单线页里按自己的原序号排列。
+  const neighbor = store.createRoute({
+    sessionId: firstSessionId,
+    name: 'T048 隔离旁线',
+    climbType: '顶绳',
+    grade: '5.10a'
+  });
+  assert.equal(neighbor.ok, true, neighbor.error);
+  const neighborAttempt = store.saveAttempt({
+    sessionId: firstSessionId,
+    routeId: neighbor.route.id,
+    result: 'fail',
+    note: '旁线这一把',
+    now: new Date(2026, 10, 10, 21, 0)
+  });
+  assert.equal(neighborAttempt.ok, true, neighborAttempt.error);
+  firstPage.refreshView();
+  assert.equal(
+    firstPage.data.attemptCards.some(row => row.id === neighborAttempt.attempt.id),
+    false,
+    '同场另一条线的把次不串入'
+  );
+  const neighborPage = openRecordFor(neighbor.route.id, firstSessionId);
+  assert.deepEqual(
+    neighborPage.data.attemptCards.map(row => row.label),
+    ['第 1 把'],
+    '旁线从自己的第 1 把起算'
+  );
+  assert.equal(neighborPage.data.attemptCards[0].isLatest, true);
+});

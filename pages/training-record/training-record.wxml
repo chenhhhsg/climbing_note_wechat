@@ -260,10 +260,11 @@
         </view>
 
         <!--
-          本场本线把次（T045）：普通文档流里直接列出，最新在前，一把一框。
-          卡框沿用 T044 的配色与边框（完攀深绿、未完成深橙）；每行只用这一行带下来的
-          原把次 ID 与归属：
-          - 「编辑」只展开这一行的备注编辑器，保存/取消只改这一把；备注为空也显示同一入口；
+          本场本线把次（T045 / T048）：普通文档流里直接列出，原序号倒序，最新在前。
+          最新一把完整展示结果、时间与一行备注；更早的把次各占一条紧凑短行，保留边框、
+          原序号、结果色（墨绿完攀／岩橙未完成）与时间，点行只展开/收起这一把。
+          卡框沿用 T044 的配色与边框；每行只用这一行带下来的原把次 ID 与归属：
+          - 展开后「编辑」只打开这一行的备注编辑器，保存/取消只改这一把；备注为空也显示同一入口；
           - 视频入口沿用原把次视频页（四个 ID 再核对）；
           - 合资格的完攀给「改成未完成」，最近一把给「这把多记了」/「恢复这一把」，
             失败重试与恢复都留在原框；两个动作各占一个并排槽，坐标互不接管。
@@ -278,10 +279,17 @@
             wx:for="{{attemptCards}}"
             wx:key="id"
             id="record-attempt-{{item.id}}"
-            class="record-attempt {{item.isSend ? 'record-attempt-send' : 'record-attempt-fail'}}{{item.isUndone ? ' record-attempt-undone' : ''}}"
+            class="record-attempt {{item.isSend ? 'record-attempt-send' : 'record-attempt-fail'}}{{item.isUndone ? ' record-attempt-undone' : ''}}{{item.isLatest ? ' record-attempt-latest' : ' record-attempt-older'}}{{item.expanded ? ' record-attempt-open' : ' record-attempt-compact'}}"
           >
             <view class="record-attempt-main">
-              <view class="record-attempt-headline">
+              <view
+                class="record-attempt-headline{{item.canToggle ? ' record-attempt-headline-toggle' : ''}}"
+                data-attempt-id="{{item.id}}"
+                data-archive-id="{{item.archiveId}}"
+                data-session-id="{{item.sessionId}}"
+                data-route-id="{{item.routeId}}"
+                bindtap="toggleAttemptRow"
+              >
                 <text id="record-attempt-label-{{item.id}}" class="record-attempt-label">{{item.label}}</text>
                 <text
                   class="record-attempt-result {{item.isSend ? 'record-attempt-result-send' : 'record-attempt-result-fail'}}"
@@ -292,12 +300,18 @@
                   class="record-attempt-undone-tag"
                 >已撤回</text>
                 <text class="record-attempt-time">{{item.timeText}}</text>
+                <text
+                  wx:if="{{item.canToggle}}"
+                  id="record-attempt-toggle-{{item.id}}"
+                  class="record-attempt-caret"
+                >{{item.expanded ? '▾' : '›'}}</text>
               </view>
 
+              <block wx:if="{{item.expanded}}">
               <text
                 wx:if="{{item.hasNote}}"
                 id="record-attempt-note-{{item.id}}"
-                class="record-attempt-note"
+                class="record-attempt-note{{item.isLatest ? ' record-attempt-note-summary' : ''}}"
               >{{item.note}}</text>
 
               <view class="record-attempt-actions">
@@ -332,8 +346,10 @@
                   class="record-attempt-video-state"
                 >{{item.videoStateText}}</text>
               </view>
+              </block>
             </view>
 
+            <block wx:if="{{item.expanded}}">
             <view class="record-attempt-fix">
               <!-- 「改成未完成」：与线路历史、本场逐把同一份资格；确认后才翻这一把 -->
               <view wx:if="{{item.correctionSupported}}" class="record-attempt-correct-slot">
@@ -448,6 +464,7 @@
                 >保存备注</button>
               </view>
             </view>
+            </block>
           </view>
         </view>
 
@@ -455,7 +472,7 @@
           <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
         </view>
 
-        <text class="record-foot-hint">点「编辑」只改这一把的备注；视频沿用原把次视频页。照片与卡点在照片缩略图里。</text>
+        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行。「编辑」只改这一把的备注；视频沿用原把次视频页。照片与卡点在照片缩略图里。</text>
       </block>
     </block>
   </block>

@@ -1623,3 +1623,74 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
   assert.match(wxss, /\.route-completed-panel,[\s\S]*?min-height: 48px/, '完攀面板同高');
   assert.equal(/route-correction/.test(wxss), false, '独立更正区样式已移除');
 });
+
+// ------------------------------------------------------------------ *
+// T048 撤回/恢复与紧凑层级
+// ------------------------------------------------------------------ *
+
+test('T048 撤回/恢复最新一把不改卡层级：最新一把仍是完整卡并带「已撤回」，旧行展开态与顺序不动', () => {
+  const { session, route } = beginTraining({ now: new Date(2026, 10, 9, 9, 0) });
+  const first = addAttempt(session, route, 'fail', '第一把备注', new Date(2026, 10, 9, 9, 10));
+  const second = addAttempt(session, route, 'fail', '第二把备注', new Date(2026, 10, 9, 9, 20));
+  const third = addAttempt(session, route, 'send', '第三把完攀', new Date(2026, 10, 9, 9, 30));
+
+  const page = createPage(recordDefinition);
+  page.onLoad({ archiveId: archiveOf().archiveId, sessionId: session.id, routeId: route.id });
+
+  // 先展开第 1 把，再撤回最新一把。
+  page.toggleAttemptRow({
+    currentTarget: {
+      dataset: {
+        attemptId: first.id,
+        archiveId: archiveOf().archiveId,
+        sessionId: session.id,
+        routeId: route.id
+      }
+    }
+  });
+  assert.equal(page.data.expandedAttemptId, first.id);
+
+  const rowEvent = row => ({
+    currentTarget: {
+      dataset: {
+        attemptId: row.attemptId,
+        routeId: row.routeId,
+        sessionId: row.sessionId,
+        archiveId: row.archiveId,
+        expected: row.expected,
+        expectedRev: row.expectedRev
+      }
+    }
+  });
+
+  page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
+  let cards = page.data.attemptCards;
+  assert.deepEqual(
+    cards.map(row => row.id),
+    [third.id, second.id, first.id],
+    '撤回不删卡、不换序，原序号与 ID 保持'
+  );
+  assert.equal(cards[0].isLatest, true, '最新一把仍置顶');
+  assert.equal(cards[0].expanded, true, '最新一把仍是完整卡');
+  assert.equal(cards[0].isUndone, true, '撤回后原卡带「已撤回」');
+  assert.equal(cards[0].note, '第三把完攀', '原备注保留');
+  assert.equal(cards[1].expanded, false, '第 2 把仍是短行');
+  assert.equal(cards[2].expanded, true, '第 1 把的展开态不被撤回改动');
+  assert.equal(page.data.expandedAttemptId, first.id);
+  assert.equal(page.data.routeCountText, '2 把', '撤回只减这一把');
+
+  // 恢复：同一张卡回到有效状态，层级、ID 与展开态都不动。
+  page.restoreLatestAttempt(rowEvent(page.data.recentAttempt));
+  cards = page.data.attemptCards;
+  assert.deepEqual(cards.map(row => row.id), [third.id, second.id, first.id]);
+  assert.equal(cards[0].isUndone, false);
+  assert.equal(cards[0].expanded, true);
+  assert.equal(cards[1].expanded, false);
+  assert.equal(cards[2].expanded, true);
+  assert.equal(page.data.expandedAttemptId, first.id, '恢复不改展开态');
+  assert.equal(page.data.routeCountText, '3 把');
+
+  // 恢复后最新一把也不再是「已撤回」卡片：结果、时间与备注都来自原把次。
+  assert.equal(cards[0].timeText, page.data.attemptCards[0].timeText);
+  assert.equal(cards[0].resultText, '完攀');
+});

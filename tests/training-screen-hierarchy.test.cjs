@@ -1051,3 +1051,92 @@ test('T044 本场一线一卡：每行中性卡框并留卡间间距，当前线
   assert.equal(page.data.routes[2].isSelected, true, '刚建的那张卡是当前线');
   assert.equal(page.data.routes[2].name, longName, '长名完整保留在卡内');
 });
+
+// ------------------------------------------------------------------ *
+// T048 单线逐把紧凑布局：窄屏单列层级
+// ------------------------------------------------------------------ *
+
+test('T048 320/390 窄屏：本场逐把仍是单列文档流，最新卡与旧行高度分层，不靠固定宽度或横向滚动', () => {
+  const recordWxml = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
+    'utf8'
+  );
+  const recordWxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
+    'utf8'
+  );
+
+  // 列表是一列纵向排布：三个宽度共用同一套布局，不做按宽度的分栏。
+  const listCss = declarationsOf(recordWxss, '.record-attempts');
+  assert.match(listCss, /display:\s*flex/);
+  assert.match(listCss, /flex-direction:\s*column/);
+  assert.doesNotMatch(recordWxss, /@media[^{]*\{[^}]*record-attempt/, '紧凑布局不按屏宽分支出第二套');
+
+  // 最新一把完整、更早的把次短行：两者都在同一列，各自宽度随屏宽，不写死 px 宽度。
+  for (const selector of ['.record-attempt-latest', '.record-attempt-compact']) {
+    const css = declarationsOf(recordWxss, selector);
+    assert.ok(css, '缺少 ' + selector);
+    assert.doesNotMatch(css, /(^|;)\s*width\s*:/, selector + ' 不写死宽度');
+    assert.doesNotMatch(css, /position\s*:\s*(absolute|fixed)/, selector + ' 不用绝对定位');
+    assert.doesNotMatch(css, /overflow-x\s*:\s*scroll/, selector + ' 不横向滚动');
+  }
+  const t048MinHeight = selector => {
+    const found = declarationsOf(recordWxss, selector).match(/min-height\s*:\s*([^;]+)/);
+    return found ? found[1].trim() : '';
+  };
+  assert.equal(t048MinHeight('.record-attempt-latest'), '100px');
+  assert.equal(t048MinHeight('.record-attempt-compact'), '48px');
+
+  // 旧行整行可点：行首 44px 命中区，序号、结果与时间都留在行内，不收起。
+  assert.equal(t048MinHeight('.record-attempt-headline'), '44px');
+  const compactCss = declarationsOf(recordWxss, '.record-attempt-compact');
+  assert.doesNotMatch(compactCss, /display:\s*none/, '短行只压缩高度，不隐藏内容');
+  const headlineAt = recordWxml.indexOf('class="record-attempt-headline');
+  const headline = recordWxml.slice(
+    headlineAt,
+    recordWxml.indexOf('wx:if="{{item.expanded}}"', headlineAt)
+  );
+  assert.match(headline, /record-attempt-label/);
+  assert.match(headline, /record-attempt-result/);
+  assert.match(headline, /record-attempt-time/);
+
+  // 长备注不会把窄屏撑出横向滚动：摘要行内省略，宽度跟随容器。
+  assert.match(declarationsOf(recordWxss, '.record-attempt-note-summary'), /overflow:\s*hidden/);
+  assert.doesNotMatch(recordWxml.slice(recordWxml.indexOf('id="record-attempts"')), /<scroll-view/);
+
+  // 三把夹具的数据层级：第 3 把完整，第 2、1 把短行；原编号、结果、时间逐把对应。
+  const session = seedSession('窄屏岩馆', '2026-11-12');
+  const route = seedRoute(session.id, {
+    name: '窄屏顶绳线',
+    climbType: '顶绳',
+    grade: '5.10a',
+    colorName: '蓝色',
+    colorHex: '#2f6fe4'
+  });
+  const saved = ['fail', 'send', 'fail'].map((result, index) => {
+    const outcome = store.saveAttempt({
+      sessionId: session.id,
+      routeId: route.id,
+      result,
+      note: index === 2 ? '长备注'.repeat(12) : '第' + (index + 1) + '把',
+      now: new Date(2026, 10, 12, 9, 10 + index * 5)
+    });
+    assert.equal(outcome.ok, true, outcome.error);
+    return outcome.attempt;
+  });
+
+  const page = openRecordPage(route.id, session.id);
+  const cards = page.data.attemptCards;
+  assert.deepEqual(
+    cards.map(row => row.label),
+    ['第 3 把', '第 2 把', '第 1 把'],
+    '三把夹具按原序号倒序'
+  );
+  assert.deepEqual(cards.map(row => row.expanded), [true, false, false]);
+  assert.equal(cards[0].id, saved[2].id);
+  assert.equal(cards[0].note, '长备注'.repeat(12), '长备注原文保留，摘要单行由样式收口');
+  assert.equal(cards[0].isSend, false);
+  assert.equal(cards[1].isSend, true, '第 2 把完攀仍带墨绿状态文字');
+  assert.ok(cards.every(row => row.timeText), '每把都有时间');
+  assert.equal(page.data.expandedAttemptId, '');
+});

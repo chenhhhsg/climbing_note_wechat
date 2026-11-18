@@ -19,6 +19,11 @@
  * / 「恢复这一把」，失败重试与撤回后的恢复都留在原框。现场不再有独立的「本场逐把」
  * 跳转与「线路历史」入口；缩略图仍打开原来的二级大图标记页。
  *
+ * T048：按场次与长期线路读取原序号倒序。最新一把完整展示结果、时间与一行备注；更早的
+ * 把次各占一条紧凑短行（保留边框、原序号、结果色与时间），点旧行只展开这一把的详情，
+ * 备注、视频与纠错入口仍在原把次上。展开态只存在本页（expandedAttemptId，按原把次 ID），
+ * 不新增存储字段；新一把落盘成功后上一把自动收成短行，失败、取消与待保存都不换层级。
+ *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
  * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
  */
@@ -54,9 +59,12 @@ Page({
 
     attempts: [],
     hasAttempts: false,
-    // 现场把次（T045）：本场本线有效把次 + 刚撤回的最近一把，最新在前、一把一框。
+    // 现场把次（T045/T048）：本场本线有效把次 + 刚撤回的最近一把，最新在前；
+    // 只有最新一把完整展示，更早的把次收成短行，点行展开原把详情。
     attemptCards: [],
     hasAttemptCards: false,
+    // 展开态只在当前页面按原把次 ID 记一份（不落盘）：'' = 只有最新一把完整展示。
+    expandedAttemptId: '',
     // 行内备注编辑：只作用于所点那一把，保存/取消按原 attemptId 与编辑代次核对。
     noteEditor: null,
     pendingRows: [],
@@ -90,6 +98,8 @@ Page({
     // 已打开、还没回应的更正确认：同一把连点沿用这一次，不叠第二个弹窗。
     this._correctionPrompt = null;
     this._recentStatus = null;
+    // 上一次渲染时置顶的原把次 ID：新一把落盘成功后上一把自动收成短行（只改本页展示）。
+    this._latestAttemptId = '';
     // 照片控制器只在本页创建一次；照片读写全在控制器里，页面不另存文件或索引。
     this._photoUi = null;
     this._unloaded = false;
@@ -142,6 +152,7 @@ Page({
         hasAttempts: false,
         attemptCards: [],
         hasAttemptCards: false,
+        expandedAttemptId: '',
         noteEditor: null,
         pendingRows: [],
         hasPending: false,
@@ -269,10 +280,10 @@ Page({
       route
     );
 
-    // 现场把次行（T045）：视频关联状态只读索引，一次读给本场本线这些把次；
+    // 现场把次行（T045/T048）：视频关联状态只读索引，一次读给本场本线这些把次；
     // 派生只读，行内动作仍由共用事件处理按原把次 ID 与归属落盘。
     const videoLinks = attemptVideo.videoLinkMap(archive.archiveId, savedRows);
-    const attemptCards = actions.attemptCardRows(
+    const baseCards = actions.attemptCardRows(
       archive,
       activeSession,
       selectedRoute,
@@ -280,6 +291,23 @@ Page({
       recentAttempt,
       videoLinks,
       this
+    );
+    // 展开展示（T048）只在页面内按原把次 ID 管理：最新一把始终完整，更早的把次默认短行。
+    // 新一把落盘成功（latest 换人）时清空展开态，上一把随之自动收成短行；写失败、取消与
+    // 还没落盘的待保存都不会换 latest，所以不会多切一次。
+    const latestAttemptId = baseCards.length ? baseCards[0].id : '';
+    let expandedAttemptId = this.data.expandedAttemptId || '';
+    if (this._latestAttemptId && this._latestAttemptId !== latestAttemptId) {
+      expandedAttemptId = '';
+    }
+    if (expandedAttemptId && !baseCards.some(item => item.id === expandedAttemptId)) {
+      expandedAttemptId = '';
+    }
+    this._latestAttemptId = latestAttemptId;
+    const attemptCards = baseCards.map(item =>
+      Object.assign({}, item, {
+        expanded: item.isLatest || item.id === expandedAttemptId
+      })
     );
     // 编辑中的这一把若已不在可编辑列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
     let noteEditor = this.data.noteEditor;
@@ -300,6 +328,7 @@ Page({
       hasAttempts: attempts.length > 0,
       attemptCards,
       hasAttemptCards: attemptCards.length > 0,
+      expandedAttemptId,
       noteEditor,
       pendingRows,
       hasPending: pendingRows.length > 0,
@@ -311,7 +340,38 @@ Page({
     });
   },
 
-  // ---------------------------------------------------------------- 现场把次（T045）
+  // ---------------------------------------------------------------- 现场把次（T045 / T048）
+
+  /**
+   * 旧把次短行：点一下只展开/收起所点的这一把，最新一把始终保持完整展示。
+   * 展开态只存在本页（expandedAttemptId，按原把次 ID），切换、收起与返回都不写盘；
+   * 这一下若已不属于本页这一场这一条线（换档、过期行、被撤回），只按最新档案刷新。
+   */
+  toggleAttemptRow(event) {
+    if (this.data.loadError || this.data.contextError) return;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
+    const stale =
+      !row ||
+      (dataset.archiveId && dataset.archiveId !== archiveId) ||
+      (dataset.sessionId && dataset.sessionId !== sessionId) ||
+      (dataset.routeId && dataset.routeId !== routeId);
+    if (stale) {
+      this.setData({ notice: '这一行已经变化，没有切换展开；已按最新数据刷新。' });
+      this.refreshView();
+      return;
+    }
+    // 最新一把没有收起态：点它的行不改层级。
+    if (row.isLatest) return;
+    this.setData({
+      expandedAttemptId: this.data.expandedAttemptId === attemptId ? '' : attemptId
+    });
+    this.refreshView();
+  },
 
   /**
    * 行内备注编辑：点的是哪一行就只打开哪一把，再点同一行不重置已输入的内容。

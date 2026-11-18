@@ -3009,3 +3009,120 @@ test('T033 恢复的第二段写成后回执丢失：页面重读落盘状态，
   assert.equal(rowOf(reopened).attemptId, only.id);
   assert.equal(rowOf(reopened).canUndo, true);
 });
+
+// ------------------------------------------------------------------ *
+// T048 单线逐把紧凑布局：最新一把完整卡，较早把次收成短行
+// ------------------------------------------------------------------ *
+
+/** 短行 / 收起事件：带渲染时这一把的原把次 ID 与本页归属。 */
+function attemptRowToggleEvent(row, archive, sessionId, routeId) {
+  return tapDataset({
+    attemptId: row.id || row.attemptId,
+    archiveId: archive.archiveId,
+    sessionId,
+    routeId
+  });
+}
+
+test('T048 原序号倒序：最新一把完整卡，较早把次默认短行，结果、时间与备注逐把对应', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T048', routeName: 'T048 A 线' });
+  const longNote = '第三把右脚先踩高，左手换到外侧后再把身体往墙里收，最后一步不要急着伸手。';
+  const saved = saveAttemptSeries(seeded.session, seeded.route, ['fail', 'fail', 'fail'], index =>
+    index === 2 ? longNote : '第' + (index + 1) + '把现场备注'
+  );
+
+  const page = openRecordPage();
+  const cards = page.data.attemptCards;
+  assert.equal(cards.length, 3);
+  assert.deepEqual(
+    cards.map(row => row.id),
+    [saved[2].id, saved[1].id, saved[0].id],
+    '按原序号倒序，最新在前'
+  );
+  assert.deepEqual(cards.map(row => row.label), ['第 3 把', '第 2 把', '第 1 把']);
+
+  // 最新一把：结果、时间与一行备注完整展示；始终展开，没有收起态。
+  assert.equal(cards[0].isLatest, true);
+  assert.equal(cards[0].expanded, true);
+  assert.equal(cards[0].canToggle, false);
+  assert.equal(cards[0].resultText, '未完成');
+  assert.equal(cards[0].isSend, false);
+  assert.ok(cards[0].timeText, '最新一把带时间');
+  assert.equal(cards[0].note, longNote, '备注原文保留，单行摘要由样式负责');
+  assert.equal(cards[0].hasNote, true);
+
+  // 较早两把：紧凑短行，保留原编号、结果、时间与备注，默认不展开。
+  for (const row of cards.slice(1)) {
+    assert.equal(row.isLatest, false);
+    assert.equal(row.expanded, false);
+    assert.equal(row.canToggle, true);
+    assert.equal(row.resultText, '未完成');
+    assert.ok(row.timeText, '短行仍带时间');
+    assert.ok(row.note, '原备注跟着原把次');
+  }
+  assert.equal(page.data.expandedAttemptId, '', '打开页面时只有最新一把完整展示');
+  assert.equal(page.data.routeCountText, '3 把', '把数口径不变');
+});
+
+test('T048 点旧行只展开原把：切换与收起不写盘，最新一把仍完整，过期行事件不改层级', () => {
+  const seeded = seedTraining({ gymName: '岩馆 T048', routeName: 'T048 B 线' });
+  const saved = saveAttemptSeries(
+    seeded.session,
+    seeded.route,
+    ['fail', 'fail', 'fail'],
+    index => '第' + (index + 1) + '把备注'
+  );
+  const archive = archiveOf();
+  const page = openRecordPage();
+  const bytesBefore = storage.get(ARCHIVE_KEY);
+  const rowOfId = id => page.data.attemptCards.find(row => row.id === id);
+
+  // 展开第 1 把：只这一把展开，第 2 把仍是短行，最新一把保持完整。
+  page.toggleAttemptRow(attemptRowToggleEvent(saved[0], archive, seeded.session.id, seeded.route.id));
+  assert.equal(page.data.expandedAttemptId, saved[0].id);
+  assert.equal(rowOfId(saved[0].id).expanded, true);
+  assert.equal(rowOfId(saved[0].id).canEditNote, true, '展开后保留原按把备注入口');
+  assert.equal(rowOfId(saved[0].id).note, '第1把备注', '展开后看到这一把的原文');
+  assert.equal(rowOfId(saved[1].id).expanded, false);
+  assert.equal(rowOfId(saved[2].id).expanded, true, '最新一把始终完整展示');
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '展开不写盘');
+
+  // 点第 2 把：展开态切到所点的那一把，同一时刻只有一把旧行展开。
+  page.toggleAttemptRow(attemptRowToggleEvent(saved[1], archive, seeded.session.id, seeded.route.id));
+  assert.equal(page.data.expandedAttemptId, saved[1].id);
+  assert.equal(rowOfId(saved[0].id).expanded, false);
+  assert.equal(rowOfId(saved[1].id).expanded, true);
+
+  // 再点同一把：收起，回到只有最新一把完整的初始层级。
+  page.toggleAttemptRow(attemptRowToggleEvent(saved[1], archive, seeded.session.id, seeded.route.id));
+  assert.equal(page.data.expandedAttemptId, '');
+  assert.equal(rowOfId(saved[1].id).expanded, false);
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '收起也不写盘');
+
+  // 最新一把没有收起态：点它的行不改层级。
+  page.toggleAttemptRow(attemptRowToggleEvent(saved[2], archive, seeded.session.id, seeded.route.id));
+  assert.equal(page.data.expandedAttemptId, '');
+  assert.equal(rowOfId(saved[2].id).expanded, true);
+
+  // 展开旧行后返回本页（onShow）：只是重读档案，展开态与持久字节都不变。
+  page.toggleAttemptRow(attemptRowToggleEvent(saved[0], archive, seeded.session.id, seeded.route.id));
+  page.onShow();
+  assert.equal(page.data.expandedAttemptId, saved[0].id, '返回后仍停在原来展开的那一把');
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '返回也不写盘');
+  page.toggleAttemptRow(attemptRowToggleEvent(saved[0], archive, seeded.session.id, seeded.route.id));
+  assert.equal(page.data.expandedAttemptId, '');
+
+  // 过期行事件（这一把不属于本页这一条线）：不改层级、不写盘，只提示并按最新档案刷新。
+  page.toggleAttemptRow(
+    tapDataset({
+      attemptId: 'attempt-of-another-route',
+      archiveId: archive.archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(page.data.expandedAttemptId, '', '过期行不展开别的把次');
+  assert.match(page.data.notice, /已经变化|刷新/);
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '过期行事件一个字都不写');
+  assert.equal(page.data.attemptCards.length, 3, '列表仍是原三把');
+});
