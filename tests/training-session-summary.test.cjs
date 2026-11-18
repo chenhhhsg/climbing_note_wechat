@@ -1296,7 +1296,9 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
   assert.match(recordWxml, /class="result-button result-fail"/);
   assert.match(recordWxml, /bindtap="recordAttempt"/);
-  assert.match(recordWxml, /bindtap="correctSend"/);
+  // T050 返工：现场只给最新一把直接的「撤销」；更正与恢复入口已从现场移除。
+  assert.match(recordWxml, /catchtap="undoLatestAttempt"/);
+  assert.doesNotMatch(recordWxml, /bindtap="correctSend"|bindtap="restoreLatestAttempt"/);
 
   assert.doesNotMatch(wxml, /id="wishlist-section"/);
   assert.doesNotMatch(wxml, /id="selected-wishlist"/);
@@ -1312,11 +1314,11 @@ test('R3 场内页 WXML：小结只留入口，其余训练操作一个不少，
   ['startSession', 'switchSession', 'openRecord', 'createRoute'].forEach(name => {
     assert.ok(handlers.includes(name), '场内绑定仍在：' + name);
   });
-  // 记录与更正按原目的地迁移到单线页，绑定与处理器都在。
+  // 记录、待保存重试与撤销按原目的地迁移到单线页，绑定与处理器都在。
   assert.equal(typeof sessionDefinition.recordAttempt, 'undefined');
   assert.equal(typeof sessionDefinition.correctSend, 'undefined');
   const recordHandlers = handlersIn(recordWxml);
-  ['recordAttempt', 'retryPendingAttempt', 'undoLatestAttempt', 'restoreLatestAttempt', 'correctSend']
+  ['recordAttempt', 'retryPendingAttempt', 'undoLatestAttempt']
     .forEach(name => assert.ok(recordHandlers.includes(name), '单线页绑定：' + name));
   assert.equal(archiveOf().activeSessionId, s2.id, '打开小结与读取入口都不改当前场次');
 });

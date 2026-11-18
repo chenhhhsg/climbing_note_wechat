@@ -1007,3 +1007,45 @@ test('T049 视频页在回看、无片与保存前都写明本机保存位置与
   const videoJs = fs.readFileSync(VIDEO_JS, 'utf8');
   assert.doesNotMatch(videoJs, /saved-storage-hint|storageHint/, '不靠额外数据字段拼说明');
 });
+
+test('T049 视频标题按有效把次连续编号：撤回第 2 把后新记的一把显示第 2 把', () => {
+  const flow = seedTwoAttempts();
+  const scope = { routeId: flow.route.id, sessionId: flow.session.id };
+  const undone = store.undoAttempt(flow.attemptB.id, scope);
+  assert.equal(undone.ok, true, undone.error);
+  const fresh = record(flow.session, flow.route, 'fail', '重记的第二把');
+  const archiveId = archiveOf().archiveId;
+
+  // 视频页只带这一把的四个 ID 打开；标题里的「第 N 把」读同一份显示投影。
+  const freshPage = openVideoPage(Object.assign({ archiveId, attemptId: fresh.id }, scope));
+  assert.equal(freshPage.data.contextError, '');
+  assert.equal(freshPage.data.attempt.id, fresh.id);
+  assert.equal(freshPage.data.attempt.label, '第 2 把', '新一把接第 2 把，不跳号');
+  assert.equal(freshPage.data.attempt.note, '重记的第二把');
+
+  const firstPage = openVideoPage(
+    Object.assign({ archiveId, attemptId: flow.attemptA.id }, scope)
+  );
+  assert.equal(firstPage.data.attempt.label, '第 1 把', '原第 1 把不挪号');
+
+  // 已撤回的那一把仍按原规则打不开视频页；归档逐把只列有效把次并显示连续编号。
+  const undonePage = openVideoPage(
+    Object.assign({ archiveId, attemptId: flow.attemptB.id }, scope)
+  );
+  assert.match(undonePage.data.contextError, /已经撤回/);
+  const attemptsPage = openAttemptsPage(
+    Object.assign({ archiveId }, scope)
+  );
+  assert.deepEqual(
+    attemptsPage.data.attempts.map(row => [row.label, row.id]),
+    [
+      ['第 1 把', flow.attemptA.id],
+      ['第 2 把', fresh.id]
+    ]
+  );
+  assert.equal(
+    attemptsPage.data.attempts.some(row => row.id === flow.attemptB.id),
+    false,
+    '已撤回的一把不在有效逐把列表里'
+  );
+});

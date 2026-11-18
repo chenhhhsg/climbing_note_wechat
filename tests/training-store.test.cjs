@@ -32,6 +32,9 @@ const fault = {
   setCount: 0,
   loseResponseAt: 0,
   getFail: false,
+  getFailOnce: 0,
+  getCount: 0,
+  getFailAt: 0,
   removeFail: false,
   infoFail: false
 };
@@ -42,6 +45,9 @@ function resetStorage() {
   fault.setCount = 0;
   fault.loseResponseAt = 0;
   fault.getFail = false;
+  fault.getFailOnce = 0;
+  fault.getCount = 0;
+  fault.getFailAt = 0;
   fault.removeFail = false;
   fault.infoFail = false;
 }
@@ -64,6 +70,14 @@ function armSetLoseResponseAt(callNumber) {
 global.wx = {
   getStorageSync(key) {
     if (fault.getFail) throw new Error('getStorageSync:fail injected');
+    fault.getCount += 1;
+    if (fault.getFailAt && fault.getCount === fault.getFailAt) {
+      throw new Error('getStorageSync:fail injected at call ' + fault.getCount);
+    }
+    if (fault.getFailOnce > 0) {
+      fault.getFailOnce -= 1;
+      throw new Error('getStorageSync:fail injected once');
+    }
     return storage.has(key) ? storage.get(key) : '';
   },
   setStorageSync(key, value) {
@@ -863,4 +877,275 @@ test('R5 正式页不再用 wx.clearStorage，改走受保护的清缓存入口'
   // 不引用试用键、不接云。
   assert.doesNotMatch(storeSource, /gymLogTrial/);
   assert.doesNotMatch(storeSource, /wx\.cloud/);
+});
+
+// ------------------------------------------------------------------ *
+// T048–T050 追加返工：长按删除有效把次（档案层）
+// ------------------------------------------------------------------ *
+
+function fiveAttempts(options) {
+  const config = options || {};
+  const { session, route } = beginTraining({
+    climbType: config.climbType || '顶绳',
+    grade: config.grade || (config.climbType === '抱石' ? 'V3' : '5.10a'),
+    routeName: config.routeName || '删除用顶绳线'
+  });
+  const notes = ['一', '二', '三', '四', '五'];
+  const attempts = notes.map((note, index) => {
+    const saved = store.saveAttempt({
+      sessionId: session.id,
+      routeId: route.id,
+      result: config.sendIndex === index ? 'send' : 'fail',
+      note: note + '号备注',
+      now: new Date(2026, 10, 9, 9, index)
+    });
+    assert.equal(saved.ok, true, saved.error);
+    return saved.attempt;
+  });
+  return { session, route, attempts, archiveId: archiveObject().archiveId };
+}
+
+test('R3 长按删除有效把次：只移出目标，其他把次的 ID/seq/备注与内序号计数保持不变', () => {
+  const flow = fiveAttempts();
+  const nextSeqBefore = archiveObject().nextAttemptSeq;
+  const removed = store.deleteAttempt(flow.attempts[2].id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    expectedRev: store.attemptRev(flow.attempts[2]),
+    expectedNote: flow.attempts[2].note,
+    expectedResult: flow.attempts[2].result
+  });
+  assert.equal(removed.ok, true, removed.error);
+  assert.equal(removed.code, 'deleted');
+  assert.equal(removed.receiptLost, false);
+
+  const archive = archiveObject();
+  assert.equal(archive.nextAttemptSeq, nextSeqBefore, '内部序号计数不回收、不复用被删序号');
+  assert.equal(archive.attempts.some(item => item.id === flow.attempts[2].id), false);
+  [0, 1, 3, 4].forEach(index => {
+    const kept = archive.attempts.find(item => item.id === flow.attempts[index].id);
+    assert.equal(kept.seq, flow.attempts[index].seq);
+    assert.equal(kept.note, flow.attempts[index].note);
+    assert.equal(kept.result, flow.attempts[index].result);
+    assert.equal(kept.createdAt, flow.attempts[index].createdAt);
+    assert.equal(kept.sessionId, flow.session.id);
+    assert.equal(kept.routeId, flow.route.id);
+  });
+
+  // 历史、显示编号与完攀按剩余有效集合重算。
+  const history = store.routeHistory(archive, flow.route.id);
+  assert.equal(history.attemptCount, 4);
+  assert.deepEqual(
+    history.groups[0].attempts.map(item => item.label),
+    ['第 1 把', '第 2 把', '第 3 把', '第 4 把']
+  );
+  assert.deepEqual(
+    history.groups[0].attempts.map(item => item.id),
+    [flow.attempts[0].id, flow.attempts[1].id, flow.attempts[3].id, flow.attempts[4].id]
+  );
+  assert.equal(
+    store.routesWithHistory(archive).find(row => row.id === flow.route.id).attemptCount,
+    4
+  );
+
+  // 新记的一把：新 ID 与更大的内部序号，不复用被删把次的 ID。
+  const fresh = store.saveAttempt({
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: 'fail',
+    note: '新一把',
+    now: new Date(2026, 10, 9, 10, 0)
+  });
+  assert.equal(fresh.ok, true, fresh.error);
+  assert.notEqual(fresh.attempt.id, flow.attempts[2].id);
+  flow.attempts.forEach(item => assert.notEqual(fresh.attempt.id, item.id));
+  assert.ok(fresh.attempt.seq > flow.attempts[4].seq);
+});
+
+test('R3 长按删除唯一有效抱石完攀后解锁；跨档/跨线/缺失/已撤回先拒绝且不写盘', () => {
+  const flow = fiveAttempts({ climbType: '抱石', sendIndex: 4, routeName: '删除用抱石线' });
+  const target = flow.attempts[2];
+  const rawBefore = readArchiveRaw();
+
+  const crossArchive = store.deleteAttempt(target.id, {
+    archiveId: 'archive-other',
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(crossArchive.code, 'archive-mismatch');
+  assert.equal(readArchiveRaw(), rawBefore);
+
+  const crossRoute = store.deleteAttempt(target.id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: 'route-other'
+  });
+  assert.equal(crossRoute.code, 'conflict');
+  assert.equal(readArchiveRaw(), rawBefore);
+
+  const crossSession = store.deleteAttempt(target.id, {
+    archiveId: flow.archiveId,
+    sessionId: 'session-other',
+    routeId: flow.route.id
+  });
+  assert.equal(crossSession.code, 'conflict');
+  assert.equal(readArchiveRaw(), rawBefore);
+
+  const missing = store.deleteAttempt('op-missing', {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(missing.code, 'missing');
+  assert.equal(readArchiveRaw(), rawBefore);
+
+  // 过期画面：版本、备注、结果任意一项不一致都不删。
+  const staleRev = store.deleteAttempt(target.id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    expectedRev: 99
+  });
+  assert.equal(staleRev.code, 'stale');
+  const staleNote = store.deleteAttempt(target.id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    expectedNote: '不是这一把的备注'
+  });
+  assert.equal(staleNote.code, 'stale');
+  const staleResult = store.deleteAttempt(target.id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    expectedResult: 'send'
+  });
+  assert.equal(staleResult.code, 'stale');
+  assert.equal(readArchiveRaw(), rawBefore);
+
+  // 已撤回的一把不参与删除。
+  const undone = store.undoAttempt(target.id, {
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(undone.ok, true, undone.error);
+  const rawAfterUndo = readArchiveRaw();
+  const undoneDelete = store.deleteAttempt(target.id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(undoneDelete.code, 'undone');
+  assert.equal(readArchiveRaw(), rawAfterUndo);
+
+  // 有真实「进行中」保存时拒绝，不覆盖在途操作。
+  const withPending = archiveObject();
+  withPending.pendingSaves.push({
+    opId: 'op-pending-guard',
+    seq: withPending.nextAttemptSeq,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: 'send',
+    note: '',
+    createdAt: '2026-11-09T02:00:00.000Z'
+  });
+  storage.set(ARCHIVE_KEY, JSON.stringify(withPending));
+  const rawWithPending = readArchiveRaw();
+  const pending = store.deleteAttempt(flow.attempts[0].id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(pending.code, 'pending');
+  assert.equal(readArchiveRaw(), rawWithPending);
+
+  // 清掉这条人为的在途标记，继续验证抱石完攀删除后解锁。
+  const clearedPending = archiveObject();
+  clearedPending.pendingSaves = [];
+  storage.set(ARCHIVE_KEY, JSON.stringify(clearedPending));
+
+  // 删除唯一有效抱石完攀：路线重新可记。
+  const sendAttempt = flow.attempts[4];
+  const beforeCompletion = store.routeCompletion(archiveObject(), flow.route.id);
+  assert.equal(beforeCompletion.completed, true, '前置：已有唯一完攀');
+  const removed = store.deleteAttempt(sendAttempt.id, {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    expectedRev: store.attemptRev(sendAttempt),
+    expectedNote: sendAttempt.note,
+    expectedResult: sendAttempt.result
+  });
+  assert.equal(removed.ok, true, removed.error);
+  const afterCompletion = store.routeCompletion(archiveObject(), flow.route.id);
+  assert.equal(afterCompletion.completed, false);
+  assert.equal(afterCompletion.closed, false);
+  assert.equal(afterCompletion.canRecord, true);
+  const rerecord = store.saveAttempt({
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: 'send',
+    note: '',
+    now: new Date(2026, 10, 9, 10, 5)
+  });
+  assert.equal(rerecord.ok, true, rerecord.error);
+  assert.notEqual(rerecord.attempt.id, sendAttempt.id);
+});
+
+test('R3 长按删除落盘失败：写前失败不落盘；回执丢失按读回确认；首次读回失败返回未确认', () => {
+  const flow = fiveAttempts({ routeName: '删除写失败线' });
+  const ids = flow.attempts.map(item => item.id);
+
+  // 写前失败：档案原样。
+  const rawBefore = readArchiveRaw();
+  armSetFailAt(1);
+  const before = store.deleteAttempt(ids[0], {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(before.ok, false);
+  assert.equal(before.code, 'write-failed');
+  assert.equal(readArchiveRaw(), rawBefore);
+  assert.equal(archiveObject().attempts.some(item => item.id === ids[0]), true);
+
+  // 写成功但回执丢失：读回确认已移出 → 成功且 receiptLost。
+  fault.setFailAt = 0;
+  armSetLoseResponseAt(1);
+  const lost = store.deleteAttempt(ids[1], {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(lost.ok, true, lost.error);
+  assert.equal(lost.code, 'deleted-receipt-lost');
+  assert.equal(lost.receiptLost, true);
+  assert.equal(archiveObject().attempts.some(item => item.id === ids[1]), false);
+
+  // 写成功、首次读回也失败：不谎报成功也不谎报没删。
+  // deleteAttempt 的读取顺序：先读最新档案（第 1 次），写抛错后读回（第 2 次）。
+  fault.loseResponseAt = 0;
+  armSetLoseResponseAt(1);
+  fault.getCount = 0;
+  fault.getFailAt = 2;
+  const unverified = store.deleteAttempt(ids[2], {
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(unverified.ok, false);
+  assert.equal(unverified.code, 'write-failed-unverified');
+  assert.equal(fault.getFailOnce, 0);
+  assert.equal(
+    archiveObject().attempts.some(item => item.id === ids[2]),
+    false,
+    '盘上其实已移出'
+  );
+
+  // 其余把次一个都没少。
+  const remaining = archiveObject().attempts.map(item => item.id);
+  assert.equal(remaining.includes(ids[3]), true);
+  assert.equal(remaining.includes(ids[4]), true);
+  assert.equal(remaining.includes(ids[0]), true);
 });

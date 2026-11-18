@@ -1468,24 +1468,33 @@ test('T032 没带 opId 的新一把另取唯一 ID：不顶替已撤回的同名
   }
 });
 
-test('T032 单场单线稳定原序号：撤回第 3 把后新记的一把是第 4 把，历史与更正行共用同一份标号', () => {
+test('T032 显示序号只数有效把次：撤回第 3 把后新记的一把是第 3 把，历史与更正行共用同一份标号', () => {
   const seeded = seedThreeAttempts();
   const scope = { routeId: seeded.route.id, sessionId: seeded.session.id };
   assert.equal(
     store.undoAttempt(seeded.third.id, { opId: 'ordinal-undo', ...scope }).code,
     'undone'
   );
-  const fourth = addAttempt(seeded.session, seeded.route, 'fail', '撤回后的新一把', new Date(2026, 10, 9, 10, 30));
+  const next = addAttempt(seeded.session, seeded.route, 'fail', '撤回后的新一把', new Date(2026, 10, 9, 10, 30));
 
-  // 已撤回的那一把照样占着原序号：新一把接第 4 把，不被撤回挤成第 3 把。
+  // 已撤回的那一把不占有效编号：新一把接第 3 把（档案里的原 seq / ID 不动）。
   const ordinals = store.attemptOrdinalMap(archiveOf(), seeded.session.id, seeded.route.id);
   assert.equal(ordinals.get(seeded.first.id), 1);
   assert.equal(ordinals.get(seeded.second.id), 2);
-  assert.equal(ordinals.get(seeded.third.id), 3, '已撤回的第 3 把仍是第 3 把');
-  assert.equal(ordinals.get(fourth.id), 4);
+  assert.equal(ordinals.get(next.id), 3, '撤回后新记的一把就是第 3 把，不跳号');
+  assert.equal(
+    ordinals.get(seeded.third.id),
+    3,
+    '已撤回的那一把给恢复位置号（恢复后回到第 3 把），但不占有效计数'
+  );
   assert.equal(ordinals.get(seeded.neighborAttempt.id), undefined, '别的线路不参与本线的编号');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === next.id).seq > seeded.third.seq,
+    true,
+    '内部 seq 仍按原算法递增（不因显示编号回收或重用），只有显示编号变了'
+  );
 
-  // 跨日历史用同一份标号，且只列有效把次（第 1、2、4 把）。
+  // 跨日历史用同一份标号，且只列有效把次（第 1、2、新第 3 把）。
   const history = store.routeHistory(archiveOf(), seeded.route.id);
   const group = history.groups.find(item => item.sessionId === seeded.session.id);
   assert.deepEqual(
@@ -1493,17 +1502,17 @@ test('T032 单场单线稳定原序号：撤回第 3 把后新记的一把是第
     [
       [seeded.first.id, '第 1 把'],
       [seeded.second.id, '第 2 把'],
-      [fourth.id, '第 4 把']
+      [next.id, '第 3 把']
     ]
   );
   assert.equal(history.attemptCount, 3, '已撤回的那一把不贡献把数');
 
-  // 「改为未完成」的行体（抱石唯一完攀）也用同一份稳定原序号。
-  const send = addAttempt(seeded.session, seeded.route, 'send', '第五把完攀', new Date(2026, 10, 9, 10, 40));
+  // 「改为未完成」的行体（抱石唯一完攀）也用同一份显示序号。
+  const send = addAttempt(seeded.session, seeded.route, 'send', '第四把完攀', new Date(2026, 10, 9, 10, 40));
   const targets = store.routeCorrectionTargets(archiveOf(), seeded.route.id);
   assert.equal(targets.length, 1);
   assert.equal(targets[0].attemptId, send.id);
-  assert.equal(targets[0].label, '第 5 把');
+  assert.equal(targets[0].label, '第 4 把');
 });
 
 test('T032 已结清凭据的只读查询：只认这次操作自己的 opId，别的不认领也不写盘', () => {
@@ -1570,10 +1579,10 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
     }
   });
 
-  // 撤回完攀：更正入口在原固定槽里变成不可交互的只读文字，整段高度不缩短；
-  // 最近一把的撤回半槽变成空槽，恢复半槽才出现按钮。
+  // 撤销完攀（T050 返工）：原把与更正资格仍按档案层派生，成功提示由页面给。
   page.undoLatestAttempt(rowEvent(page.data.recentAttempt));
   assert.equal(page.data.routeCompleted, false);
+  assert.equal(page.data.notice, '已撤销第 2 把');
   assert.equal(page.data.recentAttempt.canRestore, true);
   assert.equal(page.data.recentAttempt.isSend, true);
   assert.equal(page.data.recentAttempt.attemptId, send.id);
@@ -1581,54 +1590,68 @@ test('T042 撤回/恢复完攀时「更正结果」固定槽原地换状态：�
   assert.equal(page.data.recentAttempt.correctIdleText, '已撤回，暂不可改');
   assert.equal(page.data.recentAttempt.correctLabel, '第 2 把', '原位仍是同一把的编号');
 
-  // 恢复：固定槽回到可点的「更正结果」，高度不变。
+  // 恢复（档案层原能力）：把数与完攀回到原样，同一把接回。
   page.restoreLatestAttempt(rowEvent(page.data.recentAttempt));
   assert.equal(page.data.routeCompleted, true);
   assert.equal(page.data.recentAttempt.correctable, true);
   assert.equal(page.data.recentAttempt.attemptId, send.id);
 
-  // WXML（T045 同页）：没有独立更正区；「改成未完成」就在这一把的卡框里，
-  // 撤回/恢复在同一卡框的下一行，且只绑真实处理器。
+  // WXML/WXSS（T050 返工）：现场没有独立更正区、行内更正、纠错槽或「更多」菜单；
+  // 最新一把右侧只给一个小号文字「撤销」，至少 44×44，且带渲染时的状态版本。
   const wxml = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
     'utf8'
   );
   assert.equal(wxml.indexOf('id="route-correction"'), -1, '独立更正区已移除');
   assert.equal(wxml.indexOf('点错了完攀'), -1, '不再有独立更正区的标题与提示');
-  const cardAt = wxml.indexOf('id="record-attempts"');
-  const slotAt = wxml.indexOf('class="record-attempt-correct-slot"');
-  const buttonAt = wxml.indexOf('id="correct-attempt-{{item.id}}"');
-  const idleAt = wxml.indexOf('id="record-attempt-correct-idle-{{item.id}}"');
-  const hintAt = wxml.indexOf('class="record-attempt-hint-slot"');
-  assert.ok(cardAt > 0 && slotAt > cardAt, '更正槽在这一把的卡框里');
-  assert.ok(buttonAt > slotAt, '可更正时槽里是按钮');
-  assert.ok(idleAt > buttonAt, '不可更正时同一槽里是只读文字');
-  assert.ok(hintAt > slotAt, '把数影响的说明槽在更正槽之后');
+  assert.doesNotMatch(
+    wxml,
+    /correct-attempt-|bindtap="correctSend"|record-attempt-correct-slot/,
+    '现场不再渲染更正入口与更正槽'
+  );
+  assert.doesNotMatch(
+    wxml,
+    /record-attempt-more|toggleLatestMenu|record-attempt-menu-item/,
+    '现场不再有「更多」菜单'
+  );
+  assert.doesNotMatch(
+    wxml,
+    /restore-attempt-|bindtap="restoreLatestAttempt"/,
+    '现场不再有撤销后的「恢复」按钮'
+  );
+  assert.doesNotMatch(wxml, /record-attempt-hint-slot|record-attempt-hint/, '说明槽已移除');
   assert.match(
     wxml,
-    /id="correct-attempt-\{\{item\.id\}\}"[\s\S]{0,500}data-archive-id="\{\{item\.archiveId\}\}"[\s\S]{0,120}bindtap="correctSend"/
+    /id="record-attempt-withdraw-\{\{item\.id\}\}"[\s\S]{0,600}catchtap="undoLatestAttempt"/,
+    '最新一把右侧直接给「撤销」'
   );
-  const idleBlock = wxml.slice(idleAt, idleAt + 240);
-  assert.equal(/bindtap|catchtap/.test(idleBlock), false, '只读文字不可点，不会变成结果按钮');
-  assert.match(idleBlock, /record-attempt-correct-idle/);
-  assert.match(wxml, /item\.correctIdleText/, '惰性文案由同一把的状态派生');
+  assert.match(
+    wxml,
+    /id="record-attempt-withdraw-[\s\S]{0,600}data-expected-rev="\{\{item\.expectedRev\}\}"[\s\S]{0,80}catchtap="undoLatestAttempt"/,
+    '撤销带预期的状态版本'
+  );
 
   const wxss = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
     'utf8'
   );
-  assert.match(wxss, /\.record-attempt-correct-slot \{[^}]*min-height: 44px/, '更正槽 44px 固定');
-  assert.match(wxss, /\.record-attempt-hint-slot \{[^}]*min-height: 32px/, '说明槽固定高度');
+  assert.match(wxss, /\.record-attempt-withdraw \{[^}]*min-height: 44px/, '撤销 44px 命中区');
+  assert.match(wxss, /\.record-attempt-withdraw \{[^}]*min-width: 44px/, '撤销 44px 命中宽度');
+  assert.equal(
+    /record-attempt-more|record-attempt-menu-item|record-attempt-correct|record-attempt-hint/.test(wxss),
+    false,
+    '菜单、更正与说明槽样式已移除'
+  );
   assert.match(wxss, /\.result-button \{[^}]*min-height: 48px/, '结果按钮 48px');
   assert.match(wxss, /\.route-completed-panel,[\s\S]*?min-height: 48px/, '完攀面板同高');
   assert.equal(/route-correction/.test(wxss), false, '独立更正区样式已移除');
 });
 
 // ------------------------------------------------------------------ *
-// T048 撤回/恢复与紧凑层级
+// T048 / T050 返工 撤销与紧凑层级
 // ------------------------------------------------------------------ *
 
-test('T048 撤回/恢复最新一把不改卡层级：最新一把仍是完整卡并带「已撤回」，旧行展开态与顺序不动', () => {
+test('T048/T050 返工 撤销最新一把：原卡离开现场、前一把补位成完整卡，原把身份与展开层级按最新档案重算', () => {
   const { session, route } = beginTraining({ now: new Date(2026, 10, 9, 9, 0) });
   const first = addAttempt(session, route, 'fail', '第一把备注', new Date(2026, 10, 9, 9, 10));
   const second = addAttempt(session, route, 'fail', '第二把备注', new Date(2026, 10, 9, 9, 20));
@@ -1637,7 +1660,7 @@ test('T048 撤回/恢复最新一把不改卡层级：最新一把仍是完整�
   const page = createPage(recordDefinition);
   page.onLoad({ archiveId: archiveOf().archiveId, sessionId: session.id, routeId: route.id });
 
-  // 先展开第 1 把，再撤回最新一把。
+  // 先展开第 1 把，再撤销最新一把。
   page.toggleAttemptRow({
     currentTarget: {
       dataset: {
@@ -1667,30 +1690,30 @@ test('T048 撤回/恢复最新一把不改卡层级：最新一把仍是完整�
   let cards = page.data.attemptCards;
   assert.deepEqual(
     cards.map(row => row.id),
-    [third.id, second.id, first.id],
-    '撤回不删卡、不换序，原序号与 ID 保持'
+    [second.id, first.id],
+    '已撤销的一把离开现场列表，其余按原序号倒序'
   );
-  assert.equal(cards[0].isLatest, true, '最新一把仍置顶');
-  assert.equal(cards[0].expanded, true, '最新一把仍是完整卡');
-  assert.equal(cards[0].isUndone, true, '撤回后原卡带「已撤回」');
-  assert.equal(cards[0].note, '第三把完攀', '原备注保留');
-  assert.equal(cards[1].expanded, false, '第 2 把仍是短行');
-  assert.equal(cards[2].expanded, true, '第 1 把的展开态不被撤回改动');
-  assert.equal(page.data.expandedAttemptId, first.id);
-  assert.equal(page.data.routeCountText, '2 把', '撤回只减这一把');
+  assert.equal(cards[0].isLatest, true, '前一把补位成最新一把');
+  assert.equal(cards[0].expanded, true, '补位的最新一把完整展示');
+  assert.equal(cards[0].note, '第二把备注', '前一把备注不变');
+  assert.equal(page.data.expandedAttemptId, '', '最新一把换人后展开态回到只有最新一把');
+  assert.equal(page.data.routeCountText, '2 把', '撤销只减这一把');
+  assert.equal(page.data.notice, '已撤销第 3 把');
+  assert.equal(cards[0].showWithdraw, false, '补位的前一把不给撤销入口');
 
-  // 恢复：同一张卡回到有效状态，层级、ID 与展开态都不动。
+  // 原把身份不改：同 ID、同序号、原备注与撤回标记仍在档案里。
+  const persistedThird = archiveOf().attempts.find(item => item.id === third.id);
+  assert.equal(persistedThird.seq, third.seq);
+  assert.equal(persistedThird.note, '第三把完攀');
+  assert.equal(typeof persistedThird.undoneAt, 'string');
+
+  // 恢复（档案层原能力）：同一把接回原 ID 与原层级，结果、时间与备注都不变。
   page.restoreLatestAttempt(rowEvent(page.data.recentAttempt));
   cards = page.data.attemptCards;
   assert.deepEqual(cards.map(row => row.id), [third.id, second.id, first.id]);
   assert.equal(cards[0].isUndone, false);
   assert.equal(cards[0].expanded, true);
-  assert.equal(cards[1].expanded, false);
-  assert.equal(cards[2].expanded, true);
-  assert.equal(page.data.expandedAttemptId, first.id, '恢复不改展开态');
-  assert.equal(page.data.routeCountText, '3 把');
-
-  // 恢复后最新一把也不再是「已撤回」卡片：结果、时间与备注都来自原把次。
-  assert.equal(cards[0].timeText, page.data.attemptCards[0].timeText);
+  assert.equal(cards[0].note, '第三把完攀');
   assert.equal(cards[0].resultText, '完攀');
+  assert.equal(page.data.routeCountText, '3 把');
 });

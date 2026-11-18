@@ -161,11 +161,16 @@ function attemptIdTaken(archive, id) {
  * 或待保存的 ID 撞上就再生成一个。撞上时必须换新 ID，而不是把这次新意图当成
  * 「迟到的显式 opId 重放」去复用别人（甚至已被撤回）的那一把——显式带 opId 的
  * 请求另有去重路径（见 saveAttempt），两者不能互相顶替。
+ *
+ * isRetired 是保存前读到的删除凭据（pending/removed/墓碑）：已删除的原 ID 同样不能
+ * 被新一把复用，否则一次巧合的 ID 撞名就会把删掉的记录写回来。凭据读不出来时调用方
+ * 不会走到这里（宁可不保存）。
  */
-function newUniqueAttemptId(archive) {
+function newUniqueAttemptId(archive, isRetired) {
+  const retired = typeof isRetired === 'function' ? isRetired : () => false;
   let candidate = newOperationId();
   let salt = 0;
-  while (attemptIdTaken(archive, candidate)) {
+  while (attemptIdTaken(archive, candidate) || retired(candidate)) {
     salt += 1;
     candidate = newOperationId() + '-' + salt;
   }
@@ -211,26 +216,43 @@ function requestedAttemptRev(data) {
 }
 
 /**
- * 「第 N 把」的**稳定原序号**（T030–T033 返工）：同一次训练、同一条线路里按把次
- * 序号（seq）排出的位置，**已撤回的那一把照样占位**，所以撤回第 3 把之后新记的一把
- * 是第 4 把、原来的第 3 把也还是第 3 把——序号不会因为撤回而整体前移。
+ * 「第 N 把」的**显示序号**：同一场次、同一条线路里，按把次序号（seq）排出的位置，
+ * 但只给**有效把次**连续编号——已撤回的那一把不占号，所以撤回第 2 把之后再成功记入
+ * 一把，新一把显示「第 2 把」，恢复原来的第 2 把时它又接回原号。
  *
- * 这是「单场单线的原序号」，不是档案里的全局 seq：别的场次、别的线路不参与，也
- * 不会拿全局 seq 直接当编号显示。pendingSaves 只在页面展示待保存行时并入
- * （options.includePending），已落盘的历史只用已提交把次。
+ * 这只是显示口径：档案里的原 ID、seq 与归属不动，备注和视频仍按原把次 ID 索引；
+ * 编号只读推导，不写档案、不迁移旧数据。
+ *
+ * 已撤回但仍留在页面上的那一把（最近一次撤回的行原位保留「恢复」）拿**恢复位置号**：
+ * 恢复后它会回到的顺序，例如第 2 把撤回后显示「第 2 把」，但它不计入有效把数，也不让
+ * 其他有效把次跳号。pendingSaves 只在页面展示待保存行时并入
+ * （options.includePending）：待保存的一把按它落盘后占据的有效顺序显示（通常就是下一个号）。
+ *
+ * 现场逐把、归档逐把、线路历史、视频标题与纠错确认都读取这一份投影，不各自编号。
  */
 function attemptOrdinalMap(archive, sessionId, routeId, options) {
-  const rows = ((archive && archive.attempts) || [])
-    .filter(item => item.sessionId === sessionId && item.routeId === routeId)
-    .map(item => ({ id: item.id, seq: item.seq || 0 }));
-  if (options && options.includePending) {
-    ((archive && archive.pendingSaves) || [])
-      .filter(item => item.sessionId === sessionId && item.routeId === routeId)
-      .forEach(item => rows.push({ id: item.opId, seq: item.seq || 0 }));
-  }
+  const inScope = item => item.sessionId === sessionId && item.routeId === routeId;
+  const attempts = ((archive && archive.attempts) || []).filter(inScope);
+  const pending = options && options.includePending
+    ? ((archive && archive.pendingSaves) || []).filter(inScope)
+    : [];
+  // 有效把次与待保存的一把一起按 seq 排；已撤回的不参与计数，只按同一顺序占一个
+  // 恢复位置。sort 在 Node 与小程序运行时都是稳定排序，同 seq 的旧档按原顺序读。
+  const rows = attempts
+    .map(item => ({ id: item.id, seq: item.seq || 0, counted: isEffectiveAttempt(item) }))
+    .concat(pending.map(item => ({ id: item.opId, seq: item.seq || 0, counted: true })));
   rows.sort((left, right) => left.seq - right.seq);
   const ordinals = new Map();
-  rows.forEach((row, index) => ordinals.set(row.id, index + 1));
+  let counted = 0;
+  rows.forEach(row => {
+    if (row.counted) {
+      counted += 1;
+      ordinals.set(row.id, counted);
+    } else {
+      // 恢复位置号：恢复后它接在已经数过的有效把次后面；不增加有效计数。
+      ordinals.set(row.id, counted + 1);
+    }
+  });
   return ordinals;
 }
 
@@ -771,8 +793,8 @@ function routeCompletion(archive, routeId, options) {
 
 /**
  * 「改为未完成」的行体：原把次 ID、归属与说明（日期/场次/第几把）。
- * 「第几把」用的是这一把在**本场次本线路**里的稳定原序号（撤回也占位），因此撤回
- * 一把后显示的编号不会整体前移、恢复后又回到原来的位置（见 attemptOrdinalMap）。
+ * 「第几把」用的是这一把在**本场次本线路**里的显示序号（只数有效把次，见
+ * attemptOrdinalMap），因此确认弹窗里的编号与现场、历史、视频标题完全一致。
  */
 function correctionRow(archive, attempt) {
   const session = findById(archive.sessions, attempt.sessionId);
@@ -857,8 +879,8 @@ function routeCorrectionRows(archive, routeId, correctedIds) {
  *
  * 只列**有效把次**（T032）：已撤回的那一把不进历史、不计把数与完攀，恢复后又回到原来的
  * 序号位置。整条线都把次都撤回时，这次训练不再出现在历史里。显示用的「第 N 把」是这一把
- * 在本场次本线路里的稳定原序号（撤回的那一把照样占位，见 attemptOrdinalMap），因此撤回
- * 第 3 把后再记一把，历史里的新一把是第 4 把而不是第 3 把。
+ * 在本场次本线路里的显示序号（只数有效把次，见 attemptOrdinalMap），因此撤回第 2 把
+ * 后再记一把，历史里的新一把是第 2 把，与现场逐把、视频标题一致。
  *
  * 返回 { known, routeId, route, groups, dayCount, sessionCount, attemptCount,
  *        sendCount, completion }；线路不存在时 known:false、groups 为空。
@@ -901,8 +923,8 @@ function routeHistory(archive, routeId) {
       const ordered = entry.attempts
         .slice()
         .sort((left, right) => (left.seq || 0) - (right.seq || 0));
-      // 「第 N 把」用本场次本线路的稳定原序号（撤回也占位），不是这一份列表里的下标：
-      // 撤回第 3 把之后新记的一把仍是第 4 把，历史里不会少一个号。
+      // 「第 N 把」用本场次本线路的显示序号（只数有效把次），不是这一份列表里的下标：
+      // 撤回第 2 把之后新记的一把就是第 2 把，历史里不留空号，也不与现场编号打架。
       const ordinals = attemptOrdinalMap(archive, entry.session.id, route.id);
       return {
         sessionId: entry.session.id,
@@ -1373,6 +1395,35 @@ function selectRoute(routeId) {
 }
 
 /**
+ * 保存前的删除凭据核对（只读）。
+ *
+ * 延迟 require training-attempt-delete：它顶层依赖 attempt-video →
+ * training-record-actions → 本模块，顶层互相 require 会形成初始化循环；这里只在
+ * 真正保存时加载，那时本模块已经初始化完毕。读不出来或模块不可用时返回 ok:false，
+ * 调用方不得把它当作「确认未删除」继续写档案。
+ */
+function deletionGuardFor(archiveId) {
+  let deletion;
+  try {
+    deletion = require('./training-attempt-delete.js');
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'delete-unreadable',
+      error: '读取本机删除凭据失败：' + errorText(error) + '；未保存这一把'
+    };
+  }
+  if (!deletion || typeof deletion.attemptDeletionGuard !== 'function') {
+    return {
+      ok: false,
+      code: 'delete-unreadable',
+      error: '读取本机删除凭据失败：删除凭据模块不可用；未保存这一把'
+    };
+  }
+  return deletion.attemptDeletionGuard(archiveId);
+}
+
+/**
  * 保存一把结果与备注。
  *
  * 输入：{ opId?, archiveId?, sessionId?, routeId, result: 'fail'|'send', note?, now? }
@@ -1381,9 +1432,14 @@ function selectRoute(routeId) {
  * - 同一 opId 重复提交/迟到回调：复用已落盘的把次，只提交一次；这一把已经撤回时
  *   仍然复用原记录（duplicate:true、undone:true），既不复活撤回的那一把、也不新建第二把
  *   ——撤回保留的正是原保存请求的 opId，去重凭据不因撤回而失效；
+ * - 同一 opId 已经进入长按删除流程（journal 的 pending/prepared/removed 或墓碑）：
+ *   整条拒绝（删除已收尾 code:attempt-deleted；删除未确认/待清理 code:attempt-deleting，
+ *   两者都 blocked:true），不写档案也不生成待保存行；
+ *   journal 读取失败时不当作「未删除」继续写（code:delete-unreadable）；
  * - 新一次真实尝试：页面换新 opId，得到新的把次 ID；页面**没带 opId** 时由本层生成，
- *   并保证这份档案里唯一（见 newUniqueAttemptId）：与已撤回或仍有效的把次撞名时另取
- *   一个 ID，而不是把这次新意图误当成「迟到的显式 opId 重放」去复用别人那一把；
+ *   并保证这份档案里唯一且不在删除凭据里（见 newUniqueAttemptId）：与已撤回、仍有效
+ *   或已删除的 ID 撞名时另取一个 ID，而不是把这次新意图误当成「迟到的显式 opId
+ *   重放」去复用别人那一把；
  * - archiveId 与当前档案不一致（换档之后的迟到重试）：整条不落盘；
  * - 抱石已确认（或别的操作已在提交中）完攀：不再新增，blocked，需先「改为未完成」；
  * - 落盘失败：ok:false，不报已保存；先落盘的「进行中」标记让同 opId 重试复用同一把，
@@ -1432,8 +1488,49 @@ function saveAttempt(input) {
     };
   }
 
-  // 显式 opId 沿用它（去重凭据）；没带 opId 的新一把由本层另取一个档案内唯一的 ID。
-  const opId = hasText(data.opId) ? data.opId : newUniqueAttemptId(current);
+  // 删除凭据核对：在档案身份校验之后、任何写或分配保存标记之前。
+  // - 显式 opId 一旦属于已删除/正在删除的原记录（prepared、已移出待清理或墓碑），
+  //   整条拒绝；只按当前 archiveId + 原 opId 判定，换场次/线路/内容也不能写回；
+  // - 无显式 opId 的新一把由生成器避开这些 ID（见 newUniqueAttemptId）；
+  // - journal 读取/解析失败时同样不写：没有确认「未删除」之前，迟到的旧 opId
+  //   不能借一次读故障复活记录。
+  const explicitOpId = hasText(data.opId) ? data.opId : '';
+  const deletionGuard = deletionGuardFor(current.archiveId);
+  if (!deletionGuard.ok) {
+    return {
+      ok: false,
+      blocked: false,
+      code: 'delete-unreadable',
+      reason: deletionGuard.code || '',
+      error:
+        (deletionGuard.error || '读取本机删除凭据失败') +
+        '；这次没有保存，请稍后重试',
+      archive: current,
+      // 没有显式 ID 时也给调用方一个可重试的 ID（与档案读失败时同一口径）；
+      // 这次并没有分配保存标记，也没有写档案。
+      opId: explicitOpId || newOperationId()
+    };
+  }
+  if (explicitOpId && deletionGuard.has(explicitOpId)) {
+    const deleting = deletionGuard.stateOf(explicitOpId) === 'pending';
+    return {
+      ok: false,
+      // 业务拒绝：调用方只提示，不生成「待保存」重试行，也不报保存成功。
+      blocked: true,
+      code: deleting ? 'attempt-deleting' : 'attempt-deleted',
+      deleted: !deleting,
+      pendingDeletion: deleting,
+      error: deleting
+        ? '这一把的删除还没有完成或本机视频副本仍在清理，不能再用原来的操作 ID 写回；请稍后重试或重开确认'
+        : '这一把已经删除，不能再用原来的操作 ID 写回；如需记录请重新点结果按钮',
+      archive: current,
+      opId: explicitOpId
+    };
+  }
+
+  // 显式 opId 沿用它（去重凭据）；没带 opId 的新一把由本层另取一个档案内唯一、
+  // 且不在删除凭据里的 ID。
+  const opId = explicitOpId || newUniqueAttemptId(current, id => deletionGuard.has(id));
 
   // 同一操作重复提交或迟到回调：复用原把次，不新增、不覆盖。
   // 这一把已被撤回时同样只复用原记录：撤回保留原 ID 就是留下去重凭据，迟到的保存
@@ -1724,6 +1821,199 @@ function correctAttempt(attemptId, input) {
     return { ok: false, code: 'write-failed', error: saved.error, archive: staging };
   }
   return { ok: true, code: 'corrected', duplicate: false, error: '', archive: committed, attempt: clone(target) };
+}
+
+/**
+ * 长按删除一把已保存的有效把次（T048–T050 追加返工）。
+ *
+ * 输入：{ archiveId?, sessionId?, routeId?, expectedRev?, expectedNote?, expectedResult? }
+ * 返回：{ ok, code, error, archive, attempt, receiptLost? }
+ * code：deleted / deleted-receipt-lost / missing / undone / conflict / stale / pending /
+ *       archive-mismatch / unreadable / write-failed / write-failed-unverified。
+ *
+ * 与「撤回」不同，这里是把这一把从记录数据里**物理移出**：整条 attempts 记录（结果、
+ * 备注、时间、序号与 ID）都不再保留；其余把次的 ID、内部 seq、备注与归属逐项不动。
+ * 显示编号由 attemptOrdinalMap 按剩余有效把次重算，因此 7 把删除第 5 把后原第 6、7 把
+ * 分别显示第 5、6 把。nextAttemptSeq 不回收，新记的一把永远拿更大的内部序号与新 ID，
+ * 被删把次的 ID 不会被重新分配。
+ *
+ * 版本/内容核对（只按原把次 ID 定位，不按显示序号）：
+ * - expectedRev 是页面渲染这一行时读到的 rev；撤回/恢复过的一把版本已前进时拒绝；
+ * - expectedNote / expectedResult 是打开删除确认时的原文；期间别人改了备注或结果时
+ *   拒绝，避免把一次基于旧画面的确认落到已经变化的记录上；
+ * - 同一场同一线还有「进行中」保存、或这一把挂着撤回/恢复/更正标记时拒绝（pending）：
+ *   先让在途操作落盘，避免一次删除与另一段两段写互相覆盖。
+ *
+ * 写失败分两种：写前失败（盘上仍有这一把）返回 write-failed，调用方回滚删除凭据；
+ * 写成功但回执丢失或首次读回失败时再读一次档案，能确认已移出就按 deleted-receipt-lost
+ * 成功返回（调用方继续清理视频副本），读回也失败则返回 write-failed-unverified，让
+ * 持久删除凭据在重开后重新核对，而不是报「没删」或「删了别的」。
+ */
+function deleteAttempt(attemptId, input) {
+  const data = input || {};
+  if (!hasText(attemptId)) {
+    return { ok: false, code: 'missing', error: '缺少要删除的把次 ID', archive: null, attempt: null };
+  }
+
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return { ok: false, code: 'unreadable', error: loaded.error, archive: loaded.archive, attempt: null };
+  }
+  const current = loaded.archive;
+
+  if (hasText(data.archiveId) && data.archiveId !== current.archiveId) {
+    return {
+      ok: false,
+      code: 'archive-mismatch',
+      error: ATTEMPT_ARCHIVE_MISMATCH,
+      archive: current,
+      attempt: null
+    };
+  }
+
+  const attempt = current.attempts.find(item => item.id === attemptId) || null;
+  if (!attempt) {
+    return {
+      ok: false,
+      code: 'missing',
+      error: '找不到这一把，可能已经被删除或重置',
+      archive: current,
+      attempt: null
+    };
+  }
+  if (hasText(data.sessionId) && data.sessionId !== attempt.sessionId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前场次，未做删除', archive: current, attempt: clone(attempt) };
+  }
+  if (hasText(data.routeId) && data.routeId !== attempt.routeId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前线路，未做删除', archive: current, attempt: clone(attempt) };
+  }
+  if (!isEffectiveAttempt(attempt)) {
+    return {
+      ok: false,
+      code: 'undone',
+      error: '这一把已撤回，不在有效记录里，未做删除；如需移除请先恢复再操作',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+  if (!findById(current.sessions, attempt.sessionId)) {
+    return { ok: false, code: 'missing', error: '原场次已不存在，未做删除', archive: current, attempt: clone(attempt) };
+  }
+  if (!findById(current.routes, attempt.routeId)) {
+    return { ok: false, code: 'missing', error: '原线路已不存在，未做删除', archive: current, attempt: clone(attempt) };
+  }
+
+  // 过期画面：版本、备注或结果任意一项与打开确认时不同，都不按旧确认删除。
+  if (
+    Number.isInteger(data.expectedRev) &&
+    data.expectedRev >= 0 &&
+    data.expectedRev !== attemptRev(attempt)
+  ) {
+    return { ok: false, code: 'stale', error: ATTEMPT_STALE, archive: current, attempt: clone(attempt) };
+  }
+  if (
+    typeof data.expectedNote === 'string' &&
+    data.expectedNote !== (attempt.note || '')
+  ) {
+    return {
+      ok: false,
+      code: 'stale',
+      error: '这一把的备注已经变化，这次删除没有生效；请按最新内容重新确认',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+  if (hasText(data.expectedResult) && data.expectedResult !== attempt.result) {
+    return {
+      ok: false,
+      code: 'stale',
+      error: '这一把的结果已经变化，这次删除没有生效；请按最新内容重新确认',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+
+  // 在途操作：同一场同一线还有待保存的一把，或这一把本身挂着撤回/恢复/更正标记。
+  const pendingOnRoute = (current.pendingSaves || []).some(
+    item => item.sessionId === attempt.sessionId && item.routeId === attempt.routeId
+  );
+  const pendingOnAttempt = [
+    ...(current.pendingUndos || []),
+    ...(current.pendingRestores || []),
+    ...(current.pendingCorrections || [])
+  ].some(item => item.attemptId === attemptId);
+  if (pendingOnRoute || pendingOnAttempt) {
+    return {
+      ok: false,
+      code: 'pending',
+      error: pendingOnAttempt
+        ? '这一把还有未完成的操作，先重试或完成它，再删除这把'
+        : '这条线还有一把没保存：先在「待保存」行重试保存，再删除',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+
+  // 只移出这一个 ID；其余把次（含他们的 seq、备注与结果）一个字段都不动。
+  const next = clone(current);
+  next.attempts = next.attempts.filter(item => item.id !== attemptId);
+  // 进行中标记若残留也不再指向不存在的把次；正常路径上面的 pending 守卫已经拒绝。
+  next.pendingCorrections = (next.pendingCorrections || []).filter(item => item.attemptId !== attemptId);
+  next.pendingUndos = (next.pendingUndos || []).filter(item => item.attemptId !== attemptId);
+  next.pendingRestores = (next.pendingRestores || []).filter(item => item.attemptId !== attemptId);
+  // nextAttemptSeq 保持原值：内部序号单调，被删把次不会被新记一把复用。
+
+  const saved = saveArchive(next);
+  if (saved.ok) {
+    return {
+      ok: true,
+      code: 'deleted',
+      receiptLost: false,
+      error: '',
+      archive: next,
+      attempt: clone(attempt)
+    };
+  }
+
+  // 写抛错：回执不明确。读回最新档案判断这一把是否已经移出。
+  const reread = loadState();
+  if (!reread.ok) {
+    return {
+      ok: false,
+      code: 'write-failed-unverified',
+      // 不报「已删除」也不报「没删除」：持久删除凭据会在重开后按档案核对。
+      error: saved.error + '；记录是否已删除暂未确认，重开或重试时会重新核对',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+  if (reread.archive.archiveId === current.archiveId) {
+    const stillThere = reread.archive.attempts.some(item => item.id === attemptId);
+    if (!stillThere) {
+      return {
+        ok: true,
+        code: 'deleted-receipt-lost',
+        receiptLost: true,
+        error: '',
+        archive: reread.archive,
+        attempt: clone(attempt)
+      };
+    }
+    return {
+      ok: false,
+      code: 'write-failed',
+      error: saved.error,
+      archive: reread.archive,
+      attempt: clone(attempt)
+    };
+  }
+  return {
+    ok: false,
+    code: 'write-failed-unverified',
+    error: saved.error + '；读取到另一份本机档案，记录是否已删除暂未确认',
+    archive: reread.archive,
+    attempt: clone(attempt)
+  };
 }
 
 // ------------------------------------------------------------------ *
@@ -2142,6 +2432,8 @@ module.exports = {
   routeCorrectionRows,
   setAttemptNote,
   correctAttempt,
+  // T048–T050 追加返工：长按删除有效把次（物理移出记录；视频副本由调用方凭删除凭据清理）
+  deleteAttempt,
   undoAttempt,
   restoreAttempt,
   attemptSettledOp,

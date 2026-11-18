@@ -6,6 +6,9 @@
  * 在 320/390 两个视口下都至少 44×44 逻辑像素，因此这里用 px 兜底。
  * T045：本场本线把次直接排在普通文档流里，一把一框；卡框描边/底色与结果色
  * 复用 T044（完攀深绿、未完成深橙），长备注换行不截断。
+ * T050 返工（现场）：最新一把右侧只留一个小号文字「撤销」，最小命中区 44×44；
+ * 撤销后这一把离开列表，前一把补位时不出撤销入口。稿里不再有「更多」菜单、
+ * 行内更正与「恢复」按钮，所有动作都在普通文档流里，不用绝对定位叠放。
  */
 
 page {
@@ -469,9 +472,30 @@ page {
   padding: 16rpx 20rpx;
 }
 
-/* 最新一把：结果、时间与一行备注完整展示，明显高于旧把次的短行 */
+/* 最新一把：结果、时间与一行备注完整展示，明显高于旧把次的短行。
+   平常态就两行（标题 + 备注/入口），上下内边距略收，实测约 100px。 */
 .record-attempt-latest {
+  box-sizing: border-box;
   min-height: 100px;
+  padding-top: 12rpx;
+  padding-bottom: 12rpx;
+}
+
+/* 最新一把标题行固定为一行：时间靠右，不能被「撤销」的默认按钮宽度挤到第二行。 */
+.record-attempt-latest .record-attempt-headline {
+  flex-wrap: nowrap;
+}
+
+/* 同一行里的序号、结果与时间各自不折行：撤销盒固定 44×44 后，320 下也保持单行。 */
+.record-attempt-latest .record-attempt-label,
+.record-attempt-latest .record-attempt-result,
+.record-attempt-latest .record-attempt-time {
+  white-space: nowrap;
+}
+
+/* 详情行紧接标题行，不再额外留上下间距；旧把展开仍用默认间距。 */
+.record-attempt-latest .record-attempt-detail {
+  margin: 0;
 }
 
 /* 旧把次短行：保留边框、序号、结果、时间；结果色仍是墨绿／岩橙，左侧加粗边缘标记。
@@ -528,12 +552,6 @@ page {
   border-color: #B04A1C;
 }
 
-/* 已撤回的那一把仍在原框：卡框回到中性色，旁边写明「已撤回」。 */
-.record-attempt-undone {
-  background-color: #F2F4F3;
-  border-color: #D7DED9;
-}
-
 .record-attempt-main {
   display: flex;
   flex-direction: column;
@@ -548,10 +566,73 @@ page {
   box-sizing: border-box;
 }
 
+/* T048–T050 追加返工（手机试用「长按后没有触发框」）：序号是一个明确可见、可触的
+   原生 view 框，不再是只包住文字的 text。整框最小约 44×44 px：文字、两侧内边距与
+   框内空白都命中同一个长按目标；宽度按内容收缩且不折行（flex 不收不放），320/390
+   下都不挤走结果、时间与撤销。短按照旧冒泡到父行做展开/收起。
+
+   已按「框内边缘」验收：沿用既有卡片色系补上浅底、轻边线和小圆角，让框在手机上真的
+   看得见。box-sizing 仍是 border-box，边线画在 44×44 命中区内，不放大长按目标；左右
+   内边距从 8rpx 收到 6rpx，正好抵掉两侧各 1px 边线，框占用的行内宽度与加框前一致，
+   仍不挤占结果、时间与右侧撤销槽。 */
 .record-attempt-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 6rpx;
+  border: 1px solid #D7DED9;
+  border-radius: 6rpx;
+  background-color: #FFFFFF;
+  -webkit-user-select: none;
+  user-select: none;
   font-size: 28rpx;
   font-weight: 700;
+  line-height: 1.2;
   color: #182421;
+  white-space: nowrap;
+}
+
+/* 框里的文字只是内容：不单独接收手势，整框（含文字与内边距）是同一个长按目标。 */
+.record-attempt-label-text {
+  pointer-events: none;
+  font-size: 28rpx;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+/* 长按删除后的视频副本清理提示：与普通 notice 分开，不遮住撤销/备注入口。 */
+.video-cleanup {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  border-radius: 8rpx;
+  padding: 16rpx 24rpx;
+  margin-bottom: 24rpx;
+  background-color: #F7F1E2;
+  color: #745241;
+}
+
+.video-cleanup-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 24rpx;
+  line-height: 1.5;
+}
+
+.video-cleanup-retry {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 4rpx;
+  font-size: 24rpx;
+  color: #B7683D;
+  white-space: nowrap;
 }
 
 /* 结果状态：深底白字、写明「完攀 / 未完成」；颜色与文字同时区分两种结果。 */
@@ -573,23 +654,53 @@ page {
   background-color: #B04A1C;
 }
 
-.record-attempt-undone-tag {
-  flex: none;
-  padding: 4rpx 12rpx;
-  border-radius: 6rpx;
-  font-size: 22rpx;
-  line-height: 1.4;
-  color: #53615B;
-  background-color: #FFFFFF;
-  border: 1rpx solid #D7DED9;
-}
-
 .record-attempt-time {
   margin-left: auto;
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: 24rpx;
   color: #53615B;
+}
+
+/* 最新一把右侧「撤销」（T050 返工）：固定 44×44 的局部命中区；按一下直接撤回这一把，
+   不展开第二个菜单。文案在命中区里居中，靠右仍由时间上的 margin-left:auto 带住。 */
+.record-attempt-withdraw {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+  height: 44px;
+  min-height: 44px;
+  box-sizing: border-box;
+  margin: 0 0 0 8rpx;
+  padding: 0;
+  background-color: transparent;
+  color: #B7683D;
+  font-size: 26rpx;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* 宽度必须用「父行 + button + 类」写死：style v2 内置的 button:not([size=mini]) 是
+   184px 宽，裸类选择器（含 width:auto）会被它的优先级压住，真机仍算成 184×44，
+   把「第 2 把」挤成三行并占掉大半张卡。 */
+.record-attempt-headline button.record-attempt-withdraw {
+  width: 44px;
+  max-width: 44px;
+}
+
+/* 写失败时的「重试撤销」比常态字多，给一个有限且略宽的固定盒（128rpx ≈ 54.6px@320、
+   66.6px@390），四个字在两种宽度下都完整显示；同样不落回微信默认的 184px。 */
+.record-attempt-headline button.record-attempt-withdraw-retry {
+  width: 128rpx;
+  min-width: 128rpx;
+  max-width: 128rpx;
+}
+
+.record-attempt-withdraw::after {
+  border: none;
 }
 
 /* 长备注换行，不截断：原文与输入框里看到的是同一段话 */
@@ -629,10 +740,13 @@ page {
   min-height: 44px;
 }
 
-.record-attempt-note-locked {
-  font-size: 22rpx;
-  line-height: 1.5;
-  color: #53615B;
+/* 最新一把的「备注」与视频入口同组：按内容宽度，避免默认按钮宽度独占一行；
+   较早把次展开后的备注入口保持原样。 */
+.record-attempt-latest .record-attempt-edit {
+  flex: none;
+  width: auto;
+  padding: 0 8rpx;
+  white-space: nowrap;
 }
 
 /* 备注与视频入口同一行（T049）：备注占满左侧，入口固定在右侧同一个槽位；
@@ -650,19 +764,58 @@ page {
   margin: 0;
 }
 
-/* 视频关联状态与文字入口（T023 / T049）：入口独立于「编辑备注」，靠右同一槽位 */
+/* 较早把次展开（T048 返工）：备注正文在上，下一行同排「备注」与
+   「＋ 添加视频／回看视频」。备注入口靠左、视频入口靠右，两个都是独立可点目标；
+   有片时入口自己写「回看视频」，不再另挂视频状态文字。 */
+.record-attempt-detail-older {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.record-attempt-detail-older .record-attempt-note {
+  margin: 0 0 4rpx;
+}
+
+.record-attempt-detail-older .record-attempt-detail-actions {
+  width: 100%;
+  margin-left: 0;
+  justify-content: space-between;
+  flex-wrap: nowrap;
+}
+
+/* 旧行的两个文字入口都按内容宽度排在同一行，320 宽也不换行、不互相覆盖。
+   「备注 ›」文字实测只有 39px 宽（T048–T050 R1 原生点按区返工），
+   这里按已知实际布局补最小宽度，保证至少 44×44 的常用点按目标；min-width 不打乱
+   同一行的内容宽度排布，也不影响最新一把的「备注 ›」。 */
+.record-attempt-detail-older .record-attempt-edit {
+  flex: none;
+  width: auto;
+  min-width: 44px;
+  padding: 0 8rpx;
+  white-space: nowrap;
+}
+
+/* 视频入口同排右侧：实测 49px 已够，仍写死最小宽度做保护，避免文案变短后掉到 44 以下。 */
+.record-attempt-detail-older .record-attempt-video-action {
+  min-width: 44px;
+}
+
+/* 「备注」与视频入口同属右侧一组：备注占剩余宽度，缩窄时只省略备注，两个入口不重叠。 */
+.record-attempt-detail-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+  margin-left: auto;
+}
+
+/* 视频文字入口（T023 / T049）：入口独立于备注入口，靠右同一个槽位；
+   有片「回看视频」、无片「＋ 添加视频」，不再另外渲染一行关联状态。 */
 .record-attempt-video {
   flex: none;
   display: flex;
   align-items: center;
   margin-left: auto;
-}
-
-.record-attempt-video-state {
-  font-size: 22rpx;
-  line-height: 1.5;
-  color: #53615B;
-  margin-right: 12rpx;
 }
 
 .record-attempt-video-action {
@@ -684,99 +837,12 @@ page {
   margin-top: 8rpx;
 }
 
-/* 「改成未完成」：固定高槽，可更正时是按钮，刚改好/不可改时是只读文字 */
-.record-attempt-correct-slot {
-  display: flex;
-  align-items: center;
-  box-sizing: border-box;
-  min-height: 44px;
-}
-
-.record-attempt-correct {
-  width: 100%;
-  margin: 0;
-}
-
-.record-attempt-correct-state {
-  display: block;
-  padding: 10rpx 0;
-  font-size: 24rpx;
-  line-height: 1.5;
-  color: #1F5948;
-}
-
-.record-attempt-correct-idle {
-  display: block;
-  padding: 10rpx 0;
-  font-size: 24rpx;
-  line-height: 1.5;
-  color: #53615B;
-}
-
-/* 最近一把：两个并排的交互槽，各占一半、等高；不可用的一侧留非交互空位 */
-.record-attempt-change {
-  display: flex;
-  align-items: stretch;
-  gap: 12rpx;
-  min-height: 44px;
-  margin-top: 8rpx;
-}
-
-.record-attempt-change-slot,
-.record-attempt-change-restore {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  align-items: stretch;
-  min-height: 44px;
-}
-
-.record-attempt-change-action {
-  flex: 1 1 0;
-  min-width: 0;
-  margin: 0;
-}
-
-.record-attempt-idle {
-  flex: 1 1 0;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-sizing: border-box;
-  min-height: 44px;
-  padding: 0 18rpx;
-  border: 2rpx dashed #D7DED9;
-  border-radius: 8rpx;
-  background-color: #FFFFFF;
-}
-
-.record-attempt-idle-text {
-  font-size: 24rpx;
-  line-height: 1.4;
-  color: #53615B;
-  text-align: center;
-}
-
 .record-attempt-status {
   display: block;
   margin-top: 8rpx;
   font-size: 24rpx;
   line-height: 1.6;
   color: #1F5948;
-}
-
-/* 两种动作对把数的影响：固定说明槽（32px = 4px 的整数倍），动作切换不改高度 */
-.record-attempt-hint-slot {
-  margin-top: 8rpx;
-  min-height: 32px;
-}
-
-.record-attempt-hint {
-  display: block;
-  font-size: 22rpx;
-  line-height: 1.6;
-  color: #53615B;
 }
 
 /* 行内备注编辑（T045）：编辑器紧挨所点那一把，不主动滚动、不挪刚点过的坐标 */
@@ -805,7 +871,9 @@ page {
 
 .note-input {
   width: 100%;
-  min-height: 140rpx;
+  /* 微信原生 textarea 自带 150px 默认高度：这里由行内 height（约两行）覆盖；
+     长内容在输入框内部滚动，「取消」「保存备注」始终跟在下面。 */
+  min-height: 0;
   background-color: #F2F4F3;
   border: 1px solid #D7DED9;
   border-radius: 8rpx;
