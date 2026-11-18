@@ -566,16 +566,43 @@ page {
   box-sizing: border-box;
 }
 
+/* T048–T050 追加返工（手机试用「长按后没有触发框」）：序号是一个明确可见、可触的
+   原生 view 框，不再是只包住文字的 text。整框最小约 44×44 px：文字、两侧内边距与
+   框内空白都命中同一个长按目标；宽度按内容收缩且不折行（flex 不收不放），320/390
+   下都不挤走结果、时间与撤销。短按照旧冒泡到父行做展开/收起。
+
+   已按「框内边缘」验收：沿用既有卡片色系补上浅底、轻边线和小圆角，让框在手机上真的
+   看得见。box-sizing 仍是 border-box，边线画在 44×44 命中区内，不放大长按目标；左右
+   内边距从 8rpx 收到 6rpx，正好抵掉两侧各 1px 边线，框占用的行内宽度与加框前一致，
+   仍不挤占结果、时间与右侧撤销槽。 */
 .record-attempt-label {
-  flex: none;
-  /* T048–T050 追加返工：序号框是长按删除的命中区，给一点内边距并禁用文字选择，
-     短按仍冒泡到整行做原来的展开/收起。 */
-  padding: 6rpx 4rpx;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 6rpx;
+  border: 1px solid #D7DED9;
+  border-radius: 6rpx;
+  background-color: #FFFFFF;
   -webkit-user-select: none;
   user-select: none;
   font-size: 28rpx;
   font-weight: 700;
+  line-height: 1.2;
   color: #182421;
+  white-space: nowrap;
+}
+
+/* 框里的文字只是内容：不单独接收手势，整框（含文字与内边距）是同一个长按目标。 */
+.record-attempt-label-text {
+  pointer-events: none;
+  font-size: 28rpx;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 /* 长按删除后的视频副本清理提示：与普通 notice 分开，不遮住撤销/备注入口。 */

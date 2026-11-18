@@ -68,7 +68,9 @@ const faults = {
   readdirFail: false,
   copyFail: ''
 };
-const modal = { current: null, calls: 0, history: [] };
+const modal = { current: null, calls: 0, history: [], failNext: 0, throwNext: 0 };
+// 非阻塞 toast 的文本：只用于断言「拒绝/弹窗失败时视口内有可见反馈」。
+const toasts = [];
 let clipSeq = 0;
 let tempSeq = 0;
 
@@ -98,6 +100,9 @@ function resetDevice() {
   modal.current = null;
   modal.calls = 0;
   modal.history = [];
+  modal.failNext = 0;
+  modal.throwNext = 0;
+  toasts.length = 0;
   clipSeq = 0;
   tempSeq = 0;
 }
@@ -225,6 +230,17 @@ global.wx = {
   getFileSystemManager: fileSystem,
   showModal(options) {
     modal.calls += 1;
+    // 故障注入：弹窗同步抛异常、或调 fail 回调（真实设备上确认框没弹出来）。
+    if (modal.throwNext > 0) {
+      modal.throwNext -= 1;
+      throw { errMsg: 'showModal:fail mock synchronous failure' };
+    }
+    if (modal.failNext > 0) {
+      modal.failNext -= 1;
+      modal.current = null;
+      options.fail({ errMsg: 'showModal:fail mock dialog failure' });
+      return;
+    }
     modal.current = options;
     modal.history.push(options);
   },
@@ -232,7 +248,9 @@ global.wx = {
   navigateBack() {},
   redirectTo() {},
   reLaunch() {},
-  showToast() {}
+  showToast(options) {
+    toasts.push((options && options.title) || '');
+  }
 };
 
 const store = require(STORE_JS);
@@ -1248,9 +1266,13 @@ test('T048-删除12 共享引用与错误路径谨慎：仍被别的条目引用
 // 页面静态绑定：序号区长按、清理重试入口
 // ------------------------------------------------------------------ */
 
-test('T048-删除13 WXML 把长按绑在序号框上，并有可见的清理重试入口', () => {
+test('T048-删除13 WXML 把长按绑在序号 view 框上（同容器 + 最小命中区），并有可见的清理重试入口', () => {
   const wxml = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
+    'utf8'
+  );
+  const wxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
     'utf8'
   );
   assert.match(
@@ -1258,8 +1280,74 @@ test('T048-删除13 WXML 把长按绑在序号框上，并有可见的清理重�
     /id="record-attempt-label-\{\{item\.id\}\}"[\s\S]{0,600}data-delete-rev="\{\{item\.deleteRev\}\}"[\s\S]{0,120}catchlongpress="requestDeleteAttempt"/
   );
   assert.match(wxml, /id="video-cleanup"[\s\S]{0,260}id="video-cleanup-retry"[\s\S]{0,80}bindtap="retryVideoCleanup"/);
+
+  // 手机试用返工：长按不能再挂在只包住文字的 text 上，序号必须是明确的原生 view 框，
+  // 绑定与六项 data 都在同一个容器里（框内文字、内边距与空白命中同一目标）。
+  const labelAt = wxml.indexOf('id="record-attempt-label-{{item.id}}"');
+  assert.ok(labelAt > 0, '保留 #record-attempt-label-原ID 选择器');
+  const boxOpen = wxml.lastIndexOf('<view', labelAt);
+  const boxClose = wxml.indexOf('</view>', labelAt);
+  assert.ok(boxOpen > -1 && boxClose > labelAt, '序号框应是一个 view 容器');
+  assert.doesNotMatch(
+    wxml.slice(boxOpen, labelAt),
+    /<\/?text/,
+    '序号不是 text 上的绑定，而是 view 容器上的绑定'
+  );
+  const labelBox = wxml.slice(boxOpen, boxClose + '</view>'.length);
+  assert.match(labelBox, /class="record-attempt-label"/);
+  const required = [
+    'data-attempt-id="{{item.id}}"',
+    'data-archive-id="{{item.archiveId}}"',
+    'data-session-id="{{item.sessionId}}"',
+    'data-route-id="{{item.routeId}}"',
+    'data-delete-rev="{{item.deleteRev}}"',
+    'data-page-token="{{pageToken}}"',
+    'catchlongpress="requestDeleteAttempt"'
+  ];
+  for (const attr of required) {
+    assert.ok(labelBox.includes(attr), '同一个序号容器必须带 ' + attr);
+  }
+  // 序号文字只是框里的内容：不另挂长按，避免同一触点重复触发（短按照旧冒泡到整行）。
+  assert.match(
+    labelBox,
+    /<text class="record-attempt-label-text">\{\{item\.label\}\}<\/text>/
+  );
+  assert.equal(
+    (labelBox.match(/longpress/g) || []).length,
+    1,
+    '整框只有一个长按绑定'
+  );
+  assert.equal(
+    (labelBox.match(/catchtap|bindtap/g) || []).length,
+    0,
+    '序号框不劫持短按，短按照旧由父行展开'
+  );
+
+  // 命中区与收缩：最小约 44×44 px，宽度按内容收缩且不折行，内层文字不再单独接手势。
+  const ruleOf = selector => {
+    const start = wxss.indexOf(selector + ' {');
+    assert.ok(start > -1, '缺少样式 ' + selector);
+    return wxss.slice(start, wxss.indexOf('}', start));
+  };
+  const labelStyle = ruleOf('.record-attempt-label');
+  assert.match(labelStyle, /display:\s*flex;/);
+  assert.match(labelStyle, /flex:\s*0 0 auto;/);
+  assert.match(labelStyle, /box-sizing:\s*border-box;/);
+  assert.match(labelStyle, /min-width:\s*44px;/);
+  assert.match(labelStyle, /min-height:\s*44px;/);
+  assert.match(labelStyle, /white-space:\s*nowrap;/);
+  assert.match(labelStyle, /user-select:\s*none;/);
+  // 框内边缘验收：用既有卡片色系给序号框浅底、轻边线和小圆角，手机上看得见框；
+  // border-box 不变，边线画在 44×44 命中区内，不另占撤销槽的宽度。
+  assert.match(labelStyle, /border:\s*1px solid #D7DED9;/);
+  assert.match(labelStyle, /border-radius:\s*6rpx;/);
+  assert.match(labelStyle, /background-color:\s*#FFFFFF;/);
+  assert.match(labelStyle, /padding:\s*0 6rpx;/);
+  assert.match(ruleOf('.record-attempt-label-text'), /pointer-events:\s*none;/);
+
   assert.equal(typeof definition.requestDeleteAttempt, 'function');
   assert.equal(typeof definition.askDeleteConfirm, 'function');
+  assert.equal(typeof definition.notifyDeleteGuard, 'function');
   assert.equal(typeof definition.retryVideoCleanup, 'function');
 });
 
@@ -2612,4 +2700,125 @@ test('T048-删除29 共享副本删除时索引单次失败：重开恢复按 ke
   assert.equal(fresh.attempt.id, 'op-fresh-after-shared-kept');
   assert.equal(archiveOf().attempts.some(item => item.id === target.id), false);
   assert.equal(archiveOf().attempts.some(item => item.id === fresh.attempt.id), true);
+});
+
+// ------------------------------------------------------------------ *
+// 手机试用返工：确认框打不开、rev 0 与原身份核对
+// ------------------------------------------------------------------ *
+
+test('T048-删除30 确认框 fail/缺失/同步异常都不当取消：不写盘、草稿保留、可见重试提示、解锁后重试只删一次', async () => {
+  const flow = startFlow({ routeName: '确认框失败线' });
+  const first = addAttempt(flow, 'fail', '一', 0);
+  const latest = addAttempt(flow, 'fail', '二', 5);
+  const video = seedClip(flow, latest);
+  const page = openRecord(flow);
+  const row = rowOf(page, latest);
+
+  // 开着备注草稿：确认框没弹出来时不能丢。
+  page.openNoteEditor(tapDataset({ attemptId: latest.id }));
+  page.onNoteInput({ detail: { value: '还没保存的草稿' } });
+  const rawBefore = archiveRaw();
+  const indexBefore = indexRaw();
+
+  // (a) showModal 调 fail：当作「确认框没打开」，不是用户取消；给视口内可见的重试提示。
+  modal.failNext = 1;
+  const failed = await page.requestDeleteAttempt(rowEvent(row));
+  assert.equal(failed.ok, false);
+  assert.equal(failed.code, 'modal-unavailable');
+  assert.equal(failed.reason, 'failed');
+  assert.match(failed.error, /mock dialog failure/, '只带非敏感错误码');
+  assert.match(page.data.notice, /确认框没有打开/);
+  assert.match(toasts[toasts.length - 1], /未删除/);
+  assert.equal(archiveRaw(), rawBefore, '弹窗失败不写档案');
+  assert.equal(indexRaw(), indexBefore, '弹窗失败不写视频索引');
+  assert.equal(virtual.files.has(video.filePath), true, '弹窗失败不删视频副本');
+  assert.equal(page.data.noteEditor.text, '还没保存的草稿', '弹窗失败不清草稿');
+  assert.equal(page._deletePrompt, null, '失败后解除在途锁');
+
+  // (b) 当前环境没有 showModal：同样不当作取消，不写盘。
+  const realShowModal = global.wx.showModal;
+  delete global.wx.showModal;
+  let missing;
+  try {
+    missing = await page.requestDeleteAttempt(rowEvent(rowOf(page, latest)));
+  } finally {
+    global.wx.showModal = realShowModal;
+  }
+  assert.equal(missing.ok, false);
+  assert.equal(missing.code, 'modal-unavailable');
+  assert.equal(missing.reason, 'unavailable');
+  assert.match(page.data.notice, /确认框没有打开/);
+  assert.equal(archiveRaw(), rawBefore);
+  assert.equal(indexRaw(), indexBefore);
+  assert.equal(virtual.files.has(video.filePath), true);
+
+  // (c) showModal 同步抛异常：解除在途锁，仍不写盘、不动草稿。
+  modal.throwNext = 1;
+  const thrown = await page.requestDeleteAttempt(rowEvent(rowOf(page, latest)));
+  assert.equal(thrown.ok, false);
+  assert.equal(thrown.code, 'modal-unavailable');
+  assert.match(thrown.error, /mock synchronous failure/);
+  assert.equal(archiveRaw(), rawBefore);
+  assert.equal(virtual.files.has(video.filePath), true);
+  assert.equal(page.data.noteEditor.text, '还没保存的草稿');
+  assert.equal(page._deletePrompt, null);
+
+  // (d) 解锁后再次长按能真正删除：只删这一把，视频副本随之清理，其他把次不动。
+  const callsBefore = modal.calls;
+  const { outcome } = await confirmDelete(page, rowOf(page, latest));
+  assert.equal(outcome.ok, true, outcome.error);
+  assert.equal(outcome.video.status, 'done');
+  assert.equal(modal.calls, callsBefore + 1);
+  assert.equal(archiveOf().attempts.some(item => item.id === latest.id), false);
+  assert.equal(archiveOf().attempts.some(item => item.id === first.id), true);
+  assert.equal(virtual.files.has(video.filePath), false);
+});
+
+test('T048-删除31 原身份六项必须齐备且一致：rev 0（数字或字符串）有效，缺失/错位一律不弹确认', async () => {
+  const flow = startFlow({ routeName: '身份核对线' });
+  const first = addAttempt(flow, 'fail', '一', 0);
+  const latest = addAttempt(flow, 'fail', '二', 5);
+  const other = addOtherRouteAttempt(flow);
+  const page = openRecord(flow);
+
+  // 前置：新把次的 rev 就是 0——这个值不能被当成「缺失」。
+  assert.equal(rowOf(page, latest).deleteRev, 0, '新把次的 rev 为 0');
+
+  const callsBefore = modal.calls;
+  const rejects = [
+    { label: '换档案', overrides: { archiveId: 'archive-other' } },
+    { label: '换场次', overrides: { sessionId: 'session-other' } },
+    { label: '换线路', overrides: { routeId: other.route.id } },
+    { label: '缺档案', overrides: { archiveId: undefined } },
+    { label: '缺场次', overrides: { sessionId: undefined } },
+    { label: '缺线路', overrides: { routeId: undefined } },
+    { label: '缺把次', overrides: { attemptId: undefined } },
+    { label: '缺 rev', overrides: { deleteRev: undefined } },
+    { label: '空 rev', overrides: { deleteRev: '' } },
+    { label: '负 rev', overrides: { deleteRev: -1 } },
+    { label: '缺令牌', overrides: { pageToken: undefined } },
+    { label: '错令牌', overrides: { pageToken: 'page-stale' } }
+  ];
+  for (const item of rejects) {
+    const result = await page.requestDeleteAttempt(
+      rowEvent(rowOf(page, first), item.overrides)
+    );
+    assert.equal(result, null, item.label + ' 应直接拒绝');
+    assert.match(page.data.notice, /这一行已经变化/, item.label + ' 要说明原因');
+  }
+  assert.equal(modal.calls, callsBefore, '身份缺失/错位一次都不弹确认');
+  assert.match(toasts[toasts.length - 1], /未删除/, '拒绝时视口内有 toast');
+  assert.equal(archiveOf().attempts.some(item => item.id === first.id), true);
+  assert.equal(archiveOf().attempts.some(item => item.id === latest.id), true);
+
+  // rev 0 的数字写法有效：照常确认并只删这一把。
+  const zeroNumber = await confirmDelete(page, rowOf(page, first), { deleteRev: 0 });
+  assert.equal(zeroNumber.outcome.ok, true, zeroNumber.outcome.error);
+  assert.equal(archiveOf().attempts.some(item => item.id === first.id), false);
+  assert.equal(archiveOf().attempts.some(item => item.id === latest.id), true);
+
+  // rev 0 的字符串写法同样有效（部分基础库把 dataset 值编码成字符串）。
+  const zeroText = await confirmDelete(page, rowOf(page, latest), { deleteRev: '0' });
+  assert.equal(zeroText.outcome.ok, true, zeroText.outcome.error);
+  assert.equal(archiveOf().attempts.some(item => item.id === latest.id), false);
 });

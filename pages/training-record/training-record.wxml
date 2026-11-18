@@ -319,7 +319,11 @@
                 data-route-id="{{item.routeId}}"
                 bindtap="toggleAttemptRow"
               >
-                <text
+                <!-- T048–T050 追加返工（手机试用「长按后没有触发框」）：序号改成明确可见、
+                     可触的原生 view 框，不再把长按挂在只包住文字的 text 上。绑定与六项
+                     data 全在同一个 view：框内文字、内边距与空白都属于同一命中区。
+                     短按照旧冒泡到整行做展开/收起，长按只在这一框生效（原生 longpress）。 -->
+                <view
                   id="record-attempt-label-{{item.id}}"
                   class="record-attempt-label"
                   data-attempt-id="{{item.id}}"
@@ -329,7 +333,9 @@
                   data-delete-rev="{{item.deleteRev}}"
                   data-page-token="{{pageToken}}"
                   catchlongpress="requestDeleteAttempt"
-                >{{item.label}}</text>
+                >
+                  <text class="record-attempt-label-text">{{item.label}}</text>
+                </view>
                 <text
                   class="record-attempt-result {{item.isSend ? 'record-attempt-result-send' : 'record-attempt-result-fail'}}"
                 >{{item.resultText}}</text>

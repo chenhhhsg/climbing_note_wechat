@@ -87,6 +87,25 @@ function tapTime(event) {
   return event && Number.isFinite(event.timeStamp) ? event.timeStamp : null;
 }
 
+/**
+ * 长按事件带回来的 rev 允许数字或数字字符串：这一把的 rev 是 0 时，WXML 渲染成
+ * 「0」，部分基础库在 dataset 里给字符串「0」——两种都有效，空值才算缺失。
+ */
+function isRevisionValue(value) {
+  if (value === undefined || value === null || value === '') return false;
+  if (typeof value === 'number') return Number.isInteger(value) && value >= 0;
+  if (typeof value === 'string') return /^[0-9]+$/.test(value);
+  return false;
+}
+
+/** 确认框失败时只留非敏感证据：errMsg 里的短错误码，不带用户文案、路径或凭据。 */
+function modalErrorCode(error) {
+  const message = error && (error.errMsg || error.message);
+  if (typeof message !== 'string' || !message) return '';
+  const parts = message.split(':');
+  return String(parts.length > 1 ? parts[1] : parts[0]).trim().slice(0, 60);
+}
+
 Page({
   data: {
     ready: false,
@@ -602,12 +621,17 @@ Page({
    * 长按「第 N 把」序号框：弹出删除确认（T048–T050 追加返工）。
    *
    * 只作用于本页这一场这一条线里**已保存的有效把次**；短按仍走 toggleAttemptRow。
+   * 序号框是原生 view（绑定与 data 在同一个容器），这里只认事件带回的原目标：
+   * 把次 ID、档案/场次/线路、这一把的 rev 与页面令牌六项必须齐备且与本页当前渲染
+   * 一致，不从触点位置、显示序号或子节点推测。
+   *
    * 打开确认时把四层证据一起记下：
    * - 原把次 ID 与四 ID 归属（不是显示序号）；
    * - 这一把的 rev、备注与结果（确认期间被改过就整条拒绝）；
    * - 视频索引里的当前片段身份与精确版本（clipId + rev + fileId）；
    * - 当前有效把次的有序 ID 列表（切线、新记、撤销/删除、换档后整条拒绝）。
-   * 取消或页面离开不写一个字节，也不清正在编辑的备注草稿。
+   * 取消或页面离开不写一个字节，也不清正在编辑的备注草稿；拒绝不打开时给页内 notice
+   * 加视口内可见的非阻塞 toast，并写明是哪一类原因（过期、待保存、弹窗不可用）。
    */
   requestDeleteAttempt(event) {
     if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
@@ -629,32 +653,44 @@ Page({
       !archiveId ||
       !sessionId ||
       !routeId ||
-      (dataset.archiveId && dataset.archiveId !== archiveId) ||
-      (dataset.sessionId && dataset.sessionId !== sessionId) ||
-      (dataset.routeId && dataset.routeId !== routeId) ||
-      // 事件必须带回渲染这一行时的版本与本页令牌；缺一项或对不上都按过期事件处理。
-      dataset.deleteRev === undefined ||
-      dataset.deleteRev === null ||
-      dataset.deleteRev === '' ||
-      !Number.isInteger(Number(dataset.deleteRev)) ||
+      // 事件必须带回渲染这一行时的原身份；缺一项、或与本页这一场这一条线不一致，
+      // 都按过期事件处理（0 与「0」是有效的 rev，不算缺失）。
+      dataset.attemptId !== row.id ||
+      !dataset.archiveId ||
+      dataset.archiveId !== archiveId ||
+      dataset.archiveId !== row.archiveId ||
+      !dataset.sessionId ||
+      dataset.sessionId !== sessionId ||
+      dataset.sessionId !== row.sessionId ||
+      !dataset.routeId ||
+      dataset.routeId !== routeId ||
+      dataset.routeId !== row.routeId ||
+      !isRevisionValue(dataset.deleteRev) ||
       Number(dataset.deleteRev) !== Number(row.deleteRev) ||
       !dataset.pageToken ||
       dataset.pageToken !== this._pageToken;
     if (stale) {
-      this.setData({ notice: '这一行已经变化，没有打开删除确认；已按最新数据刷新。' });
+      this.notifyDeleteGuard(
+        '这一行已经变化，没有打开删除确认；已按最新数据刷新。',
+        '这一行已变化，未删除'
+      );
       this.refreshView();
       return Promise.resolve(null);
     }
     if (row.canDelete === false || row.isUndone) {
-      this.setData({ notice: '这一把不在有效记录里，不能长按删除；已按最新数据刷新。' });
+      this.notifyDeleteGuard(
+        '这一把不在有效记录里，不能长按删除；已按最新数据刷新。',
+        '这一把不可删除'
+      );
       this.refreshView();
       return Promise.resolve(null);
     }
     // 真实待保存：先让在途的那一把落盘，删除不能与两段写互相覆盖。
     if (this.data.pendingRows.length > 0 || this.data.resultLocked) {
-      this.setData({
-        notice: '这条线还有一把没保存：先在「待保存」行重试保存，再删除这一把。'
-      });
+      this.notifyDeleteGuard(
+        '这条线还有一把没保存：先在「待保存」行重试保存，再删除这一把。',
+        '还有一把没保存，未删除'
+      );
       return Promise.resolve(null);
     }
 
@@ -665,7 +701,10 @@ Page({
     // 视频关联不可读时不猜「有没有视频」，也不删记录：稍后重试。
     const view = attemptVideo.videoClipView(archiveId, attemptId, { sessionId, routeId });
     if (!view || !view.ok) {
-      this.setData({ notice: '本机视频关联暂时读取失败，这次没有打开删除确认；请稍后重试。' });
+      this.notifyDeleteGuard(
+        '本机视频关联暂时读取失败，这次没有打开删除确认；请稍后重试。',
+        '视频关联读取失败，未删除'
+      );
       return Promise.resolve(null);
     }
     const clip = view.clip
@@ -692,11 +731,32 @@ Page({
     };
 
     const prompt = { attemptId, promise: null };
-    prompt.promise = this.askDeleteConfirm(target).then(confirmed => {
+    prompt.promise = this.askDeleteConfirm(target).then(answer => {
+      // 无论确认、取消还是弹窗本身没打开，都在这里解除在途锁：下一次长按照常能再弹。
       if (this._deletePrompt === prompt) this._deletePrompt = null;
-      if (this._unloaded || !confirmed) return { ok: false, code: 'cancelled' };
+      if (this._unloaded) return { ok: false, code: 'cancelled' };
+      // 弹窗不可用与用户取消要分开：前者给可见重试提示，且同样一个字节都不写。
+      if (!answer || !answer.confirmed) {
+        if (answer && answer.reason !== 'cancelled') {
+          this.notifyDeleteGuard(
+            '删除确认框没有打开，这次没有删除；请再长按一次「第 N 把」重试。',
+            '确认框未打开，未删除'
+          );
+          return {
+            ok: false,
+            code: 'modal-unavailable',
+            reason: (answer && answer.reason) || 'failed',
+            error: (answer && answer.error) || ''
+          };
+        }
+        return { ok: false, code: 'cancelled' };
+      }
       // 确认回来的页面已经不是发起时的那一页：不落任何删除。
       if (!this._pageToken || this._pageToken !== target.pageToken) {
+        this.notifyDeleteGuard(
+          '已经离开这条线或换了本机档案，这次删除没有生效；已按最新数据刷新。',
+          '页面已变化，未删除'
+        );
         return { ok: false, code: 'context-changed' };
       }
       return this.performDeleteAttempt(target);
@@ -706,14 +766,35 @@ Page({
   },
 
   /**
-   * 删除确认弹窗：有视频与无视频的文案不同；弹窗不可用时按取消处理，一个字节都不写。
-   * 取消不写盘、不收起备注编辑器，草稿保持原样。
+   * 长按删除被拒绝、或确认框根本没打开时的可见反馈（T048–T050 追加返工）：
+   * 页内 notice 说清原因，同时用非阻塞 toast 保证当前视口里也看得到——长按多发生在
+   * 列表下方，页顶的 notice 可能在视口外。只做提示：不写盘，不动草稿与视频字节。
+   */
+  notifyDeleteGuard(notice, toast) {
+    this.setData({ notice });
+    const api = typeof wx !== 'undefined' ? wx : null;
+    if (!api || typeof api.showToast !== 'function') return;
+    try {
+      api.showToast({ title: toast || notice, icon: 'none', duration: 2200 });
+    } catch (error) {
+      // toast 只是补充反馈；不可用时页内 notice 仍然可见。
+    }
+  },
+
+  /**
+   * 删除确认弹窗：返回明确结果，不把「弹窗没弹出来」当成用户取消。
+   * - confirmed: true —— 用户点了「删除」；
+   * - reason 'cancelled' —— 用户点了「取消」或在弹窗外取消；
+   * - reason 'unavailable' —— 当前环境没有 showModal；
+   * - reason 'failed' —— fail 回调、同步异常，或 success 既没 confirm 也没 cancel。
+   * 失败时带非敏感错误码（errMsg 里的短码），不打印用户文案或凭据。
+   * 有视频与无视频的文案不同；取消不写盘、不收起备注编辑器，草稿保持原样。
    */
   askDeleteConfirm(target) {
     return new Promise(resolve => {
       const api = typeof wx !== 'undefined' ? wx : null;
       if (!api || typeof api.showModal !== 'function') {
-        resolve(false);
+        resolve({ confirmed: false, reason: 'unavailable', error: '' });
         return;
       }
       try {
@@ -725,14 +806,27 @@ Page({
           confirmText: '删除',
           cancelText: '取消',
           success(result) {
-            resolve(Boolean(result && result.confirm));
+            if (result && result.confirm) {
+              resolve({ confirmed: true, reason: 'confirmed', error: '' });
+              return;
+            }
+            if (result && result.cancel) {
+              resolve({ confirmed: false, reason: 'cancelled', error: '' });
+              return;
+            }
+            // 既没确认也没取消：当作弹窗异常，交给调用方给重试提示。
+            resolve({ confirmed: false, reason: 'failed', error: 'no-result' });
           },
-          fail() {
-            resolve(false);
+          fail(error) {
+            resolve({
+              confirmed: false,
+              reason: 'failed',
+              error: modalErrorCode(error)
+            });
           }
         });
       } catch (error) {
-        resolve(false);
+        resolve({ confirmed: false, reason: 'failed', error: modalErrorCode(error) });
       }
     });
   },
