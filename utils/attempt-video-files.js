@@ -1064,6 +1064,27 @@ function createAttemptVideoStore(options) {
     return saveIndex(storage, fresh.index);
   }
 
+  /**
+   * 结清与这份删除凭据**完全同身份**（档案 + 片段 + 文件）的那一条待清理标记。
+   * 文件已经确认不存在（unlink 成功但回执丢失、或重开后已不见）时，陈旧的标记
+   * 不能再留给后续恢复；只按这三层身份匹配，同 fileId 的其他片段/档案记录不动。
+   */
+  function settleDeletedPending(clipId, fileId) {
+    const fresh = readIndex(storage);
+    if (!fresh.ok) return fresh;
+    const before = fresh.index.pending.length;
+    fresh.index.pending = (fresh.index.pending || []).filter(
+      entry =>
+        !(
+          entry.archiveId === archiveId &&
+          entry.clipId === clipId &&
+          entry.fileId === fileId
+        )
+    );
+    if (fresh.index.pending.length === before) return { ok: true };
+    return saveIndex(storage, fresh.index);
+  }
+
   /** 删除失败后把清理记录写回索引；写不进去时文件与失败原因都保留给页面。 */
   function rememberCleanup(records) {
     if (!records || !records.length) return { ok: true };
@@ -1958,6 +1979,198 @@ function createAttemptVideoStore(options) {
     });
   }
 
+  /**
+   * 删除把次记录后的定向回收（T048–T050 追加返工）。
+   *
+   * 记录已经从档案里物理移出，默认的 verifyContext 会因为「找不到这一把」而拒绝；这里
+   * 改用**持久删除凭据**作为授权（调用方只应传入重开后可复核的 journal 证据）。凭据必须
+   * 带齐档案、场次、线路、把次四个原 ID 与片段的 clipId/rev/fileId，且文件标识严格落在
+   * 本档案视频目录、是同一片段文件。只移除与凭据完全一致的那一条引用：
+   * - 索引里同一把已经换成别的片段（换版）时整条拒绝，不删任何文件；
+   * - 文件仍被任何条目引用（共享引用）时保留，并以 kept/shared 作为完成态返回；
+   * - 索引写失败按读回判断，读回也失败时保留文件与索引，交给持久待清理/重试；
+   * - 文件删除失败时把所有权记录写回索引，后续 cleanupOrphans / 重试继续回收；
+   * - 文件已确认不存在（例如 unlink 成功但回执丢失）或本次重新删除成功后，只结清
+   *   与凭据同档案 + 同 clipId + 同 fileId 的那一条陈旧待清理标记。
+   */
+  async function removeDeletedClip(evidence) {
+    const ev = evidence || {};
+    const invalid = validateBase({
+      archiveId: ev.archiveId,
+      sessionId: ev.sessionId,
+      routeId: ev.routeId,
+      attemptId: ev.attemptId
+    });
+    if (invalid) return invalid;
+    if (!hasText(ev.clipId) || !isSafeClipId(ev.clipId) || !hasText(ev.fileId)) {
+      return fail('incomplete-evidence', '删除凭据缺少片段身份，未删除任何视频文件');
+    }
+    if (!attemptVideo.isClipFileIdFor(archiveId, ev.clipId, ev.fileId)) {
+      return fail('foreign-file', '删除凭据指向的文件不属于本档案视频目录，未删除任何文件');
+    }
+    const wantedRev = requestedRev(ev.rev);
+    if (wantedRev === null) {
+      return fail('incomplete-evidence', '删除凭据缺少片段版本，未删除任何视频文件');
+    }
+
+    const loaded = readIndex(storage);
+    if (!loaded.ok) return loaded;
+    const current = currentClipFor(loaded.index, archiveId, ev.attemptId, ev);
+
+    // 索引里已经没有这一把的引用：只在能证明文件属于本档案同一片段、且当前没有任何
+    // 条目再引用它时，才回收凭据指出的那个文件（例如上次已解除关联但文件删除失败）。
+    if (!current) {
+      if (loaded.index.clips.some(entry => entry.fileId === ev.fileId)) {
+        // 同一文件仍被别的记录合法引用：索引已分离，副本按设计保留（不是待清理失败）。
+        const settled = settleDeletedPending(ev.clipId, ev.fileId);
+        return {
+          ok: true,
+          removed: true,
+          duplicate: false,
+          kept: true,
+          reason: 'shared',
+          clip: null,
+          cleanupError: settled.ok ? '' : settled.error
+        };
+      }
+      if (loaded.index.clips.some(entry => sameAttemptEntry(entry, archiveId, ev))) {
+        return fail('stale-operation', '这一把的视频关联已经变化，未删除任何文件；请按当前状态重试');
+      }
+      const targetPath = files.pathForFileId(ev.fileId);
+      if (!hasText(targetPath)) {
+        return fail('foreign-file', '删除凭据指向的文件不属于本档案视频目录，未删除任何文件');
+      }
+      const existing = await files.stat(targetPath);
+      if (!existing.ok) return fail('file-cleanup-failed', existing.error);
+      if (!existing.exists) {
+        // 文件其实已经不在了（常见于 unlink 成功但回执丢失）：先按精确身份结清
+        // 索引里的陈旧待清理标记，外层 journal 才会在本次返回后收尾。
+        const settled = settleDeletedPending(ev.clipId, ev.fileId);
+        return {
+          ok: true,
+          removed: true,
+          duplicate: true,
+          clip: null,
+          cleanupError: settled.ok ? '' : settled.error
+        };
+      }
+      // stat 等待期间可能有新的引用写入：删前再按最新索引确认一次。
+      const fresh = readIndex(storage);
+      if (!fresh.ok) {
+        return Object.assign({}, fresh, {
+          cleanupError: '无法读回本机视频索引，未删除任何文件；请稍后重试'
+        });
+      }
+      if (fresh.index.clips.some(entry => entry.fileId === ev.fileId)) {
+        const settled = settleDeletedPending(ev.clipId, ev.fileId);
+        return {
+          ok: true,
+          removed: true,
+          duplicate: false,
+          kept: true,
+          reason: 'shared',
+          clip: null,
+          cleanupError: settled.ok ? '' : settled.error
+        };
+      }
+      if (fresh.index.clips.some(entry => sameAttemptEntry(entry, archiveId, ev))) {
+        return fail('stale-operation', '这一把的视频关联已经变化，未删除任何文件；请按当前状态重试');
+      }
+      const removed = await files.remove(targetPath);
+      if (!removed.ok) {
+        rememberCleanup([pendingRecord(ev.clipId, ev.fileId, 'cleanup', now())]);
+        return Object.assign(
+          fail('file-cleanup-failed', '视频副本删除失败，已保留为待清理：' + removed.error),
+          { cleanupError: removed.error }
+        );
+      }
+      // 成功回收（或确认已被回收）后，同身份的陈旧待清理标记不再需要。
+      const settled = settleDeletedPending(ev.clipId, ev.fileId);
+      return {
+        ok: true,
+        removed: true,
+        duplicate: !removed.existed,
+        clip: null,
+        cleanupError: settled.ok ? '' : settled.error
+      };
+    }
+
+    // 有引用：必须与凭据是同一片段、同一文件、同一版本；换过版就整条拒绝。
+    if (
+      current.clipId !== ev.clipId ||
+      current.fileId !== ev.fileId ||
+      revOf(current) !== wantedRev
+    ) {
+      return fail(
+        'stale-operation',
+        '这一把的视频关联已经变化，这次删除没有清理视频副本；原视频仍可用'
+      );
+    }
+
+    const previous = clipsFor(loaded.index, archiveId, ev.attemptId, ev);
+    const retiring = previous.filter(
+      entry => entry.clipId === ev.clipId && entry.fileId === ev.fileId
+    );
+    // 只移除与凭据完全一致的那一条引用；同一把若有别的残留条目，保持原样（不当作本次授权）。
+    loaded.index.clips = loaded.index.clips.filter(
+      entry =>
+        !(
+          sameAttemptEntry(entry, archiveId, ev) &&
+          entry.clipId === ev.clipId &&
+          entry.fileId === ev.fileId
+        )
+    );
+    loaded.index.pending.push.apply(
+      loaded.index.pending,
+      retirementRecords(loaded.index, retiring)
+    );
+    const saved = saveIndex(storage, loaded.index);
+    if (saved.ok) {
+      // 同一文件若仍被别的记录引用，索引已分离但副本必须保留；把这一点作为完成
+      // 状态返回，而不是留成永远清不掉的待清理。
+      const shared = loaded.index.clips.some(entry => entry.fileId === ev.fileId);
+      const cleanupError = await reclaimCopies(loaded.index, retiring);
+      return {
+        ok: true,
+        removed: true,
+        duplicate: false,
+        kept: shared,
+        reason: shared ? 'shared' : '',
+        clip: null,
+        cleanupError
+      };
+    }
+
+    // 索引写抛错：读回判断凭据指定的引用是否已经解除。
+    const read = readIndex(storage);
+    if (!read.ok) {
+      return Object.assign({}, saved, {
+        cleanupError: '无法读回本机视频索引，未删除任何文件；请稍后重试'
+      });
+    }
+    const after = currentClipFor(read.index, archiveId, ev.attemptId, ev);
+    if (!after) {
+      const shared = read.index.clips.some(entry => entry.fileId === ev.fileId);
+      const cleanupError = await reclaimCopies(read.index, retiring);
+      return {
+        ok: true,
+        removed: true,
+        duplicate: false,
+        receiptLost: true,
+        kept: shared,
+        reason: shared ? 'shared' : '',
+        clip: null,
+        cleanupError
+      };
+    }
+    if (after.clipId === ev.clipId && after.fileId === ev.fileId && revOf(after) === wantedRev) {
+      return saved;
+    }
+    return Object.assign({}, saved, {
+      cleanupError: '这一把的视频关联已经变化，未删除任何文件'
+    });
+  }
+
   return {
     archiveId,
     instanceId,
@@ -1966,6 +2179,8 @@ function createAttemptVideoStore(options) {
     commit,
     replace,
     remove,
+    // T048–T050 追加返工：把次记录删除后，凭持久删除凭据定向回收本机视频副本。
+    removeDeletedClip,
     recover,
     cleanupOrphans,
     getSpaceUsage

@@ -567,9 +567,45 @@ page {
 }
 
 .record-attempt-label {
+  flex: none;
+  /* T048–T050 追加返工：序号框是长按删除的命中区，给一点内边距并禁用文字选择，
+     短按仍冒泡到整行做原来的展开/收起。 */
+  padding: 6rpx 4rpx;
+  -webkit-user-select: none;
+  user-select: none;
   font-size: 28rpx;
   font-weight: 700;
   color: #182421;
+}
+
+/* 长按删除后的视频副本清理提示：与普通 notice 分开，不遮住撤销/备注入口。 */
+.video-cleanup {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+  border-radius: 8rpx;
+  padding: 16rpx 24rpx;
+  margin-bottom: 24rpx;
+  background-color: #F7F1E2;
+  color: #745241;
+}
+
+.video-cleanup-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 24rpx;
+  line-height: 1.5;
+}
+
+.video-cleanup-retry {
+  flex: none;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0 4rpx;
+  font-size: 24rpx;
+  color: #B7683D;
+  white-space: nowrap;
 }
 
 /* 结果状态：深底白字、写明「完攀 / 未完成」；颜色与文字同时区分两种结果。 */

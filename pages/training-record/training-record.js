@@ -49,6 +49,8 @@ const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
 const photoMarks = require('../../utils/training-photo-marks.js');
 const attemptVideo = require('../../utils/attempt-video.js');
+// T048–T050 追加返工：长按删除把次时协调档案、视频索引与文件的三阶段与重开恢复。
+const attemptDelete = require('../../utils/training-attempt-delete.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
 const {
   createTrainingPhotoController
@@ -62,6 +64,15 @@ const PHOTO_MARKS_URL = '/pages/training-photo-marks/training-photo-marks';
 // 没有触点信息的程序化调用（测试与数据层直接驱动）。
 const UNDO_REBOUND_WINDOW_MS = 600;
 const UNDO_REBOUND_RADIUS_PX = 44;
+// 长按序号框会弹出删除确认；部分基础库/机型在 longpress 结束后仍补一个 tap。
+// 这里在长按后的短窗口内忽略同一行的展开事件，避免「既弹确认又展开」。
+const LONG_PRESS_TAP_GUARD_MS = 700;
+// 页面令牌只增不减：迟到的确认/异步回执只允许更新发起时的那一页上下文。
+let pageTokenSeq = 0;
+function nextPageToken() {
+  pageTokenSeq += 1;
+  return 'page-' + Date.now().toString(36) + '-' + pageTokenSeq;
+}
 
 /** 取 tap 事件里真实触点坐标（微信 tap 的 detail 带页面坐标 x/y）；没有就返回 null。 */
 function tapPoint(event) {
@@ -112,6 +123,14 @@ Page({
     // 最近一把（T033/T042）：只作为现场把次行的派生输入——最近一把那一行据此拿到
     // 撤回/恢复的预期状态与版本、检索到同一把的重试 opId。null 表示没有可操作的最近一把。
     recentAttempt: null,
+    // 长按删除最新一把后的持久门槛（被删除的最大内部 seq）：最近一把的 seq 不大于它时
+    // 不给「撤销」入口。只读派生，不落本页。
+    undoBarrier: 0,
+    // 本页实例的令牌：随长按事件一起带回，迟到事件/回执不能更新另一页上下文。
+    pageToken: '',
+    // 已删除记录的本机视频副本清理状态（journal 里有未完成条目时才显示）。
+    cleanupNotice: '',
+    cleanupRetryVisible: false,
 
     // 线路主照片（T041）：现场入口只渲染控制器推导的状态。
     // null = 本页不展示（缺参、串档或还没读档）；其余状态与线路历史页同一套。
@@ -133,6 +152,10 @@ Page({
     this._correctionFailures = {};
     // 已打开、还没回应的更正确认：同一把连点沿用这一次，不叠第二个弹窗。
     this._correctionPrompt = null;
+    // 已打开、还没回应的删除确认（长按序号框）：同一把连点只弹一次、只删一次。
+    this._deletePrompt = null;
+    // 长按后的短窗口：同一行在这段时间内的展开事件不生效（原生手势差异兜底）。
+    this._lastLongPress = Object.create(null);
     this._recentStatus = null;
     // 上一次渲染时置顶的原把次 ID：新一把落盘成功后上一把自动收成短行（只改本页展示）。
     this._latestAttemptId = '';
@@ -144,6 +167,9 @@ Page({
     // 照片控制器只在本页创建一次；照片读写全在控制器里，页面不另存文件或索引。
     this._photoUi = null;
     this._unloaded = false;
+    // 每次进入这一页换一个令牌；本页所有删除确认与异步回执都只认这个令牌。
+    this._pageToken = nextPageToken();
+    this.setData({ pageToken: this._pageToken });
     this._context = actions.parseRecordQuery(query);
     this.loadPage();
     this.loadRecordPhoto();
@@ -155,6 +181,9 @@ Page({
     // 照片也重读一次，与线路历史页、二级大图页看到的是同一张主照片与同一版标记。
     this.loadPage();
     this.loadRecordPhoto();
+    // 长按删除的记录已移出档案后，若视频副本还没清理完，重开这一页自动再试一次；
+    // 没有 journal / 没有待清理条目时这一步不碰文件系统。
+    this.recoverDeletedMedia();
   },
 
   /**
@@ -164,6 +193,10 @@ Page({
   onUnload() {
     this._unloaded = true;
     this._correctionPrompt = null;
+    // 页面离开后到达的删除确认不再删除任何东西（确认回调里还会再查 _unloaded）。
+    this._deletePrompt = null;
+    // 令牌作废：本次删除的异步回执也不再更新这一页。
+    this._pageToken = '';
   },
 
   /**
@@ -200,6 +233,10 @@ Page({
         resultLocked: false,
         resultLockHint: '',
         recentAttempt: null,
+        undoBarrier: 0,
+        pageToken: this._pageToken || '',
+        cleanupNotice: '',
+        cleanupRetryVisible: false,
         // 入口/档案不可用：不展示任何照片，也不受理照片写入。
         recordPhoto: null,
         photoMarkCount: 0,
@@ -312,13 +349,20 @@ Page({
       ? attempts.length + ' 把 · ' + pendingRows.length + ' 把待保存'
       : attempts.length + ' 把';
     // 最近一把这一行仍是原边界：只有它能撤回/恢复；现场把次行据此给这一行两个并排槽。
+    // T048–T050 追加返工：长按删除最新一把后，持久门槛会收住补位前一把的「撤销」。
+    const undoBarrier = attemptDelete.deletedSeqBarrier(
+      archive.archiveId,
+      session.id,
+      route.id
+    );
     const recentAttempt = actions.recentAttemptView.call(
       this,
       archive,
       activeSession,
       selectedRoute,
       pendingRows,
-      route
+      route,
+      { undoBarrier }
     );
 
     // 现场把次行（T045/T048）：视频关联状态只读索引，一次读给本场本线这些把次；
@@ -349,6 +393,8 @@ Page({
       const expanded = item.isLatest || item.id === expandedAttemptId;
       return Object.assign({}, item, {
         expanded,
+        // 长按事件除了 deleteRev 还带回本页令牌：过期页面/旧渲染的事件不能落到新上下文。
+        pageToken: this._pageToken,
         // T050 返工：撤销入口只给「最新一把且它仍是最近一把」——撤销成功后最近一把
         // 已经变成刚撤回的那一把（它不在现场列表里），前一把虽然补位成最新一把，
         // 却不会再拿到撤销入口；必须再成功记一把才有新的可撤销目标。这样同一个坐标
@@ -364,6 +410,9 @@ Page({
     if (noteEditor && !attemptCards.some(item => item.id === noteEditor.attemptId && item.canEditNote)) {
       noteEditor = null;
     }
+
+    // 已删除记录的本机视频副本清理状态：只读 journal，不扫目录；没有未完成条目时留空。
+    const cleanup = attemptDelete.pendingStatus(archive.archiveId);
 
     this.setData({
       archiveId: archive.archiveId,
@@ -386,7 +435,11 @@ Page({
       resultLockHint: resultLocked
         ? '上一把还没保存：先在「待保存」行点「重试保存」，确认后再记下一把。'
         : '',
-      recentAttempt
+      recentAttempt,
+      undoBarrier,
+      pageToken: this._pageToken || '',
+      cleanupNotice: cleanup.text,
+      cleanupRetryVisible: cleanup.pending > 0 || Boolean(cleanup.error)
     });
   },
 
@@ -401,6 +454,10 @@ Page({
     if (this.data.loadError || this.data.contextError) return;
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const attemptId = dataset.attemptId || '';
+    // 部分基础库在 longpress 结束后还会补一个 tap：同一行在长按后的短窗口内不再展开，
+    // 避免「确认框和展开同时发生」。位置/行不同的下一次短按照常。
+    const pressedAt = attemptId ? (this._lastLongPress || {})[attemptId] : 0;
+    if (pressedAt && Date.now() - pressedAt < LONG_PRESS_TAP_GUARD_MS) return;
     const archiveId = (this.archive && this.archive.archiveId) || '';
     const sessionId = (this._session && this._session.id) || '';
     const routeId = (this._route && this._route.id) || '';
@@ -538,6 +595,340 @@ Page({
           this.refreshView();
         }
         return result === undefined ? null : result;
+      });
+  },
+
+  /**
+   * 长按「第 N 把」序号框：弹出删除确认（T048–T050 追加返工）。
+   *
+   * 只作用于本页这一场这一条线里**已保存的有效把次**；短按仍走 toggleAttemptRow。
+   * 打开确认时把四层证据一起记下：
+   * - 原把次 ID 与四 ID 归属（不是显示序号）；
+   * - 这一把的 rev、备注与结果（确认期间被改过就整条拒绝）；
+   * - 视频索引里的当前片段身份与精确版本（clipId + rev + fileId）；
+   * - 当前有效把次的有序 ID 列表（切线、新记、撤销/删除、换档后整条拒绝）。
+   * 取消或页面离开不写一个字节，也不清正在编辑的备注草稿。
+   */
+  requestDeleteAttempt(event) {
+    if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const attemptId = dataset.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
+
+    // 原生手势差异兜底：同一行的 longpress 之后若还补一个 tap，不再展开。
+    if (attemptId) {
+      this._lastLongPress = this._lastLongPress || Object.create(null);
+      this._lastLongPress[attemptId] = Date.now();
+    }
+
+    const stale =
+      !row ||
+      !archiveId ||
+      !sessionId ||
+      !routeId ||
+      (dataset.archiveId && dataset.archiveId !== archiveId) ||
+      (dataset.sessionId && dataset.sessionId !== sessionId) ||
+      (dataset.routeId && dataset.routeId !== routeId) ||
+      // 事件必须带回渲染这一行时的版本与本页令牌；缺一项或对不上都按过期事件处理。
+      dataset.deleteRev === undefined ||
+      dataset.deleteRev === null ||
+      dataset.deleteRev === '' ||
+      !Number.isInteger(Number(dataset.deleteRev)) ||
+      Number(dataset.deleteRev) !== Number(row.deleteRev) ||
+      !dataset.pageToken ||
+      dataset.pageToken !== this._pageToken;
+    if (stale) {
+      this.setData({ notice: '这一行已经变化，没有打开删除确认；已按最新数据刷新。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+    if (row.canDelete === false || row.isUndone) {
+      this.setData({ notice: '这一把不在有效记录里，不能长按删除；已按最新数据刷新。' });
+      this.refreshView();
+      return Promise.resolve(null);
+    }
+    // 真实待保存：先让在途的那一把落盘，删除不能与两段写互相覆盖。
+    if (this.data.pendingRows.length > 0 || this.data.resultLocked) {
+      this.setData({
+        notice: '这条线还有一把没保存：先在「待保存」行重试保存，再删除这一把。'
+      });
+      return Promise.resolve(null);
+    }
+
+    // 同一把连点沿用已经打开的那一次确认；已有别的确认时不叠第二个弹窗。
+    const opened = this._deletePrompt;
+    if (opened) return opened.attemptId === attemptId ? opened.promise : Promise.resolve(null);
+
+    // 视频关联不可读时不猜「有没有视频」，也不删记录：稍后重试。
+    const view = attemptVideo.videoClipView(archiveId, attemptId, { sessionId, routeId });
+    if (!view || !view.ok) {
+      this.setData({ notice: '本机视频关联暂时读取失败，这次没有打开删除确认；请稍后重试。' });
+      return Promise.resolve(null);
+    }
+    const clip = view.clip
+      ? {
+          clipId: view.clip.clipId,
+          rev: Number(view.clip.rev) || 0,
+          fileId: view.clip.fileId
+        }
+      : null;
+
+    const target = {
+      archiveId,
+      sessionId,
+      routeId,
+      attemptId,
+      label: row.label || '',
+      note: row.note || '',
+      result: row.isSend ? 'send' : 'fail',
+      // rev 是这一把的有效状态版本（撤回/恢复会推进），不是显示序号。
+      expectedRev: Number.isInteger(row.deleteRev) ? row.deleteRev : 0,
+      clip,
+      orderedIds: (this.data.attemptCards || []).map(item => item.id).join('|'),
+      pageToken: this._pageToken
+    };
+
+    const prompt = { attemptId, promise: null };
+    prompt.promise = this.askDeleteConfirm(target).then(confirmed => {
+      if (this._deletePrompt === prompt) this._deletePrompt = null;
+      if (this._unloaded || !confirmed) return { ok: false, code: 'cancelled' };
+      // 确认回来的页面已经不是发起时的那一页：不落任何删除。
+      if (!this._pageToken || this._pageToken !== target.pageToken) {
+        return { ok: false, code: 'context-changed' };
+      }
+      return this.performDeleteAttempt(target);
+    });
+    this._deletePrompt = prompt;
+    return prompt.promise;
+  },
+
+  /**
+   * 删除确认弹窗：有视频与无视频的文案不同；弹窗不可用时按取消处理，一个字节都不写。
+   * 取消不写盘、不收起备注编辑器，草稿保持原样。
+   */
+  askDeleteConfirm(target) {
+    return new Promise(resolve => {
+      const api = typeof wx !== 'undefined' ? wx : null;
+      if (!api || typeof api.showModal !== 'function') {
+        resolve(false);
+        return;
+      }
+      try {
+        api.showModal({
+          title: target.label ? '删除' + target.label + '？' : '删除这一把？',
+          content: target.clip
+            ? '将删除这把记录、备注及攀笔保存的视频副本。'
+            : '将删除这把记录和备注。',
+          confirmText: '删除',
+          cancelText: '取消',
+          success(result) {
+            resolve(Boolean(result && result.confirm));
+          },
+          fail() {
+            resolve(false);
+          }
+        });
+      } catch (error) {
+        resolve(false);
+      }
+    });
+  },
+
+  /**
+   * 确认之后、真正下笔之前再按最新档案核对一次：
+   * 档案/场次/线路没变、这一条线的有效把次序列与打开确认时完全一致。
+   * 任何迟到确认都在这里被拦住，只刷新页面，不删除「现在编号对上的另一把」。
+   */
+  performDeleteAttempt(target) {
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      this.archive = loaded.archive;
+      this.setData({
+        storageError: loaded.error,
+        notice: '没有删除这一把：本机档案读不出来。'
+      });
+      this.refreshView();
+      return Promise.resolve({ ok: false, code: 'unreadable' });
+    }
+    this.archive = loaded.archive;
+
+    const contextChanged =
+      loaded.archive.archiveId !== target.archiveId ||
+      !this._session ||
+      this._session.id !== target.sessionId ||
+      !this._route ||
+      this._route.id !== target.routeId;
+    if (contextChanged) {
+      this.setData({
+        notice: '已经离开这条线或换了本机档案，这次删除没有生效；已按最新数据刷新。'
+      });
+      this.refreshView();
+      return Promise.resolve({ ok: false, code: 'context-changed' });
+    }
+
+    const currentIds = store
+      .attemptsFor(loaded.archive, {
+        sessionId: target.sessionId,
+        routeId: target.routeId
+      })
+      // 现场列表最新在前；attemptsFor 按内部 seq 升序，倒过来与 orderedIds 同向比较。
+      .slice()
+      .reverse()
+      .map(item => item.id)
+      .join('|');
+    if (currentIds !== target.orderedIds) {
+      this.setData({
+        notice: '这一条线的把次已经变化，这次删除没有生效；请按最新画面重新长按确认。'
+      });
+      this.refreshView();
+      return Promise.resolve({ ok: false, code: 'stale' });
+    }
+
+    this.setData({ storageError: '', notice: '正在删除' + target.label + '…' });
+    return attemptDelete
+      .deleteAttempt({
+        archiveId: target.archiveId,
+        sessionId: target.sessionId,
+        routeId: target.routeId,
+        attemptId: target.attemptId,
+        expectedRev: target.expectedRev,
+        expectedNote: target.note,
+        expectedResult: target.result,
+        clip: target.clip
+      })
+      .then(outcome => this.applyDeleteOutcome(target, outcome));
+  },
+
+  /** 删除结果的页面读数：记录与视频副本分别说明，不把「视频没清完」说成两件都完成。 */
+  applyDeleteOutcome(target, outcome) {
+    // 只在发起这次删除的原页面上下文里更新读数：迟到回执不刷另一页/另一条线。
+    const stillOriginalContext =
+      !this._unloaded &&
+      Boolean(this._pageToken) &&
+      this._pageToken === target.pageToken &&
+      Boolean(this._session) &&
+      this._session.id === target.sessionId &&
+      Boolean(this._route) &&
+      this._route.id === target.routeId &&
+      Boolean(this.archive) &&
+      this.archive.archiveId === target.archiveId;
+    if (!stillOriginalContext) return outcome;
+
+    // 无论成功、未确认还是失败，都先按最新档案重读一次再做页面派生；module 的写入
+    // 不会回写页面实例里的旧快照。
+    const reloaded = store.loadState();
+    if (reloaded.ok) this.archive = reloaded.archive;
+    if (outcome && outcome.ok) {
+      const receipt = outcome.receiptLost ? '（回执丢失，已按最新档案确认）' : '';
+      const videoStatus = outcome.video && outcome.video.status;
+      const videoPending = Boolean(videoStatus === 'pending');
+      const videoKept = Boolean(videoStatus === 'kept');
+      this.setData({
+        storageError: '',
+        notice:
+          '已删除' +
+          target.label +
+          receipt +
+          (videoPending
+            ? '；记录已移出，本机视频副本未清理，可点上方「重试清理」。'
+            : videoKept
+              ? '；这段视频仍被其他记录使用，攀笔中的副本已按共享引用保留。'
+              : '')
+      });
+      this.refreshView();
+      return outcome;
+    }
+
+    const code = outcome && outcome.code;
+    if (code === 'archive-unverified') {
+      // 记录可能已经删掉但读回失败：不报成功，也不让人马上重复长按；凭据会在重开时核对。
+      this.setData({
+        storageError: (outcome && outcome.error) || '',
+        notice: '这次删除的结果暂未确认；重开会按最新档案核对记录与视频副本。'
+      });
+      this.refreshView();
+      return outcome;
+    }
+    if (
+      code === 'archive-write-failed' ||
+      code === 'journal-write-failed' ||
+      code === 'journal-read-failed'
+    ) {
+      this.setData({
+        storageError: (outcome && outcome.error) || '',
+        notice: '这一把没有删除，可以再长按重试。'
+      });
+      this.refreshView();
+      return outcome;
+    }
+    this.setData({
+      storageError: '',
+      notice: (outcome && outcome.error) || '这次删除没有生效，已按最新档案刷新。'
+    });
+    this.refreshView();
+    return outcome;
+  },
+
+  /**
+   * 重开自动恢复：journal 里有未完成条目时尝试一次；没有 journal 时不碰文件系统。
+   * 失败保留可见状态与手动重试，不把记录和视频都说成完成。
+   */
+  recoverDeletedMedia() {
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (!archiveId) return Promise.resolve(null);
+    const status = attemptDelete.pendingStatus(archiveId);
+    if (!status.pending) {
+      this.applyCleanupStatus(status);
+      return Promise.resolve(null);
+    }
+    return attemptDelete
+      .recoverPending({ archiveId })
+      .then(() => {
+        const next = attemptDelete.pendingStatus(archiveId);
+        this.applyCleanupStatus(next);
+        return next;
+      })
+      .catch(() => null);
+  },
+
+  applyCleanupStatus(status) {
+    const state = status || { pending: 0, error: '', text: '' };
+    this.setData({
+      cleanupNotice: state.text || '',
+      cleanupRetryVisible: Boolean(state.pending > 0 || state.error)
+    });
+  },
+
+  /** 手动重试已删除记录的本机视频副本清理；失败时保留状态，可再次点按。 */
+  retryVideoCleanup() {
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    if (!archiveId) return Promise.resolve(null);
+    this.setData({ cleanupNotice: '正在重试清理本机视频副本…', cleanupRetryVisible: false });
+    return attemptDelete
+      .recoverPending({ archiveId })
+      .then(result => {
+        const status = attemptDelete.pendingStatus(archiveId);
+        this.applyCleanupStatus(status);
+        if (status.pending > 0) {
+          this.setData({
+            notice:
+              '本机视频副本仍未清理，可稍后再试。' +
+              (status.error ? '（' + status.error + '）' : '')
+          });
+        } else if (status.error) {
+          this.setData({ notice: status.error });
+        } else {
+          this.setData({ notice: '本机视频副本已清理。' });
+        }
+        return result;
+      })
+      .catch(() => {
+        this.setData({ notice: '重试清理没有完成，本机视频副本仍保留。' });
+        this.refreshView();
+        return null;
       });
   },
 

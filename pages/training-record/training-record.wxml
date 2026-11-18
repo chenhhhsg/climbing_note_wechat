@@ -16,6 +16,9 @@
   同排「备注」与视频入口；点备注入口时，就地编辑区紧接头部替换操作行，输入约
   两行、长文框内滚动，取消与保存紧随其后。
   照片、卡点与跨天历史仍在原来的二级大图标记页；现场不再有独立逐把与线路历史跳转。
+  长按「第 N 把」序号框删除这一把（T048–T050 追加返工）：只对已保存的有效把次、收起
+  的旧行也适用；短按仍是展开/收起。确认后记录、备注与攀笔保存的视频副本一起删除，
+  档案先移出记录，视频索引与文件按持久删除凭据继续清理；失败时可重试清理。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -50,6 +53,20 @@
       <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
         <text class="notice-text">{{notice}}</text>
         <text class="notice-hint">点击收起</text>
+      </view>
+
+      <!--
+        长按删除后的本机视频副本清理（T048–T050 追加返工）：记录已移出档案但索引/文件
+        还没有清理完时显示；失败可手动重试。没有未完成条目时不占位。
+      -->
+      <view wx:if="{{cleanupNotice}}" id="video-cleanup" class="video-cleanup">
+        <text id="video-cleanup-text" class="video-cleanup-text">{{cleanupNotice}}</text>
+        <button
+          wx:if="{{cleanupRetryVisible}}"
+          id="video-cleanup-retry"
+          class="text-button video-cleanup-retry"
+          bindtap="retryVideoCleanup"
+        >重试清理</button>
       </view>
 
       <block wx:if="{{activeSession && selectedRoute}}">
@@ -302,7 +319,17 @@
                 data-route-id="{{item.routeId}}"
                 bindtap="toggleAttemptRow"
               >
-                <text id="record-attempt-label-{{item.id}}" class="record-attempt-label">{{item.label}}</text>
+                <text
+                  id="record-attempt-label-{{item.id}}"
+                  class="record-attempt-label"
+                  data-attempt-id="{{item.id}}"
+                  data-archive-id="{{item.archiveId}}"
+                  data-session-id="{{item.sessionId}}"
+                  data-route-id="{{item.routeId}}"
+                  data-delete-rev="{{item.deleteRev}}"
+                  data-page-token="{{pageToken}}"
+                  catchlongpress="requestDeleteAttempt"
+                >{{item.label}}</text>
                 <text
                   class="record-attempt-result {{item.isSend ? 'record-attempt-result-send' : 'record-attempt-result-fail'}}"
                 >{{item.resultText}}</text>
@@ -434,7 +461,7 @@
           <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
         </view>
 
-        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开后，有备注才显示原正文；最新一把和旧把都用「备注」入口，点开就在原把头部下方编辑这一把，保存只改这一把。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。最新一把右侧的「撤销」按一下就撤回这一把（本场少 1 把）；撤销成功后这一把移出列表，前一把只补位显示，再成功记一把才出现新的撤销入口，写失败时原行保留「重试撤销」。照片与卡点在照片缩略图里。</text>
+        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开后，有备注才显示原正文；最新一把和旧把都用「备注」入口，点开就在原把头部下方编辑这一把，保存只改这一把。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。最新一把右侧的「撤销」按一下就撤回这一把（本场少 1 把）；撤销成功后这一把移出列表，前一把只补位显示，再成功记一把才出现新的撤销入口，写失败时原行保留「重试撤销」。长按「第 N 把」序号框删除这一把（记录、备注与攀笔保存的视频副本；相册原片保留），取消不写；删除失败或视频副本未清理时可重试。照片与卡点在照片缩略图里。</text>
       </block>
     </block>
   </block>

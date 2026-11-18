@@ -6,9 +6,15 @@
  * 只记账并继续启动——正式页面的本机记录、场内记把与回看都不依赖云。旧云记录的
  * 读取失败在 utils/db.js 里以可判别错误返回，不在这里阻塞启动。
  * 不改 AppID、不猜云环境：env 仍是占位值，由后续任务在获得真实环境后替换。
+ *
+ * T048–T050 追加返工：冷启动时接一次本地「长按删除」的持久凭据恢复。没有凭据或没有
+ * 未完成条目时这一步立即返回，不扫描视频目录；有未完成条目时才继续清视频索引与文件，
+ * 失败留给单线记录页的可见重试。它不依赖云能力，因此放在云初始化之前。
  */
 App({
   onLaunch() {
+    // 本机删除凭据的重开恢复：只读正式命名空间内的一个受保护键。
+    this.recoverLocalAttemptDeletes();
     // 云能力不可用时只记录，不影响本机档案与页面加载。
     if (typeof wx === 'undefined' || !wx.cloud) {
       console.warn('未检测到云开发能力（可能基础库低于 2.2.3）：旧云记录暂不可读，本机记录不受影响');
@@ -25,6 +31,21 @@ App({
     } catch (error) {
       console.error('云开发初始化失败：旧云记录暂不可读，本机记录不受影响', error);
       this.globalData.cloudReady = false;
+    }
+  },
+
+  /**
+   * 冷启动恢复长按删除的收尾：没有 journal 时立即返回（不碰文件系统）。
+   * 任何异常只记录，不阻塞启动；单线记录页重开时还有一次可见的自动重试与手动重试。
+   */
+  recoverLocalAttemptDeletes() {
+    try {
+      const attemptDelete = require('./utils/training-attempt-delete.js');
+      if (!attemptDelete || typeof attemptDelete.recoverPending !== 'function') return;
+      const task = attemptDelete.recoverPending();
+      if (task && typeof task.catch === 'function') task.catch(() => undefined);
+    } catch (error) {
+      console.warn('本机删除凭据恢复检查失败，记录与视频保持不变', error);
     }
   },
 

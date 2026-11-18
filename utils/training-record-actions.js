@@ -842,7 +842,7 @@ function retryPendingAttempt(event) {
  * 失败后换页再回来（新页面实例）时，重试文案来自档案里的 pending 标记或当前应用运行期
  * 记着的那一次失败，仍指向原 opId。
  */
-function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, route) {
+function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, route, options) {
   if (!activeSession || !selectedRoute) return null;
   if (
     (pendingRows && pendingRows.length) ||
@@ -856,13 +856,22 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
 
   const attempt = target.attempt;
   const undone = store.isUndoneAttempt(attempt);
+  // T048–T050 追加返工：长按删除最新一把后，前一把只补位，不新增「撤销」入口。
+  // 门槛来自持久删除凭据（被删除的最大内部 seq）；已撤回那一把的「恢复」不受影响。
+  const undoBarrier =
+    options && Number.isInteger(options.undoBarrier) && options.undoBarrier > 0
+      ? options.undoBarrier
+      : 0;
+  const undoBlocked = !undone && undoBarrier >= (attempt.seq || 0);
   const offered = undone ? 'restore' : 'undo';
   const offeredText = undone ? '恢复' : '撤回';
   const madeByText = undone ? '撤回' : '恢复';
-  const retryOpId = retryChangeOpId(archive, attempt, offered);
+  const retryOpId = undoBlocked ? '' : retryChangeOpId(archive, attempt, offered);
 
   let stateText = '';
-  if (retryOpId) {
+  if (undoBlocked) {
+    stateText = '';
+  } else if (retryOpId) {
     stateText = offeredText + '未保存 · 点「重试' + offeredText + '这一把」按同一把重试';
   } else if (
     this._recentStatus &&
@@ -897,6 +906,8 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
   let guidanceText = '刚才那一把已计入本场；撤回只减这一把，不改其他把次。';
   if (undone) {
     guidanceText = '撤回的这把不计入本场完攀；要恢复就点右侧「恢复这一把」。';
+  } else if (undoBlocked) {
+    guidanceText = '最新一把已删除：这一把只补位，成功记下新的一把后才会出现「撤销」。';
   } else if (correctable) {
     guidanceText = '要改这一把：点上方「更正结果」；这把仍计入本场把数。';
   } else if (correctionSupported && correctionTargets.size > 0) {
@@ -939,12 +950,13 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
       '本场 ' + activeSession.label + ' · ' + activeSession.gymName + ' · ' + timeText(attempt.createdAt),
     stateText,
     guidanceText,
-    canUndo: !undone,
-    undoText: retryOpId && !undone ? '重试撤回这一把' : '撤回这一把',
+    // 长按删除最新一把后前一把只补位：撤销入口由持久门槛收住，恢复仍按原逻辑。
+    canUndo: !undone && !undoBlocked,
+    undoText: retryOpId && !undone && !undoBlocked ? '重试撤回这一把' : '撤回这一把',
     canRestore: undone,
     restoreText: retryOpId && undone ? '重试恢复这一把' : '恢复这一把',
     // 这一把当前沿用原 opId 重试：现场把次行据此换成同一把的重试文案。
-    retry: Boolean(retryOpId)
+    retry: Boolean(retryOpId) && !undoBlocked
   };
 }
 
@@ -963,6 +975,9 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
  *   记录与逐把列表，前一把只补位显示；恢复能力仍留在档案层，本页不再给入口；
  * - 「撤销」只给最近一把（与 changeRecentAttempt 的原边界一致），重试沿用
  *   recentAttemptView 的同一把、同一 opId 与渲染版本；写失败时原行保留可重试文案；
+ * - T048–T050 追加返工：每一把有效把次都带 canDelete 与真实的 rev（deleteRev），页面
+ *   只把长按绑在序号框上；实际删除由 utils/training-attempt-delete.js 按四个原 ID 与
+ *   版本核对，编号只用于确认文案；
  * - 现场不再提供更正菜单或行内更正入口：更正只在线路历史与本场逐把页按原范围处理；
  *   这里仍按原资格派生 correctable 等只读字段，供页面原有的确认入口与旧读数复用，
  *   但不渲染成现场动作；
@@ -1069,9 +1084,13 @@ function attemptCardRows(
           correctionSupported &&
           (correctable || correctionState.statusText || undone)
       ),
-      // T050 返工：最新一把可撤销时给一个文字「撤销」；页面据此渲染。
+      // 最新一把可撤销时给一个文字「撤销」；页面据此渲染。
       canUndo,
       undoText,
+      // 长按删除（T048–T050 追加返工）只给已保存的有效把次；删除前按这一把的真实
+      // rev（不是显示序号）核对，页面打开确认时再连同备注/结果/视频版本一起带回。
+      canDelete: !undone,
+      deleteRev: store.attemptRev(attempt),
       expected: isRecent ? recent.expected : '',
       expectedRev: isRecent ? recent.expectedRev : 0,
       stateText
@@ -1192,6 +1211,34 @@ function changeRecentAttempt(event, action) {
     });
     this.refreshView();
     return changeOutcome(false, false, 'target-changed');
+  }
+
+  // T048–T050 追加返工：长按删除最新一把后，前一把只补位，不再拿到撤销入口；
+  // 迟到的旧事件即使绕过画面，也不能把补位的前一把撤掉。门槛每次都按持久删除凭据
+  // 与当前档案实态重算（不依赖旧页面快照）；凭据读不出来时门槛取保守哨兵，禁止撤销。
+  // 延迟 require：attempt-video.js 依赖本模块，顶层加载会形成循环。
+  const attemptDelete = require('./training-attempt-delete.js');
+  const renderedBarrier =
+    this.data && Number.isInteger(this.data.undoBarrier) && this.data.undoBarrier > 0
+      ? this.data.undoBarrier
+      : 0;
+  const persistentBarrier =
+    attemptDelete && typeof attemptDelete.deletedSeqBarrier === 'function'
+      ? attemptDelete.deletedSeqBarrier(
+          archive.archiveId,
+          sessionId || pageSessionId,
+          routeId || pageRouteId
+        )
+      : 0;
+  const undoBarrier = Math.max(renderedBarrier, persistentBarrier);
+  if (asUndo && (target.attempt.seq || 0) <= undoBarrier) {
+    forgetFailedChange(archive.archiveId, attemptId, action);
+    this.setData({
+      storageError: '',
+      notice: '这一把不是刚记入的最新一把，没有撤销；成功记下新的一把后才会重新出现「撤销」。'
+    });
+    this.refreshView();
+    return changeOutcome(false, false, 'undo-barrier');
   }
 
   // 已经是要的状态（撤回一个已撤回的、恢复一个有效的）：不写盘，只说明下一步。

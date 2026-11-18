@@ -1743,6 +1743,199 @@ function correctAttempt(attemptId, input) {
   return { ok: true, code: 'corrected', duplicate: false, error: '', archive: committed, attempt: clone(target) };
 }
 
+/**
+ * 长按删除一把已保存的有效把次（T048–T050 追加返工）。
+ *
+ * 输入：{ archiveId?, sessionId?, routeId?, expectedRev?, expectedNote?, expectedResult? }
+ * 返回：{ ok, code, error, archive, attempt, receiptLost? }
+ * code：deleted / deleted-receipt-lost / missing / undone / conflict / stale / pending /
+ *       archive-mismatch / unreadable / write-failed / write-failed-unverified。
+ *
+ * 与「撤回」不同，这里是把这一把从记录数据里**物理移出**：整条 attempts 记录（结果、
+ * 备注、时间、序号与 ID）都不再保留；其余把次的 ID、内部 seq、备注与归属逐项不动。
+ * 显示编号由 attemptOrdinalMap 按剩余有效把次重算，因此 7 把删除第 5 把后原第 6、7 把
+ * 分别显示第 5、6 把。nextAttemptSeq 不回收，新记的一把永远拿更大的内部序号与新 ID，
+ * 被删把次的 ID 不会被重新分配。
+ *
+ * 版本/内容核对（只按原把次 ID 定位，不按显示序号）：
+ * - expectedRev 是页面渲染这一行时读到的 rev；撤回/恢复过的一把版本已前进时拒绝；
+ * - expectedNote / expectedResult 是打开删除确认时的原文；期间别人改了备注或结果时
+ *   拒绝，避免把一次基于旧画面的确认落到已经变化的记录上；
+ * - 同一场同一线还有「进行中」保存、或这一把挂着撤回/恢复/更正标记时拒绝（pending）：
+ *   先让在途操作落盘，避免一次删除与另一段两段写互相覆盖。
+ *
+ * 写失败分两种：写前失败（盘上仍有这一把）返回 write-failed，调用方回滚删除凭据；
+ * 写成功但回执丢失或首次读回失败时再读一次档案，能确认已移出就按 deleted-receipt-lost
+ * 成功返回（调用方继续清理视频副本），读回也失败则返回 write-failed-unverified，让
+ * 持久删除凭据在重开后重新核对，而不是报「没删」或「删了别的」。
+ */
+function deleteAttempt(attemptId, input) {
+  const data = input || {};
+  if (!hasText(attemptId)) {
+    return { ok: false, code: 'missing', error: '缺少要删除的把次 ID', archive: null, attempt: null };
+  }
+
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return { ok: false, code: 'unreadable', error: loaded.error, archive: loaded.archive, attempt: null };
+  }
+  const current = loaded.archive;
+
+  if (hasText(data.archiveId) && data.archiveId !== current.archiveId) {
+    return {
+      ok: false,
+      code: 'archive-mismatch',
+      error: ATTEMPT_ARCHIVE_MISMATCH,
+      archive: current,
+      attempt: null
+    };
+  }
+
+  const attempt = current.attempts.find(item => item.id === attemptId) || null;
+  if (!attempt) {
+    return {
+      ok: false,
+      code: 'missing',
+      error: '找不到这一把，可能已经被删除或重置',
+      archive: current,
+      attempt: null
+    };
+  }
+  if (hasText(data.sessionId) && data.sessionId !== attempt.sessionId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前场次，未做删除', archive: current, attempt: clone(attempt) };
+  }
+  if (hasText(data.routeId) && data.routeId !== attempt.routeId) {
+    return { ok: false, code: 'conflict', error: '这一把不属于当前线路，未做删除', archive: current, attempt: clone(attempt) };
+  }
+  if (!isEffectiveAttempt(attempt)) {
+    return {
+      ok: false,
+      code: 'undone',
+      error: '这一把已撤回，不在有效记录里，未做删除；如需移除请先恢复再操作',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+  if (!findById(current.sessions, attempt.sessionId)) {
+    return { ok: false, code: 'missing', error: '原场次已不存在，未做删除', archive: current, attempt: clone(attempt) };
+  }
+  if (!findById(current.routes, attempt.routeId)) {
+    return { ok: false, code: 'missing', error: '原线路已不存在，未做删除', archive: current, attempt: clone(attempt) };
+  }
+
+  // 过期画面：版本、备注或结果任意一项与打开确认时不同，都不按旧确认删除。
+  if (
+    Number.isInteger(data.expectedRev) &&
+    data.expectedRev >= 0 &&
+    data.expectedRev !== attemptRev(attempt)
+  ) {
+    return { ok: false, code: 'stale', error: ATTEMPT_STALE, archive: current, attempt: clone(attempt) };
+  }
+  if (
+    typeof data.expectedNote === 'string' &&
+    data.expectedNote !== (attempt.note || '')
+  ) {
+    return {
+      ok: false,
+      code: 'stale',
+      error: '这一把的备注已经变化，这次删除没有生效；请按最新内容重新确认',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+  if (hasText(data.expectedResult) && data.expectedResult !== attempt.result) {
+    return {
+      ok: false,
+      code: 'stale',
+      error: '这一把的结果已经变化，这次删除没有生效；请按最新内容重新确认',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+
+  // 在途操作：同一场同一线还有待保存的一把，或这一把本身挂着撤回/恢复/更正标记。
+  const pendingOnRoute = (current.pendingSaves || []).some(
+    item => item.sessionId === attempt.sessionId && item.routeId === attempt.routeId
+  );
+  const pendingOnAttempt = [
+    ...(current.pendingUndos || []),
+    ...(current.pendingRestores || []),
+    ...(current.pendingCorrections || [])
+  ].some(item => item.attemptId === attemptId);
+  if (pendingOnRoute || pendingOnAttempt) {
+    return {
+      ok: false,
+      code: 'pending',
+      error: pendingOnAttempt
+        ? '这一把还有未完成的操作，先重试或完成它，再删除这把'
+        : '这条线还有一把没保存：先在「待保存」行重试保存，再删除',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+
+  // 只移出这一个 ID；其余把次（含他们的 seq、备注与结果）一个字段都不动。
+  const next = clone(current);
+  next.attempts = next.attempts.filter(item => item.id !== attemptId);
+  // 进行中标记若残留也不再指向不存在的把次；正常路径上面的 pending 守卫已经拒绝。
+  next.pendingCorrections = (next.pendingCorrections || []).filter(item => item.attemptId !== attemptId);
+  next.pendingUndos = (next.pendingUndos || []).filter(item => item.attemptId !== attemptId);
+  next.pendingRestores = (next.pendingRestores || []).filter(item => item.attemptId !== attemptId);
+  // nextAttemptSeq 保持原值：内部序号单调，被删把次不会被新记一把复用。
+
+  const saved = saveArchive(next);
+  if (saved.ok) {
+    return {
+      ok: true,
+      code: 'deleted',
+      receiptLost: false,
+      error: '',
+      archive: next,
+      attempt: clone(attempt)
+    };
+  }
+
+  // 写抛错：回执不明确。读回最新档案判断这一把是否已经移出。
+  const reread = loadState();
+  if (!reread.ok) {
+    return {
+      ok: false,
+      code: 'write-failed-unverified',
+      // 不报「已删除」也不报「没删除」：持久删除凭据会在重开后按档案核对。
+      error: saved.error + '；记录是否已删除暂未确认，重开或重试时会重新核对',
+      archive: current,
+      attempt: clone(attempt)
+    };
+  }
+  if (reread.archive.archiveId === current.archiveId) {
+    const stillThere = reread.archive.attempts.some(item => item.id === attemptId);
+    if (!stillThere) {
+      return {
+        ok: true,
+        code: 'deleted-receipt-lost',
+        receiptLost: true,
+        error: '',
+        archive: reread.archive,
+        attempt: clone(attempt)
+      };
+    }
+    return {
+      ok: false,
+      code: 'write-failed',
+      error: saved.error,
+      archive: reread.archive,
+      attempt: clone(attempt)
+    };
+  }
+  return {
+    ok: false,
+    code: 'write-failed-unverified',
+    error: saved.error + '；读取到另一份本机档案，记录是否已删除暂未确认',
+    archive: reread.archive,
+    attempt: clone(attempt)
+  };
+}
+
 // ------------------------------------------------------------------ *
 // 撤回 / 恢复同一把次（T032）
 // ------------------------------------------------------------------ *
@@ -2159,6 +2352,8 @@ module.exports = {
   routeCorrectionRows,
   setAttemptNote,
   correctAttempt,
+  // T048–T050 追加返工：长按删除有效把次（物理移出记录；视频副本由调用方凭删除凭据清理）
+  deleteAttempt,
   undoAttempt,
   restoreAttempt,
   attemptSettledOp,
