@@ -1,8 +1,10 @@
 <!--
-  单线记录页（T036 / T041 现场照片入口 / T045 现场逐把同页）
+  单线记录页（T036 / T041 现场照片入口 / T045 现场逐把同页 / T048 紧凑逐把 / T049 视频入口）
   按 archiveId + sessionId + routeId 进入一条长期线路在某一场的记录：
   首屏一行线路照片入口、结果按钮、待保存重试，普通文档流下直接列本场本线把次
   （最新在前、一把一框），每行只编辑所点那一把，更正/撤回/恢复都在原框。
+  最新一把的备注右侧固定视频入口（无片「＋ 添加视频」、有片「回看视频」）；
+  旧行收起仅在已有视频时显示小视频图标，展开后按该把的真实关联给同一入口。
   照片、卡点与跨天历史仍在原来的二级大图标记页；现场不再有独立逐把与线路历史跳转。
 -->
 <view class="page">
@@ -300,6 +302,13 @@
                   class="record-attempt-undone-tag"
                 >已撤回</text>
                 <text class="record-attempt-time">{{item.timeText}}</text>
+                <!-- T049：旧行收起时只有这一把已有本机视频才出现小视频图标；
+                     图标不单独接收点按，点按仍落到整行展开原把详情。 -->
+                <text
+                  wx:if="{{item.showVideoIcon}}"
+                  id="record-attempt-video-icon-{{item.id}}"
+                  class="record-attempt-video-icon"
+                >▶</text>
                 <text
                   wx:if="{{item.canToggle}}"
                   id="record-attempt-toggle-{{item.id}}"
@@ -308,11 +317,37 @@
               </view>
 
               <block wx:if="{{item.expanded}}">
-              <text
-                wx:if="{{item.hasNote}}"
-                id="record-attempt-note-{{item.id}}"
-                class="record-attempt-note{{item.isLatest ? ' record-attempt-note-summary' : ''}}"
-              >{{item.note}}</text>
+              <view class="record-attempt-detail">
+                <text
+                  wx:if="{{item.hasNote}}"
+                  id="record-attempt-note-{{item.id}}"
+                  class="record-attempt-note{{item.isLatest ? ' record-attempt-note-summary' : ''}}"
+                >{{item.note}}</text>
+
+                <!-- T049：视频入口固定在备注右侧同一个槽位；最新一把只显示动作本身，
+                     旧把展开后连同关联状态一起显示。无片「＋ 添加视频」，有片「回看视频」。 -->
+                <view wx:if="{{item.canOpenVideo}}" class="record-attempt-video">
+                  <text
+                    wx:if="{{!item.isLatest}}"
+                    id="record-video-state-{{item.id}}"
+                    class="record-attempt-video-state"
+                  >{{item.videoStateText}}</text>
+                  <text
+                    id="record-open-video-{{item.id}}"
+                    class="record-attempt-video-action {{item.hasVideo ? 'record-attempt-video-saved' : ''}}"
+                    data-attempt-id="{{item.id}}"
+                    data-archive-id="{{item.archiveId}}"
+                    data-session-id="{{item.sessionId}}"
+                    data-route-id="{{item.routeId}}"
+                    catchtap="openAttemptVideo"
+                  >{{item.videoEntryText}}</text>
+                </view>
+                <text
+                  wx:else
+                  id="record-video-state-{{item.id}}"
+                  class="record-attempt-video-state"
+                >{{item.videoStateText}}</text>
+              </view>
 
               <view class="record-attempt-actions">
                 <button
@@ -327,24 +362,6 @@
                   id="record-attempt-note-locked-{{item.id}}"
                   class="record-attempt-note-locked"
                 >已撤回 · 恢复后可改备注</text>
-
-                <view wx:if="{{item.canOpenVideo}}" class="record-attempt-video">
-                  <text
-                    id="record-video-state-{{item.id}}"
-                    class="record-attempt-video-state"
-                  >{{item.videoStateText}}</text>
-                  <text
-                    id="record-open-video-{{item.id}}"
-                    class="record-attempt-video-action {{item.hasVideo ? 'record-attempt-video-saved' : ''}}"
-                    data-attempt-id="{{item.id}}"
-                    catchtap="openAttemptVideo"
-                  >{{item.videoEntryText}}</text>
-                </view>
-                <text
-                  wx:else
-                  id="record-video-state-{{item.id}}"
-                  class="record-attempt-video-state"
-                >{{item.videoStateText}}</text>
               </view>
               </block>
             </view>
@@ -472,7 +489,7 @@
           <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
         </view>
 
-        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行。「编辑」只改这一把的备注；视频沿用原把次视频页。照片与卡点在照片缩略图里。</text>
+        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。视频入口在备注右侧：无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。「编辑」只改这一把的备注；照片与卡点在照片缩略图里。</text>
       </block>
     </block>
   </block>

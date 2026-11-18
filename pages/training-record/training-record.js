@@ -24,6 +24,11 @@
  * 备注、视频与纠错入口仍在原把次上。展开态只存在本页（expandedAttemptId，按原把次 ID），
  * 不新增存储字段；新一把落盘成功后上一把自动收成短行，失败、取消与待保存都不换层级。
  *
+ * T049：最新一把的备注右侧固定一个视频入口：无片显示「＋ 添加视频」，有片在同一位置
+ * 显示「回看视频」；旧行收起时只有真有本机视频的那一把显示小视频图标，点行展开后按该把
+ * 的真实关联给同一个入口。入口只带这一行的四个原 ID 打开原把次视频页，复用既有的归属
+ * 核对、索引只读与本机保存；页面不新增视频字段，也不改播放、索引与保存口径。
+ *
  * 返回本场列表后行读数由列表页自己按最新档案重算；本页重开（onShow）也按最新档案
  * 刷新，因此撤回、恢复与待保存重试的结果在两边一致。
  */
@@ -304,11 +309,15 @@ Page({
       expandedAttemptId = '';
     }
     this._latestAttemptId = latestAttemptId;
-    const attemptCards = baseCards.map(item =>
-      Object.assign({}, item, {
-        expanded: item.isLatest || item.id === expandedAttemptId
-      })
-    );
+    const attemptCards = baseCards.map(item => {
+      const expanded = item.isLatest || item.id === expandedAttemptId;
+      return Object.assign({}, item, {
+        expanded,
+        // T049：旧行收起时只有这一把真有本机视频才显示小视频图标；展开后在原把详情里
+        // 给「＋ 添加视频」或「回看视频」。图标只是提示，点按仍落到整行展开原把。
+        showVideoIcon: !expanded && Boolean(item.hasVideo) && Boolean(item.canOpenVideo)
+      });
+    });
     // 编辑中的这一把若已不在可编辑列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
     let noteEditor = this.data.noteEditor;
     if (noteEditor && !attemptCards.some(item => item.id === noteEditor.attemptId && item.canEditNote)) {
@@ -391,8 +400,8 @@ Page({
 
   /**
    * 视频入口：只把这一行渲染时的原把次与归属带到原把次视频页。
-   * 打开前按最新档案再核对一次：这一把被撤回、换了档案或还没保存时不打开；
-   * 视频页会用同一组四个 ID 再核对一次。
+   * 打开前按最新档案再核对一次：这一行不属于本页这一条线、这一把被撤回、换了档案或
+   * 还没保存时不打开；视频页会用同一组四个 ID 再核对一次。
    */
   openAttemptVideo(event) {
     if (this.data.loadError || this.data.contextError) return;
@@ -403,6 +412,17 @@ Page({
     const routeId = (this._route && this._route.id) || '';
     if (!archiveId || !sessionId || !routeId || !attemptId) {
       this.setData({ notice: '无法定位这一把的原归属，请重试。' });
+      return;
+    }
+
+    // 迟到点击可能还带着上一行渲染时的归属：与当前这一场这一条线不一致就整下拒掉。
+    const stale =
+      (dataset.archiveId && dataset.archiveId !== archiveId) ||
+      (dataset.sessionId && dataset.sessionId !== sessionId) ||
+      (dataset.routeId && dataset.routeId !== routeId);
+    if (stale) {
+      this.setData({ notice: '这一下不属于本场这一条线的把次，没有打开视频页。' });
+      this.refreshView();
       return;
     }
 

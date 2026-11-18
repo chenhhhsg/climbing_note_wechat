@@ -1543,3 +1543,72 @@ test('T048 展开块保留原按把入口：备注全文、编辑、视频、更
     assert.equal(typeof recordDefinition[handler], 'function', '单线页绑定缺少处理器：' + handler);
   }
 });
+
+// ------------------------------------------------------------------ *
+// T049 最新卡与旧把详情的视频入口
+// ------------------------------------------------------------------ *
+
+test('T049 最新卡备注右侧固定视频入口，添加与回看共用同一槽位与四个原 ID', () => {
+  const wxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const wxss = fs.readFileSync(RECORD_WXSS, 'utf8');
+  const attemptsAt = wxml.indexOf('id="record-attempts"');
+  assert.ok(attemptsAt !== -1);
+  const section = wxml.slice(attemptsAt);
+
+  // 备注与视频入口在同一个详情行：备注在左、入口靠右；无备注时入口仍靠右。
+  const detailAt = section.indexOf('class="record-attempt-detail"');
+  assert.ok(detailAt !== -1, '备注与视频入口共用一个详情行');
+  const actionsAt = section.indexOf('class="record-attempt-actions"', detailAt);
+  const detail = section.slice(detailAt, actionsAt);
+  assert.match(detail, /id="record-attempt-note-\{\{item\.id\}\}"/, '备注仍在详情行里');
+  assert.match(
+    detail,
+    /id="record-open-video-\{\{item\.id\}\}"[\s\S]{0,700}catchtap="openAttemptVideo"[\s\S]{0,80}\{\{item\.videoEntryText\}\}/,
+    '视频入口用数据驱动的同一处文案'
+  );
+  for (const match of [
+    /data-attempt-id="\{\{item\.id\}\}"/,
+    /data-archive-id="\{\{item\.archiveId\}\}"/,
+    /data-session-id="\{\{item\.sessionId\}\}"/,
+    /data-route-id="\{\{item\.routeId\}\}"/
+  ]) {
+    assert.match(detail, match, '入口必须带齐这一行的四个原 ID：' + match);
+  }
+  // 添加与回看是同一个元素，只换文案：不按 hasVideo 分成两个入口。
+  const entryCount = (section.match(/id="record-open-video-\{\{item\.id\}\}"/g) || []).length;
+  assert.equal(entryCount, 1, '添加与回看共用同一个入口');
+  assert.doesNotMatch(detail, /wx:if="\{\{item\.hasVideo\}\}"/, '不按有片与否拆出第二个按钮');
+  // 最新一把只显示动作本身；关联状态只给展开的旧把。
+  assert.match(
+    detail,
+    /wx:if="\{\{!item\.isLatest\}\}"[\s\S]{0,160}id="record-video-state-\{\{item\.id\}\}"/,
+    '关联状态只给旧把展开'
+  );
+
+  // 收起态只有一个小视频图标，且只在展开块之外的整行里；入口本身只在展开块里。
+  const firstExpandAt = section.indexOf('wx:if="{{item.expanded}}"');
+  assert.ok(firstExpandAt > 0);
+  assert.ok(detailAt > firstExpandAt, '视频入口在展开块内');
+  assert.match(
+    section.slice(0, firstExpandAt),
+    /wx:if="\{\{item\.showVideoIcon\}\}"[\s\S]{0,120}id="record-attempt-video-icon-\{\{item\.id\}\}"[\s\S]{0,80}>▶</,
+    '旧行收起态的图标由 showVideoIcon 驱动'
+  );
+  const iconId = section.indexOf('id="record-attempt-video-icon-{{item.id}}"');
+  assert.doesNotMatch(
+    section.slice(iconId - 200, iconId + 200),
+    /bindtap|catchtap/,
+    '图标只作提示，点按仍由整行展开原把'
+  );
+
+  // 同一行的布局：备注可压缩，入口靠右、不换行，两态位置一致。
+  assert.match(t048Declarations(wxss, '.record-attempt-detail'), /display:\s*flex/);
+  assert.match(
+    t048Declarations(wxss, '.record-attempt-detail .record-attempt-note'),
+    /min-width:\s*0/,
+    '长备注在入口左侧压缩省略'
+  );
+  assert.match(t048Declarations(wxss, '.record-attempt-video'), /margin-left:\s*auto/);
+  assert.match(t048Declarations(wxss, '.record-attempt-video'), /flex:\s*none/);
+  assert.match(t048Declarations(wxss, '.record-attempt-video-icon'), /border/, '图标有可见边框');
+});

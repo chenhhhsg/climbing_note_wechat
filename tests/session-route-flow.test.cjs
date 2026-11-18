@@ -3664,3 +3664,261 @@ test('T048 同线另一场不串入：只列入口那一场这一条线的原把
   );
   assert.equal(neighborPage.data.attemptCards[0].isLatest, true);
 });
+
+// ------------------------------------------------------------------ *
+// T049 最新卡与旧把详情的视频入口
+// ------------------------------------------------------------------ *
+
+/** 往本机视频索引写与这些把次真实归属一致的本机副本（记录页只读索引，不写）。 */
+function writeT049VideoClips(items) {
+  const archiveId = archiveOf().archiveId;
+  storage.set(
+    VIDEO_INDEX_KEY,
+    JSON.stringify({
+      version: 1,
+      clips: items.map(item => ({
+        clipId: item.clipId,
+        archiveId,
+        sessionId: item.sessionId,
+        routeId: item.routeId,
+        attemptId: item.attemptId,
+        rev: 1,
+        bytes: item.bytes || 1024,
+        fileId: 'attempt-video/v1/' + archiveId + '/' + item.clipId + '.mp4'
+      }))
+    })
+  );
+}
+
+/** 最近一次跳转的参数：视频入口必须带齐四个原 ID。 */
+function lastVideoParams() {
+  const nav = wxLog.navigations[wxLog.navigations.length - 1];
+  assert.ok(nav, '应有一次页面跳转');
+  const url = new URL(nav.url, 'https://example.invalid');
+  assert.equal(url.pathname, '/pages/attempt-video/attempt-video');
+  return {
+    archiveId: url.searchParams.get('archiveId'),
+    sessionId: url.searchParams.get('sessionId'),
+    routeId: url.searchParams.get('routeId'),
+    attemptId: url.searchParams.get('attemptId')
+  };
+}
+
+test('T049 最新卡无片「＋ 添加视频」、有片同位置「回看视频」；旧行收起仅真有片时出图标', () => {
+  const seeded = seedRopeAttempts(['fail', 'fail', 'fail'], ['', '', '第三把备注']);
+  const archiveId = archiveOf().archiveId;
+  const indexBefore = storage.get(VIDEO_INDEX_KEY);
+
+  // 都还没片：最新一把与旧把都只给「＋ 添加视频」，收起态都没有小视频图标。
+  const firstPage = openRecordFor(seeded.route.id, seeded.session.id);
+  assert.equal(firstPage.data.attemptCards[0].isLatest, true);
+  for (const row of firstPage.data.attemptCards) {
+    assert.equal(row.hasVideo, false);
+    assert.equal(row.videoEntryText, '＋ 添加视频');
+    assert.equal(row.showVideoIcon, false);
+  }
+  // 最新一把的入口只带这一把的四个原 ID。
+  resetWxLog();
+  firstPage.openAttemptVideo(
+    tapDataset({
+      attemptId: seeded.attempts[2].id,
+      archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.deepEqual(lastVideoParams(), {
+    archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id,
+    attemptId: seeded.attempts[2].id
+  });
+
+  // 第二把已有本机副本：只有这一把在收起态带上图标，最新一把仍在同一位置给添加。
+  writeT049VideoClips([
+    {
+      clipId: 'clip-t049-older',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id,
+      attemptId: seeded.attempts[1].id
+    }
+  ]);
+  const indexRaw = storage.get(VIDEO_INDEX_KEY);
+
+  // 从视频页返回（onShow）也按最新索引刷新：同一把变成回看，最新一把仍在同位置给添加。
+  firstPage.onShow();
+  assert.equal(firstPage.data.attemptCards[0].videoEntryText, '＋ 添加视频');
+  const refreshedOlder = firstPage.data.attemptCards.find(
+    row => row.id === seeded.attempts[1].id
+  );
+  assert.equal(refreshedOlder.videoEntryText, '回看视频');
+  assert.equal(refreshedOlder.showVideoIcon, true);
+
+  const page = openRecordFor(seeded.route.id, seeded.session.id);
+
+  const latest = page.data.attemptCards[0];
+  assert.equal(latest.hasVideo, false);
+  assert.equal(latest.videoEntryText, '＋ 添加视频');
+  assert.equal(latest.expanded, true);
+  assert.equal(latest.showVideoIcon, false, '最新一把完整展示，不出现收起态图标');
+
+  const olderRow = page.data.attemptCards.find(row => row.id === seeded.attempts[1].id);
+  assert.equal(olderRow.hasVideo, true);
+  assert.equal(olderRow.videoEntryText, '回看视频');
+  assert.equal(olderRow.expanded, false);
+  assert.equal(olderRow.showVideoIcon, true, '有片的旧行收起时出现小视频图标');
+
+  const bareRow = page.data.attemptCards.find(row => row.id === seeded.attempts[0].id);
+  assert.equal(bareRow.hasVideo, false);
+  assert.equal(bareRow.videoEntryText, '＋ 添加视频');
+  assert.equal(bareRow.showVideoIcon, false, '无片的旧行不出现视频图标');
+
+  // 点开原行后按该把的真实关联给回看入口，图标让位给详情里的入口。
+  toggleRow(page, seeded.attempts[1]);
+  const opened = page.data.attemptCards.find(row => row.id === seeded.attempts[1].id);
+  assert.equal(opened.expanded, true);
+  assert.equal(opened.hasVideo, true);
+  assert.equal(opened.videoEntryText, '回看视频');
+  assert.equal(opened.showVideoIcon, false);
+
+  // 回看入口带的是这一行的四个原 ID，不是最新一把的。
+  resetWxLog();
+  page.openAttemptVideo(
+    tapDataset({
+      attemptId: opened.id,
+      archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.deepEqual(lastVideoParams(), {
+    archiveId,
+    sessionId: seeded.session.id,
+    routeId: seeded.route.id,
+    attemptId: seeded.attempts[1].id
+  });
+
+  // 打开、展开与进入视频页都只读：索引与档案逐字节不变。
+  assert.equal(storage.get(VIDEO_INDEX_KEY), indexRaw, '视频索引不变');
+  assert.notEqual(indexBefore, indexRaw, '夹具确实写入了视频索引');
+});
+
+test('T049 新、旧两把各自保存不同视频：换新把后层级切换、重开仍按各自关联，失效点击不打开视频页', () => {
+  const seeded = seedRopeAttempts(['fail', 'fail'], ['第一把备注', '']);
+  const archiveId = archiveOf().archiveId;
+  writeT049VideoClips([
+    {
+      clipId: 'clip-t049-first',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id,
+      attemptId: seeded.attempts[0].id
+    },
+    {
+      clipId: 'clip-t049-second',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id,
+      attemptId: seeded.attempts[1].id
+    }
+  ]);
+  const indexRaw = storage.get(VIDEO_INDEX_KEY);
+
+  let page = openRecordFor(seeded.route.id, seeded.session.id);
+  assert.equal(page.data.attemptCards[0].id, seeded.attempts[1].id, '最新一把置顶');
+  assert.equal(page.data.attemptCards[0].videoEntryText, '回看视频');
+  assert.equal(page.data.attemptCards[0].showVideoIcon, false);
+  assert.equal(page.data.attemptCards[1].videoEntryText, '回看视频');
+  assert.equal(page.data.attemptCards[1].showVideoIcon, true);
+
+  // 最新一把回看的是第 2 把自己的副本。
+  resetWxLog();
+  page.openAttemptVideo(
+    tapDataset({
+      attemptId: seeded.attempts[1].id,
+      archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(lastVideoParams().attemptId, seeded.attempts[1].id);
+
+  // 展开旧行再回看：进入第 1 把，不串到第 2 把。
+  toggleRow(page, seeded.attempts[0]);
+  resetWxLog();
+  page.openAttemptVideo(
+    tapDataset({
+      attemptId: seeded.attempts[0].id,
+      archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(lastVideoParams().attemptId, seeded.attempts[0].id);
+
+  // 记下第 3 把成功后层级切换：新一把置顶且无片，原两把都收成带图标的短行。
+  tick();
+  recordThroughPage(page, 'fail');
+  const cards = page.data.attemptCards;
+  assert.equal(cards.length, 3);
+  assert.equal(cards[0].hasVideo, false);
+  assert.equal(cards[0].videoEntryText, '＋ 添加视频');
+  assert.equal(cards[0].expanded, true);
+  assert.equal(cards[1].id, seeded.attempts[1].id);
+  assert.equal(cards[1].expanded, false);
+  assert.equal(cards[1].showVideoIcon, true, '原最新一把收成短行后仍有有片图标');
+  assert.equal(cards[2].id, seeded.attempts[0].id);
+  assert.equal(cards[2].showVideoIcon, true);
+
+  // 重开：仍按两把各自的关联给回看入口。
+  page = openRecordFor(seeded.route.id, seeded.session.id);
+  const reopened = page.data.attemptCards;
+  assert.deepEqual(
+    reopened.map(row => [row.id, row.hasVideo, row.expanded]),
+    [
+      [cards[0].id, false, true],
+      [seeded.attempts[1].id, true, false],
+      [seeded.attempts[0].id, true, false]
+    ]
+  );
+  assert.equal(reopened[1].videoEntryText, '回看视频');
+  assert.equal(reopened[2].videoEntryText, '回看视频');
+
+  // 失效点击：带别的档案 ID 的一下不打开视频页，只提示并按最新档案刷新。
+  const archiveRaw = storage.get(ARCHIVE_KEY);
+  resetWxLog();
+  page.openAttemptVideo(
+    tapDataset({
+      attemptId: seeded.attempts[0].id,
+      archiveId: 'archive-of-another-profile',
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(wxLog.navigations.length, 0, '串档的点击不打开视频页');
+  assert.ok(page.data.notice, '失效点击给出可见提示');
+  assert.equal(storage.get(VIDEO_INDEX_KEY), indexRaw, '失效点击不改视频索引');
+  assert.equal(storage.get(ARCHIVE_KEY), archiveRaw, '失效点击不改训练档案');
+
+  // 已撤回的一把先恢复再回看：入口不打开视频页，其他把次与索引保持。
+  page.undoLatestAttempt(rowEvent(page.data.attemptCards[0]));
+  const undone = page.data.attemptCards[0];
+  assert.equal(undone.isUndone, true);
+  assert.equal(undone.canOpenVideo, false);
+  assert.equal(undone.showVideoIcon, false);
+  resetWxLog();
+  page.openAttemptVideo(
+    tapDataset({
+      attemptId: undone.id,
+      archiveId,
+      sessionId: seeded.session.id,
+      routeId: seeded.route.id
+    })
+  );
+  assert.equal(wxLog.navigations.length, 0, '已撤回的一把不打开视频页');
+  assert.match(page.data.notice, /撤回.*恢复/);
+  assert.equal(storage.get(VIDEO_INDEX_KEY), indexRaw, '撤回与失效点击都不改视频索引');
+  assert.equal(
+    page.data.attemptCards.filter(row => row.hasVideo).length,
+    2,
+    '另外两把的视频关联保持'
+  );
+});

@@ -952,6 +952,8 @@ function recentAttemptView(archive, activeSession, selectedRoute, pendingRows, r
  *   一行紧凑短行；是否展开由页面按原把次 ID 决定，本模块不保存任何展开状态；
  * - 备注「编辑」与视频入口只给有效把次：撤回后档案层拒绝改备注、视频页拒绝打开，
  *   先恢复这一把；
+ * - T049：视频入口按该把的真实关联给「＋ 添加视频」或「回看视频」，只换文案不换槽位；
+ *   旧行收起时是否显示小视频图标由页面按展开态决定（本模块只给出 hasVideo）；
  * - 「改成未完成」与线路历史、本场逐把同一份资格（抱石、有效、已确认完攀）；
  * - 「这把多记了」（撤回）与「恢复这一把」只给最近一把，与 changeRecentAttempt 的
  *   原边界一致；重试沿用 recentAttemptView 的同一把、同一 opId 与渲染版本；
@@ -1005,6 +1007,8 @@ function attemptCardRows(
       entryText: '添加视频 ›'
     };
     const correctable = Boolean(correctionTargets.get(attempt.id)) && !undone;
+    // 这一把真实关联了本机视频（已撤回的一把不算）：入口文案与收起态图标都据此派生。
+    const hasVideo = !undone && Boolean(link.hasVideo);
     const correctionState = correctionStateOf(archive, page, attempt.id);
     const canUndo = Boolean(isRecent && recent.canUndo);
     const canRestore = Boolean(isRecent && recent.canRestore);
@@ -1033,9 +1037,11 @@ function attemptCardRows(
       hasNote: Boolean(attempt.note),
       // 备注与视频只给有效把次：已撤回的一把被档案层与视频页按同一份规则拒绝。
       canEditNote: !undone,
-      hasVideo: !undone && Boolean(link.hasVideo),
+      hasVideo,
       videoStateText: undone ? '已撤回 · 恢复后可回看' : link.stateText,
-      videoEntryText: link.entryText,
+      // T049：本页视频入口按该把的真实关联给文案（无片「＋ 添加视频」、有片「回看视频」），
+      // 添加与回看共用同一个槽位，页面只换文字，不另立按钮或另一处坐标。
+      videoEntryText: undone ? '' : hasVideo ? '回看视频' : '＋ 添加视频',
       canOpenVideo: !undone,
       routeId: attempt.routeId,
       sessionId: attempt.sessionId,
