@@ -20,6 +20,7 @@
  */
 'use strict';
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
 const path = require('node:path');
 const { test, beforeEach } = require('node:test');
 
@@ -674,4 +675,64 @@ test('T050 返工 撤销后的门控在重开与 onShow 保持；同线另一场
   assert.equal(rawArchive(), bytesBefore, '别的场次的迟到撤销不落盘');
   assert.match(reopened.data.notice, /最近一把已经变了|别的场次/);
   assert.equal(reopened.data.routeCountText, '1 把');
+});
+
+// c8b3c1b 原生 QA（320px）：微信 button 的 width:auto 实际算出 184×44，把最新一把
+// 「第 2 把」压成三行。这里只做静态回归：常态撤销必须写死 44×44、文案居中，并用
+// 「父行 + button + 类」压过 style v2 的 button:not([size=mini]) 默认 184px；
+// 重试文案单独用有限加宽的固定盒；最新行的序号、结果、时间仍保持单行。
+test('T050 返工：撤销命中盒固定 44×44，重试只做有限加宽', () => {
+  const wxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
+    'utf8'
+  );
+  const wxml = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
+    'utf8'
+  );
+  function ruleOf(selector) {
+    const start = wxss.indexOf(selector);
+    assert.ok(start >= 0, selector + ' 规则存在');
+    const brace = wxss.indexOf('{', start);
+    return wxss.slice(brace + 1, wxss.indexOf('}', brace));
+  }
+
+  const withdraw = ruleOf('.record-attempt-withdraw');
+  assert.match(withdraw, /min-width:\s*44px;/, '常态命中盒最小宽度 44px');
+  assert.match(withdraw, /height:\s*44px;/, '常态命中盒高度写死 44px');
+  assert.match(withdraw, /min-height:\s*44px;/, '常态命中盒最小高度 44px');
+  assert.match(withdraw, /padding:\s*0;/, '内边距不再叠加到命中盒外');
+  assert.match(withdraw, /align-items:\s*center;/, '文案垂直居中');
+  assert.match(withdraw, /justify-content:\s*center;/, '文案水平居中');
+  assert.doesNotMatch(withdraw, /width:\s*auto;/, '不回到会被算成 184px 的 auto');
+
+  // style v2 内置 button:not([size=mini]) { width:184px } 的优先级高于裸类；
+  // 静态断言宽度规则保持「父行 + button + 类」，避免以后又退回 184px。
+  const withdrawWidth = ruleOf('.record-attempt-headline button.record-attempt-withdraw');
+  assert.match(withdrawWidth, /width:\s*44px;/, '常态命中盒宽度写死 44px');
+  assert.match(withdrawWidth, /max-width:\s*44px;/, '44px 上限挡住微信 button 默认宽度');
+  assert.doesNotMatch(withdrawWidth, /!important/, '用选择器优先级解决，不靠 !important');
+
+  const retry = ruleOf('.record-attempt-headline button.record-attempt-withdraw-retry');
+  assert.match(retry, /width:\s*128rpx;/, '重试盒用有限加宽的固定值');
+  assert.match(retry, /min-width:\s*128rpx;/, '重试盒最小宽度覆盖常态 44px');
+  assert.match(retry, /max-width:\s*128rpx;/, '重试盒同样有上限');
+  assert.ok(
+    wxml.includes("item.undoText === '重试撤销'"),
+    '重试态按已有的 item.undoText 选类'
+  );
+  assert.ok(wxml.includes('record-attempt-withdraw-retry'), '重试类挂在撤销按钮上');
+
+  const latestLine = ruleOf('.record-attempt-latest .record-attempt-headline');
+  assert.match(latestLine, /flex-wrap:\s*nowrap;/, '最新行不换行');
+  assert.match(
+    ruleOf('.record-attempt-latest .record-attempt-label'),
+    /white-space:\s*nowrap;/,
+    '最新序号保持单行'
+  );
+  assert.match(
+    ruleOf('.record-attempt-latest .record-attempt-time'),
+    /white-space:\s*nowrap;/,
+    '最新时间保持单行'
+  );
 });

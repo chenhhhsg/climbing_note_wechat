@@ -313,7 +313,7 @@
                 <button
                   wx:if="{{item.showWithdraw}}"
                   id="record-attempt-withdraw-{{item.id}}"
-                  class="record-attempt-withdraw"
+                  class="record-attempt-withdraw{{item.undoText === '重试撤销' ? ' record-attempt-withdraw-retry' : ''}}"
                   data-attempt-id="{{item.id}}"
                   data-archive-id="{{item.archiveId}}"
                   data-session-id="{{item.sessionId}}"

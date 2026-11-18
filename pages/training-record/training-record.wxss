@@ -486,6 +486,13 @@ page {
   flex-wrap: nowrap;
 }
 
+/* 同一行里的序号、结果与时间各自不折行：撤销盒固定 44×44 后，320 下也保持单行。 */
+.record-attempt-latest .record-attempt-label,
+.record-attempt-latest .record-attempt-result,
+.record-attempt-latest .record-attempt-time {
+  white-space: nowrap;
+}
+
 /* 详情行紧接标题行，不再额外留上下间距；旧把展开仍用默认间距。 */
 .record-attempt-latest .record-attempt-detail {
   margin: 0;
@@ -592,21 +599,41 @@ page {
   color: #53615B;
 }
 
-/* 最新一把右侧「撤销」（T050 返工）：固定 44×44 起的最小命中区；按一下直接撤回这一把，
-   不展开第二个菜单。宽度用内容宽度：微信按钮的默认宽度会把同一行的时间挤到下一行。 */
+/* 最新一把右侧「撤销」（T050 返工）：固定 44×44 的局部命中区；按一下直接撤回这一把，
+   不展开第二个菜单。文案在命中区里居中，靠右仍由时间上的 margin-left:auto 带住。 */
 .record-attempt-withdraw {
   flex: none;
-  width: auto;
-  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-width: 44px;
+  height: 44px;
   min-height: 44px;
+  box-sizing: border-box;
   margin: 0 0 0 8rpx;
-  padding: 0 8rpx;
+  padding: 0;
   background-color: transparent;
   color: #B7683D;
   font-size: 26rpx;
-  line-height: 1.4;
+  line-height: 1.2;
+  text-align: center;
   white-space: nowrap;
+}
+
+/* 宽度必须用「父行 + button + 类」写死：style v2 内置的 button:not([size=mini]) 是
+   184px 宽，裸类选择器（含 width:auto）会被它的优先级压住，真机仍算成 184×44，
+   把「第 2 把」挤成三行并占掉大半张卡。 */
+.record-attempt-headline button.record-attempt-withdraw {
+  width: 44px;
+  max-width: 44px;
+}
+
+/* 写失败时的「重试撤销」比常态字多，给一个有限且略宽的固定盒（128rpx ≈ 54.6px@320、
+   66.6px@390），四个字在两种宽度下都完整显示；同样不落回微信默认的 184px。 */
+.record-attempt-headline button.record-attempt-withdraw-retry {
+  width: 128rpx;
+  min-width: 128rpx;
+  max-width: 128rpx;
 }
 
 .record-attempt-withdraw::after {
