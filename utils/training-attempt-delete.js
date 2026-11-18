@@ -33,7 +33,9 @@
  * journal 的记录只保留定位与版本，不复制结果/备注正文等用户内容。删除完成后在 journal
  * 里留下最小墓碑（attemptId / 原 seq / 归属），用于：
  *   - 删除最新一把后不再把撤回入口补给上一把（详见 deletedSeqBarrier）；
- *   - 认出新一把没有被删把次的 ID 复用（新保存本来也由档案层生成新 ID）。
+ *   - 认出新一把没有被删把次的 ID 复用（新保存本来也由档案层生成新 ID）；
+ *   - 档案层保存前用 attemptDeletionGuard 拒绝同一原 opId 的迟到写回：pending 与
+ *     墓碑都算占用，换场次/线路/内容也不能把已删记录复活。墓碑不做按条截断。
  */
 
 const store = require('./training-store.js');
@@ -43,8 +45,10 @@ const videoFiles = require('./attempt-video-files.js');
 // 正式本机命名空间里的受保护键：不在可重建前缀里，普通清缓存不会删除。
 const DELETE_KEY = store.NAMESPACE + 'attempt-delete';
 const DELETE_VERSION = 1;
-// 墓碑只用于拦回撤销与识别重复确认；保留最近若干条即可，不影响任何旧数据读取。
-const DELETED_KEEP = 200;
+// 墓碑（deleted）是「这个原 opId 已经删除」的持久去重凭据，必须一直保留：
+// 一旦按条数截断，很早以前的把次 ID 会在重开后重新变成可写，迟到的旧保存就能
+// 把它复活。opId 是含随机段的字符串，不能靠 max seq 之类的序号推断；这里不做
+// 截断，也不迁移或清理用户已有的 journal。
 // 撤销门槛读取失败时的保守值：大于任何真实内部 seq，宁可不给撤销，也不凭坏读数错撤。
 const BARRIER_BLOCKED = Number.MAX_SAFE_INTEGER;
 
@@ -161,9 +165,26 @@ function normalizeDeleted(raw) {
   };
 }
 
+function incompleteJournal() {
+  return {
+    ok: false,
+    code: 'journal-incomplete',
+    error: '本机删除凭据不完整（容器或记录身份缺失）；无法确认这个原操作是否已经删除'
+  };
+}
+
 /**
- * 读取 journal。键不存在是正常的「没有待处理删除」；版本不支持或 JSON 损坏时返回
- * ok:false，调用方据此不删任何文件（宁可保留副本，也不凭坏数据删东西）。
+ * 读取 journal：保存核对、删除、重开恢复与只读展示共用这一份严格解析。
+ *
+ * 写回是把整份 journal 重新归一化后序列化，宽松读会静默丢掉过不了归一化的坏条目，
+ * 等于把删除证据抹掉（坏墓碑被丢 → 同一原 opId 的迟到保存重新写成 ok:true）。
+ * 所以这里没有「清理时宽松、保存时严格」两条口径：
+ * - 缺整个键是正常的「没有删除凭据」——微信对不存在键的正常返回，旧数据兼容；
+ * - JSON 损坏 / 版本不支持 = ok:false，调用方不写任何东西；
+ * - pending / deleted 容器缺失或不是数组、单条记录过不了 normalizeEntry /
+ *   normalizeDeleted（身份证据不完整）、barriers 不是对象或值不是正整数 = ok:false
+ *   （journal-incomplete）。此时清理与删除一律不落盘，迟到保存继续被拒绝，宁可
+ *   保留证据等人工处理，也不「丢掉坏行继续」再用归一化结果覆盖原数据。
  */
 function readJournal(options) {
   let raw;
@@ -191,27 +212,40 @@ function readJournal(options) {
       };
     }
   }
-  if (!parsed || typeof parsed !== 'object' || parsed.version !== DELETE_VERSION) {
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || parsed.version !== DELETE_VERSION) {
     return {
       ok: false,
       code: 'journal-unsupported',
       error: '本机删除凭据版本不受支持；为保护记录与视频，没有自动清理任何文件'
     };
   }
+  if (!Array.isArray(parsed.pending) || !Array.isArray(parsed.deleted)) {
+    return incompleteJournal();
+  }
+  if (parsed.barriers !== undefined && parsed.barriers !== null) {
+    if (typeof parsed.barriers !== 'object' || Array.isArray(parsed.barriers)) {
+      return incompleteJournal();
+    }
+  }
   const journal = emptyJournal();
-  for (const entry of Array.isArray(parsed.pending) ? parsed.pending : []) {
+  for (const entry of parsed.pending) {
     const normalized = normalizeEntry(entry);
-    if (normalized) journal.pending.push(normalized);
+    if (!normalized) return incompleteJournal();
+    journal.pending.push(normalized);
   }
-  for (const item of Array.isArray(parsed.deleted) ? parsed.deleted : []) {
+  for (const item of parsed.deleted) {
     const normalized = normalizeDeleted(item);
-    if (normalized) journal.deleted.push(normalized);
+    if (!normalized) return incompleteJournal();
+    journal.deleted.push(normalized);
   }
-  const barriers = parsed.barriers && typeof parsed.barriers === 'object' ? parsed.barriers : {};
-  Object.keys(barriers).forEach(key => {
-    const value = Number(barriers[key]);
-    if (Number.isInteger(value) && value > 0) journal.barriers[key] = value;
-  });
+  const barriers = parsed.barriers || {};
+  for (const key of Object.keys(barriers)) {
+    const value = barriers[key];
+    // 门槛只由 finalizeEntry 写入正整数 seq；归一化会丢掉别的值并压低撤销门槛，
+    // 所以不认识的值同样算读取失败，不写回、不猜。
+    if (!Number.isInteger(value) || value <= 0) return incompleteJournal();
+    journal.barriers[key] = value;
+  }
   return { ok: true, present: true, journal };
 }
 
@@ -251,7 +285,6 @@ function finalizeEntry(journal, entry) {
       seq: entry.seq,
       at: nowIso()
     });
-    while (journal.deleted.length > DELETED_KEEP) journal.deleted.shift();
   }
   const key = barrierKey(entry.archiveId, entry.sessionId, entry.routeId);
   const previous = journal.barriers[key] || 0;
@@ -756,6 +789,8 @@ function deleteAttempt(input, options) {
 /**
  * 重开/手动重试：只处理 journal 里 pending 的条目。
  * - 没有 journal 或没有 pending：立即返回，不读目录、不创建视频服务；
+ * - journal 读取失败或含身份不完整的条目：整轮不执行、不写回（与保存核对共用严格读，
+ *   坏证据保持原样，页面上可见错误并保留手动重试入口）；
  * - 记录仍在档案里：这是「档案写失败」留下的 prepared 条目，撤掉它，不动视频；
  * - 记录已不在：按持久证据继续清理索引与文件；
  * - 本机档案已经换成另一份：旧档案条目保留（不能凭旧凭据动新档案目录），可见待重试。
@@ -873,26 +908,58 @@ function configure(options) {
   if (Object.prototype.hasOwnProperty.call(config, 'now')) runtime.now = config.now;
 }
 
-/** 这一把是否已经被删除（journal 墓碑；只读，不碰视频）。 */
-function isDeletedAttemptId(archiveId, attemptId, options) {
-  if (!hasText(archiveId) || !hasText(attemptId)) return false;
+/**
+ * 保存前核对「这个原 opId 是否已经被删除占用」（严格读，供档案层调用）。
+ *
+ * 返回 { ok:true, has(attemptId), stateOf(attemptId) } 或 { ok:false, code, error }：
+ * - journal 缺键 = 没有删除证据（旧数据兼容），has 对任何 ID 都返回 false；
+ * - 读取/解析/版本错误 = ok:false：调用方不能把它当作「确认未删除」去写档案；
+ * - 有值但容器或单条记录的身份证据不完整（code:journal-incomplete）= ok:false：
+ *   不能丢掉坏行只看剩下的好行，否则损坏的墓碑会把原 opId 重新放行；
+ * - pending（prepared 或 removed）与 deleted 都算已占用：删除意图已经落盘，哪怕
+ *   记录暂时还在档案里、或本机视频副本尚未清理，也不能用同一个原 ID 写回；
+ *   stateOf 区分 pending（删除尚未确认/清理未完成）与 deleted（墓碑）；
+ * - 只按 archiveId + attemptId 判定，不看场次、线路或内容：换归属/改内容的迟到
+ *   保存同样被挡住。另一份档案（archiveId 不同）不受这份凭据影响。
+ *
+ * 这里是本模块唯一的「原操作是否已被删除占用」判断入口：旧的
+ * isDeletedAttemptId 读失败时返回 false，且不涵盖 pending，会与保存校验产生
+ * 两套不一致的口径，已移除。
+ */
+function attemptDeletionGuard(archiveId, options) {
+  if (!hasText(archiveId)) {
+    return { ok: false, code: 'missing-archive', error: '缺少本机档案身份，无法核对删除凭据' };
+  }
   const read = readJournal(options);
-  if (!read.ok) return false;
-  return read.journal.deleted.some(
-    item => item.archiveId === archiveId && item.attemptId === attemptId
-  );
+  if (!read.ok) return { ok: false, code: read.code, error: read.error };
+  const retired = new Map();
+  read.journal.pending.forEach(entry => {
+    if (entry.archiveId === archiveId) retired.set(entry.attemptId, 'pending');
+  });
+  read.journal.deleted.forEach(entry => {
+    if (entry.archiveId === archiveId) retired.set(entry.attemptId, 'deleted');
+  });
+  return {
+    ok: true,
+    present: read.present,
+    has(attemptId) {
+      return hasText(attemptId) && retired.has(attemptId);
+    },
+    stateOf(attemptId) {
+      return (hasText(attemptId) && retired.get(attemptId)) || '';
+    }
+  };
 }
 
 module.exports = {
   DELETE_KEY,
   DELETE_VERSION,
-  DELETED_KEEP,
   BARRIER_BLOCKED,
   deletedSeqBarrier,
   pendingStatus,
   deleteAttempt,
   recoverPending,
-  isDeletedAttemptId,
+  attemptDeletionGuard,
   configure,
   resetRuntime
 };

@@ -161,11 +161,16 @@ function attemptIdTaken(archive, id) {
  * 或待保存的 ID 撞上就再生成一个。撞上时必须换新 ID，而不是把这次新意图当成
  * 「迟到的显式 opId 重放」去复用别人（甚至已被撤回）的那一把——显式带 opId 的
  * 请求另有去重路径（见 saveAttempt），两者不能互相顶替。
+ *
+ * isRetired 是保存前读到的删除凭据（pending/removed/墓碑）：已删除的原 ID 同样不能
+ * 被新一把复用，否则一次巧合的 ID 撞名就会把删掉的记录写回来。凭据读不出来时调用方
+ * 不会走到这里（宁可不保存）。
  */
-function newUniqueAttemptId(archive) {
+function newUniqueAttemptId(archive, isRetired) {
+  const retired = typeof isRetired === 'function' ? isRetired : () => false;
   let candidate = newOperationId();
   let salt = 0;
-  while (attemptIdTaken(archive, candidate)) {
+  while (attemptIdTaken(archive, candidate) || retired(candidate)) {
     salt += 1;
     candidate = newOperationId() + '-' + salt;
   }
@@ -1390,6 +1395,35 @@ function selectRoute(routeId) {
 }
 
 /**
+ * 保存前的删除凭据核对（只读）。
+ *
+ * 延迟 require training-attempt-delete：它顶层依赖 attempt-video →
+ * training-record-actions → 本模块，顶层互相 require 会形成初始化循环；这里只在
+ * 真正保存时加载，那时本模块已经初始化完毕。读不出来或模块不可用时返回 ok:false，
+ * 调用方不得把它当作「确认未删除」继续写档案。
+ */
+function deletionGuardFor(archiveId) {
+  let deletion;
+  try {
+    deletion = require('./training-attempt-delete.js');
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'delete-unreadable',
+      error: '读取本机删除凭据失败：' + errorText(error) + '；未保存这一把'
+    };
+  }
+  if (!deletion || typeof deletion.attemptDeletionGuard !== 'function') {
+    return {
+      ok: false,
+      code: 'delete-unreadable',
+      error: '读取本机删除凭据失败：删除凭据模块不可用；未保存这一把'
+    };
+  }
+  return deletion.attemptDeletionGuard(archiveId);
+}
+
+/**
  * 保存一把结果与备注。
  *
  * 输入：{ opId?, archiveId?, sessionId?, routeId, result: 'fail'|'send', note?, now? }
@@ -1398,9 +1432,14 @@ function selectRoute(routeId) {
  * - 同一 opId 重复提交/迟到回调：复用已落盘的把次，只提交一次；这一把已经撤回时
  *   仍然复用原记录（duplicate:true、undone:true），既不复活撤回的那一把、也不新建第二把
  *   ——撤回保留的正是原保存请求的 opId，去重凭据不因撤回而失效；
+ * - 同一 opId 已经进入长按删除流程（journal 的 pending/prepared/removed 或墓碑）：
+ *   整条拒绝（删除已收尾 code:attempt-deleted；删除未确认/待清理 code:attempt-deleting，
+ *   两者都 blocked:true），不写档案也不生成待保存行；
+ *   journal 读取失败时不当作「未删除」继续写（code:delete-unreadable）；
  * - 新一次真实尝试：页面换新 opId，得到新的把次 ID；页面**没带 opId** 时由本层生成，
- *   并保证这份档案里唯一（见 newUniqueAttemptId）：与已撤回或仍有效的把次撞名时另取
- *   一个 ID，而不是把这次新意图误当成「迟到的显式 opId 重放」去复用别人那一把；
+ *   并保证这份档案里唯一且不在删除凭据里（见 newUniqueAttemptId）：与已撤回、仍有效
+ *   或已删除的 ID 撞名时另取一个 ID，而不是把这次新意图误当成「迟到的显式 opId
+ *   重放」去复用别人那一把；
  * - archiveId 与当前档案不一致（换档之后的迟到重试）：整条不落盘；
  * - 抱石已确认（或别的操作已在提交中）完攀：不再新增，blocked，需先「改为未完成」；
  * - 落盘失败：ok:false，不报已保存；先落盘的「进行中」标记让同 opId 重试复用同一把，
@@ -1449,8 +1488,49 @@ function saveAttempt(input) {
     };
   }
 
-  // 显式 opId 沿用它（去重凭据）；没带 opId 的新一把由本层另取一个档案内唯一的 ID。
-  const opId = hasText(data.opId) ? data.opId : newUniqueAttemptId(current);
+  // 删除凭据核对：在档案身份校验之后、任何写或分配保存标记之前。
+  // - 显式 opId 一旦属于已删除/正在删除的原记录（prepared、已移出待清理或墓碑），
+  //   整条拒绝；只按当前 archiveId + 原 opId 判定，换场次/线路/内容也不能写回；
+  // - 无显式 opId 的新一把由生成器避开这些 ID（见 newUniqueAttemptId）；
+  // - journal 读取/解析失败时同样不写：没有确认「未删除」之前，迟到的旧 opId
+  //   不能借一次读故障复活记录。
+  const explicitOpId = hasText(data.opId) ? data.opId : '';
+  const deletionGuard = deletionGuardFor(current.archiveId);
+  if (!deletionGuard.ok) {
+    return {
+      ok: false,
+      blocked: false,
+      code: 'delete-unreadable',
+      reason: deletionGuard.code || '',
+      error:
+        (deletionGuard.error || '读取本机删除凭据失败') +
+        '；这次没有保存，请稍后重试',
+      archive: current,
+      // 没有显式 ID 时也给调用方一个可重试的 ID（与档案读失败时同一口径）；
+      // 这次并没有分配保存标记，也没有写档案。
+      opId: explicitOpId || newOperationId()
+    };
+  }
+  if (explicitOpId && deletionGuard.has(explicitOpId)) {
+    const deleting = deletionGuard.stateOf(explicitOpId) === 'pending';
+    return {
+      ok: false,
+      // 业务拒绝：调用方只提示，不生成「待保存」重试行，也不报保存成功。
+      blocked: true,
+      code: deleting ? 'attempt-deleting' : 'attempt-deleted',
+      deleted: !deleting,
+      pendingDeletion: deleting,
+      error: deleting
+        ? '这一把的删除还没有完成或本机视频副本仍在清理，不能再用原来的操作 ID 写回；请稍后重试或重开确认'
+        : '这一把已经删除，不能再用原来的操作 ID 写回；如需记录请重新点结果按钮',
+      archive: current,
+      opId: explicitOpId
+    };
+  }
+
+  // 显式 opId 沿用它（去重凭据）；没带 opId 的新一把由本层另取一个档案内唯一、
+  // 且不在删除凭据里的 ID。
+  const opId = explicitOpId || newUniqueAttemptId(current, id => deletionGuard.has(id));
 
   // 同一操作重复提交或迟到回调：复用原把次，不新增、不覆盖。
   // 这一把已被撤回时同样只复用原记录：撤回保留原 ID 就是留下去重凭据，迟到的保存

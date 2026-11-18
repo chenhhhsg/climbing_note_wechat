@@ -60,6 +60,8 @@ const faults = {
   indexLoseAt: 0,
   indexReadFailAfterWrite: 0,
   pendingReadFails: 0,
+  readFailKey: '',
+  readFailRemaining: 0,
   unlinkFail: false,
   unlinkFailFor: '',
   statFail: false,
@@ -86,6 +88,8 @@ function resetDevice() {
   faults.indexLoseAt = 0;
   faults.indexReadFailAfterWrite = 0;
   faults.pendingReadFails = 0;
+  faults.readFailKey = '';
+  faults.readFailRemaining = 0;
   faults.unlinkFail = false;
   faults.unlinkFailFor = '';
   faults.statFail = false;
@@ -178,6 +182,10 @@ global.wx = {
     if (faults.pendingReadFails > 0) {
       faults.pendingReadFails -= 1;
       throw { errMsg: 'getStorageSync:fail mock read error' };
+    }
+    if (faults.readFailKey && faults.readFailKey === key && faults.readFailRemaining > 0) {
+      faults.readFailRemaining -= 1;
+      throw { errMsg: 'getStorageSync:fail mock read error for ' + key };
     }
     return storage.has(key) ? storage.get(key) : '';
   },
@@ -749,6 +757,20 @@ test('T048-删除5 档案写前失败：记录与视频都不动、凭据回滚�
   assert.equal(indexRaw(), indexBefore, '写前失败不改视频索引');
   assert.equal(virtual.files.has(video.filePath), true, '视频副本保留');
   assert.equal(attemptDelete.pendingStatus(flow.archiveId).pending, 0, '坏写入回滚删除凭据');
+
+  // 删除意图已随写前失败撤回：同一把的迟到重复保存仍按正常幂等复用原记录。
+  const duplicate = store.saveAttempt({
+    opId: first.id,
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: first.result,
+    note: first.note
+  });
+  assert.equal(duplicate.ok, true);
+  assert.equal(duplicate.duplicate, true);
+  assert.equal(duplicate.attempt.id, first.id);
+  assert.equal(archiveRaw(), rawBefore, '正常重复保存不写盘');
 
   // 清掉故障后按同一把重试：记录、索引、文件各只处理一次。
   faults.archiveSetFailAt = 0;
@@ -1834,4 +1856,636 @@ test('T048-删除21 最新一把删除时视频索引写失败：门槛同样立
       latest.seq,
     true
   );
+});
+
+// ------------------------------------------------------------------ *
+// 追加返工：删除后的迟到旧保存 opId 不得把记录写回来
+// ------------------------------------------------------------------ *
+
+function lateSave(flow, attempt, overrides) {
+  return store.saveAttempt(
+    Object.assign(
+      {
+        opId: attempt.id,
+        archiveId: flow.archiveId,
+        sessionId: flow.session.id,
+        routeId: flow.route.id,
+        result: attempt.result,
+        note: attempt.note
+      },
+      overrides || {}
+    )
+  );
+}
+
+function reloadStoreModule() {
+  delete require.cache[require.resolve(STORE_JS)];
+  return require(STORE_JS);
+}
+
+// 唯一的删除占用判断入口（严格读）：pending / 墓碑都算占用。
+function retiredState(archiveId, attemptId) {
+  const guard = attemptDelete.attemptDeletionGuard(archiveId);
+  assert.equal(guard.ok, true, guard.error);
+  return guard.stateOf(attemptId);
+}
+
+test('T048-删除22 删除完成后的迟到保存：同 opId 换内容/换归属都不复活，零写入且无幻影待保存', async () => {
+  const flow = startFlow();
+  const first = addAttempt(flow, 'fail', '一', 0);
+  const second = addAttempt(flow, 'fail', '二', 5);
+  const video = seedClip(flow, first);
+
+  const deleted = await attemptDelete.deleteAttempt(deleteInput(flow, first, video));
+  assert.equal(deleted.ok, true, deleted.error);
+  assert.equal(deleted.recordDeleted, true);
+  assert.equal(attemptDelete.pendingStatus(flow.archiveId).pending, 0, '清理完成留下墓碑');
+  assert.equal(retiredState(flow.archiveId, first.id), 'deleted');
+
+  const before = archiveRaw();
+  const indexBefore = indexRaw();
+  const idsBefore = archiveOf().attempts.map(item => item.id);
+  const replays = [
+    lateSave(flow, first),
+    lateSave(flow, first, { result: 'send', note: '完全不同的内容' }),
+    lateSave(flow, first, { sessionId: 'other-session', routeId: 'other-route' }),
+    lateSave(flow, first, { archiveId: '' })
+  ];
+  replays.forEach(outcome => {
+    assert.equal(outcome.ok, false);
+    assert.equal(outcome.blocked, true);
+    assert.equal(outcome.code, 'attempt-deleted');
+    assert.equal(outcome.deleted, true);
+    assert.match(outcome.error, /已经删除/);
+  });
+  assert.equal(archiveRaw(), before, '迟到保存一个字都没写');
+  assert.equal(indexRaw(), indexBefore);
+  assert.deepEqual(archiveOf().attempts.map(item => item.id), idsBefore);
+  assert.equal(archiveOf().pendingSaves.length, 0, '没有幻影待保存');
+  assert.equal(archiveOf().attempts.find(item => item.id === second.id).note, '二');
+
+  // 独立的新 opId 仍是正常的新一把：只新增它，不复活已删记录。
+  const independent = store.saveAttempt({
+    opId: 'op-independent-late-save',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: 'fail',
+    note: '独立的新一把'
+  });
+  assert.equal(independent.ok, true, independent.error);
+  assert.equal(independent.attempt.id, 'op-independent-late-save');
+  assert.equal(archiveOf().attempts.some(item => item.id === first.id), false);
+  assert.equal(archiveOf().attempts.some(item => item.id === independent.attempt.id), true);
+});
+
+test('T048-删除23 删除处于 prepared 或记录已移出但仍待清理：同一 opId 一律不能写回', async () => {
+  // A. 档案写成功但首次读回失败：记录其实已移出，journal 仍是 prepared。
+  const flowA = startFlow({ routeName: '读回失败迟到保存线' });
+  const a1 = addAttempt(flowA, 'fail', '一', 0);
+  const a2 = addAttempt(flowA, 'fail', '二', 5);
+  faults.archiveSetCount = 0;
+  faults.archiveLoseAt = 1;
+  faults.archiveReadFailAfterWrite = 3;
+  const unverified = await attemptDelete.deleteAttempt(deleteInput(flowA, a2));
+  assert.equal(unverified.ok, false);
+  assert.equal(unverified.code, 'archive-unverified');
+  faults.pendingReadFails = 0;
+  faults.archiveLoseAt = 0;
+  assert.equal(archiveOf().attempts.some(item => item.id === a2.id), false);
+  const beforeA = archiveRaw();
+  const replayA = lateSave(flowA, a2);
+  assert.equal(replayA.ok, false);
+  assert.equal(replayA.code, 'attempt-deleting');
+  assert.equal(replayA.pendingDeletion, true);
+  assert.equal(archiveRaw(), beforeA, 'prepared 阶段也不写回');
+  assert.equal(pendingJournal().pending.length, 1);
+
+  // 重开核对后写成墓碑，迟到保存仍被拒绝。
+  const recoveredA = await attemptDelete.recoverPending({ archiveId: flowA.archiveId });
+  assert.equal(recoveredA.ok, true, JSON.stringify(recoveredA));
+  assert.equal(pendingJournal().pending.length, 0);
+  const afterRecoverA = archiveRaw();
+  const stillGoneA = lateSave(flowA, a2);
+  assert.equal(stillGoneA.ok, false);
+  assert.equal(stillGoneA.code, 'attempt-deleted');
+  assert.equal(archiveRaw(), afterRecoverA);
+
+  // B. 记录已移出、视频索引清理失败：journal 是 removed + 待清理。
+  videoFiles.resetAttemptVideoServices();
+  attemptDelete.resetRuntime();
+  const flowB = startFlow({ routeName: '索引失败迟到保存线' });
+  const b1 = addAttempt(flowB, 'fail', '一', 0);
+  const b2 = addAttempt(flowB, 'fail', '二', 5);
+  const bVideo = seedClip(flowB, b2);
+  faults.indexSetCount = 0;
+  faults.indexSetFailAt = 1;
+  const pendingDelete = await attemptDelete.deleteAttempt(deleteInput(flowB, b2, bVideo));
+  assert.equal(pendingDelete.ok, true, pendingDelete.error);
+  assert.equal(pendingDelete.video.status, 'pending');
+  const beforeB = archiveRaw();
+  const replayB = lateSave(flowB, b2);
+  assert.equal(replayB.ok, false);
+  assert.equal(replayB.code, 'attempt-deleting');
+  assert.equal(replayB.pendingDeletion, true);
+  assert.equal(archiveRaw(), beforeB, '视频待清理阶段也不写回');
+  assert.equal(virtual.files.has(bVideo.filePath), true);
+  assert.equal(archiveOf().pendingSaves.length, 0);
+
+  // 清理完成后墓碑仍在，仍拒绝。
+  faults.indexSetFailAt = 0;
+  faults.indexSetCount = 0;
+  const retried = await attemptDelete.deleteAttempt(deleteInput(flowB, b2, bVideo));
+  assert.equal(retried.ok, true, retried.error);
+  assert.equal(attemptDelete.pendingStatus(flowB.archiveId).pending, 0);
+  const afterCleanupB = archiveRaw();
+  const stillGoneB = lateSave(flowB, b2);
+  assert.equal(stillGoneB.ok, false);
+  assert.equal(stillGoneB.code, 'attempt-deleted');
+  assert.equal(archiveRaw(), afterCleanupB);
+
+  // D. 记录已移出、只有本机副本文件删除失败：removed + 待清理阶段同样不能写回。
+  videoFiles.resetAttemptVideoServices();
+  attemptDelete.resetRuntime();
+  const flowD = startFlow({ routeName: '文件失败迟到保存线' });
+  const d1 = addAttempt(flowD, 'fail', '一', 0);
+  const d2 = addAttempt(flowD, 'fail', '二', 5);
+  const dVideo = seedClip(flowD, d2);
+  faults.unlinkFail = true;
+  const filePending = await attemptDelete.deleteAttempt(deleteInput(flowD, d2, dVideo));
+  assert.equal(filePending.ok, true, filePending.error);
+  assert.equal(filePending.video.status, 'pending');
+  const beforeD = archiveRaw();
+  const replayD = lateSave(flowD, d2);
+  assert.equal(replayD.ok, false);
+  assert.equal(replayD.code, 'attempt-deleting');
+  assert.equal(archiveRaw(), beforeD, '文件待清理阶段不写回');
+  assert.equal(virtual.files.has(dVideo.filePath), true);
+
+  faults.unlinkFail = false;
+  const cleanedD = await attemptDelete.deleteAttempt(deleteInput(flowD, d2, dVideo));
+  assert.equal(cleanedD.ok, true, cleanedD.error);
+  assert.equal(attemptDelete.pendingStatus(flowD.archiveId).pending, 0);
+  const afterCleanupD = archiveRaw();
+  const stillGoneD = lateSave(flowD, d2);
+  assert.equal(stillGoneD.ok, false);
+  assert.equal(stillGoneD.code, 'attempt-deleted');
+  assert.equal(archiveRaw(), afterCleanupD);
+
+  // C. 删除意图仍是 pending/prepared（档案写前并发窗口）：同一 opId 也不能写回；
+  //    意图撤回后恢复正常的既存重复保存。
+  videoFiles.resetAttemptVideoServices();
+  attemptDelete.resetRuntime();
+  const flowC = startFlow({ routeName: '意图撤回线' });
+  const c1 = addAttempt(flowC, 'fail', '一', 0);
+  storage.set(
+    DELETE_KEY,
+    JSON.stringify({
+      version: 1,
+      pending: [
+        {
+          attemptId: c1.id,
+          archiveId: flowC.archiveId,
+          sessionId: flowC.session.id,
+          routeId: flowC.route.id,
+          seq: c1.seq,
+          clip: null,
+          state: 'prepared',
+          createdAt: '2026-11-18T01:00:00.000Z',
+          updatedAt: '2026-11-18T01:00:00.000Z',
+          lastError: ''
+        }
+      ],
+      deleted: [],
+      barriers: {}
+    })
+  );
+  const beforeC = archiveRaw();
+  const pendingReplayC = lateSave(flowC, c1);
+  assert.equal(pendingReplayC.ok, false);
+  assert.equal(pendingReplayC.code, 'attempt-deleting');
+  assert.equal(pendingReplayC.pendingDeletion, true);
+  assert.equal(archiveRaw(), beforeC);
+
+  storage.set(DELETE_KEY, JSON.stringify({ version: 1, pending: [], deleted: [], barriers: {} }));
+  const withdrawnC = lateSave(flowC, c1);
+  assert.equal(withdrawnC.ok, true);
+  assert.equal(withdrawnC.duplicate, true);
+  assert.equal(withdrawnC.attempt.id, c1.id);
+  assert.equal(archiveRaw(), beforeC, '撤回删除意图后只复用原记录、不写盘');
+});
+
+test('T048-删除24 无显式 ID 的生成器避开已删除 ID；同一字符串可用于另一份档案，显式旧档仍拒绝', async () => {
+  const realNow = Date.now;
+  const realRandom = Math.random;
+  try {
+    Date.now = () => new Date(2026, 10, 18, 10, 0, 0).getTime();
+    Math.random = () => 0.625;
+
+    const flow = startFlow({ routeName: '生成器避让线' });
+    // 第一把也用刚重载的实例生成：opId 计数器从 0 起步，后面「重开」才能用同样的
+    // 时钟与熵复现同一个候选 ID，真正逼出「生成器撞上已删除 ID」。
+    const firstStore = reloadStoreModule();
+    const firstSaved = firstStore.saveAttempt({
+      archiveId: flow.archiveId,
+      sessionId: flow.session.id,
+      routeId: flow.route.id,
+      result: 'fail',
+      note: '一'
+    });
+    assert.equal(firstSaved.ok, true, firstSaved.error);
+    const first = firstSaved.attempt;
+    assert.equal(retiredState(flow.archiveId, first.id), '');
+
+    // journal 走正式的收尾路径：没有视频时直接落墓碑。
+    const deleted = await attemptDelete.deleteAttempt(deleteInput(flow, first));
+    assert.equal(deleted.ok, true, deleted.error);
+    assert.equal(retiredState(flow.archiveId, first.id), 'deleted');
+
+    // 「重开」：本层 opId 计数器归零，固定时钟与熵会再次给出 first.id。
+    const freshStore = reloadStoreModule();
+    const created = freshStore.saveAttempt({
+      archiveId: flow.archiveId,
+      sessionId: flow.session.id,
+      routeId: flow.route.id,
+      result: 'fail',
+      note: '重开后的新一把'
+    });
+    assert.equal(created.ok, true, created.error);
+    assert.notEqual(created.attempt.id, first.id, '生成器不能复用已删除的 ID');
+    assert.equal(retiredState(flow.archiveId, created.attempt.id), '');
+    assert.equal(
+      archiveOf().attempts.filter(item => item.id === created.attempt.id).length,
+      1
+    );
+
+    // 换档后同一字符串是另一份档案的 ID：允许保存。
+    const switched = archiveOf();
+    const originalArchiveId = switched.archiveId;
+    switched.archiveId = 'archive-late-save-second';
+    storage.set(ARCHIVE_KEY, JSON.stringify(switched));
+    const cross = store.saveAttempt({
+      opId: first.id,
+      archiveId: switched.archiveId,
+      sessionId: flow.session.id,
+      routeId: flow.route.id,
+      result: 'fail',
+      note: '另一份档案的同名操作'
+    });
+    assert.equal(cross.ok, true, cross.error);
+    assert.equal(cross.attempt.id, first.id);
+    assert.equal(
+      archiveOf().attempts.filter(item => item.id === first.id).length,
+      1
+    );
+
+    // 显式带旧档案 ID 的迟到保存仍整条拒绝，不能写进新档案。
+    const beforeOld = archiveRaw();
+    const oldArchive = store.saveAttempt({
+      opId: 'op-from-old-archive',
+      archiveId: originalArchiveId,
+      sessionId: flow.session.id,
+      routeId: flow.route.id,
+      result: 'fail',
+      note: '旧档迟到保存'
+    });
+    assert.equal(oldArchive.ok, false);
+    assert.equal(oldArchive.code, 'archive-mismatch');
+    assert.equal(archiveRaw(), beforeOld);
+  } finally {
+    Date.now = realNow;
+    Math.random = realRandom;
+    delete require.cache[require.resolve(STORE_JS)];
+    require(STORE_JS);
+  }
+});
+
+test('T048-删除25 未知 journal 或档案读取失败都不当作未删除：零写入、可重试，恢复后新 ID 正常保存', () => {
+  const flow = startFlow({ routeName: '读取失败迟到保存线' });
+  const first = addAttempt(flow, 'fail', '一', 0);
+
+  // 档案读取失败：先于任何写与删除凭据判断。
+  const beforeArchiveReadFail = archiveRaw();
+  faults.pendingReadFails = 1;
+  const archiveReadFail = lateSave(flow, first);
+  assert.equal(archiveReadFail.ok, false);
+  assert.equal(archiveRaw(), beforeArchiveReadFail, '档案读失败不写盘');
+  assert.equal(archiveOf().pendingSaves.length, 0);
+
+  // journal 读取失败：不能把它当成「没有删除证据」。
+  faults.readFailKey = DELETE_KEY;
+  faults.readFailRemaining = 1;
+  const beforeJournalReadFail = archiveRaw();
+  const journalReadFail = lateSave(flow, first);
+  assert.equal(journalReadFail.ok, false);
+  assert.equal(journalReadFail.code, 'delete-unreadable');
+  assert.match(journalReadFail.error, /读取本机删除凭据失败/);
+  assert.equal(archiveRaw(), beforeJournalReadFail, 'journal 读失败不写盘');
+  assert.equal(archiveOf().pendingSaves.length, 0);
+
+  // 损坏的 journal 同样不能当作未删除。
+  storage.set(DELETE_KEY, '{broken-json');
+  const beforeBroken = archiveRaw();
+  const broken = lateSave(flow, first);
+  assert.equal(broken.ok, false);
+  assert.equal(broken.code, 'delete-unreadable');
+  assert.equal(archiveRaw(), beforeBroken, 'journal 损坏不写盘');
+
+  // 读恢复后：既存重复保存与不带 opId 的新一把都恢复正常。
+  storage.delete(DELETE_KEY);
+  const recoveredDuplicate = lateSave(flow, first);
+  assert.equal(recoveredDuplicate.ok, true);
+  assert.equal(recoveredDuplicate.duplicate, true);
+  assert.equal(archiveRaw(), beforeBroken, '恢复后重复保存仍不写盘');
+
+  const fresh = store.saveAttempt({
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: 'fail',
+    note: '读恢复后的新一把'
+  });
+  assert.equal(fresh.ok, true, fresh.error);
+  assert.notEqual(fresh.attempt.id, first.id);
+  assert.equal(archiveOf().attempts.some(item => item.id === first.id), true);
+  assert.equal(archiveOf().attempts.some(item => item.id === fresh.attempt.id), true);
+});
+
+test('T048-删除26 完成删除超过 200 把后冷开仍挡最早 ID：墓碑不按条截断', () => {
+  const flow = startFlow({ routeName: '长期墓碑线' });
+  const total = 205;
+  const removed = [];
+  for (let index = 0; index < total; index += 1) {
+    removed.push(addAttempt(flow, 'fail', '第' + (index + 1) + '把', index));
+  }
+  const run = async () => {
+    for (const attempt of removed) {
+      const outcome = await attemptDelete.deleteAttempt(deleteInput(flow, attempt));
+      assert.equal(outcome.ok, true, outcome.error);
+    }
+    assert.equal(archiveOf().attempts.length, 0);
+
+    const journal = pendingJournal();
+    assert.equal(journal.pending.length, 0);
+    assert.equal(journal.deleted.length, total, '墓碑不再按 200 条截断');
+    assert.equal(journal.deleted[0].attemptId, removed[0].id);
+
+    // 冷开：重建服务与队列，只按盘上 journal 核对。
+    attemptDelete.resetRuntime();
+    const before = archiveRaw();
+    const earliest = store.saveAttempt({
+      opId: removed[0].id,
+      archiveId: flow.archiveId,
+      sessionId: flow.session.id,
+      routeId: flow.route.id,
+      result: 'fail',
+      note: '最早被删那把的迟到保存'
+    });
+    assert.equal(earliest.ok, false);
+    assert.equal(earliest.blocked, true);
+    assert.equal(earliest.code, 'attempt-deleted');
+    assert.equal(archiveRaw(), before, '冷开后仍一个字都不写');
+    assert.equal(archiveOf().attempts.length, 0);
+
+    // 原本会落在旧 200 条窗口之外的一把同样仍被挡住。
+    const beyondWindow = store.saveAttempt({
+      opId: removed[4].id,
+      archiveId: flow.archiveId,
+      sessionId: flow.session.id,
+      routeId: flow.route.id,
+      result: 'fail',
+      note: '窗口外那把的迟到保存'
+    });
+    assert.equal(beyondWindow.ok, false);
+    assert.equal(beyondWindow.code, 'attempt-deleted');
+  };
+  return run();
+});
+
+test('T048-删除27 有值但容器或墓碑身份不完整：严格读拒绝保存，零写入且可重试', () => {
+  const flow = startFlow({ routeName: '严格删除凭据线' });
+  const first = addAttempt(flow, 'fail', '原把', 0);
+  const before = archiveRaw();
+  const cases = [
+    {
+      name: 'pending 容器不是数组',
+      // 独立 QA LS06 journal-collections
+      journal: { version: 1, pending: {}, deleted: [], barriers: {} },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'deleted 容器不是数组',
+      journal: { version: 1, pending: [], deleted: {}, barriers: {} },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'pending 容器整个缺失',
+      journal: { version: 1, deleted: [], barriers: {} },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'deleted 容器整个缺失',
+      journal: { version: 1, pending: [], barriers: {} },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: '旧格式墓碑缺少场次/线路/序号',
+      // 独立 QA LS10：坏墓碑不能被 normalizeDeleted 丢掉后当成没有删除证据。
+      journal: {
+        version: 1,
+        pending: [],
+        deleted: [{ archiveId: flow.archiveId, attemptId: first.id }],
+        barriers: {}
+      },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'pending 记录 seq 无效',
+      journal: {
+        version: 1,
+        pending: [
+          {
+            attemptId: first.id,
+            archiveId: flow.archiveId,
+            sessionId: flow.session.id,
+            routeId: flow.route.id,
+            seq: 0,
+            clip: null,
+            state: 'prepared'
+          }
+        ],
+        deleted: [],
+        barriers: {}
+      },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'barriers 容器不是对象',
+      journal: { version: 1, pending: [], deleted: [], barriers: [] },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'barriers 值不是正整数',
+      // 门槛归一化会静默丢掉不认识的值并压低撤销门槛，同样不能写回。
+      journal: {
+        version: 1,
+        pending: [],
+        deleted: [],
+        barriers: { [[flow.archiveId, flow.session.id, flow.route.id].join('/')]: 'oops' }
+      },
+      reason: 'journal-incomplete'
+    },
+    {
+      name: 'journal 是 JSON null',
+      raw: 'null',
+      reason: 'journal-unsupported'
+    },
+    {
+      name: 'journal 版本不受支持',
+      journal: { version: 999, pending: [], deleted: [], barriers: {} },
+      reason: 'journal-unsupported'
+    }
+  ];
+
+  cases.forEach(item => {
+    storage.set(DELETE_KEY, item.raw !== undefined ? item.raw : JSON.stringify(item.journal));
+    const guard = attemptDelete.attemptDeletionGuard(flow.archiveId);
+    assert.equal(guard.ok, false, item.name);
+    assert.equal(guard.code, item.reason, item.name);
+
+    const denied = lateSave(flow, first);
+    assert.equal(denied.ok, false, item.name);
+    assert.equal(denied.blocked, false, item.name);
+    assert.equal(denied.code, 'delete-unreadable', item.name);
+    assert.equal(denied.reason, item.reason, item.name);
+    assert.match(denied.error, /删除凭据/, item.name);
+    assert.match(denied.error, /重试/, item.name);
+    assert.equal(archiveRaw(), before, item.name + '：不写档案');
+    assert.equal(archiveOf().pendingSaves.length, 0, item.name + '：不生成待保存行');
+    assert.equal(archiveOf().attempts.length, 1, item.name);
+  });
+
+  // 缺整个键（微信对不存在键的返回）仍是兼容路径：恢复为既存重复保存。
+  storage.delete(DELETE_KEY);
+  const restored = lateSave(flow, first);
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(restored.duplicate, true);
+  assert.equal(restored.attempt.id, first.id);
+  assert.equal(archiveRaw(), before, '恢复后重复保存仍不写盘');
+});
+
+test('T048-删除28 清理/删除写回与保存共用严格读：坏凭据整份保持、原 ID 不复活，完整凭据仍可清理', async () => {
+  const flow = startFlow({ routeName: '严格读回写线' });
+  const live = addAttempt(flow, 'fail', '在册把', 0);
+  const victim = addAttempt(flow, 'fail', '墓碑把', 5);
+  const before = archiveRaw();
+  const barrierKeyOf = [flow.archiveId, flow.session.id, flow.route.id].join('/');
+  const tomb = {
+    attemptId: victim.id,
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    seq: victim.seq,
+    at: '2026-11-18T01:00:00.000Z'
+  };
+  // 与档案无关、只差分两步就能清理完的一条合法 pending（clip 为空，不碰文件系统）。
+  const cleanablePending = {
+    attemptId: 'stale-pending',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    seq: 2,
+    clip: null,
+    state: 'removed',
+    createdAt: '2026-11-18T01:00:00.000Z',
+    updatedAt: '2026-11-18T01:00:00.000Z',
+    lastError: ''
+  };
+
+  // A. 坏墓碑（旧格式缺场次/线路/序号）+ 一条无关的完整待清理：整份凭据一个字节都不重写。
+  const cutA = {
+    version: 1,
+    pending: [cleanablePending],
+    deleted: [{ archiveId: flow.archiveId, attemptId: 'malformed-original' }],
+    barriers: {}
+  };
+  const rawA = JSON.stringify(cutA);
+  storage.set(DELETE_KEY, rawA);
+  const recoveryA = await attemptDelete.recoverPending({ archiveId: flow.archiveId });
+  assert.equal(recoveryA.ok, false);
+  assert.equal(recoveryA.code, 'journal-incomplete');
+  assert.equal(recoveryA.processed, 0);
+  assert.equal(storage.get(DELETE_KEY), rawA, '恢复遇坏凭据不重写整份 journal');
+  // 坏墓碑保护的原 opId 仍被拒绝；恢复没有顺手把这条坏证据归一化掉。
+  const malformed = lateSave(flow, {
+    id: 'malformed-original',
+    result: 'fail',
+    note: '迟到保存'
+  });
+  assert.equal(malformed.ok, false);
+  assert.equal(malformed.code, 'delete-unreadable');
+  assert.equal(malformed.reason, 'journal-incomplete');
+  assert.equal(archiveRaw(), before, '坏凭据下保存零写入');
+  assert.equal(archiveOf().attempts.length, 2);
+  // 长按删除同样不凭坏凭据动手，也不重写这份 journal。
+  const deniedDelete = await attemptDelete.deleteAttempt(deleteInput(flow, live));
+  assert.equal(deniedDelete.ok, false);
+  assert.equal(deniedDelete.code, 'journal-read-failed');
+  assert.equal(storage.get(DELETE_KEY), rawA, '删除被拒也不重写坏凭据');
+  assert.equal(archiveRaw(), before, '删除被拒不动档案');
+  // 可见状态与撤销门槛同样保守，不把坏 journal 当成「没有删除证据」。
+  const statusA = attemptDelete.pendingStatus(flow.archiveId);
+  assert.equal(statusA.pending, 0);
+  assert.match(statusA.error, /删除凭据不完整/);
+  assert.equal(
+    attemptDelete.deletedSeqBarrier(flow.archiveId, flow.session.id, flow.route.id),
+    attemptDelete.BARRIER_BLOCKED
+  );
+
+  // B. 坏 pending + 另一把的完整墓碑：坏行不能连带把有效墓碑一起抹掉。
+  const cutB = {
+    version: 1,
+    pending: [{ archiveId: flow.archiveId, attemptId: 'malformed-pending' }],
+    deleted: [tomb],
+    barriers: { [barrierKeyOf]: victim.seq }
+  };
+  const rawB = JSON.stringify(cutB);
+  storage.set(DELETE_KEY, rawB);
+  const recoveryB = await attemptDelete.recoverPending({ archiveId: flow.archiveId });
+  assert.equal(recoveryB.ok, false);
+  assert.equal(recoveryB.code, 'journal-incomplete');
+  assert.equal(storage.get(DELETE_KEY), rawB, '坏 pending 也不抹掉同一份凭据里的墓碑');
+  const tombReplay = lateSave(flow, victim);
+  assert.equal(tombReplay.ok, false);
+  assert.equal(tombReplay.code, 'delete-unreadable');
+  assert.equal(tombReplay.reason, 'journal-incomplete');
+  assert.equal(archiveRaw(), before);
+  // 去掉坏 pending、只留墓碑（合法 journal）：同一原 ID 仍按墓碑拒绝，墓碑没有被连带抹掉。
+  const tombOnly = { version: 1, pending: [], deleted: [tomb], barriers: { [barrierKeyOf]: victim.seq } };
+  storage.set(DELETE_KEY, JSON.stringify(tombOnly));
+  const tombOnlyReplay = lateSave(flow, victim);
+  assert.equal(tombOnlyReplay.ok, false);
+  assert.equal(tombOnlyReplay.code, 'attempt-deleted', '原 ID 不复活');
+  assert.equal(archiveRaw(), before);
+
+  // C. 完整凭据仍可清理：同样的 pending 换成合法 journal 后正常收尾落墓碑。
+  storage.set(
+    DELETE_KEY,
+    JSON.stringify({ version: 1, pending: [cleanablePending], deleted: [], barriers: {} })
+  );
+  const recoveredC = await attemptDelete.recoverPending({ archiveId: flow.archiveId });
+  assert.equal(recoveredC.ok, true, recoveredC.error);
+  assert.equal(recoveredC.processed, 1);
+  assert.equal(recoveredC.pending, 0);
+  const afterC = JSON.parse(storage.get(DELETE_KEY));
+  assert.deepEqual(afterC.pending, []);
+  assert.equal(afterC.deleted.length, 1);
+  assert.equal(afterC.deleted[0].attemptId, 'stale-pending');
+  assert.equal(afterC.deleted[0].archiveId, flow.archiveId);
+  assert.equal(afterC.deleted[0].sessionId, flow.session.id);
+  assert.equal(afterC.deleted[0].routeId, flow.route.id);
+  assert.equal(afterC.deleted[0].seq, cleanablePending.seq);
+  assert.equal(afterC.barriers[barrierKeyOf], cleanablePending.seq);
+  assert.equal(attemptDelete.pendingStatus(flow.archiveId).pending, 0);
+  assert.equal(archiveRaw(), before, '清理只动 journal，不改档案');
 });
