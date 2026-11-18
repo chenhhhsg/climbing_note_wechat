@@ -2489,3 +2489,127 @@ test('T048-删除28 清理/删除写回与保存共用严格读：坏凭据整�
   assert.equal(attemptDelete.pendingStatus(flow.archiveId).pending, 0);
   assert.equal(archiveRaw(), before, '清理只动 journal，不改档案');
 });
+
+test('T048-删除29 共享副本删除时索引单次失败：重开恢复按 kept 结清，保留文件与他人引用，迟到保存仍拒绝', async () => {
+  const flow = startFlow({ routeName: '共享恢复线' });
+  const target = addAttempt(flow, 'fail', '要删的一把', 0);
+  const holder = addAttempt(flow, 'fail', '仍引用的一把', 5);
+  const shared = seedClip(flow, target, { bytes: 3000 });
+  const sharedBytes = Buffer.from(virtual.files.get(shared.filePath));
+
+  // 另一把合法引用同一文件：同一本机副本被两条索引共用。
+  const index = indexOf();
+  index.clips.push({
+    clipId: 'clip-shared-holder',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: holder.id,
+    attemptSeq: holder.seq,
+    rev: 1,
+    bytes: 3000,
+    fileId: shared.fileId,
+    createdAt: '2026-11-18T01:00:00.000Z'
+  });
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify(index));
+
+  // 目标删除时注入一次索引写失败：记录已移出，索引引用与本机副本保留为 pending。
+  faults.indexSetCount = 0;
+  faults.indexSetFailAt = 1;
+  const direct = await attemptDelete.deleteAttempt(deleteInput(flow, target, shared));
+  assert.equal(direct.ok, true, direct.error);
+  assert.equal(direct.recordDeleted, true);
+  assert.equal(direct.video.status, 'pending');
+  assert.equal(attemptDelete.pendingStatus(flow.archiveId).pending, 1);
+  assert.equal(archiveOf().attempts.some(item => item.id === target.id), false);
+  assert.equal(
+    indexOf().clips.some(item => item.attemptId === target.id),
+    true,
+    '索引写失败后目标引用仍在'
+  );
+  assert.equal(virtual.files.has(shared.filePath), true);
+  assert.equal(virtual.calls.unlink.length, 0, '索引失败阶段不动共享副本');
+
+  // 断开模块运行态重新加载：清故障、重建视频服务，并重载删除模块自己的队列/缓存。
+  faults.indexSetFailAt = 0;
+  faults.indexSetCount = 0;
+  videoFiles.resetAttemptVideoServices();
+  attemptDelete.resetRuntime();
+  delete require.cache[require.resolve(DELETE_UTIL)];
+  const reopenedDelete = require(DELETE_UTIL);
+
+  const recovered = await reopenedDelete.recoverPending({ archiveId: flow.archiveId });
+  assert.equal(recovered.ok, true, JSON.stringify(recovered));
+  assert.equal(recovered.processed, 1);
+  assert.equal(recovered.pending, 0);
+  assert.deepEqual(recovered.errors, []);
+
+  // journal 结清：目标只落一次墓碑，pending 清空。
+  const journal = pendingJournal();
+  assert.deepEqual(journal.pending, []);
+  assert.equal(journal.deleted.length, 1);
+  assert.equal(journal.deleted[0].attemptId, target.id);
+  assert.equal(journal.deleted[0].archiveId, flow.archiveId);
+  assert.equal(journal.deleted[0].sessionId, flow.session.id);
+  assert.equal(journal.deleted[0].routeId, flow.route.id);
+  assert.equal(journal.deleted[0].seq, target.seq);
+
+  // 共享副本原字节不变、只解除目标关联、剩余归属不变，且没有 unlink。
+  assert.equal(virtual.files.has(shared.filePath), true);
+  assert.deepEqual(Buffer.from(virtual.files.get(shared.filePath)), sharedBytes);
+  const afterIndex = indexOf();
+  assert.equal(afterIndex.clips.some(item => item.attemptId === target.id), false);
+  const remaining = afterIndex.clips.filter(item => item.fileId === shared.fileId);
+  assert.equal(remaining.length, 1);
+  assert.equal(remaining[0].attemptId, holder.id);
+  assert.equal(remaining[0].clipId, 'clip-shared-holder');
+  assert.equal(remaining[0].rev, 1);
+  assert.equal(virtual.calls.unlink.length, 0, '共享副本一次 unlink 都不发');
+  assert.equal(reopenedDelete.pendingStatus(flow.archiveId).pending, 0);
+
+  // 再冷开：无 pending 时是 no-op，一次文件系统也不碰。
+  videoFiles.resetAttemptVideoServices();
+  reopenedDelete.resetRuntime();
+  const callsBefore = JSON.stringify(
+    Object.keys(virtual.calls).reduce((acc, key) => {
+      acc[key] = virtual.calls[key].length;
+      return acc;
+    }, {})
+  );
+  const cold = await reopenedDelete.recoverPending({ archiveId: flow.archiveId });
+  assert.equal(cold.ok, true);
+  assert.equal(cold.skipped, true);
+  assert.equal(cold.processed, 0);
+  assert.equal(cold.pending, 0);
+  const callsAfter = JSON.stringify(
+    Object.keys(virtual.calls).reduce((acc, key) => {
+      acc[key] = virtual.calls[key].length;
+      return acc;
+    }, {})
+  );
+  assert.equal(callsAfter, callsBefore, '无 pending 的冷开不扫描文件系统');
+
+  // 迟到原保存 opId 被拒且零写入；独立新 ID 正常记录。
+  const archiveBefore = archiveRaw();
+  const indexBefore = indexRaw();
+  const replay = lateSave(flow, target);
+  assert.equal(replay.ok, false);
+  assert.equal(replay.code, 'attempt-deleted');
+  assert.equal(archiveRaw(), archiveBefore, '迟到保存一个字都没写');
+  assert.equal(indexRaw(), indexBefore, '迟到保存不动视频索引');
+  assert.equal(archiveOf().pendingSaves.length, 0, '没有幻影待保存');
+  assert.equal(archiveOf().attempts.some(item => item.id === holder.id), true);
+
+  const fresh = store.saveAttempt({
+    opId: 'op-fresh-after-shared-kept',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    result: 'send',
+    note: '新记一把'
+  });
+  assert.equal(fresh.ok, true, fresh.error);
+  assert.equal(fresh.attempt.id, 'op-fresh-after-shared-kept');
+  assert.equal(archiveOf().attempts.some(item => item.id === target.id), false);
+  assert.equal(archiveOf().attempts.some(item => item.id === fresh.attempt.id), true);
+});

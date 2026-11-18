@@ -477,6 +477,17 @@ function serviceFor(archiveId, options) {
  * 索引写成功但文件删除失败（cleanupError）也算 pending：记录已删，但副本还在。
  * kept 表示索引已分离，但同一文件仍被其他记录合法引用，副本按设计保留。
  */
+/**
+ * 视频清理的完成判定（删除与恢复共用同一口径）。
+ *
+ * none：确认时这一把没有视频；done：索引引用已解除且副本已回收；
+ * kept：索引引用已解除，但同一文件仍被其他记录合法引用，副本按设计保留。
+ * kept 同样是完成态：不删共享文件、不动剩余引用，只清原把的关联与待清理标记。
+ */
+function cleanupSettled(video) {
+  return video.status === 'done' || video.status === 'none' || video.status === 'kept';
+}
+
 async function cleanupEntry(entry, options) {
   if (!entry.clip) return { status: 'none', error: '' };
   const service = serviceFor(entry.archiveId, options);
@@ -519,7 +530,7 @@ async function finishRemovedRecord(journal, entry, options) {
   entry.state = 'removed';
   entry.updatedAt = nowIso(options);
   const video = await cleanupEntry(entry, options);
-  if (video.status === 'done' || video.status === 'none' || video.status === 'kept') {
+  if (cleanupSettled(video)) {
     finalizeEntry(journal, entry);
     const written = writeJournal(journal, options);
     return {
@@ -678,7 +689,7 @@ async function runDelete(data, options) {
   writeJournal(journal, options);
 
   const video = await cleanupEntry(entry, options);
-  if (video.status === 'done' || video.status === 'none' || video.status === 'kept') {
+  if (cleanupSettled(video)) {
     finalizeEntry(journal, entry);
     const written = writeJournal(journal, options);
     return {
@@ -792,7 +803,8 @@ function deleteAttempt(input, options) {
  * - journal 读取失败或含身份不完整的条目：整轮不执行、不写回（与保存核对共用严格读，
  *   坏证据保持原样，页面上可见错误并保留手动重试入口）；
  * - 记录仍在档案里：这是「档案写失败」留下的 prepared 条目，撤掉它，不动视频；
- * - 记录已不在：按持久证据继续清理索引与文件；
+ * - 记录已不在：按持久证据继续清理索引与文件；索引已解除但副本仍被其他记录引用
+ *   （kept）与 none/done 一样算完成——不删共享文件、不动剩余引用，只收尾本条凭据；
  * - 本机档案已经换成另一份：旧档案条目保留（不能凭旧凭据动新档案目录），可见待重试。
  */
 async function runRecovery(options) {
@@ -845,7 +857,7 @@ async function runRecovery(options) {
       continue;
     }
     const video = await cleanupEntry(entry, opts);
-    if (video.status === 'done' || video.status === 'none') {
+    if (cleanupSettled(video)) {
       finalizeEntry(journal, entry);
       processed += 1;
     } else {
