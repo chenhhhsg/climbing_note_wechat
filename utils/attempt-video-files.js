@@ -40,6 +40,13 @@
  *   照片保留量，避免把共用设备空间吃满；
  * - 真实配额失败（复制时系统报空间不足）同样按空间不足返回可见原因，并保留旧片。
  *
+ * 同场在途查询（T052）：
+ * - public commit/replace/remove 在同步校验通过后按「档案 ID + 原场次 ID」登记一个
+ *   内存计数，并在 try/finally 里释放；整场删除协调器在确认快照与同步提交边界都
+ *   查询这个计数，有在途写入时先要求完成，不会在文件 I/O 尚未返回时开始删档案；
+ * - 计数只覆盖同一场，别的场次照常保存/清理；它不读写文件系统，也不改变本模块的
+ *   所有权、回执或提交语义。
+ *
  * 本模块不发起任何上传、云调用或数据迁移。
  */
 const attemptVideo = require('./attempt-video.js');
@@ -82,6 +89,49 @@ const VIDEO_SPACE_POLICY = Object.freeze({
  */
 const RUNTIME_WRITES = new Set();
 const RUNTIME_WRITE_BYTES = new Map();
+
+/**
+ * 同一 JS 运行期内、各场次真正执行中的视频变更（仅内存）。
+ *
+ * 键 = 本机档案 ID + 原场次 ID，值 = 该键下仍在执行的 public commit/replace/remove
+ * 数量。整场删除协调器据此在「读快照」与「同步提交边界」判断这一场是否还有视频
+ * 正在保存或移除；它只回答同一场，别的场次与别的档案照常可操作，不是全局视频锁。
+ *
+ * 登记与释放在每个操作自己的 try/finally 里完成（同步抛错也会释放），运行期结束随
+ * 模块消失，因此不会留下永久状态。它是内存判定：不扫描目录、不读索引、不写存储。
+ */
+const RUNTIME_SESSION_MUTATIONS = new Map();
+
+function sessionMutationKey(archiveId, sessionId) {
+  if (!isSafeArchiveId(archiveId) || !hasText(sessionId)) return '';
+  return archiveId + '\n' + sessionId;
+}
+
+function beginSessionMutation(archiveId, sessionId) {
+  const key = sessionMutationKey(archiveId, sessionId);
+  if (!key) return null;
+  RUNTIME_SESSION_MUTATIONS.set(key, (RUNTIME_SESSION_MUTATIONS.get(key) || 0) + 1);
+  return key;
+}
+
+function endSessionMutation(key) {
+  if (!key) return;
+  const count = RUNTIME_SESSION_MUTATIONS.get(key) || 0;
+  if (count <= 1) {
+    RUNTIME_SESSION_MUTATIONS.delete(key);
+    return;
+  }
+  RUNTIME_SESSION_MUTATIONS.set(key, count - 1);
+}
+
+/**
+ * 这一场当前是否有真正执行中的视频写入/移除。只用于协调器判断「先完成在途操作」，
+ * 不参与视频自身的所有权或提交判定。身份不完整时返回 false（不登记、也不误挡）。
+ */
+function hasActiveSessionVideoMutation(archiveId, sessionId) {
+  const key = sessionMutationKey(archiveId, sessionId);
+  return Boolean(key && (RUNTIME_SESSION_MUTATIONS.get(key) || 0) > 0);
+}
 
 function hasText(value) {
   return typeof value === 'string' && value.length > 0;
@@ -1546,6 +1596,17 @@ function createAttemptVideoStore(options) {
     const invalid = validateBase(input) || validateSource(input);
     if (invalid) return invalid;
 
+    // 从校验通过到 finally 之间，这一场都算「有视频变更在途」：整场删除协调器
+    // 会据此要求在途操作先结束。键只含档案 + 场次，其他场次不受影响。
+    const mutationKey = beginSessionMutation(archiveId, input.sessionId);
+    try {
+      return await runCommit(input);
+    } finally {
+      endSessionMutation(mutationKey);
+    }
+  }
+
+  async function runCommit(input) {
     const loaded = readIndex(storage);
     if (!loaded.ok) return loaded;
     const existing = currentClipFor(loaded.index, archiveId, input.attemptId, input);
@@ -1681,6 +1742,15 @@ function createAttemptVideoStore(options) {
     const invalid = validateBase(input) || validateSource(input);
     if (invalid) return invalid;
 
+    const mutationKey = beginSessionMutation(archiveId, input.sessionId);
+    try {
+      return await runReplace(input);
+    } finally {
+      endSessionMutation(mutationKey);
+    }
+  }
+
+  async function runReplace(input) {
     const loaded = readIndex(storage);
     if (!loaded.ok) return loaded;
     const current = currentClipFor(loaded.index, archiveId, input.attemptId, input);
@@ -1836,6 +1906,15 @@ function createAttemptVideoStore(options) {
     const invalid = validateBase(input);
     if (invalid) return invalid;
 
+    const mutationKey = beginSessionMutation(archiveId, input.sessionId);
+    try {
+      return await runRemove(input);
+    } finally {
+      endSessionMutation(mutationKey);
+    }
+  }
+
+  async function runRemove(input) {
     const loaded = readIndex(storage);
     if (!loaded.ok) return loaded;
     const current = currentClipFor(loaded.index, archiveId, input.attemptId, input);
@@ -2494,6 +2573,8 @@ function openAttemptVideoService(archiveId, options) {
 /** 释放共享实例（重置本机档案或离线测试之间调用）；不删除任何文件或索引。 */
 function resetAttemptVideoServices() {
   services.clear();
+  // 仅清空内存里的在途登记；正在执行的操作仍由各自的 finally 收尾。
+  RUNTIME_SESSION_MUTATIONS.clear();
 }
 
 module.exports = {
@@ -2509,6 +2590,7 @@ module.exports = {
   createAttemptVideoStore,
   openAttemptVideoService,
   resetAttemptVideoServices,
+  hasActiveSessionVideoMutation,
   resolveVideoSpacePolicy,
   checkClipSpace,
   normalizeIndex,

@@ -553,7 +553,44 @@ async function finishRemovedRecord(journal, entry, options) {
   };
 }
 
+function sessionFenceFor(archiveId) {
+  let sessionDelete;
+  try {
+    sessionDelete = require('./training-session-delete.js');
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'session-delete-unreadable',
+      error: '读取本机场次删除凭据失败：' + errorText(error) + '；未删除任何记录或视频'
+    };
+  }
+  if (!sessionDelete || typeof sessionDelete.sessionFenceState !== 'function') {
+    return {
+      ok: false,
+      code: 'session-delete-unreadable',
+      error: '读取本机场次删除凭据失败：场次删除模块不可用；未删除任何记录或视频'
+    };
+  }
+  return sessionDelete.sessionFenceState(archiveId);
+}
+
 async function runDelete(data, options) {
+  // T052：整场删除在途或已提交时，同一场的单把删除必须让路，避免两套凭据争用
+  // 同一份视频；读取场次凭据失败时同样失败关闭，不凭未知状态删记录。
+  const sessionFence = sessionFenceFor(data.archiveId);
+  if (!sessionFence.ok) {
+    return fail(sessionFence.code || 'session-delete-unreadable', sessionFence.error);
+  }
+  if (
+    sessionFence.sessionState(data.sessionId) ||
+    sessionFence.attemptState(data.attemptId)
+  ) {
+    return fail(
+      'session-deleting',
+      '这一场正在删除或已删除，不能再单独删除这一把；请完成整场删除的清理'
+    );
+  }
+
   const journalRead = readJournal(options);
   if (!journalRead.ok) {
     return fail('journal-read-failed', journalRead.error);
