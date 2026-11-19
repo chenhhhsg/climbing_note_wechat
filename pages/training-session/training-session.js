@@ -26,6 +26,7 @@
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
+const sessionDeleteActions = require('../../utils/training-session-delete-actions.js');
 const {
   CLIMB_TYPES,
   DEFAULT_CLIMB_TYPE,
@@ -89,6 +90,11 @@ Page({
     loadError: '',      // 本机档案损坏/版本不支持/读取失败的可见报错
     storageError: '',   // 本次操作未落盘（不报已保存）
     notice: '',         // 说明性提示（守卫、快速双击等），不改数据
+
+    // T053 本日场次按钮长按删除：与记录页共用同一流程；清理重试只作用于本档案。
+    sessionDeleteBusy: false,
+    sessionCleanupText: '',
+    sessionCleanupVisible: false,
 
     archiveId: '',
 
@@ -342,6 +348,8 @@ Page({
 
     // 本次小结入口：只算入口目标与文案，不读清单、不算把数；完整小结在独立页。
     this.refreshSummaryEntry();
+    // 已删场次的本机视频副本清理状态：只读 journal，不扫目录。
+    this.refreshSessionCleanup();
   },
 
   /**
@@ -480,6 +488,9 @@ Page({
   switchSession(event) {
     if (this.data.loadError) return;
     const sessionId = event && event.currentTarget && event.currentTarget.dataset.sessionId;
+    // 长按这个按钮后基础库可能补一个 tap：同一原场次的补发不切场；
+    // 菜单/确认取消后的下一次短按照常切换。
+    if (sessionDeleteActions.consumeLongPressTap(this, sessionId)) return;
     if (!sessionId || sessionId === this._displaySessionId) return;
 
     const outcome = store.selectSession(sessionId);
@@ -497,6 +508,75 @@ Page({
     this._openRecordTap = null;
     this.setData({ storageError: '', notice: '' });
     this.refreshView();
+  },
+
+  // ---------------------------------------------------------------- 场次长按删除（T053）
+
+  /**
+   * T053 的页面适配：只提供可见状态与本页重读；确认、档案写入与视频清理都在
+   * T052 协调器里，页面不另写一份存档或删文件。
+   */
+  sessionDeleteHost() {
+    return {
+      // 共用流程用页面实例做连续长按去重，而不是每次新建的适配对象。
+      page: this,
+      archiveId: () =>
+        (this.archive && this.archive.archiveId) || this.data.archiveId || '',
+      notify: (message, options) => {
+        if (options && options.error) {
+          this.setData({ storageError: message || '', notice: '' });
+        } else {
+          this.setData({ notice: message || '', storageError: '' });
+        }
+      },
+      setBusy: busy => this.setData({ sessionDeleteBusy: Boolean(busy) }),
+      setCleanup: status => {
+        const value = status || {};
+        this.setData({
+          sessionCleanupText: value.text || '',
+          sessionCleanupVisible: Boolean(value.pending > 0 || value.error)
+        });
+      },
+      // 删除后本页重新载入：场次编号、当前场、本场线路与本次小结都从同一份档案重算。
+      refresh: () => this.loadPage({ keepForm: true }),
+      contextMatches: context =>
+        Boolean(this.archive && this.archive.archiveId === context.archiveId),
+      // 小结入口原本指向被删的这一场时，回到当前/接续场；不清理别的小结目标。
+      afterDelete: context => {
+        if (this._summarySessionId === context.sessionId) this._summarySessionId = '';
+      }
+    };
+  },
+
+  /**
+   * 长按整个「本日场次」按钮（含按钮内空白）：身份只取同一个原生 view 的
+   * data-archive-id 与 data-session-id。先记短按守卫，再交给共用流程；
+   * 当日只有一场时按钮同样存在，长按照样可删。
+   */
+  requestDeleteSession(event) {
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const sessionId = dataset.sessionId || '';
+    if (!sessionId) return Promise.resolve(null);
+    sessionDeleteActions.markLongPress(this, sessionId);
+    const row = (this.data.sameDaySessions || []).find(item => item.id === sessionId);
+    return sessionDeleteActions.requestSessionDelete(this.sessionDeleteHost(), {
+      archiveId:
+        dataset.archiveId || (this.archive && this.archive.archiveId) || this.data.archiveId || '',
+      sessionId,
+      date: this.data.activeSession ? this.data.activeSession.dateText : '',
+      gymName: row ? row.gymName : '',
+      label: row ? row.label : ''
+    });
+  },
+
+  /** 只读刷新本场次视频副本清理状态；不扫描目录、不改档案。 */
+  refreshSessionCleanup() {
+    return sessionDeleteActions.refreshSessionCleanup(this.sessionDeleteHost());
+  },
+
+  /** 可见重试：只按本档案恢复 T052 自己的场次清理 journal。 */
+  retrySessionCleanup() {
+    return sessionDeleteActions.retrySessionCleanup(this.sessionDeleteHost());
   },
 
   // ---------------------------------------------------------------- 线路
