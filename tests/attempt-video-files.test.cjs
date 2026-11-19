@@ -2038,3 +2038,197 @@ test('T026-22 索引条目场次/线路与实际把次不符：两处入口不�
   assert.equal(fixedPage.data.playerSrc, uri);
   assert.deepEqual(videoIndex().clips[0], corrupted.clips[0], '合法条目原样可读');
 });
+
+// ------------------------------------------------------------------ *
+// T025：时间点随片段生命周期（嵌入片段条目的可选 markers）
+// ------------------------------------------------------------------ */
+
+test('T025-F1 时间点随片段条目：首次保存为空、更换不继承、移除自然清理，旧索引缺字段兼容', async () => {
+  const flow = seedTwoAttempts();
+  const temp = addTempVideo('markers.mp4', 4096);
+  const service = makeService(flow);
+  const committed = await service.commit(requestFor(flow, flow.attemptB, temp));
+  assert.equal(committed.ok, true, committed.error);
+  assert.equal(committed.clip.markers.length, 0);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(videoIndex().clips[0], 'markers'),
+    false,
+    '没有记点的片段不写可选字段（旧索引同形）'
+  );
+
+  const marked = service.addMarker({
+    action: 'addMarker',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: committed.clip.clipId,
+    rev: committed.clip.rev,
+    fileId: committed.clip.fileId,
+    markerId: 'mark-file-1',
+    atMs: 2500,
+    durationSeconds: 7.5
+  });
+  assert.equal(marked.ok, true, marked.error);
+  assert.equal(videoIndex().clips[0].markers[0].atMs, 2500);
+  assert.equal(
+    attemptVideo.videoClipView(flow.archiveId, flow.attemptB.id).clip.markers.length,
+    1
+  );
+
+  // 更换：新条目从空列表开始，旧时间点不随文件复制到新片。
+  const nextTemp = addTempVideo('markers-next.mp4', 4096);
+  const replaced = await service.replace(
+    requestFor(flow, flow.attemptB, nextTemp, {
+      action: 'replace',
+      clipId: committed.clip.clipId,
+      rev: committed.clip.rev,
+      fileId: committed.clip.fileId,
+      bytes: committed.clip.bytes
+    })
+  );
+  assert.equal(replaced.ok, true, replaced.error);
+  assert.equal(replaced.clip.markers.length, 0);
+  assert.equal(replaced.clip.clipId === committed.clip.clipId, false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(videoIndex().clips[0], 'markers'),
+    false,
+    '新片没有继承旧时间点'
+  );
+  assert.equal(virtual.files.has(USER_DATA_PATH + '/' + committed.clip.fileId), false);
+
+  // 新片记两个点后移除副本：关联条目连同 markers 一起自然消失。
+  service.addMarker({
+    action: 'addMarker',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: replaced.clip.clipId,
+    rev: replaced.clip.rev,
+    fileId: replaced.clip.fileId,
+    markerId: 'mark-file-2',
+    atMs: 0,
+    durationSeconds: 7.5
+  });
+  assert.equal(videoIndex().clips[0].markers.length, 1);
+  const removed = await service.remove({
+    action: 'remove',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: replaced.clip.clipId,
+    rev: replaced.clip.rev,
+    fileId: replaced.clip.fileId,
+    bytes: replaced.clip.bytes
+  });
+  assert.equal(removed.ok, true, removed.error);
+  assert.equal(videoIndex().clips.length, 0, '条目与关联时间点一起移除');
+
+  // 旧版本索引条目没有 markers 字段：读取按空列表，视频关联照常。
+  storage.set(
+    VIDEO_INDEX_KEY,
+    JSON.stringify({
+      version: 1,
+      nextClipSeq: 3,
+      clips: [
+        {
+          clipId: 'clip-legacy-1',
+          archiveId: flow.archiveId,
+          sessionId: flow.session.id,
+          routeId: flow.route.id,
+          attemptId: flow.attemptA.id,
+          attemptSeq: flow.attemptA.seq,
+          rev: 1,
+          fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-legacy-1.mp4',
+          bytes: 1024
+        }
+      ],
+      pending: []
+    })
+  );
+  const legacy = attemptVideo.videoClipView(flow.archiveId, flow.attemptA.id);
+  assert.equal(legacy.state, 'saved');
+  assert.deepEqual(legacy.clip.markers, []);
+});
+
+function fireVideoEvent(page, handler, detail, token) {
+  const instance = page.data.videoInstances[0];
+  const activeToken = token === undefined ? (instance ? instance.token : '') : token;
+  return page[handler]({
+    currentTarget: { dataset: { videoToken: activeToken } },
+    detail: detail || {}
+  });
+}
+
+test('T025-F2 同一页面生命周期：确认更换立即清空旧片时间点，取消保留，迟到回调不串', async () => {
+  const flow = seedTwoAttempts();
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+
+  // 同一页面先保存原片并记一个点。
+  const firstTemp = addTempVideo('page-markers.mp4', 4096);
+  chooseVideo(firstTemp);
+  page.choosePreview();
+  page.commitPreview();
+  await settle();
+  assert.equal(page.data.hasSavedVideo, true, page.data.opError);
+  const firstClip = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  fireVideoEvent(page, 'onVideoLoadedMetadata', { duration: 7.5 });
+  fireVideoEvent(page, 'onVideoTimeUpdate', { currentTime: 3.125, duration: 7.5 });
+  assert.equal(page.data.canAddMarker, true);
+  page.addMarkerAtCurrentTime();
+  await settle();
+  assert.deepEqual(page.data.markers.map(item => item.atMs), [3125]);
+
+  // 取消更换：仍是原片，原时间点保持显示。
+  const cancelTemp = addTempVideo('page-cancel.mp4', 2048);
+  chooseVideo(cancelTemp);
+  page.choosePreview();
+  assert.equal(page.data.hasPreview, true);
+  page.cancelReplace();
+  await settle();
+  assert.equal(page.data.hasPreview, false);
+  assert.equal(page.data.savedVideo.clipId, firstClip.clipId);
+  assert.deepEqual(page.data.markers.map(item => item.atMs), [3125], '取消更换保留原片时间点');
+
+  // 确认更换：同一个页面实例立即显示新片的空列表，并切到新片源。
+  const oldToken = page.data.playerToken;
+  const nextTemp = addTempVideo('page-next.mp4', 3072);
+  chooseVideo(nextTemp);
+  page.choosePreview();
+  page.confirmReplace();
+  await settle();
+  assert.equal(page.data.opError, '', page.data.opError);
+  const nextClip = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  assert.notEqual(nextClip.clipId, firstClip.clipId);
+  assert.equal(page._savedClip.clipId, nextClip.clipId, '_savedClip 同步到新片段');
+  assert.equal(page.data.savedVideo.clipId, nextClip.clipId);
+  assert.equal(page.data.playerSrc, USER_DATA_PATH + '/' + nextClip.fileId);
+  assert.notEqual(page.data.playerToken, oldToken, 'startSource 换到新 token');
+  assert.deepEqual(page.data.markers, [], '确认更换后立即清空旧片时间点，无需重开');
+  assert.equal(page._playerTimeSeconds, null);
+
+  // 旧 token 的迟到回报被丢弃，不能把位置或时间点带进新片。
+  fireVideoEvent(page, 'onVideoTimeUpdate', { currentTime: 6, duration: 7.5 }, oldToken);
+  assert.equal(page.data.playerTimeMs, null, '旧 source token 不提供新片位置');
+  assert.equal(page.data.canAddMarker, false);
+  page.addMarkerAtCurrentTime();
+  await settle();
+  assert.deepEqual(page.data.markers, [], '旧 token 回调没有产生新点');
+  assert.equal(videoIndex().clips[0].markers, undefined);
+
+  // 新 token 的真实回报才在新片上记点。
+  fireVideoEvent(page, 'onVideoLoadedMetadata', { duration: 7.5 });
+  fireVideoEvent(page, 'onVideoTimeUpdate', { currentTime: 4.5, duration: 7.5 });
+  assert.equal(page.data.canAddMarker, true);
+  page.addMarkerAtCurrentTime();
+  await settle();
+  assert.deepEqual(page.data.markers.map(item => item.atMs), [4500]);
+  assert.deepEqual(
+    videoIndex().clips[0].markers.map(item => item.atMs),
+    [4500],
+    '新片只保存自己的时间点'
+  );
+});

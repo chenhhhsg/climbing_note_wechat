@@ -43,6 +43,7 @@
  * 本模块不发起任何上传、云调用或数据迁移。
  */
 const attemptVideo = require('./attempt-video.js');
+const attemptVideoMarkers = require('./attempt-video-markers.js');
 const { isSpaceError } = require('./training-photo-space.js');
 
 const VIDEO_FILES_VERSION = 1;
@@ -344,6 +345,7 @@ function normalizeClip(raw) {
   const durationSeconds = optionalNumber(raw.durationSeconds);
   const width = optionalNumber(raw.width);
   const height = optionalNumber(raw.height);
+  const rev = revOf(raw);
   return {
     clipId: raw.clipId,
     archiveId: raw.archiveId,
@@ -351,7 +353,7 @@ function normalizeClip(raw) {
     routeId: raw.routeId,
     attemptId: raw.attemptId,
     attemptSeq: safeNumber(raw.attemptSeq),
-    rev: revOf(raw),
+    rev,
     fileId: raw.fileId,
     bytes: bytes === null ? 0 : Math.floor(bytes),
     durationSeconds: durationSeconds !== null && durationSeconds >= 0 ? durationSeconds : null,
@@ -359,7 +361,13 @@ function normalizeClip(raw) {
     height: height !== null && height > 0 ? Math.floor(height) : null,
     fileName: hasText(raw.fileName) ? raw.fileName : '',
     opId: hasText(raw.opId) ? raw.opId : '',
-    createdAt: hasText(raw.createdAt) ? raw.createdAt : ''
+    createdAt: hasText(raw.createdAt) ? raw.createdAt : '',
+    // T025：手工时间点是片段条目的可选增量字段。旧索引没有这个字段 → 空列表；
+    // 单条坏标记被丢弃，不把整份索引判坏，也不影响视频引用本身。
+    markers: attemptVideoMarkers.normalizeMarkers(raw.markers, {
+      clipId: raw.clipId,
+      rev
+    })
   };
 }
 
@@ -475,7 +483,12 @@ function currentClipFor(index, archiveId, attemptId, reference) {
 }
 
 function cloneClip(clip) {
-  return Object.assign({}, clip);
+  // markers 一并复制，避免调用方改到索引读回对象里的数组（回执与页面共享同一层）。
+  return Object.assign({}, clip, {
+    markers: (clip && Array.isArray(clip.markers) ? clip.markers : []).map(marker =>
+      Object.assign({}, marker)
+    )
+  });
 }
 
 /** 请求里的片段版本：没有可比较的版本时返回 null。 */
@@ -491,6 +504,34 @@ function sameClipIdentity(current, request) {
   // 旧条目可能没有版本号：请求也没带版本时按同一片段处理；带了不一致的版本一律拒绝。
   if (wanted === null) return revOf(current) === 0;
   return revOf(current) === wanted;
+}
+
+/**
+ * 时间点写入的目标片段：片段 ID、版本与文件标识必须同时对上当前片段。
+ * 只认当前归属下读回的片段，不按请求里的值另造关联。
+ */
+function markerTargetError(current, request) {
+  const input = request || {};
+  if (!current) {
+    return fail(
+      'stale-operation',
+      '这一把当前没有已保存的视频，不能记录时间点；未改动任何数据'
+    );
+  }
+  if (
+    !sameClipIdentity(current, input) ||
+    (hasText(input.fileId) && input.fileId !== current.fileId)
+  ) {
+    return fail(
+      'stale-operation',
+      '这一把的视频关联已经变化，这次时间点操作没有采用；请刷新后再试，原视频仍可用'
+    );
+  }
+  return null;
+}
+
+function cloneMarker(marker) {
+  return Object.assign({}, marker);
 }
 
 // ------------------------------------------------------------------ *
@@ -831,9 +872,26 @@ function readIndex(storage) {
   return { ok: true, index };
 }
 
+/**
+ * 落盘形状：`markers` 是 T025 的可选增量字段。没有时间点的片段**不写这个字段**，
+ * 使未使用新功能的索引与旧版本逐字节一致；只有真的记过时间点时才出现 markers。
+ * 旧版本读取时会忽略不认识的字段，因此新索引仍可被旧代码安全读取。
+ */
+function serializedIndex(index) {
+  return Object.assign({}, index, {
+    clips: (index && Array.isArray(index.clips) ? index.clips : []).map(clip => {
+      const copy = Object.assign({}, clip);
+      if (!Array.isArray(copy.markers) || copy.markers.length === 0) {
+        delete copy.markers;
+      }
+      return copy;
+    })
+  });
+}
+
 function saveIndex(storage, index) {
   try {
-    storage.set(VIDEO_INDEX_KEY, JSON.stringify(index));
+    storage.set(VIDEO_INDEX_KEY, JSON.stringify(serializedIndex(index)));
     return { ok: true };
   } catch (error) {
     return {
@@ -1840,6 +1898,197 @@ function createAttemptVideoStore(options) {
     });
   }
 
+  // ---------------------------------------------------------------- *
+  // 手工时间点（T025）：同步读改写同一个索引
+  // ---------------------------------------------------------------- *
+
+  /**
+   * 记下一个时间点。
+   *
+   * 与文件操作不同，这里**没有异步等待**：读索引、核对当前归属与片段版本、
+   * 改这一条片段的 markers、写回，都在同一次同步调用里完成，窗口内不会被另一段
+   * 异步清理拿旧快照覆盖。只写索引里的可选字段，不创建、不删除任何媒体文件。
+   *
+   * - 只接受当前归属（四个原 ID）下、当前片段同一 clipId/rev/fileId 的请求；
+   * - atMs 必须是整数毫秒且不超过可用时长（0 秒合法）；时长同时参考本次原生回报
+   *   与当前片段已知时长，两处都没有有效时长时拒绝，过期/伪造的更长时长不能越界；
+   * - 同一个 markerId 重复提交（失败重试、回执丢失后的重试）只保留一个点；
+   * - 索引写抛错时读回判断：本次标记已落盘按成功（receiptLost），读不回则保留
+   *   现有时间点并返回失败，页面用同一 markerId 重试。
+   */
+  function addMarker(request) {
+    const input = request || {};
+    const invalid = validateBase(input);
+    if (invalid) return invalid;
+    if (!hasText(input.clipId) || !hasText(input.fileId) || requestedRev(input.rev) === null) {
+      return fail('incomplete-request', '时间点请求缺少片段身份，未改动任何数据');
+    }
+    if (!attemptVideoMarkers.isMarkerId(input.markerId)) {
+      return fail('incomplete-request', '时间点请求缺少操作身份，未改动任何数据');
+    }
+    const atMs = attemptVideoMarkers.normalizeAtMs(input.atMs);
+    if (atMs === null) {
+      return fail('invalid-time', '时间点不是有效的整数毫秒，未改动任何数据');
+    }
+
+    const loaded = readIndex(storage);
+    if (!loaded.ok) return loaded;
+    const current = currentClipFor(loaded.index, archiveId, input.attemptId, input);
+    const stale = markerTargetError(current, input);
+    if (stale) return stale;
+
+    // 复核时长：请求里的原生读数与索引里的已知时长互为补充。
+    // 旧索引没有 durationSeconds 时接受有效原生回报；两处都没有则拒绝写点。
+    const durationLimit = attemptVideoMarkers.markerDurationLimit(
+      input.durationSeconds,
+      current.durationSeconds
+    );
+    if (!durationLimit.ok) {
+      return fail(durationLimit.code, durationLimit.error);
+    }
+    if (atMs > durationLimit.limitMs) {
+      return fail('invalid-time', '时间点超出视频时长，未写入任何时间点');
+    }
+
+    // 落盘前（包括幂等重试的读回）再核对一次当前归属与有效把次；
+    // 同步路径没有 await，仍在同一窗口。
+    const lost = verifyOwnership(input);
+    if (lost) return lost;
+
+    const existing = (current.markers || []).find(marker => marker.id === input.markerId);
+    if (existing) {
+      return {
+        ok: true,
+        duplicate: true,
+        receiptLost: false,
+        marker: cloneMarker(existing),
+        clip: cloneClip(current)
+      };
+    }
+
+    const marker = {
+      id: input.markerId,
+      atMs,
+      clipId: current.clipId,
+      rev: revOf(current),
+      createdAt: now()
+    };
+    current.markers = attemptVideoMarkers.normalizeMarkers(
+      (current.markers || []).concat(marker),
+      current
+    );
+    const saved = saveIndex(storage, loaded.index);
+    if (saved.ok) {
+      return {
+        ok: true,
+        duplicate: false,
+        receiptLost: false,
+        marker: cloneMarker(marker),
+        clip: cloneClip(current)
+      };
+    }
+
+    // 索引写抛错：读回判断是「写前失败」还是「已落盘但回执丢失」。
+    const readback = readIndex(storage);
+    if (!readback.ok) {
+      return Object.assign({}, saved, {
+        markerUnconfirmed: true,
+        error: saved.error + '；也无法读回索引确认本次时间点，请用同一次动作重试'
+      });
+    }
+    const after = currentClipFor(readback.index, archiveId, input.attemptId, input);
+    const afterStale = markerTargetError(after, input);
+    if (afterStale) return afterStale;
+    const landed = (after.markers || []).find(item => item.id === input.markerId);
+    if (landed) {
+      return {
+        ok: true,
+        duplicate: false,
+        receiptLost: true,
+        marker: cloneMarker(landed),
+        clip: cloneClip(after)
+      };
+    }
+    return Object.assign({}, saved, {
+      clip: cloneClip(after),
+      markers: (after.markers || []).map(cloneMarker)
+    });
+  }
+
+  /**
+   * 移除一个时间点。只按 markerId 删除当前片段里的那一条；其他点、其他片段、
+   * 其他把次都不动。markerId 不存在时按「已移除」返回（重试幂等）。
+   * 同样在同步读改写里完成，并在索引写抛错时读回判断。
+   */
+  function removeMarker(request) {
+    const input = request || {};
+    const invalid = validateBase(input);
+    if (invalid) return invalid;
+    if (!hasText(input.clipId) || !hasText(input.fileId) || requestedRev(input.rev) === null) {
+      return fail('incomplete-request', '时间点请求缺少片段身份，未改动任何数据');
+    }
+    if (!attemptVideoMarkers.isMarkerId(input.markerId)) {
+      return fail('incomplete-request', '时间点请求缺少操作身份，未改动任何数据');
+    }
+
+    const loaded = readIndex(storage);
+    if (!loaded.ok) return loaded;
+    const current = currentClipFor(loaded.index, archiveId, input.attemptId, input);
+    const stale = markerTargetError(current, input);
+    if (stale) return stale;
+
+    const lost = verifyOwnership(input);
+    if (lost) return lost;
+
+    const markers = current.markers || [];
+    if (!markers.some(marker => marker.id === input.markerId)) {
+      return {
+        ok: true,
+        removed: true,
+        duplicate: true,
+        receiptLost: false,
+        clip: cloneClip(current)
+      };
+    }
+
+    current.markers = markers
+      .filter(marker => marker.id !== input.markerId)
+      .map(marker => Object.assign({}, marker));
+    const saved = saveIndex(storage, loaded.index);
+    if (saved.ok) {
+      return {
+        ok: true,
+        removed: true,
+        duplicate: false,
+        receiptLost: false,
+        clip: cloneClip(current)
+      };
+    }
+
+    const readback = readIndex(storage);
+    if (!readback.ok) {
+      return Object.assign({}, saved, {
+        markerUnconfirmed: true,
+        error: saved.error + '；也无法读回索引确认本次移除，请重试'
+      });
+    }
+    const after = currentClipFor(readback.index, archiveId, input.attemptId, input);
+    const afterStale = markerTargetError(after, input);
+    if (afterStale) return afterStale;
+    if ((after.markers || []).every(marker => marker.id !== input.markerId)) {
+      return {
+        ok: true,
+        removed: true,
+        duplicate: false,
+        receiptLost: true,
+        clip: cloneClip(after)
+      };
+    }
+    return Object.assign({}, saved, {
+      clip: cloneClip(after)
+    });
+  }
+
   /**
    * 无引用副本清理：只处理本档案视频目录里、当前索引不再引用、并且能证实由本功能
    * 创建的文件——即出现在持久待清理记录（pending）里的相对文件标识。
@@ -2179,6 +2428,9 @@ function createAttemptVideoStore(options) {
     commit,
     replace,
     remove,
+    // T025：手工时间点嵌在片段条目的可选 markers 字段里，不新增文件或索引键。
+    addMarker,
+    removeMarker,
     // T048–T050 追加返工：把次记录删除后，凭持久删除凭据定向回收本机视频副本。
     removeDeletedClip,
     recover,
