@@ -1087,7 +1087,7 @@ Page({
       playerDurationText: source.durationText || '',
       playerDimensionText: source.dimensionText || '',
       playerReady: false,
-      playerStatus: '点击视频或下方按钮播放',
+      playerStatus: '点视频画面使用原生控件播放',
       playing: false,
       playbackError: '',
       playerDurationSeconds: null,

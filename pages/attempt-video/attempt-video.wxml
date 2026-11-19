@@ -1,7 +1,10 @@
 <!--
-  逐把视频 · 原生播放、更换与移除（T024）
+  逐把视频 · 原生播放、更换与移除（T024 / T055）
   只针对入口带来的那一把：四个 ID 打开时核对；待确认预览与已保存副本分开显示。
   播放状态以播放器事件回报为准；保存、更换、移除都经明确操作。
+
+  T055 页面顺序：紧凑归属 → 原生播放器 → 紧贴其下的共用操作区（更换/移除或选片
+  预览操作）→ 时间点 → 页尾本机占用与无引用副本清理。画面外不再放大号播放按钮。
 -->
 <view class="page">
   <view wx:if="{{loadError}}" id="load-error" class="card error-card">
@@ -20,77 +23,21 @@
     </view>
 
     <block wx:if="{{ready && !contextError}}">
-      <view wx:if="{{attempt}}" id="video-target" class="card video-target">
-        <text class="video-route">{{selectedRoute.name}}</text>
-        <text class="video-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}} · {{attempt.label}}</text>
-        <text id="video-attempt-meta" class="video-attempt-meta">{{attempt.resultText}} · {{attempt.timeText}}</text>
+      <!-- 1. 这一把的紧凑归属：线路、把次与场次只占一小段 -->
+      <view wx:if="{{attempt}}" id="video-target" class="card attempt-head">
+        <view class="attempt-head-row">
+          <text class="video-route">{{selectedRoute.name}}</text>
+          <text class="video-route-meta">{{selectedRoute.climbType}} {{selectedRoute.grade}}</text>
+        </view>
+        <text id="video-attempt-meta" class="video-attempt-meta">{{attempt.label}} · {{attempt.resultText}} · {{attempt.timeText}}</text>
         <text class="video-session-meta">{{activeSession.dateText}} · {{activeSession.gymName}} · {{activeSession.label}}</text>
         <text wx:if="{{attempt.hasNote}}" class="video-note">{{attempt.note}}</text>
         <text id="video-state" class="video-state">{{videoStateText}}</text>
       </view>
 
-      <!-- T026：本档案视频实际占用与可执行的无引用副本清理 -->
-      <view wx:if="{{spaceUsageText || spaceError}}" id="video-space" class="card space-card">
-        <text class="card-title">本机视频占用</text>
-        <text wx:if="{{spaceUsageText}}" id="video-space-usage" class="space-usage">{{spaceUsageText}}</text>
-        <text wx:if="{{spaceDetailText}}" id="video-space-detail" class="preview-meta">{{spaceDetailText}}</text>
-        <text wx:if="{{spaceWarning}}" id="video-space-warning" class="space-warning">{{spaceWarning}}</text>
-        <text wx:if="{{spaceError}}" id="video-space-error" class="space-error">{{spaceError}}</text>
-        <view wx:if="{{cleanupNotice}}" id="video-cleanup-notice" class="notice cleanup-notice" bindtap="dismissCleanupNotice">
-          <text class="notice-text">{{cleanupNotice}}</text>
-          <text class="notice-hint">点击收起</text>
-        </view>
-        <button
-          wx:if="{{canCleanupOrphans}}"
-          id="cleanup-video-orphans"
-          class="secondary-button cleanup-button"
-          bindtap="cleanupVideoOrphans"
-          disabled="{{cleanupBusy || busy}}"
-        >{{cleanupBusy ? '正在清理…' : '清理无引用副本'}}</button>
-      </view>
-
-      <!-- 写入进行中 / 失败 / 保存服务未就绪 -->
-      <view wx:if="{{opStatus}}" id="video-op-status" class="notice op-status">
-        <text class="notice-text">{{opStatus}}</text>
-        <text class="notice-hint">完成前不重复提交，也不会改动别的把次。</text>
-      </view>
-
-      <view wx:if="{{opError}}" id="video-op-error" class="card error-card" bindtap="dismissOpError">
-        <text class="error-text">{{opError}}</text>
-        <text class="error-hint">点击收起；原把次、备注与已有视频都不受影响，可以重试。</text>
-      </view>
-
-      <view wx:if="{{storeHint}}" id="video-store-hint" class="notice store-hint">
-        <text class="notice-text">{{storeHint}}</text>
-      </view>
-
-      <view wx:if="{{indexError}}" id="video-index-error" class="card error-card">
-        <text class="error-text">{{indexError}}</text>
-        <text class="error-hint">训练档案与本机文件没有被改写；退出后重新进入本页可以再读一次。</text>
-      </view>
-
-      <view
-        wx:if="{{chooseError}}"
-        id="choose-error"
-        class="card error-card choose-error"
-        bindtap="dismissChooseError"
-      >
-        <text class="error-text">{{chooseError}}</text>
-        <text class="error-hint">点击收起；可以重新选择，其他把次与本机档案都不受影响。</text>
-      </view>
-
-      <view wx:if="{{notice}}" id="video-notice" class="notice" bindtap="dismissNotice">
-        <text class="notice-text">{{notice}}</text>
-        <text class="notice-hint">点击收起</text>
-      </view>
-
-      <!-- 播放器：待确认预览与已保存副本共用一套节点，换片时整块重建 -->
+      <!-- 2. 原生播放器：保留唯一稳定的 #video-player 定位锚点；
+           控件、进度、暂停与全屏都使用画面原生能力，不在画面外另放大按钮。 -->
       <view wx:if="{{playerSrc}}" id="video-player" class="card player-card">
-        <text class="card-title">{{playerTitle}}</text>
-        <text id="player-file-name" class="preview-name">{{playerFileName}}</text>
-        <text id="player-size" class="preview-meta">大小 {{playerSizeText}}</text>
-        <text wx:if="{{playerDurationText}}" id="player-duration" class="preview-meta">时长 {{playerDurationText}} 秒</text>
-        <text wx:if="{{playerDimensionText}}" id="player-dimension" class="preview-meta">{{playerDimensionText}}</text>
         <!-- 冷源点回：本节点按原生 initial-time（秒）重新挂载，并仅对该节点 autoplay，
              落到目标附近的 timeupdate 才确认实际画面。 -->
         <block wx:for="{{videoInstances}}" wx:key="token">
@@ -112,50 +59,129 @@
         </block>
         <text wx:if="{{playerStatus}}" id="player-status" class="player-status">{{playerStatus}}</text>
 
-        <!-- 片源打不开：可见原因 + 重选出口；原把次仍然可读可返回 -->
+        <!-- 片源打不开：可见原因；原把次仍然可读可返回，操作区仍可更换。 -->
         <view wx:if="{{playbackError}}" id="playback-error" class="playback-error">
           <text class="error-text">{{playbackError}}</text>
-          <text class="error-hint">这一把的结果、备注与相册原片都还在；重新选择不会改动别的把次。</text>
-        </view>
-
-        <view class="button-row">
-          <button id="toggle-play" class="primary-button" bindtap="togglePlay" disabled="{{busy}}">{{playing ? '暂停' : '播放'}}</button>
-          <button
-            wx:if="{{playerKind === 'saved' || playbackError}}"
-            id="reselect-from-player"
-            class="secondary-button"
-            bindtap="choosePreview"
-            disabled="{{choosing || busy}}"
-          >重新选择原片</button>
+          <text class="error-hint">这一把的结果、备注与相册原片都还在；可以从下方重新选择或更换，不会改动别的把次。</text>
         </view>
       </view>
 
-      <!-- 已保存的本机视频：关联状态、更换与移除入口 -->
-      <view wx:if="{{hasSavedVideo && savedVideo}}" id="video-saved" class="card saved-card">
-        <text class="card-title">这一把的本机视频</text>
-        <text id="saved-size" class="preview-meta">大小 {{savedVideo.sizeText}}</text>
-        <text wx:if="{{savedVideo.revText}}" id="saved-rev" class="preview-meta">片段版本 {{savedVideo.revText}}</text>
-        <text wx:if="{{!savedVideo.locatable}}" id="saved-unlocatable" class="error-text">{{savedVideo.unresolvedText}}</text>
-        <!-- T049：回看时也写明副本只在这台手机上，与预览、确认移除与相册保留的说明同一口径 -->
-        <text id="saved-storage-hint" class="video-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。系统相册里的原片保留。</text>
-        <text wx:if="{{hasPreview}}" class="video-hint">上面只是新片的待确认预览；确认更换前，关联仍是现在这段视频。</text>
-
-        <view wx:if="{{!hasPreview}}" class="button-row">
-          <button id="replace-video" class="primary-button" bindtap="choosePreview" disabled="{{choosing || busy}}">更换视频</button>
-          <button id="remove-video" class="secondary-button" bindtap="askRemove" disabled="{{busy}}">移除视频</button>
+      <!-- 3. 共用操作区：紧贴播放器；播放器不在时也落在同一位置。
+           已保存、待确认、首次选片与缺失/打不开都共用这一块。 -->
+      <view id="video-actions" class="card video-actions">
+        <view wx:if="{{opStatus}}" id="video-op-status" class="notice op-status">
+          <text class="notice-text">{{opStatus}}</text>
+          <text class="notice-hint">完成前不重复提交，也不会改动别的把次。</text>
         </view>
 
-        <!-- 移除是明确的两步操作 -->
-        <view wx:if="{{confirmRemove}}" id="confirm-remove" class="confirm-box">
-          <text class="confirm-text">只移除这台手机微信的攀笔中的视频副本；系统相册里的原片、这一把的记录与备注都保留。</text>
-          <view class="button-row">
-            <button id="confirm-remove-yes" class="primary-button" bindtap="confirmRemove" disabled="{{busy}}">确认移除</button>
-            <button id="confirm-remove-no" class="secondary-button" bindtap="cancelRemove" disabled="{{busy}}">取消</button>
+        <view wx:if="{{opError}}" id="video-op-error" class="notice op-error" bindtap="dismissOpError">
+          <text class="error-text">{{opError}}</text>
+          <text class="error-hint">点击收起；原把次、备注与已有视频都不受影响，可以重试。</text>
+        </view>
+
+        <view wx:if="{{storeHint}}" id="video-store-hint" class="notice store-hint">
+          <text class="notice-text">{{storeHint}}</text>
+        </view>
+
+        <view wx:if="{{indexError}}" id="video-index-error" class="notice op-error">
+          <text class="error-text">{{indexError}}</text>
+          <text class="error-hint">训练档案与本机文件没有被改写；退出后重新进入本页可以再读一次。</text>
+        </view>
+
+        <view wx:if="{{chooseError}}" id="choose-error" class="notice op-error" bindtap="dismissChooseError">
+          <text class="error-text">{{chooseError}}</text>
+          <text class="error-hint">点击收起；可以重新选择，其他把次与本机档案都不受影响。</text>
+        </view>
+
+        <view wx:if="{{notice}}" id="video-notice" class="notice" bindtap="dismissNotice">
+          <text class="notice-text">{{notice}}</text>
+          <text class="notice-hint">点击收起</text>
+        </view>
+
+        <!-- 已保存且没有待确认新片：紧贴播放器只有同排的「更换视频／移除视频」 -->
+        <view wx:if="{{hasSavedVideo && savedVideo && !hasPreview}}" id="video-saved" class="action-block">
+          <text wx:if="{{!savedVideo.locatable}}" id="saved-unlocatable" class="error-text">{{savedVideo.unresolvedText}}</text>
+          <view class="action-row">
+            <button id="replace-video" class="primary-button" bindtap="choosePreview" disabled="{{choosing || busy}}">更换视频</button>
+            <button id="remove-video" class="secondary-button" bindtap="askRemove" disabled="{{busy}}">移除视频</button>
+          </view>
+          <!-- T049：回看时也写明副本只在这台手机上，与预览、确认移除与相册保留的说明同一口径 -->
+          <text id="saved-storage-hint" class="video-hint action-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。系统相册里的原片保留。</text>
+          <view class="saved-meta">
+            <text id="saved-size" class="preview-meta">大小 {{savedVideo.sizeText}}</text>
+            <text wx:if="{{savedVideo.revText}}" id="saved-rev" class="preview-meta">片段版本 {{savedVideo.revText}}</text>
+          </view>
+
+          <!-- 移除是明确的两步操作 -->
+          <view wx:if="{{confirmRemove}}" id="confirm-remove" class="confirm-box">
+            <text class="confirm-text">只移除这台手机微信的攀笔中的视频副本；系统相册里的原片、这一把的记录与备注都保留。</text>
+            <view class="action-row">
+              <button id="confirm-remove-yes" class="primary-button" bindtap="confirmRemove" disabled="{{busy}}">确认移除</button>
+              <button id="confirm-remove-no" class="secondary-button" bindtap="cancelRemove" disabled="{{busy}}">取消</button>
+            </view>
+          </view>
+        </view>
+
+        <!-- 待确认预览：首次添加与更换都用同一组，按钮按模式区分 -->
+        <view wx:if="{{hasPreview}}" id="video-preview" class="action-block">
+          <text class="action-label">{{preview.mode === 'replacement' ? '待确认的新片' : '待确认预览'}}</text>
+          <text id="preview-name" class="preview-name">{{preview.fileName}}</text>
+          <text id="preview-size" class="preview-meta">大小 {{preview.sizeText}}</text>
+          <text wx:if="{{preview.durationText}}" id="preview-duration" class="preview-meta">时长 {{preview.durationText}} 秒</text>
+          <text wx:if="{{preview.dimensionText}}" id="preview-dimension" class="preview-meta">{{preview.dimensionText}}</text>
+          <text wx:if="{{preview.mode === 'replacement'}}" class="video-hint action-hint">确认之前不会改动关联；取消会回到原来那段视频，也不会创建文件。</text>
+          <text wx:else id="preview-save-hint" class="video-hint action-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。可从这一把的记录中回看。相册原片保留。</text>
+          <view class="action-row">
+            <button
+              wx:if="{{preview.mode === 'replacement'}}"
+              id="confirm-replace"
+              class="primary-button"
+              bindtap="confirmReplace"
+              disabled="{{busy}}"
+            >{{busy && opKind === 'replace' ? '正在更换…' : '确认更换'}}</button>
+            <button
+              wx:else
+              id="commit-preview"
+              class="primary-button"
+              bindtap="commitPreview"
+              disabled="{{busy}}"
+            >{{busy && opKind === 'commit' ? '正在保存…' : '保存到攀笔'}}</button>
+            <button
+              wx:if="{{preview.mode === 'replacement'}}"
+              id="cancel-replace"
+              class="secondary-button"
+              bindtap="cancelReplace"
+              disabled="{{busy}}"
+            >取消</button>
+            <button
+              wx:else
+              id="cancel-preview"
+              class="secondary-button"
+              bindtap="cancelPreview"
+              disabled="{{busy}}"
+            >取消预览</button>
+          </view>
+          <view class="action-row action-row-single">
+            <button id="reselect-video" class="secondary-button" bindtap="choosePreview" disabled="{{choosing || busy}}">{{preview.mode === 'replacement' ? '更换视频' : '重新选择'}}</button>
+          </view>
+        </view>
+
+        <!-- 没有已保存片源也没有预览：只有一个相册选片入口 -->
+        <view wx:if="{{!hasSavedVideo && !hasPreview}}" id="video-choose" class="action-block">
+          <text class="action-label">从相册选一段视频</text>
+          <text id="choose-empty-hint" class="video-hint">只选视频、单选、只从相册取。选片后先预览。确认后在这台手机的攀笔里保存一份副本；保存前不会写入本机，也不上传。</text>
+          <view class="action-row action-row-single">
+            <button
+              id="choose-video"
+              class="primary-button"
+              disabled="{{choosing}}"
+              bindtap="choosePreview"
+            >{{choosing ? '正在打开相册…' : '从相册选择视频'}}</button>
           </view>
         </view>
       </view>
 
-      <!-- T025：手工时间点。只记时间；持久整数毫秒，跳转按秒下发。 -->
+      <!-- 4. T025：手工时间点。只记时间；持久整数毫秒，跳转按秒下发。 -->
       <view wx:if="{{hasSavedVideo && savedVideo}}" id="video-markers" class="card markers-card">
         <text class="card-title">时间点</text>
         <text id="marker-current-time" class="marker-current">当前播放位置：{{playerTimeText || '等待播放器回报'}}</text>
@@ -208,63 +234,27 @@
         </view>
       </view>
 
-      <!-- 待确认预览：首次添加与更换都用同一张卡，按钮按模式区分 -->
-      <view wx:if="{{hasPreview}}" id="video-preview" class="card">
-        <text class="card-title">{{preview.mode === 'replacement' ? '待确认的新片' : '待确认预览'}}</text>
-        <text id="preview-name" class="preview-name">{{preview.fileName}}</text>
-        <text id="preview-size" class="preview-meta">大小 {{preview.sizeText}}</text>
-        <text wx:if="{{preview.durationText}}" id="preview-duration" class="preview-meta">时长 {{preview.durationText}} 秒</text>
-        <text wx:if="{{preview.dimensionText}}" class="preview-meta">{{preview.dimensionText}}</text>
-        <text wx:if="{{preview.mode === 'replacement'}}" class="video-hint">确认之前不会改动关联；取消会回到原来那段视频，也不会创建文件。</text>
-        <text wx:else id="preview-save-hint" class="video-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。可从这一把的记录中回看。相册原片保留。</text>
-        <view class="button-row">
-          <button
-            wx:if="{{preview.mode === 'replacement'}}"
-            id="confirm-replace"
-            class="primary-button"
-            bindtap="confirmReplace"
-            disabled="{{busy}}"
-          >{{busy && opKind === 'replace' ? '正在更换…' : '确认更换'}}</button>
-          <button
-            wx:else
-            id="commit-preview"
-            class="primary-button"
-            bindtap="commitPreview"
-            disabled="{{busy}}"
-          >{{busy && opKind === 'commit' ? '正在保存…' : '保存到攀笔'}}</button>
-          <button
-            wx:if="{{preview.mode === 'replacement'}}"
-            id="cancel-replace"
-            class="secondary-button"
-            bindtap="cancelReplace"
-            disabled="{{busy}}"
-          >取消更换</button>
-          <button
-            wx:else
-            id="cancel-preview"
-            class="secondary-button"
-            bindtap="cancelPreview"
-            disabled="{{busy}}"
-          >取消预览</button>
-        </view>
-        <view class="button-row">
-          <button id="reselect-video" class="secondary-button" bindtap="choosePreview" disabled="{{choosing || busy}}">重新选择</button>
-        </view>
-      </view>
+      <text class="video-foot-hint">点视频画面使用原生控件播放、暂停与全屏；更换与移除只作用于这一把。</text>
 
-      <!-- 没有已保存片源也没有预览：从相册单选一段 -->
-      <view wx:if="{{!hasSavedVideo && !hasPreview}}" id="video-choose" class="card">
-        <text class="card-title">从相册选一段视频</text>
-        <text id="choose-empty-hint" class="video-hint">只选视频、单选、只从相册取。选片后先预览。确认后在这台手机的攀笔里保存一份副本；保存前不会写入本机，也不上传。</text>
+      <!-- 5. T026：本机视频实际占用与可执行的无引用副本清理，放在页尾最后 -->
+      <view wx:if="{{spaceUsageText || spaceError}}" id="video-space" class="card space-card">
+        <text class="card-title">本机视频占用</text>
+        <text wx:if="{{spaceUsageText}}" id="video-space-usage" class="space-usage">{{spaceUsageText}}</text>
+        <text wx:if="{{spaceDetailText}}" id="video-space-detail" class="preview-meta">{{spaceDetailText}}</text>
+        <text wx:if="{{spaceWarning}}" id="video-space-warning" class="space-warning">{{spaceWarning}}</text>
+        <text wx:if="{{spaceError}}" id="video-space-error" class="space-error">{{spaceError}}</text>
+        <view wx:if="{{cleanupNotice}}" id="video-cleanup-notice" class="notice cleanup-notice" bindtap="dismissCleanupNotice">
+          <text class="notice-text">{{cleanupNotice}}</text>
+          <text class="notice-hint">点击收起</text>
+        </view>
         <button
-          id="choose-video"
-          class="primary-button"
-          disabled="{{choosing}}"
-          bindtap="choosePreview"
-        >{{choosing ? '正在打开相册…' : '从相册选择视频'}}</button>
+          wx:if="{{canCleanupOrphans}}"
+          id="cleanup-video-orphans"
+          class="secondary-button cleanup-button"
+          bindtap="cleanupVideoOrphans"
+          disabled="{{cleanupBusy || busy}}"
+        >{{cleanupBusy ? '正在清理…' : '清理无引用副本'}}</button>
       </view>
-
-      <text class="video-foot-hint">播放、暂停与更换只作用于这一把；结果、备注与其他把次都在本场逐把里。</text>
     </block>
   </block>
 </view>
