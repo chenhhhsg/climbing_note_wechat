@@ -30,6 +30,12 @@
       <text class="notice-hint">点击收起</text>
     </view>
 
+    <!-- T053：已删场次的本机视频副本待清理；只按本档案重试，不改记录与当前场。 -->
+    <view wx:if="{{sessionCleanupVisible}}" id="session-cleanup" class="storage-error">
+      <text class="storage-error-text">{{sessionCleanupText}}</text>
+      <text class="retry-link" bindtap="retrySessionCleanup">重试清理</text>
+    </view>
+
     <!-- 开始场次：填自己的岩馆，日期默认本地今天 -->
     <view wx:if="{{sessionFormVisible}}" id="session-form" class="card session-form">
       <text class="card-title">{{sessionFormTitle}}</text>
@@ -267,8 +273,11 @@
           </button>
         </view>
 
-        <!-- 同日多场：只切换归属，不新建场次 -->
-        <view wx:if="{{sameDaySessions.length > 1}}" class="session-switch">
+        <!--
+          本日场次：只切换归属，不新建场次。T053 起当日只有一场也保留这个按钮，
+          整个按钮（含框内空白）长按可删除该场；短按仍按原行为切场。
+        -->
+        <view wx:if="{{sameDaySessions.length > 0}}" class="session-switch">
           <text class="field-label">本日场次</text>
           <view class="chip-row">
             <view
@@ -277,7 +286,9 @@
               id="session-chip-{{item.id}}"
               class="chip {{item.isActive ? 'chip-active' : ''}}"
               data-session-id="{{item.id}}"
+              data-archive-id="{{archiveId}}"
               bindtap="switchSession"
+              bindlongpress="requestDeleteSession"
             >{{item.label}}</view>
           </view>
         </view>

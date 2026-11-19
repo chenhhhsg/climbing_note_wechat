@@ -17,6 +17,7 @@ const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
 const store = require('../../utils/training-store');
 const { buildSessionList } = require('../../utils/training-session-summary');
+const sessionDeleteActions = require('../../utils/training-session-delete-actions.js');
 
 Page({
   data: {
@@ -24,6 +25,14 @@ Page({
     sessionDays: [],
     hasLocalHistory: false,
     archiveError: '',         // 本机档案损坏/版本不支持/读取失败
+
+    // T053 整卡长按删除：提示只作用于本机历史区，不改旧云列表的分页/失败状态。
+    sessionDeleteNotice: '',
+    sessionDeleteError: '',
+    sessionDeleteBusy: false,
+    sessionCleanupText: '',
+    sessionCleanupError: '',
+    sessionCleanupVisible: false,
 
     // 旧记录（云汇总，只读回看）
     records: [],              // 记录列表
@@ -51,6 +60,7 @@ Page({
   // 配合空的 onLoad 保证 onLoad → onShow 只查询一次旧记录。
   onShow() {
     this.refreshLocalHistory();
+    this.refreshSessionCleanup();
     return this.loadFirstPage();
   },
 
@@ -62,6 +72,7 @@ Page({
 
     try {
       this.refreshLocalHistory();
+      this.refreshSessionCleanup();
       await this.refreshRecords();
     } finally {
       if (sequence === this._pullDownSequence) {
@@ -215,6 +226,7 @@ Page({
    */
   retryRefresh() {
     this.refreshLocalHistory();
+    this.refreshSessionCleanup();
     return this.loadFirstPage();
   },
 
@@ -247,6 +259,81 @@ Page({
   },
 
   /**
+   * T053 整卡长按删除的页面适配：只向共用流程提供可见状态与本地历史刷新。
+   * 旧云列表、分页、下拉刷新与既有重试入口都不在这里改动。
+   */
+  sessionDeleteHost() {
+    return {
+      // 共用流程用页面实例做连续长按去重，而不是每次新建的适配对象。
+      page: this,
+      archiveId: () => this._archiveId || '',
+      notify: (message, options) => {
+        if (options && options.error) {
+          this.setData({ sessionDeleteError: message || '', sessionDeleteNotice: '' });
+        } else {
+          this.setData({ sessionDeleteNotice: message || '', sessionDeleteError: '' });
+        }
+      },
+      setBusy: busy => this.setData({ sessionDeleteBusy: Boolean(busy) }),
+      setCleanup: status => {
+        const value = status || {};
+        this.setData({
+          sessionCleanupText: value.text || '',
+          sessionCleanupError: value.error || '',
+          sessionCleanupVisible: Boolean(value.pending > 0 || value.error)
+        });
+      },
+      // 删除、失败与恢复都只重读本机历史与清理状态；旧云区保持原样。
+      refresh: () => {
+        this.refreshLocalHistory();
+        this.refreshSessionCleanup();
+      },
+      contextMatches: context => (this._archiveId || '') === context.archiveId
+    };
+  },
+
+  /** 按原场次 ID 找这次长按渲染出来的那一行（只用于提示文案的日期/岩馆/场次）。 */
+  localSessionRow(sessionId) {
+    for (const day of this.data.sessionDays || []) {
+      for (const gym of day.gyms || []) {
+        const row = (gym.sessions || []).find(session => session.id === sessionId);
+        if (row) return row;
+      }
+    }
+    return null;
+  },
+
+  /**
+   * 长按整张本机场次卡（含框内空白）：身份只取同一个原生 view 的 data-archive-id 与
+   * data-session-id。先记短按守卫，再交给两页共用的 T052 流程。
+   * 长按松手后若基础库补一个 tap，goToSessionSummary 会按同一原场次丢弃它。
+   */
+  requestDeleteSession(e) {
+    const dataset = (e && e.currentTarget && e.currentTarget.dataset) || {};
+    const sessionId = dataset.sessionId || '';
+    if (!sessionId) return Promise.resolve(null);
+    sessionDeleteActions.markLongPress(this, sessionId);
+    const row = this.localSessionRow(sessionId);
+    return sessionDeleteActions.requestSessionDelete(this.sessionDeleteHost(), {
+      archiveId: dataset.archiveId || this._archiveId || '',
+      sessionId,
+      date: row ? row.date : '',
+      gymName: row ? row.gymName : '',
+      label: row ? row.label : ''
+    });
+  },
+
+  /** 只读刷新待清理视频副本状态；不扫描目录、不改旧云区。 */
+  refreshSessionCleanup() {
+    return sessionDeleteActions.refreshSessionCleanup(this.sessionDeleteHost());
+  },
+
+  /** 可见重试：只按本档案恢复 T052 自己的场次清理 journal。 */
+  retrySessionCleanup() {
+    return sessionDeleteActions.retrySessionCleanup(this.sessionDeleteHost());
+  },
+
+  /**
    * 打开这一行的原场小结（T043）：只用渲染这一行时写下的原档案 ID 与原场次 ID，
    * 经现有小结页读取；同字 ID 的旧记录仍走 goToDetail 的原 _id 路由，两边不混用。
    * 换档或场次不存在时由小结页按既有错误路径显示可见状态，本页不猜、不补场次。
@@ -254,6 +341,7 @@ Page({
   goToSessionSummary(e) {
     const dataset = (e && e.currentTarget && e.currentTarget.dataset) || {};
     const sessionId = dataset.sessionId;
+    if (sessionDeleteActions.consumeLongPressTap(this, sessionId)) return;
     if (!sessionId) return;
     const archiveId = dataset.archiveId || this._archiveId || '';
     if (!archiveId) return;

@@ -109,6 +109,23 @@
   margin-top: 10rpx;
 }
 
+/* T053：长按删除完成后的说明；与错误提示分开配色，320/390 宽下自动换行。 */
+.inline-notice {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #eef3ea;
+  border-radius: 12rpx;
+  padding: 20rpx;
+  margin-bottom: 20rpx;
+  font-size: 26rpx;
+}
+
+.inline-notice-text {
+  color: #2f5d43;
+  word-break: break-all;
+}
+
 /* 记录卡片 */
 .record-card {
   background-color: #fffcf3;

@@ -48,6 +48,7 @@
               id="local-session-{{session.id}}"
               class="local-session-row"
               bindtap="goToSessionSummary"
+              bindlongpress="requestDeleteSession"
               data-session-id="{{session.id}}"
               data-archive-id="{{session.archiveId}}"
             >
@@ -60,6 +61,21 @@
           </view>
         </view>
       </view>
+    </view>
+
+    <!--
+      T053：长按整卡的可见结果与待清理重试。只属于本机历史区；
+      旧记录区原有的首屏/刷新/翻页失败与重试入口保持原样。
+    -->
+    <view wx:if="{{sessionDeleteError}}" id="session-delete-error" class="inline-error">
+      <text class="inline-error-text">{{sessionDeleteError}}</text>
+    </view>
+    <view wx:if="{{sessionDeleteNotice}}" id="session-delete-notice" class="inline-notice">
+      <text class="inline-notice-text">{{sessionDeleteNotice}}</text>
+    </view>
+    <view wx:if="{{sessionCleanupVisible}}" id="session-cleanup" class="inline-error">
+      <text class="inline-error-text">{{sessionCleanupText}}</text>
+      <text class="retry-link" bindtap="retrySessionCleanup">重试清理</text>
     </view>
   </view>
 
