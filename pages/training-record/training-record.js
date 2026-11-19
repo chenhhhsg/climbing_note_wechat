@@ -64,9 +64,11 @@ const PHOTO_MARKS_URL = '/pages/training-photo-marks/training-photo-marks';
 // 没有触点信息的程序化调用（测试与数据层直接驱动）。
 const UNDO_REBOUND_WINDOW_MS = 600;
 const UNDO_REBOUND_RADIUS_PX = 44;
-// 长按序号框会弹出删除确认；部分基础库/机型在 longpress 结束后仍补一个 tap。
-// 这里在长按后的短窗口内忽略同一行的展开事件，避免「既弹确认又展开」。
+// 长按整张把次卡会先弹「删除这一把」菜单；部分基础库/机型在 longpress 结束后仍补一个
+// tap。这里在长按后的短窗口内忽略同一行的展开事件，避免「既弹菜单又展开」。
 const LONG_PRESS_TAP_GUARD_MS = 700;
+// T054：长按整卡后的第一步菜单只有这一项。
+const DELETE_ATTEMPT_MENU_LABEL = '删除这一把';
 // 页面令牌只增不减：迟到的确认/异步回执只允许更新发起时的那一页上下文。
 let pageTokenSeq = 0;
 function nextPageToken() {
@@ -104,6 +106,12 @@ function modalErrorCode(error) {
   if (typeof message !== 'string' || !message) return '';
   const parts = message.split(':');
   return String(parts.length > 1 ? parts[1] : parts[0]).trim().slice(0, 60);
+}
+
+/** 原生 fail 里的「取消」不是错误：用户关掉菜单/确认框时不写盘，也不报失败。 */
+function isCancelNativeError(error) {
+  const message = error && (error.errMsg || error.message);
+  return typeof message === 'string' && /cancel|canceled|cancelled|取消/i.test(message);
 }
 
 Page({
@@ -171,7 +179,8 @@ Page({
     this._correctionFailures = {};
     // 已打开、还没回应的更正确认：同一把连点沿用这一次，不叠第二个弹窗。
     this._correctionPrompt = null;
-    // 已打开、还没回应的删除确认（长按序号框）：同一把连点只弹一次、只删一次。
+    // 已打开、还没回应的删除流程（长按整卡后的菜单/确认）：同一把连点沿用这一次，
+    // 不叠第二个菜单或确认框。
     this._deletePrompt = null;
     // 长按后的短窗口：同一行在这段时间内的展开事件不生效（原生手势差异兜底）。
     this._lastLongPress = Object.create(null);
@@ -212,7 +221,7 @@ Page({
   onUnload() {
     this._unloaded = true;
     this._correctionPrompt = null;
-    // 页面离开后到达的删除确认不再删除任何东西（确认回调里还会再查 _unloaded）。
+    // 页面离开后到达的菜单/确认回调不再删除任何东西（回调里还会再查 _unloaded）。
     this._deletePrompt = null;
     // 令牌作废：本次删除的异步回执也不再更新这一页。
     this._pageToken = '';
@@ -618,35 +627,79 @@ Page({
   },
 
   /**
-   * 长按「第 N 把」序号框：弹出删除确认（T048–T050 追加返工）。
+   * 长按整张把次卡：先弹「删除这一把」菜单（T054）。
    *
    * 只作用于本页这一场这一条线里**已保存的有效把次**；短按仍走 toggleAttemptRow。
-   * 序号框是原生 view（绑定与 data 在同一个容器），这里只认事件带回的原目标：
-   * 把次 ID、档案/场次/线路、这一把的 rev 与页面令牌六项必须齐备且与本页当前渲染
-   * 一致，不从触点位置、显示序号或子节点推测。
+   * 整卡是原生 view，六项身份都在卡根节点自己的 data 上：把次 ID、档案/场次/线路、
+   * 这一把的 rev 与页面令牌必须齐备且与本页当前渲染一致，不从触点位置、显示序号
+   * 或子节点推测。菜单打开前、选中后与确认后各核对一次；两次异步原生 UI 之间内容
+   * 变化（换档、切线、新记、撤销、视频换版）时整条拒绝，不把删除落到补位后的另一把。
    *
-   * 打开确认时把四层证据一起记下：
-   * - 原把次 ID 与四 ID 归属（不是显示序号）；
-   * - 这一把的 rev、备注与结果（确认期间被改过就整条拒绝）；
-   * - 视频索引里的当前片段身份与精确版本（clipId + rev + fileId）；
-   * - 当前有效把次的有序 ID 列表（切线、新记、撤销/删除、换档后整条拒绝）。
-   * 取消或页面离开不写一个字节，也不清正在编辑的备注草稿；拒绝不打开时给页内 notice
-   * 加视口内可见的非阻塞 toast，并写明是哪一类原因（过期、待保存、弹窗不可用）。
+   * 打开流程时把四层证据一起记下（原把次与四 ID、rev/备注/结果、视频片段身份、
+   * 当前有效把次有序 ID 列表）。菜单或确认取消都只结束本次操作：不写盘、不清备注
+   * 草稿、不改展开态；同一把重复长按复用同一次菜单/确认，不叠第二个弹窗。
    */
   requestDeleteAttempt(event) {
     if (this.data.loadError || this.data.contextError) return Promise.resolve(null);
     const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
     const attemptId = dataset.attemptId || '';
-    const archiveId = (this.archive && this.archive.archiveId) || '';
-    const sessionId = (this._session && this._session.id) || '';
-    const routeId = (this._route && this._route.id) || '';
-    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
 
     // 原生手势差异兜底：同一行的 longpress 之后若还补一个 tap，不再展开。
     if (attemptId) {
       this._lastLongPress = this._lastLongPress || Object.create(null);
       this._lastLongPress[attemptId] = Date.now();
     }
+
+    // 同一把连点沿用已经打开的那一次菜单/确认；已有别的确认时不叠第二个弹窗。
+    const opened = this._deletePrompt;
+    if (opened) return opened.attemptId === attemptId ? opened.promise : Promise.resolve(null);
+
+    // 菜单打开前先核对原目标：不属于本页、已失效或还有待保存时连菜单都不弹。
+    const initialTarget = this.resolveDeleteTarget(dataset);
+    if (!initialTarget) return Promise.resolve(null);
+
+    const prompt = { attemptId, pageToken: initialTarget.pageToken, promise: null };
+    this._deletePrompt = prompt;
+    prompt.promise = this.runDeletePrompt(prompt, dataset).then(
+      answer => {
+        if (this._deletePrompt === prompt) this._deletePrompt = null;
+        // 菜单/确认关掉后才可能补到 release tap：守卫窗口从流程结束时刻重新起算，
+        // 松手不会把刚长按的这一把展开或收起。
+        this.settleAttemptLongPress(attemptId);
+        return answer;
+      },
+      error => {
+        if (this._deletePrompt === prompt) this._deletePrompt = null;
+        this.settleAttemptLongPress(attemptId);
+        if (this._unloaded) return { ok: false, code: 'cancelled' };
+        this.notifyDeleteGuard(
+          '删除流程没有完成，这次没有删除；请再长按一次这张把次卡重试。',
+          '删除流程未完成，未删除'
+        );
+        return { ok: false, code: 'failed', error: modalErrorCode(error) };
+      }
+    );
+    return prompt.promise;
+  },
+
+  /** 长按流程结束（选中、取消或失败）时把短按守卫窗口从此刻重新起算。 */
+  settleAttemptLongPress(attemptId) {
+    if (!attemptId) return;
+    this._lastLongPress = this._lastLongPress || Object.create(null);
+    this._lastLongPress[attemptId] = Date.now();
+  },
+
+  /**
+   * 从长按事件解析本次删除的原目标，并核对原归属、版本、待保存与视频关联。
+   * 菜单前和菜单选中后各调用一次；拒绝时给页内 notice + 视口内 toast 并刷新。
+   */
+  resolveDeleteTarget(dataset) {
+    const data = dataset || {};
+    const attemptId = data.attemptId || '';
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const sessionId = (this._session && this._session.id) || '';
+    const routeId = (this._route && this._route.id) || '';
+    const row = (this.data.attemptCards || []).find(item => item.id === attemptId) || null;
 
     const stale =
       !row ||
@@ -655,27 +708,27 @@ Page({
       !routeId ||
       // 事件必须带回渲染这一行时的原身份；缺一项、或与本页这一场这一条线不一致，
       // 都按过期事件处理（0 与「0」是有效的 rev，不算缺失）。
-      dataset.attemptId !== row.id ||
-      !dataset.archiveId ||
-      dataset.archiveId !== archiveId ||
-      dataset.archiveId !== row.archiveId ||
-      !dataset.sessionId ||
-      dataset.sessionId !== sessionId ||
-      dataset.sessionId !== row.sessionId ||
-      !dataset.routeId ||
-      dataset.routeId !== routeId ||
-      dataset.routeId !== row.routeId ||
-      !isRevisionValue(dataset.deleteRev) ||
-      Number(dataset.deleteRev) !== Number(row.deleteRev) ||
-      !dataset.pageToken ||
-      dataset.pageToken !== this._pageToken;
+      data.attemptId !== row.id ||
+      !data.archiveId ||
+      data.archiveId !== archiveId ||
+      data.archiveId !== row.archiveId ||
+      !data.sessionId ||
+      data.sessionId !== sessionId ||
+      data.sessionId !== row.sessionId ||
+      !data.routeId ||
+      data.routeId !== routeId ||
+      data.routeId !== row.routeId ||
+      !isRevisionValue(data.deleteRev) ||
+      Number(data.deleteRev) !== Number(row.deleteRev) ||
+      !data.pageToken ||
+      data.pageToken !== this._pageToken;
     if (stale) {
       this.notifyDeleteGuard(
-        '这一行已经变化，没有打开删除确认；已按最新数据刷新。',
+        '这一行已经变化，没有打开删除菜单；已按最新数据刷新。',
         '这一行已变化，未删除'
       );
       this.refreshView();
-      return Promise.resolve(null);
+      return null;
     }
     if (row.canDelete === false || row.isUndone) {
       this.notifyDeleteGuard(
@@ -683,7 +736,7 @@ Page({
         '这一把不可删除'
       );
       this.refreshView();
-      return Promise.resolve(null);
+      return null;
     }
     // 真实待保存：先让在途的那一把落盘，删除不能与两段写互相覆盖。
     if (this.data.pendingRows.length > 0 || this.data.resultLocked) {
@@ -691,21 +744,17 @@ Page({
         '这条线还有一把没保存：先在「待保存」行重试保存，再删除这一把。',
         '还有一把没保存，未删除'
       );
-      return Promise.resolve(null);
+      return null;
     }
-
-    // 同一把连点沿用已经打开的那一次确认；已有别的确认时不叠第二个弹窗。
-    const opened = this._deletePrompt;
-    if (opened) return opened.attemptId === attemptId ? opened.promise : Promise.resolve(null);
 
     // 视频关联不可读时不猜「有没有视频」，也不删记录：稍后重试。
     const view = attemptVideo.videoClipView(archiveId, attemptId, { sessionId, routeId });
     if (!view || !view.ok) {
       this.notifyDeleteGuard(
-        '本机视频关联暂时读取失败，这次没有打开删除确认；请稍后重试。',
+        '本机视频关联暂时读取失败，这次没有打开删除菜单；请稍后重试。',
         '视频关联读取失败，未删除'
       );
-      return Promise.resolve(null);
+      return null;
     }
     const clip = view.clip
       ? {
@@ -715,7 +764,7 @@ Page({
         }
       : null;
 
-    const target = {
+    return {
       archiveId,
       sessionId,
       routeId,
@@ -729,41 +778,143 @@ Page({
       orderedIds: (this.data.attemptCards || []).map(item => item.id).join('|'),
       pageToken: this._pageToken
     };
+  },
 
-    const prompt = { attemptId, promise: null };
-    prompt.promise = this.askDeleteConfirm(target).then(answer => {
-      // 无论确认、取消还是弹窗本身没打开，都在这里解除在途锁：下一次长按照常能再弹。
-      if (this._deletePrompt === prompt) this._deletePrompt = null;
+  /**
+   * 两步原生 UI（菜单 → 确认）。每一步回来都重新核对原目标；取消静默结束，
+   * 非取消的原生失败给页内 notice + 视口内 toast，两个字节都不写。
+   */
+  runDeletePrompt(prompt, dataset) {
+    return this.askDeleteMenu().then(answer => {
       if (this._unloaded) return { ok: false, code: 'cancelled' };
-      // 弹窗不可用与用户取消要分开：前者给可见重试提示，且同样一个字节都不写。
-      if (!answer || !answer.confirmed) {
-        if (answer && answer.reason !== 'cancelled') {
+      if (!answer || !answer.chosen) {
+        if (answer && answer.reason === 'unavailable') {
           this.notifyDeleteGuard(
-            '删除确认框没有打开，这次没有删除；请再长按一次「第 N 把」重试。',
-            '确认框未打开，未删除'
+            '操作菜单没有打开，这次没有删除；请再长按一次这张把次卡重试。',
+            '删除菜单未打开，未删除'
+          );
+          return { ok: false, code: 'menu-unavailable', reason: 'unavailable', error: '' };
+        }
+        if (answer && answer.reason === 'failed') {
+          this.notifyDeleteGuard(
+            '操作菜单打开失败' +
+              (answer.error ? '（' + answer.error + '）' : '') +
+              '，这次没有删除；请再长按一次这张把次卡重试。',
+            '删除菜单打开失败，未删除'
           );
           return {
             ok: false,
-            code: 'modal-unavailable',
-            reason: (answer && answer.reason) || 'failed',
+            code: 'menu-unavailable',
+            reason: 'failed',
             error: (answer && answer.error) || ''
           };
         }
         return { ok: false, code: 'cancelled' };
       }
-      // 确认回来的页面已经不是发起时的那一页：不落任何删除。
-      if (!this._pageToken || this._pageToken !== target.pageToken) {
+
+      // 菜单选中后、确认框打开前：页面令牌与原目标都要仍是发起时的那一个。
+      if (!this._pageToken || this._pageToken !== prompt.pageToken) {
         this.notifyDeleteGuard(
           '已经离开这条线或换了本机档案，这次删除没有生效；已按最新数据刷新。',
           '页面已变化，未删除'
         );
+        this.refreshView();
         return { ok: false, code: 'context-changed' };
       }
-      return this.performDeleteAttempt(target);
+      // 按最新档案重读后再核对一次：菜单打开期间被撤回/换档/切线时不再显示确认框，
+      // 视频关联也按这一刻的索引重新取（不沿用长按瞬间的旧范围）。
+      const loaded = store.loadState();
+      if (!loaded.ok) {
+        this.archive = loaded.archive || this.archive;
+        this.setData({
+          storageError: loaded.error,
+          notice: '没有删除这一把：本机档案读不出来。'
+        });
+        this.refreshView();
+        return { ok: false, code: 'unreadable' };
+      }
+      this.archive = loaded.archive;
+      this.refreshView();
+      const target = this.resolveDeleteTarget(dataset);
+      if (!target) return { ok: false, code: 'stale' };
+
+      return this.askDeleteConfirm(target).then(confirmAnswer => {
+        if (this._unloaded) return { ok: false, code: 'cancelled' };
+        // 弹窗不可用与用户取消要分开：前者给可见重试提示，且同样一个字节都不写。
+        if (!confirmAnswer || !confirmAnswer.confirmed) {
+          if (confirmAnswer && confirmAnswer.reason !== 'cancelled') {
+            this.notifyDeleteGuard(
+              '删除确认框没有打开，这次没有删除；请再长按一次这张把次卡重试。',
+              '确认框未打开，未删除'
+            );
+            return {
+              ok: false,
+              code: 'modal-unavailable',
+              reason: (confirmAnswer && confirmAnswer.reason) || 'failed',
+              error: (confirmAnswer && confirmAnswer.error) || ''
+            };
+          }
+          return { ok: false, code: 'cancelled' };
+        }
+        // 确认回来的页面已经不是发起时的那一页：不落任何删除。
+        if (!this._pageToken || this._pageToken !== target.pageToken) {
+          this.notifyDeleteGuard(
+            '已经离开这条线或换了本机档案，这次删除没有生效；已按最新数据刷新。',
+            '页面已变化，未删除'
+          );
+          return { ok: false, code: 'context-changed' };
+        }
+        return this.performDeleteAttempt(target);
+      });
     });
-    this._deletePrompt = prompt;
-    return prompt.promise;
   },
+
+  /**
+   * 第一步菜单：只有「删除这一把」。
+   * 返回 { chosen, reason: 'chosen'|'cancelled'|'unavailable'|'failed', error }。
+   */
+  askDeleteMenu() {
+    return new Promise(resolve => {
+      const api = typeof wx !== 'undefined' ? wx : null;
+      if (!api || typeof api.showActionSheet !== 'function') {
+        resolve({ chosen: false, reason: 'unavailable', error: '' });
+        return;
+      }
+      try {
+        api.showActionSheet({
+          itemList: [DELETE_ATTEMPT_MENU_LABEL],
+          success(result) {
+            const tapIndex = result ? Number(result.tapIndex) : NaN;
+            if (tapIndex === 0) {
+              resolve({ chosen: true, reason: 'chosen', error: '' });
+              return;
+            }
+            // 只有一项：负索引/undefined 或显式 cancel 都是用户取消；其他索引是原生异常。
+            if ((result && result.cancel) || !Number.isFinite(tapIndex) || tapIndex < 0) {
+              resolve({ chosen: false, reason: 'cancelled', error: '' });
+              return;
+            }
+            resolve({ chosen: false, reason: 'failed', error: 'invalid-index' });
+          },
+          fail(error) {
+            resolve({
+              chosen: false,
+              reason: isCancelNativeError(error) ? 'cancelled' : 'failed',
+              error: modalErrorCode(error)
+            });
+          }
+        });
+      } catch (error) {
+        resolve({ chosen: false, reason: 'failed', error: modalErrorCode(error) });
+      }
+    });
+  },
+
+  /**
+   * 卡内独立控件（备注入口、编辑区、视频入口、撤销）自己的长按语义：这里只吞掉
+   * 冒泡到整卡的长按，避免触碰这些控件时发起父级删除；点按与输入仍由各自处理器负责。
+   */
+  ignoreLongPress() {},
 
   /**
    * 长按删除被拒绝、或确认框根本没打开时的可见反馈（T048–T050 追加返工）：
@@ -820,7 +971,7 @@ Page({
           fail(error) {
             resolve({
               confirmed: false,
-              reason: 'failed',
+              reason: isCancelNativeError(error) ? 'cancelled' : 'failed',
               error: modalErrorCode(error)
             });
           }
