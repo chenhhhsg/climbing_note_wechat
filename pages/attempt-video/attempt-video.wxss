@@ -84,22 +84,30 @@ page {
   opacity: 0.75;
 }
 
-/* 这一把的归属与状态 */
-.video-target {
+/* 这一把的紧凑归属（T055）：线路、把次与场次压在一小段里 */
+.attempt-head {
   border-left: 8rpx solid #1F5948;
+  padding: 12px 16px;
+  margin-bottom: 10px;
+}
+
+.attempt-head-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
 }
 
 .video-route {
-  display: block;
-  font-size: 32rpx;
+  display: inline;
+  font-size: 30rpx;
   font-weight: 700;
   color: #182421;
   word-break: break-all;
 }
 
 .video-route-meta {
-  display: block;
-  margin-top: 6rpx;
+  display: inline;
+  margin-left: 10rpx;
   font-size: 24rpx;
   line-height: 1.5;
   color: #53615B;
@@ -107,15 +115,15 @@ page {
 
 .video-attempt-meta {
   display: block;
-  margin-top: 4rpx;
-  font-size: 26rpx;
+  margin-top: 2rpx;
+  font-size: 25rpx;
   line-height: 1.5;
   color: #182421;
 }
 
 .video-session-meta {
   display: block;
-  margin-top: 4rpx;
+  margin-top: 2rpx;
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: 22rpx;
@@ -127,21 +135,21 @@ page {
 .video-note {
   display: block;
   border-left: 4rpx solid #B7683D;
-  padding: 3rpx 0 3rpx 16rpx;
-  margin: 12rpx 0 4rpx;
-  font-size: 26rpx;
-  line-height: 1.6;
+  padding: 2rpx 0 2rpx 16rpx;
+  margin: 8rpx 0 2rpx;
+  font-size: 25rpx;
+  line-height: 1.55;
   color: #53615B;
   word-break: break-all;
 }
 
 .video-state {
   display: inline-block;
-  margin-top: 12rpx;
-  padding: 4rpx 14rpx;
+  margin-top: 8rpx;
+  padding: 3rpx 14rpx;
   border-radius: 6rpx;
   background-color: #F2F4F3;
-  font-size: 24rpx;
+  font-size: 23rpx;
   line-height: 1.5;
   color: #53615B;
 }
@@ -193,22 +201,28 @@ page {
   color: #53615B;
 }
 
-/* 播放器：待确认预览与已保存副本共用，换片时整块重建 */
+/* 播放器：待确认预览与已保存副本共用，换片时整块重建。
+   T055 不再在画面外放大号播放按钮，原生控件覆盖在画面上。 */
 .player-card {
   border-left: 8rpx solid #1F5948;
+  padding: 12px 12px 10px;
+  margin-bottom: 8px;
 }
 
+/* 16:9：320px 屏内容宽约 288px（两侧 16px 内边距），380rpx ≈ 162px；
+   390px 屏约 197px，与 16:9 的 201px 接近，画面与原生控件都完整可见。 */
 .video {
+  display: block;
   width: 100%;
   height: 380rpx;
-  margin-top: 12rpx;
+  margin-top: 0;
   background-color: #000000;
   border-radius: 6rpx;
 }
 
 .player-status {
   display: block;
-  margin-top: 12rpx;
+  margin-top: 8rpx;
   font-size: 24rpx;
   line-height: 1.5;
   color: #53615B;
@@ -223,6 +237,93 @@ page {
 
 .op-status {
   background-color: #E8F0EC;
+}
+
+/* T055 共用操作区：紧贴播放器；已保存、待确认、首次选片与缺失共用这一块 */
+.video-actions {
+  padding: 10px 16px 12px;
+}
+
+.action-block {
+  margin-top: 4px;
+}
+
+.action-block:first-child {
+  margin-top: 0;
+}
+
+.action-label {
+  display: block;
+  font-size: 26rpx;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #182421;
+  margin-bottom: 8rpx;
+}
+
+/* 窄屏同排：两个按钮各自等宽（320px 内容宽约 288px，每个约 138px），
+   永不换行、不越界；文案保持单行。 */
+.action-row {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: stretch;
+  margin-top: 12rpx;
+}
+
+.action-block > .action-row:first-child {
+  margin-top: 0;
+}
+
+.action-row .primary-button,
+.action-row .secondary-button {
+  flex: 1 1 0;
+  min-width: 0;
+  margin: 0 6rpx;
+  padding: 16rpx 6rpx;
+  font-size: 28rpx;
+  white-space: nowrap;
+}
+
+.action-row .primary-button:first-child,
+.action-row .secondary-button:first-child {
+  margin-left: 0;
+}
+
+.action-row .primary-button:last-child,
+.action-row .secondary-button:last-child {
+  margin-right: 0;
+}
+
+.action-row-single .primary-button,
+.action-row-single .secondary-button {
+  flex: 1 1 100%;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.action-hint {
+  margin: 10rpx 0 0;
+  font-size: 23rpx;
+  line-height: 1.55;
+}
+
+.saved-meta {
+  display: flex;
+  flex-wrap: wrap;
+  margin-top: 2rpx;
+}
+
+.saved-meta .preview-meta {
+  margin: 0 16rpx 0 0;
+  font-size: 22rpx;
+}
+
+.op-error {
+  background-color: #F7E6DB;
+}
+
+.video-actions .notice:last-child {
+  margin-bottom: 0;
 }
 
 /* 本机视频占用（T026） */
@@ -374,11 +475,7 @@ page {
   color: #813323;
 }
 
-/* 已保存副本与更换/移除 */
-.saved-card {
-  border-left: 8rpx solid #B7683D;
-}
-
+/* 已保存副本的移除确认 */
 .confirm-box {
   margin-top: 16rpx;
   padding: 16rpx 20rpx;

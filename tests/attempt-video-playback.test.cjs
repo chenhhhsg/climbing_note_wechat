@@ -1216,8 +1216,14 @@ test('T024-17 WXML 绑定真实处理器：原生 video 事件、播放按钮与
   assert.match(wxml, /bindplay="onVideoPlay"/);
   assert.match(wxml, /bindpause="onVideoPause"/);
   assert.match(wxml, /binderror="onVideoError"/);
-  assert.match(wxml, /id="toggle-play"/);
-  assert.match(wxml, /id="reselect-from-player"/);
+  // T055：页面顺序为归属 → 播放器 → 紧贴的共用操作区；画面外不再有播放按钮，
+  // 已有视频也只保留「更换视频」这一个选片入口，不再另设「重新选择原片」。
+  assert.doesNotMatch(wxml, /id="toggle-play"/, '画面外播放按钮已移除');
+  assert.doesNotMatch(wxml, /bindtap="togglePlay"/, '不再从画面外按钮发起播放');
+  assert.doesNotMatch(wxml, /id="reselect-from-player"/, '不再有独立的「重新选择原片」入口');
+  assert.match(wxml, /id="video-actions"[\s\S]{0,4000}id="replace-video"/, '更换入口在共用操作区');
+  assert.match(wxml, /id="replace-video"/);
+  assert.match(wxml, /id="remove-video"/);
   assert.match(wxml, /id="confirm-replace"/);
   assert.match(wxml, /id="cancel-replace"/);
   assert.match(wxml, /id="commit-preview"/);

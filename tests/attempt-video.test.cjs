@@ -36,6 +36,7 @@ const ROUTE_WXML = path.join(ROOT, 'pages', 'training-route', 'training-route.wx
 const VIDEO_DIR = path.join(ROOT, 'pages', 'attempt-video');
 const VIDEO_JS = path.join(VIDEO_DIR, 'attempt-video.js');
 const VIDEO_WXML = path.join(VIDEO_DIR, 'attempt-video.wxml');
+const VIDEO_WXSS = path.join(VIDEO_DIR, 'attempt-video.wxss');
 const VIDEO_JSON = path.join(VIDEO_DIR, 'attempt-video.json');
 const VIDEO_UTIL = path.join(ROOT, 'utils', 'attempt-video.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
@@ -950,8 +951,8 @@ test('T023-13 视频索引只读：T026 写入后列表与视频页自动显示�
 test('T047 视频空态：先预览、确认后保存本机副本，保存与取消维持原绑定', () => {
   const videoWxml = fs.readFileSync(VIDEO_WXML, 'utf8');
   const emptyStart = videoWxml.indexOf('wx:if="{{!hasSavedVideo && !hasPreview}}"');
-  const emptyEnd = videoWxml.indexOf('video-foot-hint');
-  assert.ok(emptyStart !== -1 && emptyStart < emptyEnd, '缺空态选片卡');
+  const emptyEnd = videoWxml.indexOf('id="video-markers"');
+  assert.ok(emptyStart !== -1 && emptyStart < emptyEnd, '缺空态选片组');
   const emptyCard = videoWxml.slice(emptyStart, emptyEnd);
 
   assert.match(emptyCard, /id="video-choose"/);
@@ -966,12 +967,15 @@ test('T047 视频空态：先预览、确认后保存本机副本，保存与取
   assert.match(emptyCard, /id="choose-video"/);
   assert.match(emptyCard, /bindtap="choosePreview"/);
 
-  // 保存按钮文案仍是「保存到攀笔」；保存、取消与播放/移除的绑定不变。
+  // 保存按钮文案仍是「保存到攀笔」；保存、取消与移除的绑定不变。
+  // T055：画面外的大号播放/暂停按钮已移除，播放交给视频画面的原生控件。
   assert.match(videoWxml, /id="commit-preview"[\s\S]{0,300}保存到攀笔/, '保存按钮仍写「保存到攀笔」');
   assert.match(videoWxml, /id="cancel-preview"/);
   assert.match(videoWxml, /bindtap="commitPreview"/);
   assert.match(videoWxml, /bindtap="cancelPreview"/);
-  assert.match(videoWxml, /bindtap="togglePlay"/);
+  assert.doesNotMatch(videoWxml, /id="toggle-play"/, '画面外播放按钮已移除');
+  assert.doesNotMatch(videoWxml, /bindtap="togglePlay"/, '不再从画面外按钮发起播放');
+  assert.match(videoWxml, /controls="\{\{true\}\}"/, '播放/暂停/进度/全屏使用原生控件');
   assert.match(videoWxml, /bindtap="askRemove"/);
 });
 
@@ -1006,6 +1010,104 @@ test('T049 视频页在回看、无片与保存前都写明本机保存位置与
   // 这些说明都是页面静态文案：不新增存储键、字段或页面方法。
   const videoJs = fs.readFileSync(VIDEO_JS, 'utf8');
   assert.doesNotMatch(videoJs, /saved-storage-hint|storageHint/, '不靠额外数据字段拼说明');
+});
+
+test('T055 页面顺序与共用操作区：归属 → 播放器 → 同排更换/移除 → 时间点 → 占用清理', () => {
+  const wxml = fs.readFileSync(VIDEO_WXML, 'utf8');
+  const at = id => {
+    const index = wxml.indexOf('id="' + id + '"');
+    assert.ok(index !== -1, '缺少 #' + id);
+    return index;
+  };
+  // 主体顺序：紧凑归属在最前；操作区紧跟播放器；时间点在其后；占用/清理最后。
+  assert.ok(at('video-target') < at('video-player'), '归属在播放器之前');
+  assert.ok(at('video-player') < at('video-actions'), '操作区紧接播放器');
+  assert.ok(at('video-actions') < at('video-markers'), '时间点在操作区之后');
+  assert.ok(at('video-markers') < at('video-space'), '占用与清理在时间点之后');
+  const spaceCardClass = wxml.indexOf('class="card ', at('video-space'));
+  assert.ok(spaceCardClass > at('video-space'), '占用卡片带 card 样式');
+  assert.equal(wxml.lastIndexOf('class="card '), spaceCardClass, '占用与清理是页尾最后一张实质卡片');
+
+  // 已保存且无待确认新片：操作区同排只有「更换视频／移除视频」两个入口。
+  const savedStart = at('video-saved');
+  const previewStart = at('video-preview');
+  const savedBlock = wxml.slice(savedStart, previewStart);
+  const idleRow = (savedBlock.match(/class="action-row"([\s\S]*?)<\/view>/) || [])[1] || '';
+  assert.match(idleRow, /id="replace-video"[\s\S]{0,200}id="remove-video"/, '更换与移除同排');
+  assert.equal((idleRow.match(/<button\b/g) || []).length, 2, '已保存空态同排只有两个操作按钮');
+  assert.doesNotMatch(savedBlock, /id="reselect/, '不再另设「重新选择原片」入口');
+
+  // 待确认预览：重选、确认/保存、取消都在同一操作区。
+  const emptyStart = wxml.indexOf('wx:if="{{!hasSavedVideo && !hasPreview}}"');
+  const previewBlock = wxml.slice(previewStart, emptyStart);
+  assert.match(previewBlock, /id="reselect-video"[\s\S]{0,80}bindtap="choosePreview"/);
+  assert.match(previewBlock, /id="confirm-replace"[\s\S]{0,120}bindtap="confirmReplace"/);
+  assert.match(previewBlock, /id="cancel-replace"[\s\S]{0,80}bindtap="cancelReplace"/);
+  assert.match(previewBlock, /id="commit-preview"[\s\S]{0,120}bindtap="commitPreview"/);
+  assert.match(previewBlock, /id="cancel-preview"[\s\S]{0,80}bindtap="cancelPreview"/);
+
+  // T055 最终文案：只复用 choosePreview 一个入口；更换待确认时同区写「更换视频／确认更换／取消」，
+  // 首次预览仍保留「重新选择」与「取消预览」。
+  assert.match(
+    previewBlock,
+    /id="reselect-video"[\s\S]{0,240}\{\{preview\.mode === 'replacement' \? '更换视频' : '重新选择'\}\}/,
+    '重选入口按模式显示「更换视频／重新选择」'
+  );
+  assert.match(previewBlock, /id="confirm-replace"[\s\S]{0,220}'确认更换'/, '更换确认写「确认更换」');
+  assert.match(previewBlock, /id="cancel-replace"[\s\S]{0,140}>取消</, '更换取消写「取消」');
+  assert.match(previewBlock, /id="cancel-preview"[\s\S]{0,140}>取消预览</, '首次预览取消仍写「取消预览」');
+  assert.equal(
+    (previewBlock.match(/bindtap="choosePreview"/g) || []).length,
+    1,
+    '待确认预览只有一个选片入口'
+  );
+
+  // 首次空态：只有一个相册选片入口，选片后仍回到同一操作区预览。
+  const markersStart = at('video-markers');
+  const emptyBlock = wxml.slice(emptyStart, markersStart);
+  assert.equal((emptyBlock.match(/<button\b/g) || []).length, 1, '空态只有一个相册选片入口');
+  assert.match(emptyBlock, /id="choose-video"[\s\S]{0,120}bindtap="choosePreview"/);
+
+  // 原生画面仍保留播放/暂停/进度/全屏控件与冷源重挂载绑定。
+  assert.match(wxml, /controls="\{\{true\}\}"/);
+  assert.match(wxml, /show-center-play-btn="\{\{true\}\}"/);
+  assert.match(wxml, /wx:for="\{\{videoInstances\}\}" wx:key="token"/);
+  assert.match(wxml, /initial-time="\{\{item\.initialSeconds\}\}"/);
+  assert.match(wxml, /autoplay="\{\{item\.autoplay\}\}"/);
+  assert.doesNotMatch(wxml, /id="toggle-play"/);
+  assert.doesNotMatch(wxml, /id="reselect-from-player"/);
+
+  // 缺失/打不开：可见原因与更换入口同在，占用与清理文案完整留在页尾。
+  assert.match(wxml, /id="saved-unlocatable"/);
+  assert.match(wxml, /\{\{playbackError\}\}/);
+  assert.match(wxml.slice(at('video-space')), /id="video-space-usage"/);
+  assert.match(wxml.slice(at('video-space')), /id="video-space-warning"/);
+  assert.match(wxml.slice(at('video-space')), /id="cleanup-video-orphans"/);
+});
+
+test('T055 320/390 窄屏规则：同排按钮等宽不换行，视频保持 16:9 且触控不小于 44px', () => {
+  const wxss = fs.readFileSync(VIDEO_WXSS, 'utf8');
+  const rule = selector => {
+    const match = wxss.match(selector);
+    return match ? match[1] : '';
+  };
+  const actionRow = rule(/\.action-row\s*\{([^}]*)\}/);
+  assert.match(actionRow, /display:\s*flex/, '操作入口同排');
+  assert.match(actionRow, /flex-wrap:\s*nowrap/, '320px 下两个按钮不换行');
+
+  const actionButton = rule(
+    /\.action-row \.primary-button,\s*\.action-row \.secondary-button\s*\{([^}]*)\}/
+  );
+  assert.match(actionButton, /flex:\s*1 1 0/, '两个按钮等分内容宽度');
+  assert.match(actionButton, /min-width:\s*0/, '不因默认按钮宽度把 320px 屏幕挤出');
+  assert.match(actionButton, /white-space:\s*nowrap/, '按钮文案单行');
+
+  const video = rule(/\.video\s*\{([^}]*)\}/);
+  assert.match(video, /width:\s*100%/);
+  assert.match(video, /height:\s*380rpx/, '320px 屏约 16:9，390px 屏接近 16:9');
+
+  const touch = rule(/\.primary-button,\s*\.secondary-button\s*\{([^}]*)\}/);
+  assert.match(touch, /min-height:\s*44px/, '原生控件之外的按钮仍有 44px 触控高度');
 });
 
 test('T049 视频标题按有效把次连续编号：撤回第 2 把后新记的一把显示第 2 把', () => {
