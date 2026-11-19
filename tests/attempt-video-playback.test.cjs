@@ -1353,3 +1353,63 @@ test('T049 新、旧两把各存不同视频：各按原把播放自己的副本
   assert.equal(afterB.data.savedVideo.clipId, clipB.clipId, '新把没有被A的更换顶替');
   assert.equal(afterB.data.playerSrc, USER_DATA_PATH + '/' + clipB.fileId);
 });
+
+// ------------------------------------------------------------------ *
+// T025：时间点请求与原生时长数值
+// ------------------------------------------------------------------ */
+
+test('T025-P1 时间点请求复用四个原 ID 与片段身份；时长数值供严格记点使用', () => {
+  const request = playback.buildMarkerRequest(
+    playback.METHOD_ADD_MARKER,
+    {
+      archiveId: 'archive-1',
+      sessionId: 'session-1',
+      routeId: 'route-1',
+      attemptId: 'attempt-1',
+      attemptSeq: 3
+    },
+    {
+      clipId: 'clip-1-a',
+      rev: 2,
+      fileId: 'attempt-video/v1/archive-1/clip-1-a.mp4'
+    },
+    { markerId: 'mark-1', atMs: 5123 },
+    12.4
+  );
+  assert.deepEqual(request, {
+    action: playback.METHOD_ADD_MARKER,
+    archiveId: 'archive-1',
+    sessionId: 'session-1',
+    routeId: 'route-1',
+    attemptId: 'attempt-1',
+    attemptSeq: 3,
+    clipId: 'clip-1-a',
+    rev: 2,
+    fileId: 'attempt-video/v1/archive-1/clip-1-a.mp4',
+    markerId: 'mark-1',
+    atMs: 5123,
+    durationSeconds: 12.4
+  });
+  assert.equal(request.atMs, 5123, '持久整数毫秒');
+  assert.equal(playback.buildMarkerRequest(
+    playback.METHOD_REMOVE_MARKER,
+    {},
+    {},
+    { markerId: 'mark-1' }
+  ).rev, null);
+
+  const meta = playback.metadataPatch({ duration: 12.345 });
+  assert.equal(meta.playerDurationSeconds, 12.345);
+  assert.equal(meta.playerDurationText, '12.35');
+  assert.equal(playback.metadataPatch({ duration: 0 }).playerDurationSeconds, null);
+
+  assert.deepEqual(
+    playback.callMarkerStore('unknown', {}),
+    { ok: false, code: 'bad-method', error: '不支持的时间点操作：unknown' }
+  );
+  const unavailable = playback.callMarkerStore(playback.METHOD_ADD_MARKER, {
+    archiveId: ''
+  });
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.code, 'unavailable');
+});

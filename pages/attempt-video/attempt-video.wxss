@@ -270,6 +270,93 @@ page {
   background-color: #F7F1E2;
 }
 
+/* 手工时间点（T025）：列表可点回、可单点移除，触控目标不小于 44px */
+.markers-card {
+  border-left: 8rpx solid #1F5948;
+}
+
+.marker-current {
+  display: block;
+  margin-bottom: 10rpx;
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 24rpx;
+  line-height: 1.5;
+  color: #182421;
+}
+
+.marker-seek-request,
+.marker-seek-actual,
+.marker-seek-pending {
+  display: block;
+  margin-bottom: 8rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+
+.marker-seek-pending {
+  padding: 10rpx 14rpx;
+  border-radius: 6rpx;
+  background-color: #F7F1E2;
+  color: #745241;
+}
+
+.marker-list {
+  margin: 8rpx 0 12rpx;
+}
+
+.marker-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8rpx 0;
+  border-top: 1px solid #E4E9E6;
+}
+
+.marker-row:first-child {
+  border-top: none;
+}
+
+.marker-time {
+  font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-variant-numeric: tabular-nums;
+  font-size: 30rpx;
+  line-height: 1.5;
+  color: #182421;
+}
+
+.marker-actions {
+  display: flex;
+  flex: 0 0 auto;
+}
+
+.marker-button {
+  min-width: 96px;
+  margin-left: 12rpx;
+  padding: 12rpx 18rpx;
+  font-size: 24rpx;
+}
+
+.marker-notice,
+.marker-error {
+  display: block;
+  margin-bottom: 10rpx;
+  font-size: 24rpx;
+  line-height: 1.6;
+}
+
+.marker-notice {
+  color: #1F5948;
+}
+
+.marker-error {
+  padding: 12rpx 16rpx;
+  border-radius: 6rpx;
+  background-color: #F7E6DB;
+  color: #813323;
+}
+
 /* 已保存副本与更换/移除 */
 .saved-card {
   border-left: 8rpx solid #B7683D;

@@ -38,7 +38,12 @@ const METHOD_COMMIT = 'commit';
 const METHOD_REPLACE = 'replace';
 const METHOD_REMOVE = 'remove';
 
+// T025：手工时间点。同步读改写片段条目里的 markers，不新增媒体文件或索引键。
+const METHOD_ADD_MARKER = 'addMarker';
+const METHOD_REMOVE_MARKER = 'removeMarker';
+
 const OPERATION_METHODS = [METHOD_COMMIT, METHOD_REPLACE, METHOD_REMOVE];
+const MARKER_METHODS = [METHOD_ADD_MARKER, METHOD_REMOVE_MARKER];
 
 const UNAVAILABLE_MESSAGE =
   '当前版本还不能保存或修改这台手机微信的攀笔中的视频副本（本机保存服务未就绪）；已有视频仍可回看。';
@@ -53,8 +58,28 @@ function hasText(value) {
 }
 
 function safeNumber(value) {
+  if (
+    value === null ||
+    value === undefined ||
+    typeof value === 'boolean' ||
+    typeof value === 'object' ||
+    typeof value === 'symbol'
+  ) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    const text = value.trim();
+    if (text === '') return null;
+    if (!/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(text)) return null;
+    value = text;
+  }
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+/** 原生回调里的数值：只认真正的有限 number，0 保留；null/false/''/数组都不算。 */
+function nativeNumber(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function errorText(error) {
@@ -226,11 +251,13 @@ function isCurrentVideoEvent(event, activeToken) {
 /** 播放器元数据回报：只用于展示，不代表播放位置。 */
 function metadataPatch(detail) {
   const data = detail || {};
-  const duration = safeNumber(data.duration);
-  const width = safeNumber(data.width);
-  const height = safeNumber(data.height);
+  const duration = nativeNumber(data.duration);
+  const width = nativeNumber(data.width);
+  const height = nativeNumber(data.height);
   return {
     playerReady: duration !== null,
+    // T025：记点/跳转用原生时长数值，展示仍用文本；0 或负值不算可用时长。
+    playerDurationSeconds: duration !== null && duration > 0 ? duration : null,
     playerDurationText: duration !== null && duration > 0 ? duration.toFixed(2) : '',
     playerDimensionText: width !== null && height !== null && width > 0 && height > 0
       ? width + '×' + height
@@ -332,6 +359,43 @@ function callVideoStore(method, request) {
   );
 }
 
+/**
+ * 调持久层的时间点接口。真实实现是同步读改写同一个索引；测试替身可能返回
+ * Promise，因此这里允许两者，但都把异常收敛成可展示对象。
+ */
+function callMarkerStore(method, request) {
+  if (MARKER_METHODS.indexOf(method) === -1) {
+    return { ok: false, code: 'bad-method', error: '不支持的时间点操作：' + method };
+  }
+  const store = resolveVideoStore(request);
+  if (!store || typeof store[method] !== 'function') {
+    return {
+      ok: false,
+      code: 'unavailable',
+      error: '当前版本还不能记录视频时间点；已有视频仍可回看。'
+    };
+  }
+  let result;
+  try {
+    result = store[method](request);
+  } catch (error) {
+    return { ok: false, code: 'threw', error: errorText(error) };
+  }
+  if (result && typeof result.then === 'function') {
+    return Promise.resolve(result).then(
+      receipt =>
+        receipt && typeof receipt === 'object'
+          ? receipt
+          : { ok: false, code: 'bad-receipt', error: '时间点写入没有返回可核对的结果。' },
+      error => ({ ok: false, code: 'rejected', error: errorText(error) })
+    );
+  }
+  if (!result || typeof result !== 'object') {
+    return { ok: false, code: 'bad-receipt', error: '时间点写入没有返回可核对的结果。' };
+  }
+  return result;
+}
+
 function attemptBaseOf(context) {
   const item = context || {};
   return {
@@ -384,6 +448,24 @@ function buildRequest(kind, context, beforeClip, preview, operationId) {
     request.bytes = safeNumber(before.bytes);
   }
   return request;
+}
+
+/**
+ * 时间点请求体：四个原 ID + 当前片段 ID/版本/文件标识 + 操作身份 + 整数毫秒。
+ * 片段身份来自读回/正在显示的已保存片段，不从用户请求值另造归属。
+ */
+function buildMarkerRequest(kind, context, clip, marker, durationSeconds) {
+  const base = attemptBaseOf(context);
+  const target = clip || {};
+  const item = marker || {};
+  return Object.assign({ action: kind }, base, {
+    clipId: target.clipId || '',
+    rev: safeNumber(target.rev),
+    fileId: target.fileId || '',
+    markerId: item.markerId || '',
+    atMs: safeNumber(item.atMs),
+    durationSeconds: safeNumber(durationSeconds)
+  });
 }
 
 /** 每次操作的唯一标识（只用于本机索引核对，不含用户或视频内容）。 */
@@ -596,6 +678,9 @@ module.exports = {
   METHOD_COMMIT,
   METHOD_REPLACE,
   METHOD_REMOVE,
+  METHOD_ADD_MARKER,
+  METHOD_REMOVE_MARKER,
+  MARKER_METHODS,
   isSafeFileId,
   joinPath,
   savedSourceFromClip,
@@ -615,7 +700,9 @@ module.exports = {
   resolveVideoStore,
   videoStoreAvailable,
   callVideoStore,
+  callMarkerStore,
   buildRequest,
+  buildMarkerRequest,
   makeOperationId,
   operationStatusText,
   sameClipIdentity,

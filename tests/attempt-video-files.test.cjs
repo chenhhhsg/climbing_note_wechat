@@ -2038,3 +2038,117 @@ test('T026-22 索引条目场次/线路与实际把次不符：两处入口不�
   assert.equal(fixedPage.data.playerSrc, uri);
   assert.deepEqual(videoIndex().clips[0], corrupted.clips[0], '合法条目原样可读');
 });
+
+// ------------------------------------------------------------------ *
+// T025：时间点随片段生命周期（嵌入片段条目的可选 markers）
+// ------------------------------------------------------------------ */
+
+test('T025-F1 时间点随片段条目：首次保存为空、更换不继承、移除自然清理，旧索引缺字段兼容', async () => {
+  const flow = seedTwoAttempts();
+  const temp = addTempVideo('markers.mp4', 4096);
+  const service = makeService(flow);
+  const committed = await service.commit(requestFor(flow, flow.attemptB, temp));
+  assert.equal(committed.ok, true, committed.error);
+  assert.equal(committed.clip.markers.length, 0);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(videoIndex().clips[0], 'markers'),
+    false,
+    '没有记点的片段不写可选字段（旧索引同形）'
+  );
+
+  const marked = service.addMarker({
+    action: 'addMarker',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: committed.clip.clipId,
+    rev: committed.clip.rev,
+    fileId: committed.clip.fileId,
+    markerId: 'mark-file-1',
+    atMs: 2500,
+    durationSeconds: 7.5
+  });
+  assert.equal(marked.ok, true, marked.error);
+  assert.equal(videoIndex().clips[0].markers[0].atMs, 2500);
+  assert.equal(
+    attemptVideo.videoClipView(flow.archiveId, flow.attemptB.id).clip.markers.length,
+    1
+  );
+
+  // 更换：新条目从空列表开始，旧时间点不随文件复制到新片。
+  const nextTemp = addTempVideo('markers-next.mp4', 4096);
+  const replaced = await service.replace(
+    requestFor(flow, flow.attemptB, nextTemp, {
+      action: 'replace',
+      clipId: committed.clip.clipId,
+      rev: committed.clip.rev,
+      fileId: committed.clip.fileId,
+      bytes: committed.clip.bytes
+    })
+  );
+  assert.equal(replaced.ok, true, replaced.error);
+  assert.equal(replaced.clip.markers.length, 0);
+  assert.equal(replaced.clip.clipId === committed.clip.clipId, false);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(videoIndex().clips[0], 'markers'),
+    false,
+    '新片没有继承旧时间点'
+  );
+  assert.equal(virtual.files.has(USER_DATA_PATH + '/' + committed.clip.fileId), false);
+
+  // 新片记两个点后移除副本：关联条目连同 markers 一起自然消失。
+  service.addMarker({
+    action: 'addMarker',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: replaced.clip.clipId,
+    rev: replaced.clip.rev,
+    fileId: replaced.clip.fileId,
+    markerId: 'mark-file-2',
+    atMs: 0,
+    durationSeconds: 7.5
+  });
+  assert.equal(videoIndex().clips[0].markers.length, 1);
+  const removed = await service.remove({
+    action: 'remove',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: replaced.clip.clipId,
+    rev: replaced.clip.rev,
+    fileId: replaced.clip.fileId,
+    bytes: replaced.clip.bytes
+  });
+  assert.equal(removed.ok, true, removed.error);
+  assert.equal(videoIndex().clips.length, 0, '条目与关联时间点一起移除');
+
+  // 旧版本索引条目没有 markers 字段：读取按空列表，视频关联照常。
+  storage.set(
+    VIDEO_INDEX_KEY,
+    JSON.stringify({
+      version: 1,
+      nextClipSeq: 3,
+      clips: [
+        {
+          clipId: 'clip-legacy-1',
+          archiveId: flow.archiveId,
+          sessionId: flow.session.id,
+          routeId: flow.route.id,
+          attemptId: flow.attemptA.id,
+          attemptSeq: flow.attemptA.seq,
+          rev: 1,
+          fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-legacy-1.mp4',
+          bytes: 1024
+        }
+      ],
+      pending: []
+    })
+  );
+  const legacy = attemptVideo.videoClipView(flow.archiveId, flow.attemptA.id);
+  assert.equal(legacy.state, 'saved');
+  assert.deepEqual(legacy.clip.markers, []);
+});

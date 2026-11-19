@@ -14,6 +14,7 @@
  */
 const store = require('./training-store.js');
 const recordActions = require('./training-record-actions.js');
+const attemptVideoMarkers = require('./attempt-video-markers.js');
 
 // T026 写入的独立视频索引；本单只读，绝不创建。与照片、卡点、清单同用正式本机命名空间。
 const VIDEO_INDEX_KEY = store.NAMESPACE + 'attempt-video';
@@ -312,7 +313,11 @@ function clipFor(read, archiveId, attemptId, reference) {
       chosenRev = rev;
     }
   }
-  return chosen;
+  // T025：时间点是片段条目的可选增量字段。所有实际读路径都经这里归一化，
+  // 旧索引没有字段时为空列表，坏标记只丢弃自己，不影响片段关联。
+  return Object.assign({}, chosen, {
+    markers: attemptVideoMarkers.normalizeMarkers(chosen.markers, chosen)
+  });
 }
 
 function linkView(read, archiveId, attemptId, reference) {

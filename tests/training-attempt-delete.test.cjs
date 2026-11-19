@@ -2822,3 +2822,60 @@ test('T048-删除31 原身份六项必须齐备且一致：rev 0（数字或字�
   assert.equal(zeroText.outcome.ok, true, zeroText.outcome.error);
   assert.equal(archiveOf().attempts.some(item => item.id === latest.id), false);
 });
+
+// ------------------------------------------------------------------ *
+// T025：删除把次时关联时间点随片段条目自然移除
+// ------------------------------------------------------------------ */
+
+test('T025-D1 共享副本删除：被删把次的时间点移除，另一条目的时间点与文件保留；最后引用删除时一并清理', async () => {
+  const flow = startFlow();
+  const first = addAttempt(flow, 'fail', '一', 0);
+  const second = addAttempt(flow, 'fail', '二', 5);
+  const shared = seedClip(flow, first, { bytes: 3000, clipId: 'clip-marker-shared' });
+  const index = indexOf();
+  // 共享副本的另一个条目必须与文件标识是同一个片段（clipId 与文件名一致）。
+  index.clips.push({
+    clipId: 'clip-marker-shared',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: second.id,
+    rev: 1,
+    bytes: 3000,
+    fileId: shared.fileId,
+    markers: [
+      { id: 'mark-holder', atMs: 1234, clipId: 'clip-marker-shared', rev: 1 }
+    ]
+  });
+  index.clips[0].markers = [
+    { id: 'mark-first', atMs: 0, clipId: 'clip-marker-shared', rev: 1 }
+  ];
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify(index));
+
+  const page = openRecord(flow);
+  const { outcome } = await confirmDelete(page, rowOf(page, first));
+  assert.equal(outcome.ok, true, outcome.error);
+  assert.equal(outcome.video.status, 'kept');
+  assert.equal(outcome.video.reason, 'shared');
+  assert.equal(
+    indexOf().clips.some(entry => entry.attemptId === first.id),
+    false,
+    '被删把次的条目与时间点一起移除'
+  );
+  const holder = indexOf().clips.find(entry => entry.attemptId === second.id);
+  assert.ok(holder, '共享文件仍被另一条目引用');
+  assert.deepEqual(
+    holder.markers.map(item => item.id),
+    ['mark-holder'],
+    '只保留仍存在条目的时间点'
+  );
+  assert.equal(virtual.files.has(shared.filePath), true, '共享副本按设计保留');
+  assert.equal(page.data.notice.includes('其他记录'), true);
+
+  // 第二个条目是最后一个引用：删除后文件与 markers 一并清理。
+  const { outcome: last } = await confirmDelete(page, rowOf(page, second));
+  assert.equal(last.ok, true, last.error);
+  assert.equal(last.video.status, 'done');
+  assert.equal(indexOf().clips.length, 0, '最后一个条目与时间点一起移除');
+  assert.equal(virtual.files.has(shared.filePath), false, '最后一个引用删除后回收副本');
+});

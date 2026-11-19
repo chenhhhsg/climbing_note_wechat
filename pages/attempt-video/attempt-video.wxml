@@ -100,6 +100,7 @@
             controls="{{true}}"
             show-center-play-btn="{{true}}"
             bindloadedmetadata="onVideoLoadedMetadata"
+            bindtimeupdate="onVideoTimeUpdate"
             bindplay="onVideoPlay"
             bindpause="onVideoPause"
             binderror="onVideoError"
@@ -147,6 +148,59 @@
             <button id="confirm-remove-yes" class="primary-button" bindtap="confirmRemove" disabled="{{busy}}">确认移除</button>
             <button id="confirm-remove-no" class="secondary-button" bindtap="cancelRemove" disabled="{{busy}}">取消</button>
           </view>
+        </view>
+      </view>
+
+      <!-- T025：手工时间点。只记时间；持久整数毫秒，跳转按秒下发。 -->
+      <view wx:if="{{hasSavedVideo && savedVideo}}" id="video-markers" class="card markers-card">
+        <text class="card-title">时间点</text>
+        <text id="marker-current-time" class="marker-current">当前播放位置：{{playerTimeText || '等待播放器回报'}}</text>
+        <text wx:if="{{seekRequestText}}" id="marker-seek-request" class="marker-seek-request">{{seekRequestText}}</text>
+        <text wx:if="{{seekActualText}}" id="marker-seek-actual" class="marker-seek-actual">{{seekActualText}}</text>
+        <text wx:if="{{seekPending}}" id="marker-seek-pending" class="marker-seek-pending">跳转尚未确认：目标与原生实际落点分开显示，确认前不记新点。</text>
+
+        <view wx:if="{{markers.length}}" id="marker-list" class="marker-list">
+          <view wx:for="{{markers}}" wx:key="id" id="marker-row-{{item.id}}" class="marker-row">
+            <text class="marker-time">{{item.timeText}}</text>
+            <view class="marker-actions">
+              <button
+                id="marker-seek-{{item.id}}"
+                class="secondary-button marker-button"
+                data-marker-id="{{item.id}}"
+                bindtap="seekToMarker"
+                disabled="{{busy || markerBusy || choosing || hasPreview}}"
+              >跳到此处</button>
+              <button
+                id="marker-remove-{{item.id}}"
+                class="secondary-button marker-button"
+                data-marker-id="{{item.id}}"
+                bindtap="removeMarker"
+                disabled="{{busy || markerBusy || choosing || hasPreview}}"
+              >移除</button>
+            </view>
+          </view>
+        </view>
+        <text wx:else id="marker-empty" class="video-hint">还没有时间点。播放到想记的位置后点「记下当前时间」。</text>
+
+        <text wx:if="{{markerNotice}}" id="marker-notice" class="marker-notice" bindtap="dismissMarkerNotice">{{markerNotice}}</text>
+        <text wx:if="{{markerError}}" id="marker-error" class="marker-error" bindtap="dismissMarkerError">{{markerError}}</text>
+        <text wx:if="{{markerHint}}" id="marker-hint" class="video-hint">{{markerHint}}</text>
+
+        <view class="button-row">
+          <button
+            wx:if="{{markerPendingRetry}}"
+            id="marker-retry"
+            class="primary-button"
+            bindtap="retryMarker"
+            disabled="{{markerBusy || busy}}"
+          >{{markerBusy ? '正在重试…' : '重试记下刚才的位置'}}</button>
+          <button
+            wx:else
+            id="add-marker"
+            class="primary-button"
+            bindtap="addMarkerAtCurrentTime"
+            disabled="{{!canAddMarker || busy || markerBusy}}"
+          >{{markerBusy ? '正在记下…' : '记下当前时间'}}</button>
         </view>
       </view>
 

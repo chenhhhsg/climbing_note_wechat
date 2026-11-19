@@ -29,6 +29,7 @@
 const attemptVideo = require('../../utils/attempt-video.js');
 const playback = require('../../utils/attempt-video-playback.js');
 const videoFiles = require('../../utils/attempt-video-files.js');
+const attemptVideoMarkers = require('../../utils/attempt-video-markers.js');
 const actions = require('../../utils/training-record-actions.js');
 const store = require('../../utils/training-store.js');
 const { climbTypeOf } = require('../../utils/training-rules.js');
@@ -77,6 +78,21 @@ Page({
     playing: false,
     playbackError: '',
 
+    // T025：手工时间点。持久整数毫秒，列表按时间升序；实际落点只认播放器回报。
+    markers: [],
+    canAddMarker: false,
+    markerHint: '',
+    markerError: '',
+    markerNotice: '',
+    markerBusy: false,
+    markerPendingRetry: false,
+    playerDurationSeconds: null,
+    playerTimeMs: null,
+    playerTimeText: '',
+    seekPending: false,
+    seekRequestText: '',
+    seekActualText: '',
+
     // 保存 / 更换 / 移除的状态。
     busy: false,
     opKind: '',
@@ -108,6 +124,13 @@ Page({
     this._sourceSeq = 0;
     // 空间统计序号：换页/换档后迟到的占用读数不覆盖新页面。
     this._spaceSeq = 0;
+    // 时间点序号：换片/换归属后迟到的写入回执不采用；失败重试沿用同一 markerId。
+    this._markerOpSeq = 0;
+    this._pendingMarker = null;
+    this._playerTimeSeconds = null;
+    this._seek = null;
+    this._seekTimer = null;
+    this._seekWaitMs = 0;
     this._videoService = null;
     this._unloaded = false;
     this._contextToken = '';
@@ -138,10 +161,12 @@ Page({
    */
   onUnload() {
     this._unloaded = true;
+    this.clearSeekWait();
     this._selectionSeq += 1;
     this._previewSeq += 1;
     this._opSeq += 1;
     this._spaceSeq += 1;
+    this._markerOpSeq += 1;
   },
 
   // ------------------------------------------------------------------ *
@@ -221,6 +246,11 @@ Page({
       this._removeTarget = null;
       this._videoContext = null;
       this._videoContextDomId = '';
+      this._pendingMarker = null;
+      this._playerTimeSeconds = null;
+      this.clearSeekWait();
+      this._seek = null;
+        this._markerOpSeq += 1;
     }
     this.setData(patch);
     this.applyClipState(read);
@@ -250,6 +280,19 @@ Page({
       playerStatus: '',
       playing: false,
       playbackError: '',
+      markers: [],
+      canAddMarker: false,
+      markerHint: '',
+      markerError: '',
+      markerNotice: '',
+      markerBusy: false,
+      markerPendingRetry: false,
+      playerDurationSeconds: null,
+      playerTimeMs: null,
+      playerTimeText: '',
+      seekPending: false,
+      seekRequestText: '',
+      seekActualText: '',
       busy: false,
       opKind: '',
       opStatus: '',
@@ -272,13 +315,16 @@ Page({
           '本机视频索引暂时读不出来（' + (read.error || '未知原因') +
           '）；这一把的视频关联无法确认，页面上已有的片源仍可尝试播放。'
       });
+      this.refreshMarkerReadiness();
       return;
     }
-    if (this.data.busy) return;
+    // 写入进行中不动播放器、预览与时间点，避免回执与刷新互相覆盖。
+    if (this.data.busy || this.data.markerBusy) return;
 
     const clip = read.state === 'saved' ? read.clip : null;
     this._savedClip = clip;
     this.setData({ indexError: '', savedVideo: clip ? this.savedViewOf(clip) : null });
+    this.applyMarkerList(clip ? clip.markers : []);
 
     if (this._previewMode === 'replacement') {
       const base = this._previewBaseClip;
@@ -335,6 +381,11 @@ Page({
     this.invalidatePreview();
     this._opSeq += 1;
     this._spaceSeq += 1;
+    this._markerOpSeq += 1;
+    this._pendingMarker = null;
+    this._playerTimeSeconds = null;
+    this.clearSeekWait();
+    this._seek = null;
     this.setData(
       Object.assign(this.emptyExtras(), {
         ready: true,
@@ -934,8 +985,14 @@ Page({
     this._videoContext = null;
     this._videoContextDomId = '';
     this._playerClip = source.kind === playback.KIND_SAVED
-      ? { clipId: source.clipId || '', rev: source.rev }
+      ? { clipId: source.clipId || '', rev: source.rev, fileId: source.fileId || '' }
       : null;
+    // 换片/换预览：旧的播放器读数、跳转等待与失败重试身份全部作废。
+    this._playerTimeSeconds = null;
+    this.clearSeekWait();
+    this._seek = null;
+    this._pendingMarker = null;
+    this._markerOpSeq += 1;
     this.setData({
       videoInstances: [{ token, domId: playback.videoDomId(seq) }],
       playerToken: token,
@@ -949,8 +1006,18 @@ Page({
       playerReady: false,
       playerStatus: '点击视频或下方按钮播放',
       playing: false,
-      playbackError: ''
+      playbackError: '',
+      playerDurationSeconds: null,
+      playerTimeMs: null,
+      playerTimeText: '',
+      seekPending: false,
+      seekRequestText: '',
+      seekActualText: '',
+      markerBusy: false,
+      markerPendingRetry: false,
+      markerError: ''
     });
+    this.refreshMarkerReadiness();
   },
 
   /** 让播放器显示这一把已保存的片段；同一份片段不重开，保持播放位置。 */
@@ -976,6 +1043,11 @@ Page({
     this._playerClip = null;
     this._videoContext = null;
     this._videoContextDomId = '';
+    this._playerTimeSeconds = null;
+    this.clearSeekWait();
+    this._seek = null;
+    this._pendingMarker = null;
+    this._markerOpSeq += 1;
     this.setData({
       videoInstances: [],
       playerToken: '',
@@ -989,8 +1061,18 @@ Page({
       playerReady: false,
       playerStatus: '',
       playing: false,
-      playbackError: ''
+      playbackError: '',
+      playerDurationSeconds: null,
+      playerTimeMs: null,
+      playerTimeText: '',
+      seekPending: false,
+      seekRequestText: '',
+      seekActualText: '',
+      markerBusy: false,
+      markerPendingRetry: false,
+      markerError: ''
     });
+    this.refreshMarkerReadiness();
   },
 
   savedViewOf(clip) {
@@ -1036,6 +1118,7 @@ Page({
     const patch = playback.metadataPatch(event && event.detail);
     patch.playbackError = '';
     this.setData(patch);
+    this.refreshMarkerReadiness();
   },
 
   onVideoPlay(event) {
@@ -1055,12 +1138,632 @@ Page({
   onVideoError(event) {
     if (!this.videoEventAccepted(event)) return;
     const errMsg = (event && event.detail && event.detail.errMsg) || '';
+    this._playerTimeSeconds = null;
+    this.clearSeekWait();
+    this._seek = null;
     this.setData({
       playerReady: false,
       playing: false,
       playerStatus: '',
-      playbackError: playback.playbackErrorMessage(errMsg, this.data.playerKind)
+      playbackError: playback.playbackErrorMessage(errMsg, this.data.playerKind),
+      playerDurationSeconds: null,
+      playerTimeMs: null,
+      playerTimeText: '',
+      seekPending: false,
+      seekRequestText: '',
+      seekActualText: ''
     });
+    this.refreshMarkerReadiness();
+  },
+
+  /**
+   * 原生播放位置回报：这是「实际落点」的唯一来源。
+   * 跳转请求本身不回填当前位置；只有回报落到目标 ±0.5 秒内，才结束等待并允许
+   * 再次记点，避免把跳转前的旧画面当成跳转后的位置写进时间点。
+   */
+  onVideoTimeUpdate(event) {
+    if (!this.videoEventAccepted(event)) return;
+    const detail = (event && event.detail) || {};
+    // 只接受原生回调真正给出的有限 number：null/false/''/空白/数组都不能变成 0 秒。
+    // 非法读数既不改上一有效位置，也不结束跳转等待，更不允许记点。
+    const current = attemptVideoMarkers.safeNativeNumber(detail.currentTime);
+    const duration = attemptVideoMarkers.safeNativeNumber(detail.duration);
+    const patch = {};
+    if (duration !== null && duration > 0) {
+      patch.playerDurationSeconds = duration;
+      patch.playerDurationText = duration.toFixed(2);
+      patch.playerReady = true;
+    }
+    if (current !== null && current >= 0) {
+      this._playerTimeSeconds = current;
+      patch.playerTimeMs = Math.round(current * 1000);
+      patch.playerTimeText = attemptVideoMarkers.formatSecondsText(patch.playerTimeMs);
+      Object.assign(patch, this.seekReportPatch(current));
+    }
+    if (Object.keys(patch).length) this.setData(patch);
+    this.refreshMarkerReadiness();
+  },
+
+  /** 跳转等待中的位置回报：只认落在目标附近的回报为「实际落点」。 */
+  seekReportPatch(currentTimeSeconds) {
+    const seek = this._seek;
+    if (!seek || seek.token !== this.data.playerToken) return {};
+    const reported = attemptVideoMarkers.safeNativeNumber(currentTimeSeconds);
+    if (reported === null || reported < 0) return {};
+    const reportedText = attemptVideoMarkers.formatSecondsText(Math.round(reported * 1000));
+    if (attemptVideoMarkers.isSeekConfirmed(seek.targetMs, reported)) {
+      this.clearSeekWait();
+      this._seek = null;
+      return {
+        seekPending: false,
+        seekActualText: '播放器实际位置 ' + reportedText + ' 秒。',
+        markerNotice:
+          '已跳到 ' + reportedText + ' 秒（请求 ' +
+          attemptVideoMarkers.formatSecondsText(seek.targetMs) + ' 秒）。'
+      };
+    }
+    // 超时解除等待后，迟到的非目标回报不再把页面锁回「等待确认」；
+    // 真正落到目标的回报仍会在上面确认。
+    if (seek.expired) {
+      return {
+        seekPending: false,
+        seekActualText:
+          '播放器回报 ' + reportedText + ' 秒，与请求的 ' +
+          attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+          ' 秒不一致；跳转落点仍未确认。'
+      };
+    }
+    return {
+      seekPending: true,
+      seekActualText:
+        '播放器回报 ' + reportedText + ' 秒，与请求的 ' +
+        attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+        ' 秒不一致，仍在等待画面确认。'
+    };
+  },
+
+  // ------------------------------------------------------------------ *
+  // 手工时间点（T025）
+  // ------------------------------------------------------------------ *
+
+  expectedPlayerToken() {
+    if (!this._contextToken) return '';
+    return playback.sourceToken(this._contextToken, this._sourceSeq);
+  },
+
+  sameClipFileIdentity(left, right) {
+    if (!left || !right) return false;
+    if ((left.clipId || '') !== (right.clipId || '')) return false;
+    if (Number(left.rev) !== Number(right.rev)) return false;
+    return (left.fileId || '') === (right.fileId || '');
+  },
+
+  /** 当前页面是否满足「给已保存片源记点」的全部前提。 */
+  markerReadiness() {
+    const token = this.expectedPlayerToken();
+    return attemptVideoMarkers.markReadiness({
+      busy: this.data.busy,
+      markerBusy: this.data.markerBusy,
+      choosing: this.data.choosing,
+      indexError: this.data.indexError,
+      hasSavedVideo: this.data.hasSavedVideo,
+      savedClip: this._savedClip,
+      playerKind: this.data.playerKind,
+      playerToken: this.data.playerToken,
+      expectedToken: token,
+      sourceCurrent: Boolean(this.data.playerToken) && this.data.playerToken === token,
+      clipMatchesPlayer: this.sameClipFileIdentity(this._savedClip, this._playerClip),
+      durationSeconds: this.data.playerDurationSeconds,
+      currentTimeSeconds: this._playerTimeSeconds,
+      seekPending: this.data.seekPending
+    });
+  },
+
+  /**
+   * 刷新「能否记点」与提示。存在未确认的失败记点时只保留重试，不另开新点，
+   * 保证同一次动作最多新增一个时间点。
+   */
+  refreshMarkerReadiness() {
+    if (this._unloaded) return;
+    let pending = this._pendingMarker;
+    if (pending) {
+      const identity = {
+        clipId: pending.clipId,
+        rev: pending.rev,
+        fileId: pending.fileId
+      };
+      const sourceChanged =
+        Boolean(this.data.playerToken) && this.data.playerToken !== pending.token;
+      if (
+        this._contextToken !== pending.contextToken ||
+        sourceChanged ||
+        !this.sameClipFileIdentity(this._savedClip, identity)
+      ) {
+        this._pendingMarker = null;
+        pending = null;
+      }
+    }
+    const ready = this.markerReadiness();
+    this.setData({
+      canAddMarker: ready.ok && !pending,
+      markerHint: ready.hint || '',
+      markerPendingRetry: Boolean(pending)
+    });
+  },
+
+  applyMarkerList(list) {
+    this.setData({ markers: attemptVideoMarkers.markerViews(list) });
+    this.refreshMarkerReadiness();
+  },
+
+  /** 严格读取当前原生读数并算出待写入的整数毫秒。 */
+  markerCaptureState() {
+    const ready = this.markerReadiness();
+    if (!ready.ok) return ready;
+    return {
+      ok: true,
+      code: 'ready',
+      error: '',
+      hint: '',
+      atMs: ready.atMs,
+      clip: this._savedClip,
+      durationSeconds: Number(this.data.playerDurationSeconds),
+      token: this.data.playerToken
+    };
+  },
+
+  /**
+   * 记下当前时间。操作身份在这里生成一次；失败后「重试」沿用同一个 markerId。
+   */
+  addMarkerAtCurrentTime() {
+    if (this.data.busy || this.data.markerBusy || this.data.choosing) return;
+    if (this._pendingMarker) {
+      this.retryMarker();
+      return;
+    }
+    const capture = this.markerCaptureState();
+    if (!capture.ok) {
+      this.setData({
+        markerError: capture.hint || capture.error || '现在还不能记时间点。',
+        markerNotice: ''
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    this._pendingMarker = {
+      markerId: attemptVideoMarkers.makeMarkerId(),
+      atMs: capture.atMs,
+      clipId: capture.clip.clipId,
+      rev: Number(capture.clip.rev),
+      fileId: capture.clip.fileId,
+      token: capture.token,
+      contextToken: this._contextToken,
+      durationSeconds: capture.durationSeconds
+    };
+    this.runMarkerAdd(this._pendingMarker);
+  },
+
+  /** 失败重试：片段、片源与操作身份都不变，只再提交一次同一个 markerId。 */
+  retryMarker() {
+    const pending = this._pendingMarker;
+    if (!pending || this.data.markerBusy || this.data.busy) return;
+    if (this._contextToken !== pending.contextToken || this.data.playerToken !== pending.token) {
+      this._pendingMarker = null;
+      this.setData({
+        markerError: '播放器片源已经变化，这次未确认的记点已作废；请在新画面上重新记。',
+        markerPendingRetry: false
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    if (
+      !this.sameClipFileIdentity(this._savedClip, {
+        clipId: pending.clipId,
+        rev: pending.rev,
+        fileId: pending.fileId
+      })
+    ) {
+      this._pendingMarker = null;
+      this.setData({
+        markerError: '这一把的视频片段已经变化，这次未确认的记点已作废；请重新记。',
+        markerPendingRetry: false
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    this.runMarkerAdd(pending);
+  },
+
+  markerContextOf() {
+    return {
+      archiveId: this.archive ? this.archive.archiveId : '',
+      sessionId: this._session ? this._session.id : '',
+      routeId: this._route ? this._route.id : '',
+      attemptId: this._attempt ? this._attempt.id : '',
+      attemptSeq: this._attempt ? this._attempt.seq : null
+    };
+  },
+
+  runMarkerAdd(pending) {
+    if (this._unloaded) return;
+    const context = this.markerContextOf();
+    if (
+      !context.archiveId ||
+      !context.sessionId ||
+      !context.routeId ||
+      !context.attemptId ||
+      !this._contextToken
+    ) {
+      this.setData({ markerError: '这一把的归属已经不可确认，没有写入时间点。' });
+      return;
+    }
+    this._markerOpSeq += 1;
+    const seq = this._markerOpSeq;
+    this.setData({
+      markerBusy: true,
+      canAddMarker: false,
+      markerError: '',
+      markerNotice: '',
+      markerPendingRetry: false
+    });
+    const request = playback.buildMarkerRequest(
+      playback.METHOD_ADD_MARKER,
+      context,
+      { clipId: pending.clipId, rev: pending.rev, fileId: pending.fileId },
+      { markerId: pending.markerId, atMs: pending.atMs },
+      pending.durationSeconds
+    );
+    const result = playback.callMarkerStore(playback.METHOD_ADD_MARKER, request);
+    Promise.resolve(result).then(
+      receipt => this.finishMarkerAdd(seq, pending, receipt),
+      error => this.finishMarkerAdd(seq, pending, { ok: false, error: playback.errorText(error) })
+    );
+  },
+
+  finishMarkerAdd(seq, pending, receipt) {
+    if (this._unloaded || seq !== this._markerOpSeq) return;
+    if (this._contextToken !== pending.contextToken) {
+      this._pendingMarker = null;
+      this.setData({ markerBusy: false, markerPendingRetry: false });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    if (this.data.playerToken !== pending.token) {
+      this._pendingMarker = null;
+      this.setData({
+        markerBusy: false,
+        markerPendingRetry: false,
+        markerError: '播放器片源已经变化，这次记点回执没有采用。'
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+
+    const context = attemptVideo.loadVideoContext(this._context);
+    if (!context.ok) {
+      this.applyContextFailure(context);
+      return;
+    }
+    const read = attemptVideo.videoClipView(
+      context.archive.archiveId,
+      context.attempt.id,
+      context.attempt
+    );
+    if (!read.ok) {
+      this._pendingMarker = pending;
+      this.setData({
+        markerBusy: false,
+        markerPendingRetry: true,
+        markerError:
+          '时间点写入后读不回本机视频索引（' +
+          (read.error || '未知原因') +
+          '），请用同一次动作重试；已有时间点保持原样。'
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+
+    this._savedClip = read.clip;
+    this.setData({
+      indexError: '',
+      savedVideo: read.clip ? this.savedViewOf(read.clip) : null
+    });
+    this.applyMarkerList(read.clip ? read.clip.markers : []);
+
+    const identity = { clipId: pending.clipId, rev: pending.rev, fileId: pending.fileId };
+    const same = this.sameClipFileIdentity(read.clip, identity);
+    const landed =
+      same && (read.clip.markers || []).some(marker => marker.id === pending.markerId);
+    if (landed) {
+      const marker = read.clip.markers.find(item => item.id === pending.markerId);
+      this._pendingMarker = null;
+      this.setData({
+        markerBusy: false,
+        markerPendingRetry: false,
+        markerError: '',
+        markerNotice:
+          '已记下 ' +
+          attemptVideoMarkers.formatSecondsText(marker.atMs) +
+          ' 秒。' +
+          (receipt && receipt.receiptLost
+            ? '（写入回执不明确，已按本机索引读回确认）'
+            : '')
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+
+    // 索引可读但没有本次标记：只有片段仍是同一个才保留同身份重试。
+    this._pendingMarker = same ? pending : null;
+    this.setData({
+      markerBusy: false,
+      markerPendingRetry: same,
+      markerError: same
+        ? ((receipt && receipt.error) ||
+            '时间点没有写入本机索引；已有时间点保持原样。') + ' 可以用同一次动作重试。'
+        : '这一把的视频关联已经变化，这次时间点没有写入；页面已按读回显示最新片段。'
+    });
+    this.refreshMarkerReadiness();
+  },
+
+  /** 移除单点：只按 markerId 删除当前片段里的这一条。 */
+  removeMarker(event) {
+    if (this.data.busy || this.data.markerBusy || this.data.choosing) return;
+    if (this.data.hasPreview) {
+      this.setData({ markerError: '新片还在待确认，先取消更换或确认更换后再移除原片时间点。' });
+      return;
+    }
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const markerId = dataset.markerId || '';
+    const marker = (this.data.markers || []).find(item => item.id === markerId) || null;
+    const clip = this._savedClip;
+    if (!marker || !clip || !attemptVideoMarkers.isMarkerId(markerId)) {
+      this.setData({ markerError: '这个时间点已经不在列表里，未改动任何数据。' });
+      return;
+    }
+    const pending = {
+      markerId,
+      clipId: clip.clipId,
+      rev: Number(clip.rev),
+      fileId: clip.fileId,
+      contextToken: this._contextToken
+    };
+    this._markerOpSeq += 1;
+    const seq = this._markerOpSeq;
+    this.setData({
+      markerBusy: true,
+      canAddMarker: false,
+      markerError: '',
+      markerNotice: ''
+    });
+    const request = playback.buildMarkerRequest(
+      playback.METHOD_REMOVE_MARKER,
+      this.markerContextOf(),
+      { clipId: pending.clipId, rev: pending.rev, fileId: pending.fileId },
+      { markerId, atMs: marker.atMs },
+      this.data.playerDurationSeconds
+    );
+    const result = playback.callMarkerStore(playback.METHOD_REMOVE_MARKER, request);
+    Promise.resolve(result).then(
+      receipt => this.finishMarkerRemove(seq, pending, receipt),
+      error =>
+        this.finishMarkerRemove(seq, pending, {
+          ok: false,
+          error: playback.errorText(error)
+        })
+    );
+  },
+
+  finishMarkerRemove(seq, pending, receipt) {
+    if (this._unloaded || seq !== this._markerOpSeq) return;
+    if (this._contextToken !== pending.contextToken) {
+      this.setData({ markerBusy: false });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    const context = attemptVideo.loadVideoContext(this._context);
+    if (!context.ok) {
+      this.applyContextFailure(context);
+      return;
+    }
+    const read = attemptVideo.videoClipView(
+      context.archive.archiveId,
+      context.attempt.id,
+      context.attempt
+    );
+    if (!read.ok) {
+      this.setData({
+        markerBusy: false,
+        markerError:
+          '移除后读不回本机视频索引（' +
+          (read.error || '未知原因') +
+          '），结果未确认；请稍后重新进入本页核对。'
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    this._savedClip = read.clip;
+    this.setData({
+      indexError: '',
+      savedVideo: read.clip ? this.savedViewOf(read.clip) : null
+    });
+    this.applyMarkerList(read.clip ? read.clip.markers : []);
+
+    const identity = { clipId: pending.clipId, rev: pending.rev, fileId: pending.fileId };
+    const same = this.sameClipFileIdentity(read.clip, identity);
+    const gone =
+      same && (read.clip.markers || []).every(marker => marker.id !== pending.markerId);
+    if (gone) {
+      this.setData({
+        markerBusy: false,
+        markerError: '',
+        markerNotice:
+          '已移除这个时间点。' +
+          (receipt && receipt.receiptLost
+            ? '（写入回执不明确，已按本机索引读回确认）'
+            : '')
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    this.setData({
+      markerBusy: false,
+      markerError: same
+        ? (receipt && receipt.error) || '这个时间点还没有从本机索引移除，可以重试。'
+        : '这一把的视频关联已经变化，本次移除没有采用；页面已按读回显示最新片段。'
+    });
+    this.refreshMarkerReadiness();
+  },
+
+  /**
+   * 跳到时间点：只下发秒数请求，不把请求值当成实际落点。
+   * 在播放器回报落在目标 ±0.5 秒内之前，页面保持「跳转尚未确认」并暂停记点。
+   */
+  seekToMarker(event) {
+    if (this.data.busy || this.data.markerBusy || this.data.choosing) return;
+    if (this.data.hasPreview) {
+      this.setData({ markerError: '新片还在待确认，先取消更换或确认更换后再跳转。' });
+      return;
+    }
+    if (this.data.playerKind !== playback.KIND_SAVED || !this.data.playerSrc) {
+      this.setData({ markerError: '当前没有可跳转的已保存视频。' });
+      return;
+    }
+    if (!this.sameClipFileIdentity(this._savedClip, this._playerClip)) {
+      this.setData({ markerError: '播放器显示的片段与时间点所属片段不一致，暂不能跳转。' });
+      return;
+    }
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const markerId = dataset.markerId || '';
+    const marker = (this.data.markers || []).find(item => item.id === markerId) || null;
+    if (!marker) {
+      this.setData({ markerError: '这个时间点已经不在列表里。' });
+      return;
+    }
+    const target = attemptVideoMarkers.seekSecondsOf(
+      marker.atMs,
+      this.data.playerDurationSeconds
+    );
+    if (!target.ok) {
+      this.setData({ markerError: target.error });
+      return;
+    }
+    const context = this.getVideoContext();
+    if (!context || typeof context.seek !== 'function') {
+      this.setData({ markerError: '当前环境无法控制播放器跳转，请使用视频画面自带的进度条。' });
+      return;
+    }
+    try {
+      context.seek(target.seconds);
+    } catch (error) {
+      this.setData({
+        markerError: '跳转请求失败：' + playback.errorText(error) + '，可以重试。'
+      });
+      return;
+    }
+    this.clearSeekWait();
+    this._seek = {
+      token: this.data.playerToken,
+      targetMs: marker.atMs,
+      seconds: target.seconds,
+      clipId: this._playerClip.clipId,
+      rev: Number(this._playerClip.rev),
+      fileId: this._playerClip.fileId,
+      retried: false,
+      expired: false
+    };
+    this.setData({
+      seekPending: true,
+      seekRequestText:
+        '跳转请求 ' +
+        attemptVideoMarkers.formatSecondsText(marker.atMs) +
+        ' 秒（按秒下发，实际落点以播放器回报为准）。',
+      seekActualText: '等待播放器回报实际位置…',
+      markerError: '',
+      markerNotice: ''
+    });
+    this.scheduleSeekWait(this._seek);
+    this.refreshMarkerReadiness();
+  },
+
+  seekWaitMs() {
+    const custom = Number(this._seekWaitMs);
+    return Number.isFinite(custom) && custom > 0
+      ? custom
+      : attemptVideoMarkers.SEEK_REPORT_WAIT_MS;
+  },
+
+  clearSeekWait() {
+    if (this._seekTimer !== null && this._seekTimer !== undefined) {
+      clearTimeout(this._seekTimer);
+      this._seekTimer = null;
+    }
+  },
+
+  /** 跳转后等待原生 location 回报；暂停态下原生可能不发 timeupdate，不能永久锁住。 */
+  scheduleSeekWait(seek) {
+    this.clearSeekWait();
+    const timer = setTimeout(() => {
+      this._seekTimer = null;
+      this.onSeekWaitElapsed(seek);
+    }, this.seekWaitMs());
+    // Node 测试环境会返回 Timeout 对象；小程序环境返回数字，都能被 clearTimeout 接受。
+    this._seekTimer = timer;
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  },
+
+  /**
+   * 短等待仍无实际位置回报：
+   * 1) 先重发一次同一秒数请求，给暂停态播放器一个重新回报的机会；
+   * 2) 仍无回报则解除「等待确认」，只显示未确认，绝不把请求值回填为实际落点。
+   * 解除后若真实 token 的回报落到目标，仍会在 seekReportPatch 中确认。
+   */
+  onSeekWaitElapsed(seek) {
+    if (this._unloaded || this._seek !== seek) return;
+    if (this.data.playerToken !== seek.token) {
+      this._seek = null;
+      this.setData({ seekPending: false });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    if (!seek.retried) {
+      seek.retried = true;
+      const context = this.getVideoContext();
+      if (context && typeof context.seek === 'function') {
+        try {
+          context.seek(seek.seconds);
+        } catch (error) {
+          // 重试失败不再抛出：仍按「未确认」收敛，页面保持可操作。
+        }
+      }
+      this.setData({
+        seekActualText:
+          '播放器还没有回报实际位置，正在重试跳转（请求 ' +
+          attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+          ' 秒）…'
+      });
+      this.scheduleSeekWait(seek);
+      return;
+    }
+    seek.expired = true;
+    this.setData({
+      seekPending: false,
+      seekActualText:
+        '播放器没有回报跳转后的实际位置（请求 ' +
+        attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+        ' 秒）；落点未确认，可再次点时间点重试，或播放后再核对。',
+      markerNotice: '跳转请求已下发，但没有收到原生实际位置；请求值没有当作实际落点。'
+    });
+    this.refreshMarkerReadiness();
+  },
+
+  dismissMarkerError() {
+    this.setData({ markerError: '' });
+    this.refreshMarkerReadiness();
+  },
+
+  dismissMarkerNotice() {
+    this.setData({ markerNotice: '' });
   },
 
   /**
