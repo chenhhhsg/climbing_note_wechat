@@ -1,15 +1,20 @@
 /**
- * T048–T050 追加返工 · 长按删除把次与视频
+ * T048–T050 追加返工 · 长按删除把次与视频（T054 整卡入口）
  *
  * 直接加载真实模块与真实页面：
- * - pages/training-record（长按序号框的确认、迟到确认、页码刷新）；
+ * - pages/training-record（长按整卡后的菜单/确认、迟到确认、页码刷新）；
  * - utils/training-store.js（物理移出把次、版本/备注/结果核对、写失败回执）；
  * - utils/training-attempt-delete.js（持久删除凭据 journal、三阶段协调、重开恢复）；
  * - utils/attempt-video-files.js（记录删除后的定向视频索引/文件回收）。
  *
+ * 原生 showActionSheet / showModal 用严格参数对象替身：菜单只能有一项「删除这一把」，
+ * 缺字段、缺 success/fail 视为测试失败；菜单取消、原生失败与非法索引分开核对。
+ *
  * 用隔离的本机存储替身、虚拟文件系统与可注入故障核对：
- * - 只有已保存有效把次能长按，收起旧行也可；短按仍展开；取消不写、不清备注草稿；
- *   有/无视频的确认文案不同；原生手势补发 tap 不会同时展开；
+ * - 只有已保存有效把次能长按，最新把/收起旧把/展开旧把都可用；短按仍展开；取消不写、
+ *   不清备注草稿、不改展开；有/无视频的确认文案不同；原生手势补发 tap 不会同时展开；
+ * - 长按先开菜单；取消或菜单原生失败零写入，菜单期间目标/视频变化在选中后整条重校验；
+ *   重复长按只开一个菜单与一个确认；
  * - 7 把删除第 5 把后剩 6 把，原第 6、7 把显示第 5、6 把，其他把次 ID/seq/备注/
  *   视频归属不变；历史、场次小结、统计与抱石完攀解锁按剩余有效集合；
  * - 删除最新一把后前一把不新增撤销；删除较早一把时原最新一把仍可撤销；冷开一致；
@@ -19,7 +24,7 @@
  * - 重开（重建服务）只处理 journal 里的 pending；没有 journal 时不扫描文件系统；
  *   换档、共享引用、错误路径与损坏索引一律谨慎不删；普通清缓存不动删除凭据。
  *
- * 真机长按手势、原生确认框与从相册选择的实际文件另在整项 QA / 手机验收（待验）。
+ * 真机长按手势、原生菜单/确认框外观与从相册选择的实际文件另在整项 QA / 手机验收（待验）。
  *
  * 运行：node --test tests/training-attempt-delete.test.cjs
  */
@@ -69,6 +74,16 @@ const faults = {
   copyFail: ''
 };
 const modal = { current: null, calls: 0, history: [], failNext: 0, throwNext: 0 };
+// T054 第一步原生菜单：严格检查参数对象（只能有一项「删除这一把」）。
+const sheet = {
+  current: null,
+  calls: 0,
+  history: [],
+  failNext: 0,
+  throwNext: 0,
+  cancelNext: 0,
+  invalidNext: 0
+};
 // 非阻塞 toast 的文本：只用于断言「拒绝/弹窗失败时视口内有可见反馈」。
 const toasts = [];
 let clipSeq = 0;
@@ -102,6 +117,13 @@ function resetDevice() {
   modal.history = [];
   modal.failNext = 0;
   modal.throwNext = 0;
+  sheet.current = null;
+  sheet.calls = 0;
+  sheet.history = [];
+  sheet.failNext = 0;
+  sheet.throwNext = 0;
+  sheet.cancelNext = 0;
+  sheet.invalidNext = 0;
   toasts.length = 0;
   clipSeq = 0;
   tempSeq = 0;
@@ -228,6 +250,35 @@ global.wx = {
     return { keys: [...storage.keys()] };
   },
   getFileSystemManager: fileSystem,
+  showActionSheet(options) {
+    assert.equal(typeof options, 'object', 'showActionSheet 必须收到参数对象');
+    assert.deepEqual(options.itemList, ['删除这一把'], '菜单只显示「删除这一把」');
+    assert.equal(typeof options.success, 'function');
+    assert.equal(typeof options.fail, 'function');
+    sheet.calls += 1;
+    // 故障注入：与 showModal 一样区分取消、原生失败、同步异常与非法索引。
+    if (sheet.throwNext > 0) {
+      sheet.throwNext -= 1;
+      throw { errMsg: 'showActionSheet:fail mock synchronous failure' };
+    }
+    if (sheet.failNext > 0) {
+      sheet.failNext -= 1;
+      options.fail({ errMsg: 'showActionSheet:fail mock menu failure' });
+      return;
+    }
+    if (sheet.cancelNext > 0) {
+      sheet.cancelNext -= 1;
+      options.fail({ errMsg: 'showActionSheet:fail cancel' });
+      return;
+    }
+    if (sheet.invalidNext > 0) {
+      sheet.invalidNext -= 1;
+      options.success({ tapIndex: 3 });
+      return;
+    }
+    sheet.current = options;
+    sheet.history.push(options);
+  },
   showModal(options) {
     modal.calls += 1;
     // 故障注入：弹窗同步抛异常、或调 fail 回调（真实设备上确认框没弹出来）。
@@ -428,11 +479,50 @@ function tapDataset(dataset) {
   return { currentTarget: { dataset } };
 }
 
-/** 打开确认（不回答），返回 Promise 与已捕获的弹窗参数。 */
-function openPrompt(page, row, overrides) {
+/** 等菜单 Promise 的 then 链跑完，确认框/失败状态已经落到 mock 上。 */
+function flush() {
+  return new Promise(resolve => setImmediate(resolve));
+}
+
+/** 回答当前挂起的「删除这一把」菜单：默认选中唯一一项。 */
+function chooseMenu(tapIndex) {
+  const current = sheet.current;
+  sheet.current = null;
+  assert.ok(current, '没有待选择的操作菜单');
+  current.success({ tapIndex: tapIndex === undefined ? 0 : tapIndex });
+}
+
+/** 取消当前挂起的菜单：显式 cancel 或按原生约定用 fail(cancel) 关闭。 */
+function cancelMenu(mode) {
+  const current = sheet.current;
+  sheet.current = null;
+  assert.ok(current, '没有待取消的操作菜单');
+  if (mode === 'native') {
+    current.fail({ errMsg: 'showActionSheet:fail cancel' });
+    return;
+  }
+  current.success({ cancel: true, tapIndex: -1 });
+}
+
+/** 打开菜单但不回答，返回删除 Promise 与菜单参数（用于取消/失败/菜单期间变化）。 */
+function startMenu(page, row, overrides) {
   const promise = page.requestDeleteAttempt(rowEvent(row, overrides));
-  assert.ok(modal.current, '应打开删除确认');
-  return promise;
+  assert.ok(sheet.current, '应打开「删除这一把」菜单');
+  const options = sheet.current;
+  sheet.current = null;
+  return { promise, options };
+}
+
+/** 打开菜单并选中「删除这一把」，等确认框出现后返回删除 Promise 与弹窗参数。 */
+async function openPrompt(page, row, overrides) {
+  const promise = page.requestDeleteAttempt(rowEvent(row, overrides));
+  assert.ok(sheet.current, '应打开「删除这一把」菜单');
+  const menu = sheet.current;
+  sheet.current = null;
+  menu.success({ tapIndex: 0 });
+  await flush();
+  assert.ok(modal.current, '菜单选中后应打开删除确认');
+  return { promise, menu };
 }
 
 function answerPrompt(confirm) {
@@ -443,7 +533,7 @@ function answerPrompt(confirm) {
 }
 
 async function confirmDelete(page, row, overrides) {
-  const promise = openPrompt(page, row, overrides);
+  const { promise } = await openPrompt(page, row, overrides);
   const options = modal.current;
   answerPrompt(true);
   const outcome = await promise;
@@ -463,10 +553,10 @@ beforeEach(() => {
 });
 
 // ------------------------------------------------------------------ *
-// 交互：长按序号框、确认文案、取消与短按
+// 交互：长按整卡菜单、确认文案、取消与短按
 // ------------------------------------------------------------------ *
 
-test('T048-删除1 长按仅序号区且折叠旧行可用；有/无视频文案不同；取消不写不清草稿；短按仍展开', async () => {
+test('T054-删除1 长按整卡（含序号/结果/时间/正文/内边距）且折叠旧行可用；有/无视频文案不同；取消不写不清草稿；短按仍展开', async () => {
   const flow = startFlow();
   const first = addAttempt(flow, 'fail', '第一把备注', 0);
   const second = addAttempt(flow, 'fail', '第二把备注', 5);
@@ -491,8 +581,9 @@ test('T048-删除1 长按仅序号区且折叠旧行可用；有/无视频文案
   const rawBefore = archiveRaw();
   const indexBefore = indexRaw();
 
-  // 无视频：文案只说记录和备注。
-  const cancelled = openPrompt(page, firstRow);
+  // 无视频：菜单先出现，选中后才显示「记录和备注」确认文案。
+  const { promise: cancelled, menu: firstMenu } = await openPrompt(page, firstRow);
+  assert.deepEqual(firstMenu.itemList, ['删除这一把']);
   assert.equal(modal.current.title, '删除第 1 把？');
   assert.equal(modal.current.content, '将删除这把记录和备注。');
   assert.equal(modal.current.confirmText, '删除');
@@ -509,7 +600,7 @@ test('T048-删除1 长按仅序号区且折叠旧行可用；有/无视频文案
   assert.equal(page.data.expandedAttemptId, '', '长按后的短窗口内 tap 不展开');
 
   // 有视频：确认文案写明攀笔保存的视频副本。
-  const withVideo = openPrompt(page, rowOf(page, second));
+  const { promise: withVideo } = await openPrompt(page, rowOf(page, second));
   assert.equal(modal.current.title, '删除第 2 把？');
   assert.match(modal.current.content, /攀笔保存的视频副本/);
   answerPrompt(false);
@@ -518,17 +609,180 @@ test('T048-删除1 长按仅序号区且折叠旧行可用；有/无视频文案
   assert.equal(virtual.files.has(video.filePath), true, '取消不删视频副本');
   assert.equal(page.data.noteEditor.text, '还没保存的草稿');
 
-  // 同一把重复长按不再叠第二个弹窗，回答一次即可。
-  const callsBefore = modal.calls;
+  // 同一把重复长按不再叠第二个菜单或确认，回答一次即可。
+  const sheetCallsBefore = sheet.calls;
+  const modalCallsBefore = modal.calls;
   const p1 = page.requestDeleteAttempt(rowEvent(rowOf(page, first)));
   const p2 = page.requestDeleteAttempt(rowEvent(rowOf(page, first)));
-  assert.equal(modal.calls, callsBefore + 1, '同一把只弹一次确认');
+  assert.equal(sheet.calls, sheetCallsBefore + 1, '同一把只弹一次菜单');
+  assert.equal(modal.calls, modalCallsBefore, '菜单还没选中时不弹确认');
+  chooseMenu();
+  await flush();
+  assert.equal(modal.calls, modalCallsBefore + 1, '同一把只弹一次确认');
   answerPrompt(false);
   assert.deepEqual(await Promise.all([p1, p2]), [
     { ok: false, code: 'cancelled' },
     { ok: false, code: 'cancelled' }
   ]);
   assert.equal(archiveRaw(), rawBefore);
+});
+
+// ------------------------------------------------------------------ *
+// T054：先说「删除这一把」菜单，再显示原把与视频范围
+// ------------------------------------------------------------------ *
+
+test('T054-删除1b 整卡菜单：取消/原生失败零写入且不改展开；菜单期间目标失效不弹确认；视频范围按选中时的最新索引', async () => {
+  const flow = startFlow({ routeName: '整卡菜单线' });
+  const first = addAttempt(flow, 'fail', '第一把备注', 0);
+  const second = addAttempt(flow, 'fail', '第二把备注', 5);
+  const video = seedClip(flow, second);
+  const page = openRecord(flow);
+
+  // 展开旧行：菜单取消不能改变展开状态。
+  page.toggleAttemptRow(tapDataset({ attemptId: first.id }));
+  assert.equal(page.data.expandedAttemptId, first.id);
+  const expandedBefore = page.data.expandedAttemptId;
+  const rawBefore = archiveRaw();
+  const indexBefore = indexRaw();
+  const modalCallsBefore = modal.calls;
+
+  // (a) 菜单 success(cancel)：静默结束，不弹确认、不写盘、不改展开。
+  const cancelBySuccess = startMenu(page, rowOf(page, first));
+  cancelBySuccess.options.success({ cancel: true, tapIndex: -1 });
+  assert.deepEqual(await cancelBySuccess.promise, { ok: false, code: 'cancelled' });
+  assert.equal(modal.calls, modalCallsBefore, '取消菜单不弹确认');
+  assert.equal(archiveRaw(), rawBefore, '取消菜单不写档案');
+  assert.equal(indexRaw(), indexBefore, '取消菜单不写视频索引');
+  assert.equal(page.data.expandedAttemptId, expandedBefore, '取消菜单不改展开状态');
+  assert.equal(page._deletePrompt, null, '取消后解除在途锁');
+
+  // (b) 原生 fail(cancel)：同样视为用户取消，不报失败。
+  const cancelByNative = startMenu(page, rowOf(page, first));
+  cancelByNative.options.fail({ errMsg: 'showActionSheet:fail cancel' });
+  assert.deepEqual(await cancelByNative.promise, { ok: false, code: 'cancelled' });
+  assert.equal(modal.calls, modalCallsBefore);
+  assert.equal(archiveRaw(), rawBefore);
+  assert.equal(page.data.expandedAttemptId, expandedBefore);
+
+  // (c) 非取消的原生失败：给可见提示，零写入，解锁后可重试。
+  const failedMenu = startMenu(page, rowOf(page, first));
+  failedMenu.options.fail({ errMsg: 'showActionSheet:fail system error' });
+  const menuFailed = await failedMenu.promise;
+  assert.equal(menuFailed.ok, false);
+  assert.equal(menuFailed.code, 'menu-unavailable');
+  assert.equal(menuFailed.reason, 'failed');
+  assert.match(page.data.notice, /操作菜单打开失败/);
+  assert.match(toasts[toasts.length - 1], /未删除/);
+  assert.equal(modal.calls, modalCallsBefore);
+  assert.equal(archiveRaw(), rawBefore);
+  assert.equal(page.data.expandedAttemptId, expandedBefore);
+  assert.equal(page._deletePrompt, null, '菜单失败后解除在途锁');
+
+  // (d) 非法菜单索引按原生异常处理，不选到任何一项。
+  const invalidMenu = startMenu(page, rowOf(page, first));
+  invalidMenu.options.success({ tapIndex: 3 });
+  const invalid = await invalidMenu.promise;
+  assert.equal(invalid.code, 'menu-unavailable');
+  assert.equal(invalid.reason, 'failed');
+  assert.equal(invalid.error, 'invalid-index');
+  assert.equal(archiveRaw(), rawBefore);
+
+  // (e) 当前环境没有 showActionSheet：不当成取消，不写盘，给出可见重试提示。
+  const realSheet = global.wx.showActionSheet;
+  delete global.wx.showActionSheet;
+  let unavailable;
+  try {
+    unavailable = await page.requestDeleteAttempt(rowEvent(rowOf(page, first)));
+  } finally {
+    global.wx.showActionSheet = realSheet;
+  }
+  assert.equal(unavailable.ok, false);
+  assert.equal(unavailable.code, 'menu-unavailable');
+  assert.equal(unavailable.reason, 'unavailable');
+  assert.match(page.data.notice, /操作菜单没有打开/);
+  assert.equal(archiveRaw(), rawBefore);
+  assert.equal(page.data.expandedAttemptId, expandedBefore);
+
+  // (f) showActionSheet 同步抛异常：解除在途锁，仍零写入。
+  sheet.throwNext = 1;
+  const thrownMenu = await page.requestDeleteAttempt(rowEvent(rowOf(page, first)));
+  assert.equal(thrownMenu.code, 'menu-unavailable');
+  assert.equal(thrownMenu.reason, 'failed');
+  assert.match(thrownMenu.error, /mock synchronous failure/);
+  assert.equal(archiveRaw(), rawBefore);
+  assert.equal(page._deletePrompt, null);
+
+  // (g) 同一把重复长按只开一个菜单、一个确认。
+  const sheetCallsBefore = sheet.calls;
+  const p1 = page.requestDeleteAttempt(rowEvent(rowOf(page, second)));
+  const p2 = page.requestDeleteAttempt(rowEvent(rowOf(page, second)));
+  assert.equal(sheet.calls, sheetCallsBefore + 1, '同一把只开一次菜单');
+  assert.equal(modal.calls, modalCallsBefore, '选择菜单项前不弹确认');
+  chooseMenu();
+  await flush();
+  assert.equal(modal.calls, modalCallsBefore + 1, '同一把只开一次确认');
+  answerPrompt(false);
+  assert.deepEqual(await Promise.all([p1, p2]), [
+    { ok: false, code: 'cancelled' },
+    { ok: false, code: 'cancelled' }
+  ]);
+  assert.equal(archiveRaw(), rawBefore);
+
+  // (h) 菜单打开期间视频换版：选中后按最新索引显示视频范围，确认只删新副本。
+  const heldMedia = startMenu(page, rowOf(page, second));
+  clipSeq += 1;
+  const replacement = {
+    clipId: 'clip-' + clipSeq + '-menu-refresh',
+    rev: 2,
+    fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-' + clipSeq + '-menu-refresh.mp4'
+  };
+  virtual.files.set(USER_DATA_PATH + '/' + replacement.fileId, Buffer.alloc(2222, 3));
+  const refreshedIndex = indexOf();
+  refreshedIndex.clips = refreshedIndex.clips.filter(entry => entry.attemptId !== second.id);
+  refreshedIndex.clips.push({
+    clipId: replacement.clipId,
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: second.id,
+    rev: replacement.rev,
+    bytes: 2222,
+    fileId: replacement.fileId
+  });
+  storage.set(VIDEO_INDEX_KEY, JSON.stringify(refreshedIndex));
+  heldMedia.options.success({ tapIndex: 0 });
+  await flush();
+  assert.ok(modal.current, '视频换版后仍按原把打开确认');
+  assert.match(modal.current.content, /攀笔保存的视频副本/);
+  answerPrompt(true);
+  const mediaOutcome = await heldMedia.promise;
+  assert.equal(mediaOutcome.ok, true, mediaOutcome.error);
+  assert.equal(mediaOutcome.video.status, 'done');
+  assert.equal(
+    virtual.files.has(USER_DATA_PATH + '/' + replacement.fileId),
+    false,
+    '按菜单选中后的最新索引删除新副本'
+  );
+  assert.equal(virtual.files.has(video.filePath), true, '旧索引不再引用的文件不按旧范围误删');
+  assert.equal(indexOf().clips.some(entry => entry.attemptId === second.id), false);
+  assert.equal(archiveOf().attempts.some(item => item.id === second.id), false);
+
+  // (i) 菜单打开期间原把被撤回：选中后不再弹确认，也不删除任何东西。
+  const heldTarget = startMenu(page, rowOf(page, first));
+  const undone = store.undoAttempt(first.id, {
+    sessionId: flow.session.id,
+    routeId: flow.route.id
+  });
+  assert.equal(undone.ok, true, undone.error);
+  const rawAfterUndo = archiveRaw();
+  const modalCallsAfterUndo = modal.calls;
+  heldTarget.options.success({ tapIndex: 0 });
+  const changed = await heldTarget.promise;
+  assert.equal(changed.ok, false);
+  assert.equal(changed.code, 'stale');
+  assert.equal(modal.calls, modalCallsAfterUndo, '菜单期间目标失效后不弹确认');
+  assert.equal(archiveRaw(), rawAfterUndo, '失效目标不写盘');
+  assert.match(page.data.notice, /这一行已经变化/);
 });
 
 // ------------------------------------------------------------------ *
@@ -959,7 +1213,7 @@ test('T048-删除9 迟到确认不删错误项：列表变化、视频换版、�
   const page = openRecord(flow);
 
   // (a) 确认期间这条线新增了一把：整条拒绝，被点的那把还在。
-  let pending = openPrompt(page, rowOf(page, first));
+  let { promise: pending } = await openPrompt(page, rowOf(page, first));
   const fourth = addAttempt(flow, 'fail', '四', 15);
   answerPrompt(true);
   let outcome = await pending;
@@ -970,7 +1224,7 @@ test('T048-删除9 迟到确认不删错误项：列表变化、视频换版、�
   assert.equal(archiveOf().attempts.some(item => item.id === fourth.id), true);
 
   // (b) 确认期间视频换版：不删除记录，也不删新的视频副本。
-  pending = openPrompt(page, rowOf(page, third));
+  ({ promise: pending } = await openPrompt(page, rowOf(page, third)));
   clipSeq += 1;
   const replaced = {
     clipId: 'clip-' + clipSeq + '-replaced',
@@ -999,22 +1253,28 @@ test('T048-删除9 迟到确认不删错误项：列表变化、视频换版、�
   assert.equal(virtual.files.has(USER_DATA_PATH + '/' + replaced.fileId), true);
   assert.equal(virtual.files.has(USER_DATA_PATH + '/' + video.fileId), true, '旧副本也不在这一步删');
 
-  // (c) 别的线路/场次的迟到事件：页面归属核对直接拒绝，不弹确认。
+  // (c) 别的线路/场次的迟到事件：页面归属核对直接拒绝，不弹菜单也不弹确认。
   const other = addOtherRouteAttempt(flow);
   const callsBefore = modal.calls;
+  const sheetCallsBefore = sheet.calls;
   const cross = await page.requestDeleteAttempt(
     rowEvent(rowOf(page, second), { routeId: other.route.id })
   );
   assert.equal(cross, null);
+  assert.equal(sheet.calls, sheetCallsBefore, '跨线事件不弹删除菜单');
   assert.equal(modal.calls, callsBefore, '跨线事件不弹删除确认');
   assert.equal(archiveOf().attempts.some(item => item.id === second.id), true);
   assert.match(page.data.notice, /这一行已经变化/);
 
-  // (d) 重复确认：同一把只产生一次删除结果。
+  // (d) 重复长按：同一把只产生一次菜单、一次确认结果。
   const targetRow = rowOf(page, second);
+  const modalCallsBefore = modal.calls;
   const p1 = page.requestDeleteAttempt(rowEvent(targetRow));
   const p2 = page.requestDeleteAttempt(rowEvent(targetRow));
-  assert.equal(modal.calls, callsBefore + 1, '同一把只弹一次');
+  assert.equal(sheet.calls, sheetCallsBefore + 1, '同一把只弹一次菜单');
+  chooseMenu();
+  await flush();
+  assert.equal(modal.calls, modalCallsBefore + 1, '同一把只弹一次确认');
   answerPrompt(true);
   const [r1, r2] = await Promise.all([p1, p2]);
   assert.equal(r1.ok, true, r1.error);
@@ -1032,9 +1292,11 @@ test('T048-删除9 迟到确认不删错误项：列表变化、视频换版、�
     3,
     '没有多删或复活别的把次'
   );
-  // 再长按已删除的一行：页面只剩最新数据，不再弹确认。
+  // 再长按已删除的一行：页面只剩最新数据，不再弹菜单或确认。
   const callsAfter = modal.calls;
+  const sheetCallsAfter = sheet.calls;
   await page.requestDeleteAttempt(rowEvent(targetRow));
+  assert.equal(sheet.calls, sheetCallsAfter, '已删除行的旧事件不再弹菜单');
   assert.equal(modal.calls, callsAfter, '已删除行的旧事件不再弹确认');
 });
 
@@ -1069,9 +1331,11 @@ test('T048-删除10 真实待保存时不允许长按删除；待保存操作不
 
   const rawBefore = archiveRaw();
   const callsBefore = modal.calls;
+  const sheetCallsBefore = sheet.calls;
   const result = page.requestDeleteAttempt(rowEvent(rowOf(page, first)));
   return Promise.resolve(result).then(outcome => {
     assert.equal(outcome, null);
+    assert.equal(sheet.calls, sheetCallsBefore, '有待保存时不弹删除菜单');
     assert.equal(modal.calls, callsBefore, '有待保存时不弹删除确认');
     assert.match(page.data.notice, /先在「待保存」行重试保存/);
     assert.equal(archiveRaw(), rawBefore, '没有改动档案');
@@ -1253,8 +1517,10 @@ test('T048-删除12 共享引用与错误路径谨慎：仍被别的条目引用
   storage.set(VIDEO_INDEX_KEY, '{broken-json');
   const rawBefore = archiveRaw();
   const callsBefore = modal.calls;
+  const sheetCallsBefore = sheet.calls;
   const result = await page.requestDeleteAttempt(rowEvent(rowOf(page, second)));
   assert.equal(result, null);
+  assert.equal(sheet.calls, sheetCallsBefore, '视频关联读不出来时不打开删除菜单');
   assert.equal(modal.calls, callsBefore, '视频关联读不出来时不打开删除确认');
   assert.match(page.data.notice, /视频关联暂时读取失败/);
   assert.equal(archiveRaw(), rawBefore);
@@ -1263,10 +1529,10 @@ test('T048-删除12 共享引用与错误路径谨慎：仍被别的条目引用
 });
 
 // ------------------------------------------------------------------ *
-// 页面静态绑定：序号区长按、清理重试入口
+// 页面静态绑定：整卡长按、卡内控件隔离、清理重试入口
 // ------------------------------------------------------------------ */
 
-test('T048-删除13 WXML 把长按绑在序号 view 框上（同容器 + 最小命中区），并有可见的清理重试入口', () => {
+test('T054-删除13 WXML 把长按绑在整卡根节点（序号/结果/时间/正文/内边距同一命中区），卡内控件各自隔离，并有可见的清理重试入口', () => {
   const wxml = fs.readFileSync(
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
     'utf8'
@@ -1275,26 +1541,22 @@ test('T048-删除13 WXML 把长按绑在序号 view 框上（同容器 + 最小�
     path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
     'utf8'
   );
-  assert.match(
-    wxml,
-    /id="record-attempt-label-\{\{item\.id\}\}"[\s\S]{0,600}data-delete-rev="\{\{item\.deleteRev\}\}"[\s\S]{0,120}catchlongpress="requestDeleteAttempt"/
-  );
   assert.match(wxml, /id="video-cleanup"[\s\S]{0,260}id="video-cleanup-retry"[\s\S]{0,80}bindtap="retryVideoCleanup"/);
 
-  // 手机试用返工：长按不能再挂在只包住文字的 text 上，序号必须是明确的原生 view 框，
-  // 绑定与六项 data 都在同一个容器里（框内文字、内边距与空白命中同一目标）。
-  const labelAt = wxml.indexOf('id="record-attempt-label-{{item.id}}"');
-  assert.ok(labelAt > 0, '保留 #record-attempt-label-原ID 选择器');
-  const boxOpen = wxml.lastIndexOf('<view', labelAt);
-  const boxClose = wxml.indexOf('</view>', labelAt);
-  assert.ok(boxOpen > -1 && boxClose > labelAt, '序号框应是一个 view 容器');
-  assert.doesNotMatch(
-    wxml.slice(boxOpen, labelAt),
-    /<\/?text/,
-    '序号不是 text 上的绑定，而是 view 容器上的绑定'
-  );
-  const labelBox = wxml.slice(boxOpen, boxClose + '</view>'.length);
-  assert.match(labelBox, /class="record-attempt-label"/);
+  // 整卡根节点：<view wx:for ... id="record-attempt-原ID" ...> 同时带六项原身份与长按。
+  // 序号、结果、时间、展开后的备注正文与卡片内边距都在这一个原生 view 里。
+  const cardIdAt = wxml.indexOf('id="record-attempt-{{item.id}}"');
+  assert.ok(cardIdAt > 0, '保留 #record-attempt-原ID 选择器');
+  const cardOpen = wxml.lastIndexOf('<view', cardIdAt);
+  const cardOpenEnd = wxml.indexOf('>', cardIdAt);
+  assert.ok(cardOpen > -1 && cardOpenEnd > cardIdAt, '整卡应是原生 view 容器');
+  const cardTag = wxml.slice(cardOpen, cardOpenEnd + 1);
+  assert.match(cardTag, /class="record-attempt /);
+  // 最新把与旧把、展开与收起都由同一根节点换 class，长按入口不因状态变化而换位置。
+  assert.match(cardTag, /record-attempt-latest/);
+  assert.match(cardTag, /record-attempt-older/);
+  assert.match(cardTag, /record-attempt-open/);
+  assert.match(cardTag, /record-attempt-compact/);
   const required = [
     'data-attempt-id="{{item.id}}"',
     'data-archive-id="{{item.archiveId}}"',
@@ -1305,48 +1567,109 @@ test('T048-删除13 WXML 把长按绑在序号 view 框上（同容器 + 最小�
     'catchlongpress="requestDeleteAttempt"'
   ];
   for (const attr of required) {
-    assert.ok(labelBox.includes(attr), '同一个序号容器必须带 ' + attr);
+    assert.ok(cardTag.includes(attr), '整卡根节点必须带 ' + attr);
   }
-  // 序号文字只是框里的内容：不另挂长按，避免同一触点重复触发（短按照旧冒泡到整行）。
-  assert.match(
-    labelBox,
-    /<text class="record-attempt-label-text">\{\{item\.label\}\}<\/text>/
-  );
   assert.equal(
-    (labelBox.match(/longpress/g) || []).length,
+    (cardTag.match(/longpress/g) || []).length,
     1,
-    '整框只有一个长按绑定'
+    '整卡只有一个长按绑定'
   );
   assert.equal(
-    (labelBox.match(/catchtap|bindtap/g) || []).length,
+    (cardTag.match(/catchtap|bindtap/g) || []).length,
     0,
-    '序号框不劫持短按，短按照旧由父行展开'
+    '整卡根节点不劫持短按，短按仍由头部展开'
   );
 
-  // 命中区与收缩：最小约 44×44 px，宽度按内容收缩且不折行，内层文字不再单独接手势。
+  // 长按照旧从序号框移到整卡：序号本身不再单独挂手势，序号文字随整卡命中。
+  const labelAt = wxml.indexOf('id="record-attempt-label-{{item.id}}"');
+  assert.ok(labelAt > 0, '保留可见的 #record-attempt-label-原ID');
+  const labelOpen = wxml.lastIndexOf('<view', labelAt);
+  const labelTag = wxml.slice(labelOpen, wxml.indexOf('>', labelAt) + 1);
+  assert.doesNotMatch(labelTag, /catchlongpress|catchtap|bindtap/);
+  assert.match(wxml.slice(labelOpen, wxml.indexOf('</view>', labelAt)), /class="record-attempt-label"/);
+
+  // 整卡覆盖范围：序号 → 结果 → 时间 → 展开后的备注正文都在同一张卡里。
+  const cardSlice = wxml.slice(cardOpen, wxml.indexOf('id="record-attempts-empty"'));
+  const labelInCard = cardSlice.indexOf('id="record-attempt-label-{{item.id}}"');
+  const resultAt = cardSlice.indexOf('class="record-attempt-result');
+  const timeAt = cardSlice.indexOf('class="record-attempt-time"');
+  const noteAt = cardSlice.indexOf('id="record-attempt-note-{{item.id}}"');
+  assert.ok(labelInCard > 0, '卡内含序号');
+  assert.ok(resultAt > labelInCard, '卡内含结果');
+  assert.ok(timeAt > resultAt, '卡内含时间');
+  assert.ok(noteAt > timeAt, '卡内含展开后的备注正文');
+  // 备注正文是非交互内容：没有自己的点按/长按，跟随整卡命中。
+  const noteOpen = cardSlice.lastIndexOf('<text', noteAt);
+  const noteTag = cardSlice.slice(noteOpen, cardSlice.indexOf('>', noteAt) + 1);
+  assert.doesNotMatch(noteTag, /catchtap|bindtap|catchlongpress|bindlongpress/);
+
+  // 卡内独立控件各自 catchlongpress：触碰备注入口/编辑区/视频入口/撤销不会发起父卡删除，
+  // 它们自己的点按、输入与撤销处理仍保留。
+  assert.match(
+    cardSlice,
+    /id="record-attempt-withdraw-\{\{item\.id\}\}"[\s\S]{0,520}catchtap="undoLatestAttempt"[\s\S]{0,80}catchlongpress="ignoreLongPress"/
+  );
+  assert.match(cardSlice, /id="note-editor"[\s\S]{0,120}catchlongpress="ignoreLongPress"/);
+  assert.match(
+    cardSlice,
+    /id="note-input"[\s\S]{0,520}bindinput="onNoteInput"[\s\S]{0,80}catchlongpress="ignoreLongPress"/
+  );
+  assert.match(
+    cardSlice,
+    /id="cancel-note"[\s\S]{0,320}bindtap="cancelNote"[\s\S]{0,80}catchlongpress="ignoreLongPress"/
+  );
+  assert.match(
+    cardSlice,
+    /id="save-note"[\s\S]{0,320}bindtap="saveNote"[\s\S]{0,80}catchlongpress="ignoreLongPress"/
+  );
+  const controlTag = id => {
+    const at = cardSlice.indexOf(id);
+    assert.ok(at > 0, '缺少 ' + id);
+    return cardSlice.slice(cardSlice.lastIndexOf('<', at), cardSlice.indexOf('>', at) + 1);
+  };
+  const editAt = cardSlice.indexOf('id="edit-note-{{item.id}}"');
+  const editTag = controlTag('id="edit-note-{{item.id}}"');
+  assert.match(editTag, /catchtap="openNoteEditor"/);
+  assert.match(editTag, /catchlongpress="ignoreLongPress"/);
+  assert.match(
+    cardSlice.slice(cardSlice.indexOf('>', editAt) + 1),
+    /^\{\{item\.noteActionText\}\} ›/
+  );
+  const videoAt = cardSlice.indexOf('id="record-open-video-{{item.id}}"');
+  const videoTag = controlTag('id="record-open-video-{{item.id}}"');
+  assert.match(videoTag, /catchtap="openAttemptVideo"/);
+  assert.match(videoTag, /catchlongpress="ignoreLongPress"/);
+  assert.match(
+    cardSlice.slice(cardSlice.indexOf('>', videoAt) + 1),
+    /^\{\{item\.videoEntryText\}\}/
+  );
+  // 收起旧行的小视频图标只是提示，点按照旧由头部展开；长按也不落到父卡删除。
+  const iconTag = controlTag('id="record-attempt-video-icon-{{item.id}}"');
+  assert.match(iconTag, /catchlongpress="ignoreLongPress"/);
+  assert.doesNotMatch(iconTag, /catchtap|bindtap/);
+
+  // 卡身几何：整卡内边距、旧行短行与最新把最小高度仍由现有样式提供，长按不另造命中区。
   const ruleOf = selector => {
     const start = wxss.indexOf(selector + ' {');
     assert.ok(start > -1, '缺少样式 ' + selector);
     return wxss.slice(start, wxss.indexOf('}', start));
   };
+  assert.match(ruleOf('.record-attempt'), /padding:\s*16rpx 20rpx;/);
+  assert.match(ruleOf('.record-attempt-compact'), /padding:\s*0 12px;/);
+  assert.match(ruleOf('.record-attempt-latest'), /min-height:\s*100px;/);
+  // 序号框仍可见，但不再承担长按；框内文字仍不单独接手势。
   const labelStyle = ruleOf('.record-attempt-label');
-  assert.match(labelStyle, /display:\s*flex;/);
-  assert.match(labelStyle, /flex:\s*0 0 auto;/);
-  assert.match(labelStyle, /box-sizing:\s*border-box;/);
   assert.match(labelStyle, /min-width:\s*44px;/);
   assert.match(labelStyle, /min-height:\s*44px;/);
-  assert.match(labelStyle, /white-space:\s*nowrap;/);
-  assert.match(labelStyle, /user-select:\s*none;/);
-  // 框内边缘验收：用既有卡片色系给序号框浅底、轻边线和小圆角，手机上看得见框；
-  // border-box 不变，边线画在 44×44 命中区内，不另占撤销槽的宽度。
-  assert.match(labelStyle, /border:\s*1px solid #D7DED9;/);
-  assert.match(labelStyle, /border-radius:\s*6rpx;/);
-  assert.match(labelStyle, /background-color:\s*#FFFFFF;/);
   assert.match(labelStyle, /padding:\s*0 6rpx;/);
   assert.match(ruleOf('.record-attempt-label-text'), /pointer-events:\s*none;/);
 
   assert.equal(typeof definition.requestDeleteAttempt, 'function');
+  assert.equal(typeof definition.resolveDeleteTarget, 'function');
+  assert.equal(typeof definition.runDeletePrompt, 'function');
+  assert.equal(typeof definition.askDeleteMenu, 'function');
   assert.equal(typeof definition.askDeleteConfirm, 'function');
+  assert.equal(typeof definition.ignoreLongPress, 'function');
   assert.equal(typeof definition.notifyDeleteGuard, 'function');
   assert.equal(typeof definition.retryVideoCleanup, 'function');
 });
@@ -1864,10 +2187,12 @@ test('T048-删除20 长按事件必须带当前页面令牌与 deleteRev；过�
   assert.equal(row.pageToken, page.data.pageToken);
 
   const callsBefore = modal.calls;
+  const sheetCallsBefore = sheet.calls;
   const wrongRev = await page.requestDeleteAttempt(
     rowEvent(row, { deleteRev: Number(row.deleteRev) + 1 })
   );
   assert.equal(wrongRev, null);
+  assert.equal(sheet.calls, sheetCallsBefore, '版本不一致不弹菜单');
   assert.equal(modal.calls, callsBefore, '版本不一致不弹确认');
   assert.match(page.data.notice, /这一行已经变化/);
 
@@ -1875,18 +2200,21 @@ test('T048-删除20 长按事件必须带当前页面令牌与 deleteRev；过�
     rowEvent(row, { pageToken: 'page-stale' })
   );
   assert.equal(staleToken, null);
+  assert.equal(sheet.calls, sheetCallsBefore, '页面令牌不一致不弹菜单');
   assert.equal(modal.calls, callsBefore, '页面令牌不一致不弹确认');
 
   const missingRev = await page.requestDeleteAttempt(
     rowEvent(row, { deleteRev: undefined })
   );
   assert.equal(missingRev, null);
+  assert.equal(sheet.calls, sheetCallsBefore, '缺少 deleteRev 不弹菜单');
   assert.equal(modal.calls, callsBefore, '缺少 deleteRev 不弹确认');
 
   const missingToken = await page.requestDeleteAttempt(
     rowEvent(row, { pageToken: undefined })
   );
   assert.equal(missingToken, null);
+  assert.equal(sheet.calls, sheetCallsBefore, '缺少页面令牌不弹菜单');
   assert.equal(modal.calls, callsBefore, '缺少页面令牌不弹确认');
 
   // 正确事件（原行/令牌/版本一致）能走完原生回调并只删除这一把。
@@ -2722,7 +3050,9 @@ test('T048-删除30 确认框 fail/缺失/同步异常都不当取消：不写�
 
   // (a) showModal 调 fail：当作「确认框没打开」，不是用户取消；给视口内可见的重试提示。
   modal.failNext = 1;
-  const failed = await page.requestDeleteAttempt(rowEvent(row));
+  const failedPromise = page.requestDeleteAttempt(rowEvent(row));
+  chooseMenu();
+  const failed = await failedPromise;
   assert.equal(failed.ok, false);
   assert.equal(failed.code, 'modal-unavailable');
   assert.equal(failed.reason, 'failed');
@@ -2740,7 +3070,9 @@ test('T048-删除30 确认框 fail/缺失/同步异常都不当取消：不写�
   delete global.wx.showModal;
   let missing;
   try {
-    missing = await page.requestDeleteAttempt(rowEvent(rowOf(page, latest)));
+    const missingPromise = page.requestDeleteAttempt(rowEvent(rowOf(page, latest)));
+    chooseMenu();
+    missing = await missingPromise;
   } finally {
     global.wx.showModal = realShowModal;
   }
@@ -2754,7 +3086,9 @@ test('T048-删除30 确认框 fail/缺失/同步异常都不当取消：不写�
 
   // (c) showModal 同步抛异常：解除在途锁，仍不写盘、不动草稿。
   modal.throwNext = 1;
-  const thrown = await page.requestDeleteAttempt(rowEvent(rowOf(page, latest)));
+  const thrownPromise = page.requestDeleteAttempt(rowEvent(rowOf(page, latest)));
+  chooseMenu();
+  const thrown = await thrownPromise;
   assert.equal(thrown.ok, false);
   assert.equal(thrown.code, 'modal-unavailable');
   assert.match(thrown.error, /mock synchronous failure/);
@@ -2785,6 +3119,7 @@ test('T048-删除31 原身份六项必须齐备且一致：rev 0（数字或字�
   assert.equal(rowOf(page, latest).deleteRev, 0, '新把次的 rev 为 0');
 
   const callsBefore = modal.calls;
+  const sheetCallsBefore = sheet.calls;
   const rejects = [
     { label: '换档案', overrides: { archiveId: 'archive-other' } },
     { label: '换场次', overrides: { sessionId: 'session-other' } },
@@ -2806,6 +3141,7 @@ test('T048-删除31 原身份六项必须齐备且一致：rev 0（数字或字�
     assert.equal(result, null, item.label + ' 应直接拒绝');
     assert.match(page.data.notice, /这一行已经变化/, item.label + ' 要说明原因');
   }
+  assert.equal(sheet.calls, sheetCallsBefore, '身份缺失/错位一次都不弹菜单');
   assert.equal(modal.calls, callsBefore, '身份缺失/错位一次都不弹确认');
   assert.match(toasts[toasts.length - 1], /未删除/, '拒绝时视口内有 toast');
   assert.equal(archiveOf().attempts.some(item => item.id === first.id), true);

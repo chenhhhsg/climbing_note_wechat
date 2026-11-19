@@ -16,9 +16,12 @@
   同排「备注」与视频入口；点备注入口时，就地编辑区紧接头部替换操作行，输入约
   两行、长文框内滚动，取消与保存紧随其后。
   照片、卡点与跨天历史仍在原来的二级大图标记页；现场不再有独立逐把与线路历史跳转。
-  长按「第 N 把」序号框删除这一把（T048–T050 追加返工）：只对已保存的有效把次、收起
-  的旧行也适用；短按仍是展开/收起。确认后记录、备注与攀笔保存的视频副本一起删除，
-  档案先移出记录，视频索引与文件按持久删除凭据继续清理；失败时可重试清理。
+  长按整张把次卡删除这一把（T054）：绑定在整卡根节点，序号、结果、时间、展开后的
+  备注正文与卡片内边距都属于同一命中区；最新把、收起旧把与展开旧把都适用。
+  长按先开「删除这一把」菜单，选中后才显示原把与视频删除范围；短按仍是展开/收起。
+  备注入口、编辑区、视频入口与撤销各自保留独立输入，不触发父卡删除。确认后记录、
+  备注与攀笔保存的视频副本一起删除，档案先移出记录，视频索引与文件按持久删除凭据
+  继续清理；失败时可重试清理。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -304,11 +307,24 @@
             <text class="record-attempts-hint">最新在前 · 共 {{attempts.length}} 把</text>
           </view>
 
+          <!--
+            T054：长按绑定在整卡根节点，六项原身份也都在这里。序号、结果、时间、
+            展开后的备注正文以及卡片内边距都落在同一命中区；短按仍只由头部展开/收起。
+            卡内备注入口、编辑区、视频入口与撤销各自 catchlongpress，触碰这些控件
+            不会发起这张卡的删除，也不吞掉它们本来的点按/输入。
+          -->
           <view
             wx:for="{{attemptCards}}"
             wx:key="id"
             id="record-attempt-{{item.id}}"
             class="record-attempt {{item.isSend ? 'record-attempt-send' : 'record-attempt-fail'}}{{item.isLatest ? ' record-attempt-latest' : ' record-attempt-older'}}{{item.expanded ? ' record-attempt-open' : ' record-attempt-compact'}}"
+            data-attempt-id="{{item.id}}"
+            data-archive-id="{{item.archiveId}}"
+            data-session-id="{{item.sessionId}}"
+            data-route-id="{{item.routeId}}"
+            data-delete-rev="{{item.deleteRev}}"
+            data-page-token="{{pageToken}}"
+            catchlongpress="requestDeleteAttempt"
           >
             <view class="record-attempt-main">
               <view
@@ -319,20 +335,11 @@
                 data-route-id="{{item.routeId}}"
                 bindtap="toggleAttemptRow"
               >
-                <!-- T048–T050 追加返工（手机试用「长按后没有触发框」）：序号改成明确可见、
-                     可触的原生 view 框，不再把长按挂在只包住文字的 text 上。绑定与六项
-                     data 全在同一个 view：框内文字、内边距与空白都属于同一命中区。
-                     短按照旧冒泡到整行做展开/收起，长按只在这一框生效（原生 longpress）。 -->
+                <!-- T054：序号框仍是看得见的原序，但长按入口已经上移到整张卡根节点；
+                     这里不再单独挂手势，序号文字与内边距随整卡命中。 -->
                 <view
                   id="record-attempt-label-{{item.id}}"
                   class="record-attempt-label"
-                  data-attempt-id="{{item.id}}"
-                  data-archive-id="{{item.archiveId}}"
-                  data-session-id="{{item.sessionId}}"
-                  data-route-id="{{item.routeId}}"
-                  data-delete-rev="{{item.deleteRev}}"
-                  data-page-token="{{pageToken}}"
-                  catchlongpress="requestDeleteAttempt"
                 >
                   <text class="record-attempt-label-text">{{item.label}}</text>
                 </view>
@@ -354,11 +361,13 @@
                   data-expected="{{item.expected}}"
                   data-expected-rev="{{item.expectedRev}}"
                   catchtap="undoLatestAttempt"
+                  catchlongpress="ignoreLongPress"
                 >{{item.undoText}}</button>
                 <!-- T049：旧行收起时只有这一把已有本机视频才出现小视频图标；
                      图标不单独接收点按，点按仍落到整行展开原把详情。 -->
                 <text
                   wx:if="{{item.showVideoIcon}}"
+                  catchlongpress="ignoreLongPress"
                   id="record-attempt-video-icon-{{item.id}}"
                   class="record-attempt-video-icon"
                 >▶</text>
@@ -379,6 +388,7 @@
                 wx:if="{{noteEditor && noteEditor.attemptId === item.id}}"
                 id="note-editor"
                 class="note-editor"
+                catchlongpress="ignoreLongPress"
               >
                 <text id="note-editor-title" class="note-title">备注 · {{noteEditor.attemptLabel}}</text>
                 <textarea
@@ -392,6 +402,7 @@
                   maxlength="120"
                   cursor-spacing="24"
                   bindinput="onNoteInput"
+                  catchlongpress="ignoreLongPress"
                 ></textarea>
                 <view class="button-row">
                   <button
@@ -400,6 +411,7 @@
                     data-attempt-id="{{noteEditor.attemptId}}"
                     data-edit-version="{{noteEditor.version}}"
                     bindtap="cancelNote"
+                    catchlongpress="ignoreLongPress"
                   >取消</button>
                   <button
                     id="save-note"
@@ -407,6 +419,7 @@
                     data-attempt-id="{{noteEditor.attemptId}}"
                     data-edit-version="{{noteEditor.version}}"
                     bindtap="saveNote"
+                    catchlongpress="ignoreLongPress"
                   >保存备注</button>
                 </view>
               </view>
@@ -432,6 +445,7 @@
                       id="edit-note-{{item.id}}"
                       class="text-button record-attempt-edit"
                       data-attempt-id="{{item.id}}"
+                      catchlongpress="ignoreLongPress"
                       catchtap="openNoteEditor"
                     >{{item.noteActionText}} ›</button>
 
@@ -444,6 +458,7 @@
                         data-archive-id="{{item.archiveId}}"
                         data-session-id="{{item.sessionId}}"
                         data-route-id="{{item.routeId}}"
+                        catchlongpress="ignoreLongPress"
                         catchtap="openAttemptVideo"
                       >{{item.videoEntryText}}</text>
                     </view>
@@ -467,7 +482,7 @@
           <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
         </view>
 
-        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开后，有备注才显示原正文；最新一把和旧把都用「备注」入口，点开就在原把头部下方编辑这一把，保存只改这一把。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。最新一把右侧的「撤销」按一下就撤回这一把（本场少 1 把）；撤销成功后这一把移出列表，前一把只补位显示，再成功记一把才出现新的撤销入口，写失败时原行保留「重试撤销」。长按「第 N 把」序号框删除这一把（记录、备注与攀笔保存的视频副本；相册原片保留），取消不写；删除失败或视频副本未清理时可重试。照片与卡点在照片缩略图里。</text>
+        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开后，有备注才显示原正文；最新一把和旧把都用「备注」入口，点开就在原把头部下方编辑这一把，保存只改这一把。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。最新一把右侧的「撤销」按一下就撤回这一把（本场少 1 把）；撤销成功后这一把移出列表，前一把只补位显示，再成功记一把才出现新的撤销入口，写失败时原行保留「重试撤销」。长按整张把次卡（序号、结果、时间、正文与卡内空白）先开「删除这一把」菜单，选中后才显示原把与视频删除范围；记录、备注与攀笔保存的视频副本一起删除（相册原片保留），取消不写；删除失败或视频副本未清理时可重试。备注入口、编辑区、回看视频与撤销有各自的手势，不会触发整卡删除。照片与卡点在照片缩略图里。</text>
       </block>
     </block>
   </block>
