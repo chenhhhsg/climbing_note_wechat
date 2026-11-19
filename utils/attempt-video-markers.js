@@ -27,12 +27,17 @@ const SEEK_REPORT_WAIT_MS = 900;
 // 换成不同位置、不同片段或更晚的主动记点都照常保存；失败重试走 pending 路径，不经过这里。
 const MARKER_RAPID_DUPLICATE_WINDOW_MS = 1500;
 // 冷源（本次片源还没有有效推进过）不能直接 seek：先启动一小段播放，
-// 等本 token 报出非零原生进度后再下发跳转；bindplay 只算就绪信号。
-// 启动等待有上限，重试次数有限。「有效推进」留出一个小阈值，
-// 避免起始关键帧的 0.0x 秒读数被当成真的播起来了。
-const SEEK_COLD_PLAY_WAIT_MS = 1200;
+// 等本 token 报出**真实推进到约 1.1 秒**的原生进度后再下发跳转；bindplay、
+// 元数据、墙钟和起始 0.25/0.8 秒读数都不算就绪。真机正控制显示，太早 seek
+// 会让画面停在起始帧并忽略后续请求。
+// 启动等待有上限，重试次数有限；首次等待放宽到 3.5 秒，避免在播放器真正
+// 推进（观测到约 1.32 秒）之前就重发 play。
+const SEEK_COLD_PLAY_WAIT_MS = 3500;
 const SEEK_COLD_MAX_PLAY_ATTEMPTS = 2;
-const SEEK_COLD_PROGRESS_SECONDS = 0.2;
+// 正常片源的预热门槛：同源原生进度到这个位置才算播起来了。
+const SEEK_COLD_WARMUP_SECONDS = 1.1;
+// 极短片段按实际时长的这一比例取门槛，避免门槛超过片长而永远等不到。
+const SEEK_COLD_WARMUP_DURATION_RATIO = 0.5;
 
 function hasText(value) {
   return typeof value === 'string' && value.length > 0;
@@ -236,6 +241,30 @@ function markerDurationLimit(nativeDurationSeconds, clipDurationSeconds) {
 }
 
 /**
+ * 冷源预热门槛：正常片源要等同源原生进度真实推进到约 1.1 秒，才允许下发
+ * 第一次 seek。极短片段按实际时长的一半收口，否则门槛可能超过片长。
+ * 时长还没回来时仍用正常门槛——元数据只决定门槛，不能单独当作就绪。
+ */
+function coldWarmupProgressSeconds(durationSeconds) {
+  const duration = safeNativeNumber(durationSeconds);
+  if (duration !== null && duration > 0) {
+    return Math.min(SEEK_COLD_WARMUP_SECONDS, duration * SEEK_COLD_WARMUP_DURATION_RATIO);
+  }
+  return SEEK_COLD_WARMUP_SECONDS;
+}
+
+/**
+ * 这一帧原生进度是否已经足以证明冷源播起来了：
+ * 必须是真正的有限 number、大于 0，并且达到同源预热门槛。
+ */
+function isColdWarmupProgress(currentTimeSeconds, durationSeconds) {
+  const current = safeNativeNumber(currentTimeSeconds);
+  if (current === null || current <= 0) return false;
+  const threshold = coldWarmupProgressSeconds(durationSeconds);
+  return threshold > 0 && current >= threshold;
+}
+
+/**
  * 跳转请求：持久毫秒换算为秒，并收口到 [0, duration]。
  * 只负责请求参数；请求值不得回填为「实际落点」。
  */
@@ -371,7 +400,10 @@ module.exports = {
   MARKER_RAPID_DUPLICATE_WINDOW_MS,
   SEEK_COLD_PLAY_WAIT_MS,
   SEEK_COLD_MAX_PLAY_ATTEMPTS,
-  SEEK_COLD_PROGRESS_SECONDS,
+  SEEK_COLD_WARMUP_SECONDS,
+  SEEK_COLD_WARMUP_DURATION_RATIO,
+  coldWarmupProgressSeconds,
+  isColdWarmupProgress,
   DURATION_EDGE_TOLERANCE_SECONDS,
   hasText,
   safeNativeNumber,

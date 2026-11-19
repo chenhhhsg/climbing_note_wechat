@@ -1135,10 +1135,21 @@ test('T025-18 冷重开源：点回先启动短播放，等本 token 非零进�
   assert.equal(page.data.playing, true);
   assert.match(page.data.seekActualText, /等待有效推进/);
 
-  // 起始微量读数不是有效推进；同 token 非零进度才触发 seek（按秒）。
+  // 起始微量读数、0.25/0.8 秒的早回报都不是有效推进；同 token 真实推进到
+  // 约 1.1 秒才触发 seek（按秒）。元数据与 bindplay 更不能替代。
   reportTime(page, 0.1, 12);
   assert.equal(seekCalls(context).length, 0, '起始微量读数不能触发 seek');
   reportTime(page, 0.25, 12);
+  assert.equal(seekCalls(context).length, 0, '0.25 秒早回报按真机负例不算就绪');
+  assert.equal(page._nativeEngaged, false);
+  reportTime(page, 0.8, 12);
+  assert.equal(seekCalls(context).length, 0, '0.8 秒早回报仍不算就绪');
+  assert.equal(page._nativeEngaged, false);
+  assert.equal(page.data.seekPending, true);
+  reportTime(page, 1.05, 12);
+  assert.equal(seekCalls(context).length, 0, '略低于 1.1 秒门槛仍不下发 seek');
+  reportTime(page, 1.1, 12);
+  assert.equal(page._nativeEngaged, true);
   assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 4.954 }]);
   assert.equal(page._playerTimeSeconds, null, '触发 seek 的预热帧不是落点');
   assert.equal(page.data.canAddMarker, false);
@@ -1204,12 +1215,14 @@ test('T025-20 冷源初始化位置即使接近目标也不能成为落点（含
   reportTime(page, 0, 12);
   assert.equal(seekCalls(context).length, 0, '0 秒预热帧不能触发 seek');
   assert.equal(page.data.seekPending, true);
+  reportTime(page, 0.8, 12);
+  assert.equal(seekCalls(context).length, 0, '0.8 秒早回报仍不算就绪');
 
-  // 同 token 非零进度才下发 seek；这一帧仍属于跳转前，不能确认 0 秒落点。
-  reportTime(page, 0.25, 12);
+  // 同 token 真实推进到约 1.1 秒才下发 seek；这一帧仍属于跳转前，不能确认 0 秒落点。
+  reportTime(page, 1.1, 12);
   assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 0 }]);
   assert.equal(page.data.seekPending, true);
-  assert.equal(page.data.playerTimeMs, 250, '只更新展示读数');
+  assert.equal(page.data.playerTimeMs, 1100, '只更新展示读数');
   assert.equal(page._playerTimeSeconds, null, '触发 seek 的预热帧不能回填可记点位置');
   assert.equal(pauseCount(context), 0);
 
@@ -1264,13 +1277,16 @@ test('T025-23 冷源没有 play 事件时，有效推进也触发 seek；起始�
   const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
   assert.equal(playCount(context), 1);
 
-  // 起始关键帧的微量读数不是“有效推进”。
+  // 起始关键帧的微量读数与早回报都不是“有效推进”。
   reportTime(page, 0.1, 12);
   assert.equal(seekCalls(context).length, 0);
   assert.equal(page._nativeEngaged, false);
+  reportTime(page, 0.8, 12);
+  assert.equal(seekCalls(context).length, 0, '0.8 秒仍低于预热门槛');
+  assert.equal(page._nativeEngaged, false);
 
-  // 真正推进后才下发 seek，且不依赖 play 事件。
-  reportTime(page, 0.25, 12);
+  // 真正推进到约 1.1 秒后才下发 seek，且不依赖 play 事件。
+  reportTime(page, 1.1, 12);
   assert.equal(page._nativeEngaged, true);
   assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 8 }]);
 
@@ -1291,10 +1307,10 @@ test('T025-24 冷源已启动但跳转无回报：重试一次后明确失败并
   page.seekToMarker(clickMarker({}, 'mark-silent'));
   const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
   assert.equal(playCount(context), 1);
-  // bindplay 只记就绪；同 token 非零进度才下发跳转。
+  // bindplay 只记就绪；同 token 真实推进到约 1.1 秒才下发跳转。
   page.onVideoPlay(videoEvent(page, {}));
   assert.equal(seekCalls(context).length, 0, '仅 bindplay 不能触发 seek');
-  reportTime(page, 0.25, 12);
+  reportTime(page, 1.1, 12);
   assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 4.954 }]);
 
   // 第一次等待没有回报：重发同一请求，仍不把目标当实际。
@@ -1326,6 +1342,136 @@ test('T025-24 冷源已启动但跳转无回报：重试一次后明确失败并
   page.onUnload();
 });
 
+test('T025-27 预热门槛按真实推进判定：0.25/0.8 早回报不算，1.1 秒才就绪；首次等待 3–4 秒', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-late', atMs: 4954 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+
+  // 纯判定：只认同源真实进度，元数据/0/早回报都不算。
+  assert.equal(markers.coldWarmupProgressSeconds(12), 1.1);
+  assert.equal(markers.coldWarmupProgressSeconds(null), 1.1);
+  assert.equal(markers.coldWarmupProgressSeconds(0), 1.1);
+  assert.equal(markers.isColdWarmupProgress(0, 12), false);
+  assert.equal(markers.isColdWarmupProgress(null, 12), false);
+  assert.equal(markers.isColdWarmupProgress(0.25, 12), false);
+  assert.equal(markers.isColdWarmupProgress(0.8, 12), false);
+  assert.equal(markers.isColdWarmupProgress(1.09, 12), false);
+  assert.equal(markers.isColdWarmupProgress(1.1, 12), true);
+
+  // 真机负例：首次等待必须给播放器 3–4 秒真实推进时间，不能 1.2 秒就重发 play。
+  assert.ok(
+    markers.SEEK_COLD_PLAY_WAIT_MS >= 3000 && markers.SEEK_COLD_PLAY_WAIT_MS <= 4000,
+    '首次启动等待应在 3–4 秒内收口'
+  );
+  assert.equal(markers.SEEK_COLD_MAX_PLAY_ATTEMPTS, 2, '重试次数仍有上限');
+
+  page._seekColdPlayWaitMs = 80;
+  page.seekToMarker(clickMarker({}, 'mark-late'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+  page.onVideoPlay(videoEvent(page, {}));
+
+  // 早回报既不触发 seek，也不会提前重发 play。
+  reportTime(page, 0.8, 12);
+  assert.equal(seekCalls(context).length, 0);
+  assert.equal(playCount(context), 1, '等待期内不提前重试 play');
+  await sleep(30);
+  assert.equal(playCount(context), 1, '未到等待上限不重试');
+  assert.equal(page.data.seekPending, true);
+
+  // 等到设定上限后才有一次重试，仍不下发 seek。
+  await sleep(70);
+  assert.equal(playCount(context), 2);
+  assert.equal(seekCalls(context).length, 0);
+  page.onUnload();
+});
+
+test('T025-28 极短片按实际时长取相对门槛；普通早期进度不当作可直跳', async () => {
+  const flow = seedFlow();
+  const shortClip = coldMarkerClip(flow, [
+    { id: 'mark-short-a', atMs: 1000 },
+    { id: 'mark-short-b', atMs: 1400 }
+  ]);
+  shortClip.durationSeconds = 1.6;
+  writeIndex([shortClip]);
+  const page = openPage(flow);
+  loadMetadata(page, 1.6);
+
+  // 1.6 秒片段按一半收口：0.8 秒即就绪，不再强求 1.1 秒。
+  assert.equal(markers.coldWarmupProgressSeconds(1.6), 0.8);
+  assert.equal(markers.isColdWarmupProgress(0.7, 1.6), false);
+  assert.equal(markers.isColdWarmupProgress(0.8, 1.6), true);
+
+  page.seekToMarker(clickMarker({}, 'mark-short-a'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+  reportTime(page, 0.7, 1.6);
+  assert.equal(seekCalls(context).length, 0, '短片 0.7 秒仍未到相对门槛');
+  assert.equal(page._nativeEngaged, false);
+  reportTime(page, 0.85, 1.6);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 1 }]);
+  assert.equal(page._nativeEngaged, true);
+
+  reportTime(page, 1.0, 1.6);
+  assert.equal(page.data.seekPending, false);
+  assert.match(page.data.seekActualText, /播放器实际位置 0:01\.000/);
+  assert.equal(pauseCount(context), 1, '短片落点确认后仍恢复暂停');
+
+  // 已经真实推进过：后续点回沿用普通直跳，不再额外 play/pause。
+  page.seekToMarker(clickMarker({}, 'mark-short-b'));
+  assert.deepEqual(
+    seekCalls(context).map(call => call.seconds),
+    [1, 1.4],
+    'warm 后直接下发新目标'
+  );
+  assert.equal(playCount(context), 1, 'warm 点回不额外启动播放');
+  reportTime(page, 1.4, 1.6);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(pauseCount(context), 1, 'warm 点回不重复暂停');
+});
+
+test('T025-29 普通早期进度（0.8 秒）不把片源标记为可直跳，点回仍先预热到门槛', async () => {
+  const flow = seedFlow();
+  writeIndex([
+    coldMarkerClip(flow, [
+      { id: 'mark-early-a', atMs: 6000 },
+      { id: 'mark-early-b', atMs: 8000 }
+    ])
+  ]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+
+  // 没有在途冷源等待时，0.25/0.8 秒只是展示读数，不算“播起来过”。
+  reportTime(page, 0.25, 12);
+  assert.equal(page._nativeEngaged, false);
+  reportTime(page, 0.8, 12);
+  assert.equal(page._nativeEngaged, false, '0.8 秒早回报不能解锁直跳');
+
+  page.seekToMarker(clickMarker({}, 'mark-early-a'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1, '未达门槛按冷源先启动短播放');
+  assert.equal(seekCalls(context).length, 0);
+  reportTime(page, 1.1, 12);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 6 }]);
+  reportTime(page, 6.0, 12);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(pauseCount(context), 1);
+
+  // 达到门槛后同源状态保留：下一次点回直接 seek。
+  page.seekToMarker(clickMarker({}, 'mark-early-b'));
+  assert.deepEqual(
+    seekCalls(context).map(call => call.seconds),
+    [6, 8],
+    '预热门槛达成后沿用直跳'
+  );
+  assert.equal(playCount(context), 1);
+  reportTime(page, 8.1, 12);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(pauseCount(context), 1);
+  page.onUnload();
+});
+
 test('T025-22 同源并发点回接管旧等待；旧 token 切换后不控制新片源', async () => {
   const flow = seedFlow();
   writeIndex([
@@ -1345,7 +1491,7 @@ test('T025-22 同源并发点回接管旧等待；旧 token 切换后不控制�
   assert.equal(playCount(context), 1);
   page.onVideoPlay(videoEvent(page, {}));
   assert.equal(seekCalls(context).length, 0, '仅 bindplay 不能触发 seek');
-  reportTime(page, 0.25, 12);
+  reportTime(page, 1.1, 12);
   assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 8 }]);
 
   // 落点确认前再点 B：旧等待被替换，B 直跳到 2 秒。

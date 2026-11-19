@@ -15,9 +15,10 @@
  *   pause / error 不覆盖新片，也不改页面其他状态；
  * - 播放与暂停只向播放器发请求，界面上的播放状态以 bindplay / bindpause 回报为准；
  * - 点回时间点时，冷重开源（本次片源还没有有效推进）先启动一小段播放；bindplay
- *   只记「播放器已开始」的就绪信号，真正下发 seek 要等本 token 报出非零原生进度。
- *   落到目标附近即恢复原暂停态；已经推进过的源沿用原有直跳。预热回报与跳转后的
- *   回报分属两次事件，冷源启动位置绝不当作跳转落点；失败有明确提示且可重试；
+ *   只记「播放器已开始」的就绪信号，真正下发 seek 要等本 token 的原生进度真实
+ *   推进到约 1.1 秒（极短片段按时长比例收口）。落到目标附近即恢复原暂停态；
+ *   已经推进过的源沿用原有直跳。预热回报与跳转后的回报分属两次事件，冷源启动
+ *   位置绝不当作跳转落点；失败有明确提示且可重试；
  * - 已保存片源打不开（文件被清理或损坏）时给出可见的重选提示，原把次、备注与相册
  *   原片都保留；
  * - 更换先进入待确认预览：确认前不改关联，取消回到同一段旧片且不创建/删除文件；
@@ -134,8 +135,9 @@ Page({
     // 最近一次**成功落盘**的时间点：只用于拦同片段同毫秒的快速连点。
     this._lastSavedMarker = null;
     this._playerTimeSeconds = null;
-    // 本次片源是否已经报出**有效的非零原生进度**：冷源直接 seek 在真机上不会上报
-    // 位置，跳转前先经一段短播放把源“启动”。bindplay 只记就绪信号，不单独算预热。
+    // 本次片源是否已经报出**有效推进**：真机冷源要等同源原生进度到约 1.1 秒
+    // （极短片段按时长比例收口）才稳定上报位置；更早的 0.25/0.8 秒读数不算。
+    // 跳转前先经一段短播放把源“启动”。bindplay 只记就绪信号，不单独算预热。
     this._nativeEngaged = false;
     this._nativePlaySignaled = false;
     // 冷源点回临时启动的播放及其原暂停态；只对同一 token 的连续点回有效。
@@ -1168,7 +1170,8 @@ Page({
   onVideoPlay(event) {
     if (!this.videoEventAccepted(event)) return;
     // bindplay 只证明播放器已开始播放，是就绪信号；真机冷源要等到同 token 的
-    // 非零原生进度才稳定上报位置，所以这里不直接下发 seek，也不把源标记为已预热。
+    // 原生进度真实推进到约 1.1 秒才稳定上报位置，所以这里不直接下发 seek，
+    // 也不把源标记为已预热。
     this._nativePlaySignaled = true;
     this.setData({ playing: true, playerStatus: '正在播放', playbackError: '' });
     const seek = this._seek;
@@ -1247,14 +1250,19 @@ Page({
       patch.playerReady = true;
     }
     if (current !== null && current >= 0) {
+      // 冷源门槛只由真实进度决定；元数据/时长只用于极短片段的相对收口。
+      const warmupDuration =
+        duration !== null && duration > 0 ? duration : this.data.playerDurationSeconds;
+      const warmupReady = attemptVideoMarkers.isColdWarmupProgress(current, warmupDuration);
       const seek = this._seek;
       const activeSeek = Boolean(seek) && seek.token === this.data.playerToken;
       // 冷源预热回报是独立的一类事件：这一帧只说明播放器启动了/推进了，
       // 即使它刚好触发 seek，也仍是**跳转请求之前**的位置，必须整帧返回，
       // 绝不能用同一次回报去确认落点或回填可记点位置。
       if (activeSeek && seek.phase === 'warming' && !seek.expired) {
-        if (current >= attemptVideoMarkers.SEEK_COLD_PROGRESS_SECONDS) {
-          // 只有同 token 的非零原生进度才能下发跳转；bindplay 单独不算。
+        if (warmupReady) {
+          // 只有同 token 的真实推进（约 1.1 秒，短片按时长比例）才能下发跳转；
+          // bindplay、元数据、0.25/0.8 秒的早回报都不算。
           this._nativeEngaged = true;
           this.advanceColdSeek();
         }
@@ -1265,8 +1273,8 @@ Page({
         this.refreshMarkerReadiness();
         return;
       }
-      // 没有在途冷源等待时，非零进度同样证明片源已经真实启动，后续点回可直跳。
-      if (current >= attemptVideoMarkers.SEEK_COLD_PROGRESS_SECONDS) {
+      // 没有在途冷源等待时，同样的预热门槛才证明片源已经真实启动，后续点回可直跳。
+      if (warmupReady) {
         this._nativeEngaged = true;
       }
       // 已下发跳转但回报还没落到目标 ±0.5 秒内：偏差读数只用于展示，
@@ -1805,8 +1813,8 @@ Page({
       return;
     }
     // 冷源（本次片源还没有有效推进）直接 seek 在真机上不上报位置：
-    // 先由这次点回启动一小段播放；bindplay 只算就绪信号，等本 token 报出非零
-    // 原生进度后再下发跳转。
+    // 先由这次点回启动一小段播放；bindplay 只算就绪信号，等本 token 的原生进度
+    // 真实推进到约 1.1 秒（短片按时长比例）后再下发跳转。
     const cold = !this._nativeEngaged;
     const token = this.data.playerToken;
     // 冷源临时播放的“原暂停态”跨同一片源的连续点回保持：A 点回启动了播放，
@@ -1881,7 +1889,7 @@ Page({
       : attemptVideoMarkers.SEEK_COLD_PLAY_WAIT_MS;
   },
 
-  /** 冷源启动等待：同 token 的非零进度会提前结束；bindplay 不结束等待，超时重试有限。 */
+  /** 冷源启动等待：同 token 的真实推进到门槛会提前结束；bindplay 不结束等待，超时重试有限。 */
   scheduleColdWait(seek) {
     this.clearSeekWait();
     const timer = setTimeout(() => {
@@ -1916,7 +1924,7 @@ Page({
     return true;
   },
 
-  /** 本 token 报出非零原生进度：冷源预热完成，可以下发跳转。 */
+  /** 本 token 真实推进到预热门槛：冷源预热完成，可以下发跳转。 */
   advanceColdSeek() {
     const seek = this._seek;
     if (!seek || seek.mode !== 'cold' || seek.phase !== 'warming' || seek.expired) return false;
