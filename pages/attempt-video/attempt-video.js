@@ -54,6 +54,30 @@ function isMeasuredBox(box) {
   );
 }
 
+/**
+ * 原生页面视口高度：部分真实 SDK 的 selectViewport() 恒为 0 高，
+ * 此时用有限正的 windowHeight 作为页面视口的后备高度。
+ */
+function nativeViewportHeight() {
+  if (typeof wx === 'undefined' || !wx) return null;
+  const accept = info =>
+    info && Number.isFinite(info.windowHeight) && info.windowHeight > 0
+      ? info.windowHeight
+      : null;
+  try {
+    if (typeof wx.getWindowInfo === 'function') {
+      const height = accept(wx.getWindowInfo());
+      if (height !== null) return height;
+    }
+  } catch (error) {}
+  try {
+    if (typeof wx.getSystemInfoSync === 'function') {
+      return accept(wx.getSystemInfoSync());
+    }
+  } catch (error) {}
+  return null;
+}
+
 // T026：持久层按 request.archiveId 取对应档案的服务；换档/迟到回调不会写错档案。
 playback.setVideoStoreFactory(archiveId => videoFiles.openAttemptVideoService(archiveId));
 
@@ -2027,17 +2051,37 @@ Page({
         if (!this.seekStillOwned(seek) || seek.phase !== 'revealing' || seek.expired) return;
         const rect = Array.isArray(results) ? results[0] : null;
         const viewport = Array.isArray(results) ? results[1] : null;
-        if (!isMeasuredBox(rect) || !isMeasuredBox(viewport)) {
-          // 几何不可用/尚未回填：不伪造可见性，回退到原生滚动成功。
+        if (!isMeasuredBox(rect)) {
+          // 节点几何不可用/尚未回填：不伪造可见性，回退到原生滚动成功。
           finish(true);
           return;
+        }
+        let viewportTop;
+        let viewportBottom;
+        if (
+          isMeasuredBox(viewport) &&
+          viewport.height > 0 &&
+          viewport.bottom > viewport.top
+        ) {
+          viewportTop = viewport.top;
+          viewportBottom = viewport.bottom;
+        } else {
+          // 选择器视口为 0 高/缺失（真实 SDK 可稳定复现）时，改用原生
+          // 有限正的 windowHeight；仍取不到才保持原来的有界回退。
+          const height = nativeViewportHeight();
+          if (height === null) {
+            finish(true);
+            return;
+          }
+          viewportTop = 0;
+          viewportBottom = height;
         }
         // 正高度但整体在视口上方或下方，仍不是可见。
         if (!(rect.width > 0) || !(rect.height > 0)) {
           finish(false);
           return;
         }
-        const visible = rect.bottom > viewport.top && rect.top < viewport.bottom;
+        const visible = rect.bottom > viewportTop && rect.top < viewportBottom;
         finish(visible);
       });
     } catch (error) {

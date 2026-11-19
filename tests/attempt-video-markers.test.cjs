@@ -45,6 +45,8 @@ const wxLog = {
   // 播放器节点几何与视口；top/height 缺 bottom 时由 mock 补齐。
   rect: { top: 20, height: 240 },
   viewport: { top: 0, bottom: 500, width: 320, height: 500 },
+  // 原生视口高度：选择器视口退化时的后备来源。
+  windowHeight: 500,
   // 模拟选择器查询拿不到几何（节点尚未布局/回调延迟）。
   geometryMissing: false,
   querySelectors: []
@@ -59,6 +61,7 @@ function resetDevice() {
   wxLog.scrollResult = 'success';
   wxLog.rect = { top: 20, height: 240 };
   wxLog.viewport = { top: 0, bottom: 500, width: 320, height: 500 };
+  wxLog.windowHeight = 500;
   wxLog.geometryMissing = false;
   wxLog.querySelectors = [];
 }
@@ -85,6 +88,12 @@ global.wx = {
   },
   getStorageInfoSync() {
     return { keys: [...storage.keys()] };
+  },
+  getWindowInfo() {
+    return { windowHeight: wxLog.windowHeight };
+  },
+  getSystemInfoSync() {
+    return { windowHeight: wxLog.windowHeight };
   },
   getFileSystemManager() {
     return fileManager;
@@ -1830,6 +1839,72 @@ test('T025-35 可见性复核当前播放器节点与视口相交：正高度但
   assert.notEqual(coldInstance(page).token, beforeToken, '几何不可用时回退到原生滚动成功');
   assert.equal(coldInstance(page).initialSeconds, 4.954);
   wxLog.geometryMissing = false;
+  page.onUnload();
+});
+
+test('T025-38 选择器视口为 0 高时改用原生 windowHeight：当前节点可见才重挂载', () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-zero-viewport', atMs: 4954 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+  const beforeToken = page.data.playerToken;
+
+  // 真实 SDK 的 selectViewport().boundingClientRect() 恒为 0 高。
+  wxLog.viewport = { top: 0, bottom: 0, width: 0, height: 0 };
+  wxLog.windowHeight = 446;
+  // 滚动后当前播放器节点确实位于原视口内（108.8..270.8）。
+  wxLog.rect = { top: 108.8, height: 162 };
+  page.seekToMarker(clickMarker({}, 'mark-zero-viewport'));
+  completeScroll();
+
+  const instance = coldInstance(page);
+  assert.notEqual(instance.token, beforeToken, '0 高视口不应把所有节点判为不可见');
+  assert.equal(instance.initialSeconds, 4.954);
+  assert.equal(instance.autoplay, true);
+  assert.equal(page._seek.phase, 'seeking');
+  reportTime(page, 4.96, 12);
+  assert.equal(page.data.seekPending, false);
+  page.onUnload();
+
+  // getWindowInfo 缺失时回退 getSystemInfoSync，仍按原生有限正高度判定。
+  const savedWindowInfo = global.wx.getWindowInfo;
+  delete global.wx.getWindowInfo;
+  try {
+    const fallbackPage = openPage(flow);
+    loadMetadata(fallbackPage, 12);
+    const fallbackToken = fallbackPage.data.playerToken;
+    fallbackPage.seekToMarker(clickMarker({}, 'mark-zero-viewport'));
+    completeScroll();
+    assert.notEqual(
+      coldInstance(fallbackPage).token,
+      fallbackToken,
+      'getWindowInfo 缺失时回退 getSystemInfoSync'
+    );
+    fallbackPage.onUnload();
+  } finally {
+    global.wx.getWindowInfo = savedWindowInfo;
+  }
+});
+
+test('T025-39 选择器视口为 0 高且节点确实在原生视口外：仍然阻止重挂载', () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-zero-offscreen', atMs: 4954 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+  const beforeToken = page.data.playerToken;
+
+  wxLog.viewport = { top: 0, bottom: 0, width: 0, height: 0 };
+  wxLog.windowHeight = 446;
+  // 节点高度为正，但整体位于原生窗口下方。
+  wxLog.rect = { top: 620, height: 240 };
+  page.seekToMarker(clickMarker({}, 'mark-zero-offscreen'));
+  completeScroll();
+
+  assert.equal(coldInstance(page).token, beforeToken, '原生视口外不重挂载');
+  assert.equal(page.data.seekPending, false);
+  assert.equal(page.data.playerTimeMs, null, '请求值不回填落点');
+  assert.match(page.data.seekActualText, /滚到可见位置/);
+  assert.equal(page._seek.phase, 'failed');
   page.onUnload();
 });
 
