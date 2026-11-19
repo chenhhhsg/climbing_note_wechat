@@ -310,6 +310,10 @@ page {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* 320px 屏幕上时间文字 + 两个动作按钮放不下时整体换行，
+     动作按钮保持完整宽度，不挤出可视区，也不压扁时间文字。 */
+  flex-wrap: wrap;
+  row-gap: 6rpx;
   padding: 8rpx 0;
   border-top: 1px solid #E4E9E6;
 }
@@ -319,23 +323,36 @@ page {
 }
 
 .marker-time {
+  flex: 0 0 auto;
   font-family: "IBM Plex Mono", Consolas, "PingFang SC", "Microsoft YaHei", sans-serif;
   font-variant-numeric: tabular-nums;
   font-size: 30rpx;
   line-height: 1.5;
   color: #182421;
+  white-space: nowrap;
 }
 
 .marker-actions {
   display: flex;
   flex: 0 0 auto;
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  margin-left: auto;
 }
 
-.marker-button {
-  min-width: 96px;
-  margin-left: 12rpx;
-  padding: 12rpx 18rpx;
+/* 微信默认 button 宽 184px，两个按钮在 320px 屏幕上会越界；
+   这里显式收窄到 84px（仍大于 44px 触控宽），并保留 44px 最小高度。
+   选择器比后面的 .secondary-button 更具体，避免内边距/字号被覆盖。 */
+.marker-actions .marker-button {
+  flex: 0 0 84px;
+  width: 84px;
+  min-width: 84px;
+  max-width: 84px;
+  box-sizing: border-box;
+  margin: 0 0 0 8rpx;
+  padding: 12rpx 8rpx;
   font-size: 24rpx;
+  white-space: nowrap;
 }
 
 .marker-notice,

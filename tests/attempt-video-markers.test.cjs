@@ -271,6 +271,15 @@ function clickMarker(eventSource, markerId) {
   };
 }
 
+/** 从真实 WXML 取出某个 id 的绑定处理器；测试按渲染后的绑定调用，而不是猜方法名。 */
+function bindingOf(markup, id, attribute) {
+  const tag = markup.match(new RegExp(`<[a-z-]+\\b[^>]*\\bid="${id}"[^>]*>`, 's'))?.[0];
+  assert.ok(tag, '缺少 WXML 节点：' + id);
+  const hit = tag.match(new RegExp(`(?:bind|catch):?${attribute}="([a-zA-Z][\\w]*)"`));
+  assert.ok(hit, '缺少 ' + id + ' 的 ' + attribute + ' 绑定');
+  return hit[1];
+}
+
 beforeEach(() => {
   resetDevice();
   files.resetAttemptVideoServices();
@@ -716,7 +725,7 @@ test('T025-11 点回只下发秒数请求；未确认前不接受旧画面位置
   const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
   const seekCall = context.calls.filter(call => call.type === 'seek')[0];
   assert.deepEqual(seekCall, { type: 'seek', seconds: 8 }, '跳转请求用秒');
-  assert.equal(page.data.playerTimeMs, 2000, '请求值不回填实际落点');
+  assert.equal(page.data.playerTimeMs, null, '请求值不回填实际落点，旧位置也已作废');
   assert.equal(page.data.seekPending, true);
   assert.match(page.data.seekRequestText, /0:08\.000/);
   assert.equal(page.data.canAddMarker, false, '跳转未确认时不记新点');
@@ -859,7 +868,7 @@ test('T025-14 原生数值严格校验：null/false/空白/数组不伪造 0，�
   assert.equal(playback.metadataPatch({ duration: 12.4 }).playerDurationSeconds, 12.4);
 });
 
-test('T025-15 页面非法 timeupdate 不写 0、不覆盖上一有效读数、不误报就绪', async () => {
+test('T025-15 当前源非法 timeupdate 清空捕获位置；合法新回报恢复，旧 token 仍忽略', async () => {
   const flow = seedFlow();
   writeIndex([clipOf(flow)]);
   const page = openPage(flow);
@@ -887,15 +896,39 @@ test('T025-15 页面非法 timeupdate 不写 0、不覆盖上一有效读数、�
   await tick();
   assert.equal(page.data.markers[0].atMs, 0);
 
-  // 已有有效读数后，非法读数不得把它覆盖成 0。
+  // 已有有效读数后，当前源的不合法读数清空捕获位置与就绪态，不能保存旧位置。
   reportTime(page, 3, 12.4);
   assert.equal(page.data.playerTimeMs, 3000);
-  reportTime(page, null, 12.4);
-  reportTime(page, [], null);
-  assert.equal(page.data.playerTimeMs, 3000, '保留上一有效位置');
-  assert.equal(page._playerTimeSeconds, 3);
-  assert.equal(page.data.playerDurationSeconds, 12.4, '非法 duration 不覆盖已知时长');
   assert.equal(page.data.canAddMarker, true);
+  const beforeInvalid = storage.get(VIDEO_INDEX_KEY);
+  reportTime(page, null, 12.4);
+  assert.equal(page.data.playerTimeMs, null, '非法读数不保留旧位置');
+  assert.equal(page.data.playerTimeText, '');
+  assert.equal(page._playerTimeSeconds, null);
+  assert.equal(page.data.playerDurationSeconds, 12.4, '非法 duration 不覆盖已知时长');
+  assert.equal(page.data.canAddMarker, false, '未知位置不能记点');
+  page.addMarkerAtCurrentTime();
+  await tick();
+  assert.equal(storage.get(VIDEO_INDEX_KEY), beforeInvalid, '不合法读数后不写旧位置');
+  assert.equal(page.data.markers.length, 1);
+
+  // 其他片源的迟到 token 仍被忽略：既不改也不清空当前源。
+  reportTime(page, 3, 12.4);
+  const staleToken = page.data.playerToken + '-old';
+  page.onVideoTimeUpdate(staleVideoEvent(staleToken, { currentTime: null, duration: 12.4 }));
+  page.onVideoTimeUpdate(staleVideoEvent(staleToken, { currentTime: 4, duration: 12.4 }));
+  assert.equal(page._playerTimeSeconds, 3, '旧 token 不改当前片源位置');
+  assert.equal(page.data.canAddMarker, true);
+
+  // 合法的新回报恢复可记点，并按新位置写入。
+  reportTime(page, 5.5, 12.4);
+  assert.equal(page.data.canAddMarker, true);
+  page.addMarkerAtCurrentTime();
+  await tick();
+  assert.deepEqual(
+    page.data.markers.map(item => item.atMs),
+    [0, 5500]
+  );
 });
 
 test('T025-16 addMarker 按当前片段与原生回报复核时长，无有效时长拒绝', () => {
@@ -1001,12 +1034,12 @@ test('T025-17 seek 无原生回报：短等待重发一次，仍未回报则解�
   const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
   assert.deepEqual(context.calls[0], { type: 'seek', seconds: 8 });
   assert.equal(page.data.seekPending, true);
-  assert.equal(page.data.playerTimeMs, 2000, '请求值不回填实际落点');
+  assert.equal(page.data.playerTimeMs, null, '请求值不回填实际落点，旧位置也随跳转作废');
 
-  // 非法读数不结束等待、不覆盖位置。
+  // 非法读数不结束等待、不重建位置。
   reportTime(page, null, 12.4);
   assert.equal(page.data.seekPending, true);
-  assert.equal(page.data.playerTimeMs, 2000);
+  assert.equal(page.data.playerTimeMs, null);
 
   // 第一次短等待：重发同一秒数请求，仍等待真实回报。
   await sleep(150);
@@ -1015,21 +1048,25 @@ test('T025-17 seek 无原生回报：短等待重发一次，仍未回报则解�
   assert.deepEqual(firstSeeks[1], { type: 'seek', seconds: 8 });
   assert.equal(page.data.seekPending, true);
   assert.match(page.data.seekActualText, /重试跳转/);
-  assert.equal(page.data.playerTimeMs, 2000, '重试也不把请求当实际');
+  assert.equal(page.data.playerTimeMs, null, '重试也不把请求当实际');
 
-  // 第二次短等待仍无回报：解除等待，不永久锁定，但落点仍未确认。
+  // 第二次短等待仍无回报：解除等待，不永久锁定，但落点仍未确认、旧位置不能记点。
   await sleep(120);
   assert.equal(page.data.seekPending, false, '不会永久锁定');
-  assert.equal(page.data.playerTimeMs, 2000, '没有把目标值返填为实际落点');
+  assert.equal(page.data.playerTimeMs, null, '没有把目标值返填为实际落点');
   assert.match(page.data.seekRequestText, /0:08\.000/);
   assert.match(page.data.seekActualText, /没有回报/);
-  assert.equal(page.data.canAddMarker, true, '解除等待后可继续操作');
-  assert.equal(page.data.markers.length, 1, '不会自动产生新点');
+  page.addMarkerAtCurrentTime();
+  await tick();
+  assert.equal(page.data.markers.length, 1, '跳转前旧画面位置没有被写成新点');
+  assert.equal(page.data.canAddMarker, false, '超时后要等新的真实回报');
 
-  // 解锁后迟到的非目标位置不把页面锁回等待。
+  // 解锁后真实播放/拖动回报重建位置；迟到的非目标回报不把页面锁回等待。
   reportTime(page, 1, 12.4);
   assert.equal(page.data.seekPending, false);
   assert.match(page.data.seekActualText, /仍未确认/);
+  assert.equal(page.data.playerTimeMs, 1000);
+  assert.equal(page.data.canAddMarker, true, '新的真实回报恢复可记点');
 
   // 旧 token 的目标位置不算确认；当前 token 真正到达目标时才确认。
   const staleToken = page.data.playerToken + '-old';
@@ -1039,4 +1076,430 @@ test('T025-17 seek 无原生回报：短等待重发一次，仍未回报则解�
   assert.equal(page.data.playerTimeMs, 8200);
   assert.match(page.data.seekActualText, /播放器实际位置 0:08\.200/);
   assert.equal(page.data.seekPending, false);
+});
+
+// ------------------------------------------------------------------ *
+// 真机阻塞返工：冷重开源不能直接 seek，先短播放启动，再跳转并恢复暂停
+// ------------------------------------------------------------------ *
+
+function coldMarkerClip(flow, markers) {
+  return clipOf(flow, {
+    markers: markers.map(item => ({
+      id: item.id,
+      atMs: item.atMs,
+      clipId: 'clip-1-test',
+      rev: 1
+    }))
+  });
+}
+
+function seekCalls(context) {
+  return context.calls.filter(call => call.type === 'seek');
+}
+
+function playCount(context) {
+  return context.calls.filter(call => call === 'play').length;
+}
+
+function pauseCount(context) {
+  return context.calls.filter(call => call === 'pause').length;
+}
+
+test('T025-18 冷重开源：点回先启动短播放，等本 token 非零进度后 seek，近目标回报后恢复暂停', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-cold', atMs: 4954 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+  assert.equal(page._nativeEngaged, false, '只有元数据、从未播放/推进，按冷源处理');
+
+  page.seekToMarker(clickMarker({}, 'mark-cold'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1, '冷源先启动一小段播放');
+  assert.equal(seekCalls(context).length, 0, '播放启动前不下发 seek');
+  assert.equal(page.data.seekPending, true);
+  assert.equal(page.data.playerTimeMs, null);
+  assert.match(page.data.seekRequestText, /0:04\.954/);
+  assert.match(page.data.seekActualText, /还没有开始播放/);
+
+  // 冷源初始化位置（尚未真正推进的 0 秒）不是落点，也不能用来记点。
+  reportTime(page, 0, 12);
+  assert.equal(page.data.seekPending, true);
+  assert.equal(page._playerTimeSeconds, null);
+  assert.equal(page.data.canAddMarker, false);
+  assert.equal(seekCalls(context).length, 0, '初始化位置不能替代跳转请求');
+
+  // bindplay 只是就绪信号：单独出现时不下发 seek，也不把冷源算作已预热。
+  page.onVideoPlay(videoEvent(page, {}));
+  assert.equal(seekCalls(context).length, 0, '仅 bindplay 不能触发 seek');
+  assert.equal(page._nativeEngaged, false, '仅 bindplay 不设置已预热门槛');
+  assert.equal(page.data.playing, true);
+  assert.match(page.data.seekActualText, /等待有效推进/);
+
+  // 起始微量读数不是有效推进；同 token 非零进度才触发 seek（按秒）。
+  reportTime(page, 0.1, 12);
+  assert.equal(seekCalls(context).length, 0, '起始微量读数不能触发 seek');
+  reportTime(page, 0.25, 12);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 4.954 }]);
+  assert.equal(page._playerTimeSeconds, null, '触发 seek 的预热帧不是落点');
+  assert.equal(page.data.canAddMarker, false);
+  assert.equal(pauseCount(context), 0, '预热帧不触发暂停');
+
+  // 下一帧（已下发跳转后）落到目标附近才确认实际落点，并恢复原来的暂停态。
+  reportTime(page, 5.0, 12);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(page.data.playerTimeMs, 5000, '显示原生实际落点，不填请求值');
+  assert.match(page.data.seekActualText, /播放器实际位置 0:05\.000/);
+  assert.match(page.data.markerNotice, /0:05\.000 秒（请求 0:04\.954 秒）/);
+  assert.equal(pauseCount(context), 1, '确认落点后恢复原暂停态');
+
+  // 再来的位置回报只更新读数，不重复暂停。
+  reportTime(page, 5.1, 12);
+  assert.equal(pauseCount(context), 1);
+  assert.equal(page.data.playerTimeMs, 5100);
+});
+
+test('T025-19 warm/已暂停源保持原直跳：不额外启动播放，也不暂停', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-warm', atMs: 8000 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12.4);
+  // 真机正控制路径：同一片源先播放过、再暂停，随后点回直接 seek。
+  page.onVideoPlay(videoEvent(page, {}));
+  page.onVideoPause(videoEvent(page, {}));
+  reportTime(page, 2, 12.4);
+  assert.equal(page._nativeEngaged, true);
+
+  page.seekToMarker(clickMarker({}, 'mark-warm'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.deepEqual(context.calls, [{ type: 'seek', seconds: 8 }], '已有播放经历时直接 seek');
+
+  reportTime(page, 8.2, 12.4);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(page.data.playerTimeMs, 8200);
+  assert.equal(playCount(context), 0, 'warm 路径不额外播放');
+  assert.equal(pauseCount(context), 0, 'warm 路径不擅自暂停');
+});
+
+test('T025-20 冷源初始化位置即使接近目标也不能成为落点（含 0 秒目标）', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-zero', atMs: 0 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+
+  page.seekToMarker(clickMarker({}, 'mark-zero'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+
+  // 目标 0 秒：预热阶段的 0 秒回报本身落在 ±0.5 秒内，但还没下发 seek。
+  reportTime(page, 0, 12);
+  assert.equal(page.data.seekPending, true, '预热阶段不确认落点');
+  assert.equal(page._playerTimeSeconds, null);
+  assert.equal(page.data.canAddMarker, false);
+  assert.equal(pauseCount(context), 0);
+  assert.match(page.data.seekActualText, /还没有开始播放/);
+
+  // bindplay 与 0 秒预热帧都不能替代跳转请求。
+  page.onVideoPlay(videoEvent(page, {}));
+  assert.equal(seekCalls(context).length, 0, '仅 bindplay 不能触发 seek');
+  reportTime(page, 0, 12);
+  assert.equal(seekCalls(context).length, 0, '0 秒预热帧不能触发 seek');
+  assert.equal(page.data.seekPending, true);
+
+  // 同 token 非零进度才下发 seek；这一帧仍属于跳转前，不能确认 0 秒落点。
+  reportTime(page, 0.25, 12);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 0 }]);
+  assert.equal(page.data.seekPending, true);
+  assert.equal(page.data.playerTimeMs, 250, '只更新展示读数');
+  assert.equal(page._playerTimeSeconds, null, '触发 seek 的预热帧不能回填可记点位置');
+  assert.equal(pauseCount(context), 0);
+
+  // 下一帧落到 0 秒附近才确认并恢复暂停。
+  reportTime(page, 0, 12);
+  assert.equal(page.data.seekPending, false);
+  assert.match(page.data.seekActualText, /播放器实际位置 0:00\.000/);
+  assert.equal(page.data.playerTimeMs, 0);
+  assert.equal(pauseCount(context), 1);
+});
+
+test('T025-21 冷源始终未启动：有限次重试后明确失败，可再次点回重试且不填目标', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-stuck', atMs: 4954 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+  page._seekColdPlayWaitMs = 40;
+  page._seekWaitMs = 40;
+
+  page.seekToMarker(clickMarker({}, 'mark-stuck'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+
+  await sleep(60);
+  assert.equal(playCount(context), 2, '启动等待超时只重试一次');
+  assert.equal(page.data.seekPending, true);
+  assert.match(page.data.seekActualText, /重试启动/);
+
+  await sleep(70);
+  assert.equal(playCount(context), 2, '重试次数有限，不无限播放');
+  assert.equal(page.data.seekPending, false);
+  assert.equal(seekCalls(context).length, 0, '没有启动就不下发 seek');
+  assert.equal(page.data.playerTimeMs, null, '请求目标没有回填为实际位置');
+  assert.match(page.data.seekActualText, /没有开始播放/);
+  assert.match(page.data.seekActualText, /再次点时间点重试/);
+  assert.match(page.data.markerNotice, /没有当作实际位置/);
+
+  // 同一个时间点可以再次发起：重新走一次冷源启动，不是永久锁死。
+  page.seekToMarker(clickMarker({}, 'mark-stuck'));
+  assert.equal(playCount(context), 3);
+  assert.equal(page.data.seekPending, true);
+  page.onUnload();
+});
+
+test('T025-23 冷源没有 play 事件时，有效推进也触发 seek；起始微量读数不算', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-progress', atMs: 8000 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+
+  page.seekToMarker(clickMarker({}, 'mark-progress'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+
+  // 起始关键帧的微量读数不是“有效推进”。
+  reportTime(page, 0.1, 12);
+  assert.equal(seekCalls(context).length, 0);
+  assert.equal(page._nativeEngaged, false);
+
+  // 真正推进后才下发 seek，且不依赖 play 事件。
+  reportTime(page, 0.25, 12);
+  assert.equal(page._nativeEngaged, true);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 8 }]);
+
+  reportTime(page, 8.1, 12);
+  assert.equal(page.data.seekPending, false);
+  assert.match(page.data.seekActualText, /0:08\.100/);
+  assert.equal(pauseCount(context), 1);
+});
+
+test('T025-24 冷源已启动但跳转无回报：重试一次后明确失败并恢复暂停，迟到落点仍可确认', async () => {
+  const flow = seedFlow();
+  writeIndex([coldMarkerClip(flow, [{ id: 'mark-silent', atMs: 4954 }])]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+  page._seekWaitMs = 40;
+  page._seekColdPlayWaitMs = 500;
+
+  page.seekToMarker(clickMarker({}, 'mark-silent'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+  // bindplay 只记就绪；同 token 非零进度才下发跳转。
+  page.onVideoPlay(videoEvent(page, {}));
+  assert.equal(seekCalls(context).length, 0, '仅 bindplay 不能触发 seek');
+  reportTime(page, 0.25, 12);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 4.954 }]);
+
+  // 第一次等待没有回报：重发同一请求，仍不把目标当实际。
+  await sleep(60);
+  assert.deepEqual(
+    seekCalls(context).map(call => call.seconds),
+    [4.954, 4.954],
+    '失败路径也只重试有限次'
+  );
+  assert.equal(page.data.seekPending, true);
+  assert.equal(page.data.playerTimeMs, null);
+
+  // 第二次等待仍无回报：解除等待、明确未确认，并恢复到原来的暂停态。
+  await sleep(70);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(page.data.playerTimeMs, null);
+  assert.match(page.data.seekActualText, /已开始播放/);
+  assert.match(page.data.seekActualText, /没有收到落在目标附近/);
+  assert.match(page.data.seekActualText, /再次点时间点重试/);
+  assert.match(page.data.markerNotice, /没有当作实际落点/);
+  assert.equal(pauseCount(context), 1, '失败收敛时也恢复原暂停态');
+
+  // 迟到但真正落到目标的原生回报仍可确认；不重复暂停。
+  reportTime(page, 5.0, 12);
+  assert.match(page.data.seekActualText, /播放器实际位置 0:05\.000/);
+  assert.equal(page.data.playerTimeMs, 5000);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(pauseCount(context), 1);
+  page.onUnload();
+});
+
+test('T025-22 同源并发点回接管旧等待；旧 token 切换后不控制新片源', async () => {
+  const flow = seedFlow();
+  writeIndex([
+    coldMarkerClip(flow, [
+      { id: 'mark-a', atMs: 8000 },
+      { id: 'mark-b', atMs: 2000 }
+    ])
+  ]);
+  const page = openPage(flow);
+  loadMetadata(page, 12);
+  page._seekColdPlayWaitMs = 200;
+  page._seekWaitMs = 200;
+
+  // A 冷源点回：启动播放后跳到 8 秒。
+  page.seekToMarker(clickMarker({}, 'mark-a'));
+  const context = wxLog.videoContexts[wxLog.videoContexts.length - 1];
+  assert.equal(playCount(context), 1);
+  page.onVideoPlay(videoEvent(page, {}));
+  assert.equal(seekCalls(context).length, 0, '仅 bindplay 不能触发 seek');
+  reportTime(page, 0.25, 12);
+  assert.deepEqual(seekCalls(context), [{ type: 'seek', seconds: 8 }]);
+
+  // 落点确认前再点 B：旧等待被替换，B 直跳到 2 秒。
+  page.seekToMarker(clickMarker({}, 'mark-b'));
+  assert.deepEqual(
+    seekCalls(context).map(call => call.seconds),
+    [8, 2],
+    '同源后来点回接管，旧等待不再重复 seek'
+  );
+  assert.equal(page.data.seekPending, true);
+
+  // A 的迟到近目标回报不能确认 B，也不能触发暂停。
+  reportTime(page, 8.2, 12);
+  assert.equal(page.data.seekPending, true);
+  assert.match(page.data.seekActualText, /不一致/);
+  assert.equal(pauseCount(context), 0);
+
+  // B 落到目标：确认并恢复冷源序列开始前的暂停态。
+  reportTime(page, 2.1, 12);
+  assert.equal(page.data.seekPending, false);
+  assert.equal(page.data.playerTimeMs, 2100);
+  assert.equal(pauseCount(context), 1);
+
+  // 同一把随后换了片源：旧 token 的 play/timeupdate 不能控制新节点。
+  const oldToken = page.data.playerToken;
+  page.startSource(
+    {
+      kind: 'saved',
+      clipId: 'clip-2-new',
+      rev: 2,
+      fileId: 'attempt-video/v1/' + flow.archiveId + '/clip-2-new.mp4',
+      src: 'wxfile://usr/attempt-video/v1/' + flow.archiveId + '/clip-2-new.mp4'
+    },
+    '新片'
+  );
+  const newContext = page.getVideoContext();
+  assert.ok(newContext);
+  assert.notEqual(page.data.playerToken, oldToken);
+  assert.notEqual(newContext.domId, context.domId, '换片后 video 节点也跟着换');
+  page.onVideoPlay(staleVideoEvent(oldToken, {}));
+  page.onVideoTimeUpdate(staleVideoEvent(oldToken, { currentTime: 2.1, duration: 12 }));
+  assert.equal(page.data.playing, false, '旧 token 的 play 不采用');
+  assert.equal(page.data.seekPending, false);
+  assert.deepEqual(newContext.calls, [], '旧 token 不对新片源下发任何控制');
+
+  // 旧等待定时器到点也不能重新对新片源发 seek/play/pause。
+  await sleep(260);
+  assert.deepEqual(newContext.calls, []);
+  page.onUnload();
+});
+
+// ------------------------------------------------------------------ *
+// 连点去重、失败重试与窄屏按钮（V3 返工）
+// ------------------------------------------------------------------ */
+
+test('T025-25 真实 WXML 绑定下快速连点同一帧只记一次；不同位置与失败重试照常保存', async () => {
+  const flow = seedFlow();
+  writeIndex([clipOf(flow)]);
+  const page = openPage(flow);
+  loadMetadata(page, 12.4);
+  reportTime(page, 3.125, 12.4);
+  page.onVideoPause(videoEvent(page, {}));
+
+  const wxml = fs.readFileSync(VIDEO_PAGE_WXML, 'utf8');
+  const addBinding = bindingOf(wxml, 'add-marker', 'tap');
+  assert.equal(addBinding, 'addMarkerAtCurrentTime');
+  const tapAdd = () =>
+    page[addBinding]({ type: 'tap', currentTarget: { dataset: {} }, target: { dataset: {} } });
+
+  tapAdd();
+  await tick();
+  assert.deepEqual(
+    page.data.markers.map(item => item.atMs),
+    [3125],
+    '第一次点击必须落盘'
+  );
+
+  // 本地同步回执已结清后约 100ms 再点同一帧：不应新增第二行。
+  await sleep(100);
+  tapAdd();
+  await tick();
+  assert.deepEqual(
+    page.data.markers.map(item => item.atMs),
+    [3125],
+    '快速连点同一帧不能重复保存'
+  );
+  assert.match(page.data.markerNotice, /没有重复添加/);
+
+  // 不同位置立即再点：必须正常保存。
+  reportTime(page, 3.25, 12.4);
+  tapAdd();
+  await tick();
+  assert.deepEqual(page.data.markers.map(item => item.atMs), [3125, 3250]);
+
+  // 失败重试不能被去重吞掉：写前失败后立即再点，沿用同一次动作并落盘。
+  reportTime(page, 4.125, 12.4);
+  const realService = files.openAttemptVideoService(flow.archiveId);
+  const originalAdd = realService.addMarker;
+  let failOnce = true;
+  realService.addMarker = request => {
+    if (failOnce) {
+      failOnce = false;
+      return { ok: false, code: 'index-write-failed', error: '模拟写入前失败' };
+    }
+    return originalAdd.call(realService, request);
+  };
+  try {
+    tapAdd();
+    await tick();
+    assert.equal(page.data.markerPendingRetry, true);
+    tapAdd();
+    await tick();
+    assert.deepEqual(
+      page.data.markers.map(item => item.atMs),
+      [3125, 3250, 4125],
+      '失败后的快速重试仍然保存，没有被去重吞掉'
+    );
+    assert.equal(page.data.markerPendingRetry, false);
+  } finally {
+    realService.addMarker = originalAdd;
+  }
+
+  // 不同片段即使在窗口内、同一 atMs 也不能被上一条片段的成功记点拦住。
+  const sameMs = { clipId: 'clip-1-test', rev: 1, fileId: 'a.mp4', atMs: 3125, at: Date.now() };
+  assert.equal(
+    markers.isRapidDuplicateMarker(sameMs, { ...sameMs, clipId: 'clip-2-other' }, Date.now()),
+    false,
+    '不同片段不能串用去重状态'
+  );
+  assert.equal(
+    markers.isRapidDuplicateMarker(sameMs, { ...sameMs, fileId: 'b.mp4' }, Date.now()),
+    false,
+    '同一片段换文件标识也不能命中去重'
+  );
+});
+
+test('T025-26 时间点行按钮在窄屏有明确受限宽度并允许换行，触控高度至少 44px', () => {
+  const wxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'attempt-video', 'attempt-video.wxss'),
+    'utf8'
+  );
+  const row = (wxss.match(/\.marker-row\s*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(row, /flex-wrap:\s*wrap/, '窄屏放不下时动作区应换行而不是越界');
+
+  const actions = (wxss.match(/\.marker-actions\s*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(actions, /flex-wrap:\s*nowrap/, '动作按钮自身不拆行');
+
+  const button = (wxss.match(/\.marker-button\s*\{([^}]*)\}/) || [])[1] || '';
+  const width = Number((button.match(/\bwidth:\s*(\d+)px/) || [])[1]);
+  assert.ok(width > 0 && width <= 100, 'marker 按钮需要明确且足够窄的宽度：' + width);
+  assert.match(button, /min-width:\s*\d+px/);
+  assert.match(button, /max-width:\s*\d+px/);
+  assert.match(button, /box-sizing:\s*border-box/);
+
+  const touch = (wxss.match(/\.primary-button,\s*\.secondary-button\s*\{([^}]*)\}/) || [])[1] || '';
+  assert.match(touch, /min-height:\s*44px/, '动作按钮触控高度至少 44px');
 });

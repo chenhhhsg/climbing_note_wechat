@@ -22,6 +22,17 @@ const SEEK_CONFIRM_TOLERANCE_MS = 500;
 const DURATION_EDGE_TOLERANCE_SECONDS = 0.5;
 // 跳转之后等待原生位置回报的时长；超时后重试一次，仍无回报则解除等待（不伪造落点）。
 const SEEK_REPORT_WAIT_MS = 900;
+// 快速连点去重窗口：同一条片段、同一个整数毫秒在这么短的时间内再次点击，
+// 视为对同一帧的重复点击（本地同步回执可能只有百余毫秒的间隔），只提示不重复写入。
+// 换成不同位置、不同片段或更晚的主动记点都照常保存；失败重试走 pending 路径，不经过这里。
+const MARKER_RAPID_DUPLICATE_WINDOW_MS = 1500;
+// 冷源（本次片源还没有有效推进过）不能直接 seek：先启动一小段播放，
+// 等本 token 报出非零原生进度后再下发跳转；bindplay 只算就绪信号。
+// 启动等待有上限，重试次数有限。「有效推进」留出一个小阈值，
+// 避免起始关键帧的 0.0x 秒读数被当成真的播起来了。
+const SEEK_COLD_PLAY_WAIT_MS = 1200;
+const SEEK_COLD_MAX_PLAY_ATTEMPTS = 2;
+const SEEK_COLD_PROGRESS_SECONDS = 0.2;
 
 function hasText(value) {
   return typeof value === 'string' && value.length > 0;
@@ -333,10 +344,34 @@ function makeMarkerId() {
   return 'mark-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
 }
 
+/**
+ * 快速连点去重：只拦同一片段（clipId/rev/fileId 全同）在同一整数毫秒上的短时间
+ * 第二次点击。`lastSaved` 必须是**已经成功落盘**的记点；失败的操作不会进入这里，
+ * 因此重试不会被吞掉。不同位置或不同片段永远不会命中。
+ */
+function isRapidDuplicateMarker(lastSaved, candidate, nowMs) {
+  if (!lastSaved || !candidate) return false;
+  const savedAt = safeNumber(lastSaved.at);
+  const now = safeNumber(nowMs);
+  if (savedAt === null || now === null) return false;
+  const elapsed = now - savedAt;
+  if (elapsed < 0 || elapsed > MARKER_RAPID_DUPLICATE_WINDOW_MS) return false;
+  if (!hasText(lastSaved.clipId) || lastSaved.clipId !== candidate.clipId) return false;
+  if ((lastSaved.fileId || '') !== (candidate.fileId || '')) return false;
+  if (markerRevOf(lastSaved.rev) !== markerRevOf(candidate.rev)) return false;
+  const savedMs = normalizeAtMs(lastSaved.atMs);
+  const nextMs = normalizeAtMs(candidate.atMs);
+  return savedMs !== null && nextMs !== null && savedMs === nextMs;
+}
+
 module.exports = {
   MARKER_ID_PATTERN,
   SEEK_CONFIRM_TOLERANCE_MS,
   SEEK_REPORT_WAIT_MS,
+  MARKER_RAPID_DUPLICATE_WINDOW_MS,
+  SEEK_COLD_PLAY_WAIT_MS,
+  SEEK_COLD_MAX_PLAY_ATTEMPTS,
+  SEEK_COLD_PROGRESS_SECONDS,
   DURATION_EDGE_TOLERANCE_SECONDS,
   hasText,
   safeNativeNumber,
@@ -353,5 +388,6 @@ module.exports = {
   seekSecondsOf,
   isSeekConfirmed,
   markReadiness,
-  makeMarkerId
+  makeMarkerId,
+  isRapidDuplicateMarker
 };

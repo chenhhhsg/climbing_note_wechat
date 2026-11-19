@@ -14,6 +14,10 @@
  *   token 回来，只有当前片才被采用；换片后旧节点迟到的 loadedmetadata / play /
  *   pause / error 不覆盖新片，也不改页面其他状态；
  * - 播放与暂停只向播放器发请求，界面上的播放状态以 bindplay / bindpause 回报为准；
+ * - 点回时间点时，冷重开源（本次片源还没有有效推进）先启动一小段播放；bindplay
+ *   只记「播放器已开始」的就绪信号，真正下发 seek 要等本 token 报出非零原生进度。
+ *   落到目标附近即恢复原暂停态；已经推进过的源沿用原有直跳。预热回报与跳转后的
+ *   回报分属两次事件，冷源启动位置绝不当作跳转落点；失败有明确提示且可重试；
  * - 已保存片源打不开（文件被清理或损坏）时给出可见的重选提示，原把次、备注与相册
  *   原片都保留；
  * - 更换先进入待确认预览：确认前不改关联，取消回到同一段旧片且不创建/删除文件；
@@ -127,10 +131,20 @@ Page({
     // 时间点序号：换片/换归属后迟到的写入回执不采用；失败重试沿用同一 markerId。
     this._markerOpSeq = 0;
     this._pendingMarker = null;
+    // 最近一次**成功落盘**的时间点：只用于拦同片段同毫秒的快速连点。
+    this._lastSavedMarker = null;
     this._playerTimeSeconds = null;
+    // 本次片源是否已经报出**有效的非零原生进度**：冷源直接 seek 在真机上不会上报
+    // 位置，跳转前先经一段短播放把源“启动”。bindplay 只记就绪信号，不单独算预热。
+    this._nativeEngaged = false;
+    this._nativePlaySignaled = false;
+    // 冷源点回临时启动的播放及其原暂停态；只对同一 token 的连续点回有效。
+    this._coldRestoreToken = '';
+    this._coldPausedBefore = false;
     this._seek = null;
     this._seekTimer = null;
     this._seekWaitMs = 0;
+    this._seekColdPlayWaitMs = 0;
     this._videoService = null;
     this._unloaded = false;
     this._contextToken = '';
@@ -247,7 +261,12 @@ Page({
       this._videoContext = null;
       this._videoContextDomId = '';
       this._pendingMarker = null;
+      this._lastSavedMarker = null;
       this._playerTimeSeconds = null;
+      this._nativeEngaged = false;
+      this._nativePlaySignaled = false;
+      this._coldRestoreToken = '';
+      this._coldPausedBefore = false;
       this.clearSeekWait();
       this._seek = null;
         this._markerOpSeq += 1;
@@ -383,7 +402,12 @@ Page({
     this._spaceSeq += 1;
     this._markerOpSeq += 1;
     this._pendingMarker = null;
+    this._lastSavedMarker = null;
     this._playerTimeSeconds = null;
+    this._nativeEngaged = false;
+    this._nativePlaySignaled = false;
+    this._coldRestoreToken = '';
+    this._coldPausedBefore = false;
     this.clearSeekWait();
     this._seek = null;
     this.setData(
@@ -955,6 +979,13 @@ Page({
       this._playerClip = null;
       this._videoContext = null;
       this._videoContextDomId = '';
+      this._lastSavedMarker = null;
+      this._nativeEngaged = false;
+      this._nativePlaySignaled = false;
+      this._coldRestoreToken = '';
+      this._coldPausedBefore = false;
+      this.clearSeekWait();
+      this._seek = null;
       const extras = this.emptyExtras();
       extras.notice = patch.notice;
       extras.hasSavedVideo = false;
@@ -969,6 +1000,9 @@ Page({
     patch.videoStateText = '已添加视频';
     patch.savedVideo = this.savedViewOf(clip);
     this.setData(patch);
+    // 时间点随片段生命周期：确认更换后同一页面必须立即只显示新片的列表，
+    // 不能等重开页面才把旧片时间点换掉。
+    this.applyMarkerList(clip ? clip.markers : []);
     this.ensureSavedPlayer(clip, { force: true });
     this.refreshSpaceUsage();
   },
@@ -989,6 +1023,11 @@ Page({
       : null;
     // 换片/换预览：旧的播放器读数、跳转等待与失败重试身份全部作废。
     this._playerTimeSeconds = null;
+    this._lastSavedMarker = null;
+    this._nativeEngaged = false;
+    this._nativePlaySignaled = false;
+    this._coldRestoreToken = '';
+    this._coldPausedBefore = false;
     this.clearSeekWait();
     this._seek = null;
     this._pendingMarker = null;
@@ -1044,6 +1083,11 @@ Page({
     this._videoContext = null;
     this._videoContextDomId = '';
     this._playerTimeSeconds = null;
+    this._lastSavedMarker = null;
+    this._nativeEngaged = false;
+    this._nativePlaySignaled = false;
+    this._coldRestoreToken = '';
+    this._coldPausedBefore = false;
     this.clearSeekWait();
     this._seek = null;
     this._pendingMarker = null;
@@ -1123,7 +1167,25 @@ Page({
 
   onVideoPlay(event) {
     if (!this.videoEventAccepted(event)) return;
+    // bindplay 只证明播放器已开始播放，是就绪信号；真机冷源要等到同 token 的
+    // 非零原生进度才稳定上报位置，所以这里不直接下发 seek，也不把源标记为已预热。
+    this._nativePlaySignaled = true;
     this.setData({ playing: true, playerStatus: '正在播放', playbackError: '' });
+    const seek = this._seek;
+    if (
+      seek &&
+      seek.token === this.data.playerToken &&
+      seek.phase === 'warming' &&
+      !seek.expired &&
+      this.seekStillOwned(seek)
+    ) {
+      this.setData({
+        seekActualText:
+          '视频已开始播放，正在等待有效推进后跳到 ' +
+          attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+          ' 秒…'
+      });
+    }
   },
 
   onVideoPause(event) {
@@ -1139,6 +1201,10 @@ Page({
     if (!this.videoEventAccepted(event)) return;
     const errMsg = (event && event.detail && event.detail.errMsg) || '';
     this._playerTimeSeconds = null;
+    this._nativeEngaged = false;
+    this._nativePlaySignaled = false;
+    this._coldRestoreToken = '';
+    this._coldPausedBefore = false;
     this.clearSeekWait();
     this._seek = null;
     this.setData({
@@ -1160,12 +1226,18 @@ Page({
    * 原生播放位置回报：这是「实际落点」的唯一来源。
    * 跳转请求本身不回填当前位置；只有回报落到目标 ±0.5 秒内，才结束等待并允许
    * 再次记点，避免把跳转前的旧画面当成跳转后的位置写进时间点。
+   *
+   * 跳转发起/重试时旧位置已经作废。等待期间没落到目标附近的回报只更新界面上的
+   * 偏差读数，不能成为新点；超时解锁后要等下一次真实播放/拖动回报才重新就绪。
+   * 冷源预热回报单独处理并整帧返回：触发 seek 的那一帧属于「跳转前」，同一帧
+   * 不能确认落点；只有下一帧（phase 已为 seeking）落到目标附近才确认并恢复暂停。
+   * 当前片源给出不合法读数（null/false/空白/数组/负数）时，捕获位置一并清空，
+   * 合法的新回报才恢复；其他片源的迟到 token 仍由上方的 videoEventAccepted 丢弃。
    */
   onVideoTimeUpdate(event) {
     if (!this.videoEventAccepted(event)) return;
     const detail = (event && event.detail) || {};
     // 只接受原生回调真正给出的有限 number：null/false/''/空白/数组都不能变成 0 秒。
-    // 非法读数既不改上一有效位置，也不结束跳转等待，更不允许记点。
     const current = attemptVideoMarkers.safeNativeNumber(detail.currentTime);
     const duration = attemptVideoMarkers.safeNativeNumber(detail.duration);
     const patch = {};
@@ -1175,23 +1247,67 @@ Page({
       patch.playerReady = true;
     }
     if (current !== null && current >= 0) {
-      this._playerTimeSeconds = current;
+      const seek = this._seek;
+      const activeSeek = Boolean(seek) && seek.token === this.data.playerToken;
+      // 冷源预热回报是独立的一类事件：这一帧只说明播放器启动了/推进了，
+      // 即使它刚好触发 seek，也仍是**跳转请求之前**的位置，必须整帧返回，
+      // 绝不能用同一次回报去确认落点或回填可记点位置。
+      if (activeSeek && seek.phase === 'warming' && !seek.expired) {
+        if (current >= attemptVideoMarkers.SEEK_COLD_PROGRESS_SECONDS) {
+          // 只有同 token 的非零原生进度才能下发跳转；bindplay 单独不算。
+          this._nativeEngaged = true;
+          this.advanceColdSeek();
+        }
+        this._playerTimeSeconds = null;
+        patch.playerTimeMs = Math.round(current * 1000);
+        patch.playerTimeText = attemptVideoMarkers.formatSecondsText(patch.playerTimeMs);
+        if (Object.keys(patch).length) this.setData(patch);
+        this.refreshMarkerReadiness();
+        return;
+      }
+      // 没有在途冷源等待时，非零进度同样证明片源已经真实启动，后续点回可直跳。
+      if (current >= attemptVideoMarkers.SEEK_COLD_PROGRESS_SECONDS) {
+        this._nativeEngaged = true;
+      }
+      // 已下发跳转但回报还没落到目标 ±0.5 秒内：偏差读数只用于展示，
+      // 不能回填为可记点的当前位置。落到目标的下一帧由 seekReportPatch 确认。
+      const awaitingTarget =
+        activeSeek &&
+        seek.phase === 'seeking' &&
+        !seek.expired &&
+        !attemptVideoMarkers.isSeekConfirmed(seek.targetMs, current);
+      if (awaitingTarget) {
+        this._playerTimeSeconds = null;
+      } else {
+        this._playerTimeSeconds = current;
+      }
       patch.playerTimeMs = Math.round(current * 1000);
       patch.playerTimeText = attemptVideoMarkers.formatSecondsText(patch.playerTimeMs);
       Object.assign(patch, this.seekReportPatch(current));
+    } else {
+      // 当前源最新回报不合法：清空捕获位置与就绪态，避免把上一帧位置写成新点。
+      this._playerTimeSeconds = null;
+      patch.playerTimeMs = null;
+      patch.playerTimeText = '';
     }
     if (Object.keys(patch).length) this.setData(patch);
     this.refreshMarkerReadiness();
   },
 
-  /** 跳转等待中的位置回报：只认落在目标附近的回报为「实际落点」。 */
+  /** 跳转等待中的位置回报：只认已经下发跳转后、落在目标附近的回报为「实际落点」。 */
   seekReportPatch(currentTimeSeconds) {
     const seek = this._seek;
     if (!seek || seek.token !== this.data.playerToken) return {};
+    // 片源/片段/节点已经变化时，旧回报不能确认，也不能触发暂停。
+    if (!this.seekStillOwned(seek)) return {};
+    // 冷源预热阶段还没下发跳转：初始化画面再接近目标也不能当成落点。
+    if (seek.phase !== 'seeking') return {};
     const reported = attemptVideoMarkers.safeNativeNumber(currentTimeSeconds);
     if (reported === null || reported < 0) return {};
     const reportedText = attemptVideoMarkers.formatSecondsText(Math.round(reported * 1000));
     if (attemptVideoMarkers.isSeekConfirmed(seek.targetMs, reported)) {
+      // 冷源是页面为定位而临时启动的：首次确认落点后恢复用户原来的暂停态。
+      this.restoreSeekPause(seek);
       this.clearSeekWait();
       this._seek = null;
       return {
@@ -1326,6 +1442,27 @@ Page({
       this.setData({
         markerError: capture.hint || capture.error || '现在还不能记时间点。',
         markerNotice: ''
+      });
+      this.refreshMarkerReadiness();
+      return;
+    }
+    // 快速连点：同一片段、同一个整数毫秒在很短时间内再次点击，视为对同一帧的
+    // 重复动作，只提示不重复写入。不同位置、不同片段与失败后的同身份重试都不受影响。
+    if (
+      attemptVideoMarkers.isRapidDuplicateMarker(
+        this._lastSavedMarker,
+        {
+          clipId: capture.clip.clipId,
+          rev: Number(capture.clip.rev),
+          fileId: capture.clip.fileId,
+          atMs: capture.atMs
+        },
+        Date.now()
+      )
+    ) {
+      this.setData({
+        markerError: '',
+        markerNotice: '同一个位置刚刚已经记过，这次没有重复添加。'
       });
       this.refreshMarkerReadiness();
       return;
@@ -1477,6 +1614,15 @@ Page({
     if (landed) {
       const marker = read.clip.markers.find(item => item.id === pending.markerId);
       this._pendingMarker = null;
+      // 只有成功落盘才登记，供紧接着的快速连点去重；失败重试不会经过这段。
+      this._lastSavedMarker = {
+        markerId: marker.id,
+        clipId: pending.clipId,
+        rev: Number(pending.rev),
+        fileId: pending.fileId,
+        atMs: marker.atMs,
+        at: Date.now()
+      };
       this.setData({
         markerBusy: false,
         markerPendingRetry: false,
@@ -1594,6 +1740,10 @@ Page({
     const gone =
       same && (read.clip.markers || []).every(marker => marker.id !== pending.markerId);
     if (gone) {
+      // 刚移除的就是最近一次成功记点：不能再用它拦住用户在同一位置的再次记点。
+      if (this._lastSavedMarker && this._lastSavedMarker.markerId === pending.markerId) {
+        this._lastSavedMarker = null;
+      }
       this.setData({
         markerBusy: false,
         markerError: '',
@@ -1648,41 +1798,244 @@ Page({
       this.setData({ markerError: target.error });
       return;
     }
+    const instance = (this.data.videoInstances || [])[0];
     const context = this.getVideoContext();
-    if (!context || typeof context.seek !== 'function') {
+    if (!context || !instance || typeof context.seek !== 'function') {
       this.setData({ markerError: '当前环境无法控制播放器跳转，请使用视频画面自带的进度条。' });
       return;
     }
-    try {
-      context.seek(target.seconds);
-    } catch (error) {
-      this.setData({
-        markerError: '跳转请求失败：' + playback.errorText(error) + '，可以重试。'
-      });
-      return;
+    // 冷源（本次片源还没有有效推进）直接 seek 在真机上不上报位置：
+    // 先由这次点回启动一小段播放；bindplay 只算就绪信号，等本 token 报出非零
+    // 原生进度后再下发跳转。
+    const cold = !this._nativeEngaged;
+    const token = this.data.playerToken;
+    // 冷源临时播放的“原暂停态”跨同一片源的连续点回保持：A 点回启动了播放，
+    // 用户在落点确认前又点 B，B 落点确认后仍应回到用户最初暂停的样子。
+    if (cold && this._coldRestoreToken !== token) {
+      this._coldRestoreToken = token;
+      this._coldPausedBefore = !this.data.playing;
     }
-    this.clearSeekWait();
-    this._seek = {
-      token: this.data.playerToken,
+    const seek = {
+      token,
       targetMs: marker.atMs,
       seconds: target.seconds,
       clipId: this._playerClip.clipId,
       rev: Number(this._playerClip.rev),
       fileId: this._playerClip.fileId,
+      domId: instance.domId,
+      contextToken: this._contextToken,
+      mode: cold ? 'cold' : 'direct',
+      phase: cold ? 'warming' : 'seeking',
+      pausedBefore: cold ? !this.data.playing : this._coldPausedBefore,
+      needPauseRestore:
+        (cold || this._coldRestoreToken === token) &&
+        (cold ? !this.data.playing : this._coldPausedBefore),
+      playAttempts: 0,
+      pauseSent: false,
       retried: false,
       expired: false
     };
+    // 已播放/已暂停过的片源沿用原有直跳，不额外播放或暂停。
+    if (!cold) {
+      try {
+        context.seek(target.seconds);
+      } catch (error) {
+        this.setData({
+          markerError: '跳转请求失败：' + playback.errorText(error) + '，可以重试。'
+        });
+        return;
+      }
+    }
+    this.clearSeekWait();
+    // 发起跳转即作废旧位置：等待期间只能用真实回报重建可记点位置，
+    // 避免暂停态没有 timeupdate 时继续把跳转前的画面位置写进新点。
+    this._playerTimeSeconds = null;
+    this._seek = seek;
     this.setData({
       seekPending: true,
       seekRequestText:
         '跳转请求 ' +
         attemptVideoMarkers.formatSecondsText(marker.atMs) +
         ' 秒（按秒下发，实际落点以播放器回报为准）。',
-      seekActualText: '等待播放器回报实际位置…',
+      seekActualText: cold
+        ? '视频还没有开始播放，正在启动一小段播放以便定位…'
+        : '等待播放器回报实际位置…',
+      playerTimeMs: null,
+      playerTimeText: '',
       markerError: '',
       markerNotice: ''
     });
-    this.scheduleSeekWait(this._seek);
+    if (cold) {
+      if (this.startColdPlay(seek)) this.scheduleColdWait(seek);
+    } else {
+      this.scheduleSeekWait(seek);
+    }
+    this.refreshMarkerReadiness();
+  },
+
+  /** 冷源启动短播放的等待上限；测试可覆盖页面实例上的 `_seekColdPlayWaitMs`。 */
+  coldPlayWaitMs() {
+    const custom = Number(this._seekColdPlayWaitMs);
+    return Number.isFinite(custom) && custom > 0
+      ? custom
+      : attemptVideoMarkers.SEEK_COLD_PLAY_WAIT_MS;
+  },
+
+  /** 冷源启动等待：同 token 的非零进度会提前结束；bindplay 不结束等待，超时重试有限。 */
+  scheduleColdWait(seek) {
+    this.clearSeekWait();
+    const timer = setTimeout(() => {
+      this._seekTimer = null;
+      this.onColdWaitElapsed(seek);
+    }, this.coldPlayWaitMs());
+    this._seekTimer = timer;
+    if (timer && typeof timer.unref === 'function') timer.unref();
+  },
+
+  /** 只对发起跳转时的同一 token/片段/节点启动播放；失败不触碰其他片源。 */
+  startColdPlay(seek) {
+    if (!this.seekStillOwned(seek) || seek.phase !== 'warming') return false;
+    const context = this.getVideoContext();
+    if (!context || typeof context.play !== 'function') {
+      this.failColdSeek(
+        seek,
+        '当前环境无法启动视频播放，未能定位到请求的时间点；可以重试或使用视频自带的进度条。'
+      );
+      return false;
+    }
+    seek.playAttempts += 1;
+    try {
+      context.play();
+    } catch (error) {
+      this.failColdSeek(
+        seek,
+        '启动视频播放失败：' + playback.errorText(error) + '；请求的时间点没有当作落点，可以重试。'
+      );
+      return false;
+    }
+    return true;
+  },
+
+  /** 本 token 报出非零原生进度：冷源预热完成，可以下发跳转。 */
+  advanceColdSeek() {
+    const seek = this._seek;
+    if (!seek || seek.mode !== 'cold' || seek.phase !== 'warming' || seek.expired) return false;
+    return this.issueColdSeek(seek);
+  },
+
+  /** 返回是否真的下发了跳转：调用方的同一帧回报不能再当作跳转后的落点。 */
+  issueColdSeek(seek) {
+    if (!this.seekStillOwned(seek) || seek.phase !== 'warming') return false;
+    const context = this.getVideoContext();
+    if (!context || typeof context.seek !== 'function') {
+      this.failColdSeek(
+        seek,
+        '视频已开始播放，但当前环境无法下发跳转；请求的时间点没有当作落点，可以重试。'
+      );
+      return false;
+    }
+    seek.phase = 'seeking';
+    seek.retried = false;
+    seek.expired = false;
+    try {
+      context.seek(seek.seconds);
+    } catch (error) {
+      this.failColdSeek(
+        seek,
+        '视频已开始播放，但跳转请求失败：' + playback.errorText(error) + '；可以重试。'
+      );
+      return false;
+    }
+    this.clearSeekWait();
+    this._playerTimeSeconds = null;
+    this.setData({
+      seekActualText:
+        '视频已开始播放，正在跳到 ' +
+        attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+        ' 秒（按秒下发，实际落点以播放器回报为准）…',
+      playerTimeMs: null,
+      playerTimeText: ''
+    });
+    this.scheduleSeekWait(seek);
+    this.refreshMarkerReadiness();
+    return true;
+  },
+
+  onColdWaitElapsed(seek) {
+    if (!this.seekStillOwned(seek) || seek.phase !== 'warming') return;
+    if (seek.playAttempts < attemptVideoMarkers.SEEK_COLD_MAX_PLAY_ATTEMPTS) {
+      this._playerTimeSeconds = null;
+      this.setData({
+        seekActualText:
+          (this._nativePlaySignaled
+            ? '视频已开始播放，但还没有报出有效推进，正在重试启动一次短播放（请求 '
+            : '视频还没有开始播放，正在重试启动一次短播放（请求 ') +
+          attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+          ' 秒）…',
+        playerTimeMs: null,
+        playerTimeText: ''
+      });
+      if (this.startColdPlay(seek)) this.scheduleColdWait(seek);
+      return;
+    }
+    this.failColdSeek(
+      seek,
+      (this._nativePlaySignaled
+        ? '视频已开始播放，但没有报出有效推进，未能定位到 '
+        : '视频没有开始播放，未能定位到 ') +
+        attemptVideoMarkers.formatSecondsText(seek.targetMs) +
+        ' 秒；可以再次点时间点重试，或先手动播放一次再点回。'
+    );
+  },
+
+  /**
+   * 跳转发起后是否仍由本页当前片源承载：token、归属、video 节点与片段身份
+   * 全部一致，才允许继续下发 seek/play/pause；后来切换的片源一律不碰。
+   */
+  seekStillOwned(seek) {
+    if (!seek || this._unloaded || this._seek !== seek) return false;
+    if (this.data.playerToken !== seek.token) return false;
+    if (this._contextToken !== seek.contextToken) return false;
+    const instance = (this.data.videoInstances || [])[0];
+    if (!instance || instance.domId !== seek.domId) return false;
+    return this.sameClipFileIdentity(this._playerClip, seek);
+  },
+
+  /**
+   * 冷源定位是页面临时启动的短播放：落点确认/收敛失败后恢复用户原来的暂停态。
+   * 暂停只发给发起时的同一片源与节点，绝不控制后来切换的源；同一片源上被后来
+   * 点回接替的冷源序列也在这里统一收口。
+   */
+  restoreSeekPause(seek) {
+    if (!seek || !seek.needPauseRestore || seek.pauseSent) return;
+    if (!this.seekStillOwned(seek)) return;
+    const context = this.getVideoContext();
+    if (!context || typeof context.pause !== 'function') return;
+    seek.pauseSent = true;
+    // 临时播放的暂停态只消费一次；后续普通直跳不再暂停用户主动播放的画面。
+    if (this._coldRestoreToken === seek.token) {
+      this._coldRestoreToken = '';
+      this._coldPausedBefore = false;
+    }
+    try {
+      context.pause();
+    } catch (error) {
+      // 暂停请求失败不伪造播放状态：界面继续以 bindpause 回报为准。
+    }
+  },
+
+  /** 冷源启动失败：明确未定位、保留重试入口，绝不把请求值写成实际落点。 */
+  failColdSeek(seek, message) {
+    if (!this.seekStillOwned(seek)) return;
+    seek.phase = 'failed';
+    seek.expired = true;
+    this.clearSeekWait();
+    this.restoreSeekPause(seek);
+    this.setData({
+      seekPending: false,
+      seekActualText: message,
+      markerNotice: '跳转落点没有确认，请求值没有当作实际位置。'
+    });
     this.refreshMarkerReadiness();
   },
 
@@ -1720,7 +2073,8 @@ Page({
    */
   onSeekWaitElapsed(seek) {
     if (this._unloaded || this._seek !== seek) return;
-    if (this.data.playerToken !== seek.token) {
+    if (!this.seekStillOwned(seek)) {
+      // 片源/片段/节点已经变化：结束旧等待，绝不对新片源重发请求。
       this._seek = null;
       this.setData({ seekPending: false });
       this.refreshMarkerReadiness();
@@ -1736,20 +2090,30 @@ Page({
           // 重试失败不再抛出：仍按「未确认」收敛，页面保持可操作。
         }
       }
+      // 重发请求同样作废旧位置：等不到真实回报时不能拿旧画面位置记新点。
+      this._playerTimeSeconds = null;
       this.setData({
         seekActualText:
-          '播放器还没有回报实际位置，正在重试跳转（请求 ' +
+          (seek.mode === 'cold' ? '视频已开始播放，但还没有回报实际位置' : '播放器还没有回报实际位置') +
+          '，正在重试跳转（请求 ' +
           attemptVideoMarkers.formatSecondsText(seek.targetMs) +
-          ' 秒）…'
+          ' 秒）…',
+        playerTimeMs: null,
+        playerTimeText: ''
       });
       this.scheduleSeekWait(seek);
       return;
     }
     seek.expired = true;
+    // 冷源为定位临时启动的播放到这里先回到用户原来的暂停态；迟到确认仍可收敛。
+    this.restoreSeekPause(seek);
     this.setData({
       seekPending: false,
       seekActualText:
-        '播放器没有回报跳转后的实际位置（请求 ' +
+        (seek.mode === 'cold'
+          ? '视频已开始播放，但没有收到落在目标附近的原生位置回报'
+          : '播放器没有回报跳转后的实际位置') +
+        '（请求 ' +
         attemptVideoMarkers.formatSecondsText(seek.targetMs) +
         ' 秒）；落点未确认，可再次点时间点重试，或播放后再核对。',
       markerNotice: '跳转请求已下发，但没有收到原生实际位置；请求值没有当作实际落点。'
