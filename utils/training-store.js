@@ -1408,10 +1408,15 @@ function selectRoute(routeId) {
 /**
  * 保存前的删除凭据核对（只读）。
  *
- * 延迟 require training-attempt-delete：它顶层依赖 attempt-video →
- * training-record-actions → 本模块，顶层互相 require 会形成初始化循环；这里只在
- * 真正保存时加载，那时本模块已经初始化完毕。读不出来或模块不可用时返回 ok:false，
- * 调用方不得把它当作「确认未删除」继续写档案。
+ * 延迟 require training-attempt-delete 与 training-session-delete：它们顶层依赖
+ * attempt-video → training-record-actions → 本模块，顶层互相 require 会形成初始化
+ * 循环；这里只在真正保存时加载，那时本模块已经初始化完毕。读不出来或模块不可用时
+ * 返回 ok:false，调用方不得把它当作「确认未删除」继续写档案。
+ *
+ * T052：整场删除的护栏也在这里合并。目标把次 ID（prepared/removed 或已收尾护栏）
+ * 与单把删除的 pending/墓碑一样占用原 opId，即使请求把它塞进另一场在途保存也不能
+ * 复活；新生成的 ID（newUniqueAttemptId 会避开这些 ID）与其他场次照常可写。
+ * sessionState 用于在整场删除在途时拒绝该场的新保存。
  */
 function deletionGuardFor(archiveId) {
   let deletion;
@@ -1431,7 +1436,47 @@ function deletionGuardFor(archiveId) {
       error: '读取本机删除凭据失败：删除凭据模块不可用；未保存这一把'
     };
   }
-  return deletion.attemptDeletionGuard(archiveId);
+  const attemptGuard = deletion.attemptDeletionGuard(archiveId);
+  if (!attemptGuard.ok) return attemptGuard;
+
+  let sessionDelete;
+  try {
+    sessionDelete = require('./training-session-delete.js');
+  } catch (error) {
+    return {
+      ok: false,
+      code: 'delete-unreadable',
+      error: '读取本机场次删除凭据失败：' + errorText(error) + '；未保存这一把'
+    };
+  }
+  if (!sessionDelete || typeof sessionDelete.sessionFenceState !== 'function') {
+    return {
+      ok: false,
+      code: 'delete-unreadable',
+      error: '读取本机场次删除凭据失败：场次删除模块不可用；未保存这一把'
+    };
+  }
+  const sessionGuard = sessionDelete.sessionFenceState(archiveId);
+  if (!sessionGuard.ok) {
+    return {
+      ok: false,
+      code: sessionGuard.code || 'delete-unreadable',
+      error: (sessionGuard.error || '读取本机场次删除凭据失败') + '；未保存这一把'
+    };
+  }
+  return {
+    ok: true,
+    present: Boolean(attemptGuard.present || sessionGuard.present),
+    has(attemptId) {
+      return attemptGuard.has(attemptId) || Boolean(sessionGuard.attemptState(attemptId));
+    },
+    stateOf(attemptId) {
+      return attemptGuard.stateOf(attemptId) || sessionGuard.attemptState(attemptId) || '';
+    },
+    sessionState(sessionId) {
+      return sessionGuard.sessionState(sessionId) || '';
+    }
+  };
 }
 
 /**
@@ -1568,6 +1613,26 @@ function saveAttempt(input) {
   const route = findById(current.routes, routeId);
   if (!route) {
     return { ok: false, blocked: false, error: '找不到这条线路', archive: current, opId: opId };
+  }
+
+  // 整场删除在途/已提交：这一场不能再接受新保存。原 opId 的迟到重放已在上面的
+  // 删除凭据核对里按 archiveId + attemptId 挡住；这里挡住同场的新 ID，避免在
+  // 「凭据已落盘、档案尚未删除」的窗口里又长出一把。
+  if (typeof deletionGuard.sessionState === 'function') {
+    const sessionState = deletionGuard.sessionState(session.id);
+    if (sessionState) {
+      return {
+        ok: false,
+        blocked: true,
+        code: 'session-deleting',
+        error:
+          sessionState === 'prepared'
+            ? '这一场正在删除，不能继续记录；请稍后重试或重开确认'
+            : '这一场已经删除，不能再写入新的把次',
+        archive: current,
+        opId: opId
+      };
+    }
   }
 
   // 已落盘的「进行中」标记：这是同一次操作的重试，还是别的操作借了这个 opId？

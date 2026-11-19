@@ -10,11 +10,17 @@
  * T048–T050 追加返工：冷启动时接一次本地「长按删除」的持久凭据恢复。没有凭据或没有
  * 未完成条目时这一步立即返回，不扫描视频目录；有未完成条目时才继续清视频索引与文件，
  * 失败留给单线记录页的可见重试。它不依赖云能力，因此放在云初始化之前。
+ *
+ * T052：整场删除使用自己命名空间里的独立凭据。冷启动先恢复单把删除，再恢复整场删除；
+ * 两者都只处理各自 journal 的 pending，没有待办时不碰文件系统。整场恢复只有在同一份
+ * 档案证明原场次、本场关联与全部原把次都已不在时才继续清理；原场次还在就撤掉未完成
+ * 凭据，不会在重开时悄悄接着做一次没提交的删除。
  */
 App({
   onLaunch() {
-    // 本机删除凭据的重开恢复：只读正式命名空间内的一个受保护键。
+    // 本机删除凭据的重开恢复：只读正式命名空间内各自的受保护键。
     this.recoverLocalAttemptDeletes();
+    this.recoverLocalSessionDeletes();
     // 云能力不可用时只记录，不影响本机档案与页面加载。
     if (typeof wx === 'undefined' || !wx.cloud) {
       console.warn('未检测到云开发能力（可能基础库低于 2.2.3）：旧云记录暂不可读，本机记录不受影响');
@@ -46,6 +52,21 @@ App({
       if (task && typeof task.catch === 'function') task.catch(() => undefined);
     } catch (error) {
       console.warn('本机删除凭据恢复检查失败，记录与视频保持不变', error);
+    }
+  },
+
+  /**
+   * 冷启动恢复整场删除的收尾：独立 journal，没有 pending 时不碰文件系统。
+   * 读取不到档案或凭据时整轮失败关闭，证据与视频都保持原样。
+   */
+  recoverLocalSessionDeletes() {
+    try {
+      const sessionDelete = require('./utils/training-session-delete.js');
+      if (!sessionDelete || typeof sessionDelete.recoverPending !== 'function') return;
+      const task = sessionDelete.recoverPending();
+      if (task && typeof task.catch === 'function') task.catch(() => undefined);
+    } catch (error) {
+      console.warn('本机场次删除凭据恢复检查失败，记录与视频保持不变', error);
     }
   },
 
