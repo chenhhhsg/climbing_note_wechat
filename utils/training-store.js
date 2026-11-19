@@ -54,6 +54,13 @@
  * 这样「3→2→3 之后重放旧撤回」的 ABA 无法得逞（见 attemptRev / expectedRevMismatch）。
  * 旧档案没有 undoneAt / settledOps / rev 字段时，全部已提交把次按有效读取、版本按 0 读，
  * 只读打开不迁移、不改原字节。
+ *
+ * T051 在本层加的是「整场删除」的一次提交：inspectSessionDeletion 按原档案 ID + 原场次
+ * ID 返回本场快照（原日期、岩馆、场次、场内关联与全部把次，含已撤回），commitSessionDeletion
+ * 必须带同一份快照；内容有任何变化（包括把数不变但结果/备注/原把被替换）都按 stale 拒绝。
+ * 一次档案写入只移出目标场次、它的场内关联与全部把次，其他场次、原 ID、内部 seq 与单调
+ * 计数器保持原值；删当前场时接续同日同馆剩余最近一场，没有可接续场则清空当前选择。
+ * 媒体归属与清理不在本层，由 T052 的协调器在档案确认删除后按持久凭据处理。
  */
 const rules = require('./training-rules.js');
 
@@ -73,6 +80,10 @@ const ARCHIVE_WRITE_FAILED = '保存本机训练档案失败：';
 const ATTEMPT_ARCHIVE_MISMATCH = '这一把属于原来的本机档案，未做改动';
 // 撤回/恢复：这一把的当前状态已经不是发起时的那一种（迟到的旧回调）。
 const ATTEMPT_STALE = '这一把的状态已经变了，请刷新后再试';
+// 场次删除：确认必须带原档案、原场次与打开确认时的快照，三者缺一都不写档案。
+const SESSION_DELETE_INCOMPLETE = '删除场次需要原档案 ID、原场次 ID 和确认快照，未做任何改动';
+const SESSION_DELETE_STALE = '这场训练的内容已经变化，这次删除没有生效；请按最新范围重新确认';
+const SESSION_DELETE_ARCHIVE_MISMATCH = '这场训练属于原来的本机档案，未做改动';
 
 // 「进行中」标记与把次一起占用序号：重试不能重新分配 ID。
 function clone(value) {
@@ -2017,6 +2028,547 @@ function deleteAttempt(attemptId, input) {
 }
 
 // ------------------------------------------------------------------ *
+// 整场删除（T051）
+// ------------------------------------------------------------------ *
+
+/**
+ * 快照用的稳定序列化：对象键排序、数组保持原序。同一份档案在 Node 与小程序运行时
+ * 得到同一段文本，快照令牌才能同步比对。
+ */
+function stableSnapshotValue(value) {
+  if (Array.isArray(value)) return value.map(stableSnapshotValue);
+  if (value && typeof value === 'object') {
+    const sorted = {};
+    Object.keys(value)
+      .sort()
+      .forEach(key => {
+        sorted[key] = stableSnapshotValue(value[key]);
+      });
+    return sorted;
+  }
+  return value;
+}
+
+/**
+ * 快照令牌：不是密码学摘要，只用来同步回答「确认框打开时的本场范围是否仍一字不差」。
+ * 两路 32 位混合后拼成 16 位十六进制，足以区分同数量但结果、备注或原把被替换的情况。
+ */
+function snapshotHash(text) {
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    first ^= code;
+    first = Math.imul(first, 0x01000193);
+    second ^= code + index;
+    second = Math.imul(second, 0x85ebca6b);
+  }
+  const hex = value => ('00000000' + (value >>> 0).toString(16)).slice(-8);
+  return hex(first) + hex(second);
+}
+
+function compareText(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * 本场持久待办（只读）：待保存、更正、撤回、恢复各自按原场次 ID 命中。
+ * 整场删除会连同这些记录的目标场次一起移出，所以在途操作必须先落盘或先完成，
+ * 否则一次删除会和另一段两段写互相覆盖。
+ */
+function sessionPendingSummary(archive, sessionId) {
+  const count = list => (list || []).filter(item => item && item.sessionId === sessionId).length;
+  const pending = {
+    saves: count(archive.pendingSaves),
+    corrections: count(archive.pendingCorrections),
+    undos: count(archive.pendingUndos),
+    restores: count(archive.pendingRestores)
+  };
+  pending.total = pending.saves + pending.corrections + pending.undos + pending.restores;
+  pending.text = pending.saves
+    ? '本场还有 ' + pending.saves + ' 把没保存：先在「待保存」行重试保存，再删除场次'
+    : pending.total
+      ? '本场还有 ' + pending.total + ' 项撤回、恢复或更正没有完成，请先处理再删除场次'
+      : '';
+  return pending;
+}
+
+/**
+ * 本场确认快照：原日期、岩馆、场次、场内线路关联和全部把次（含已撤回）的实际内容。
+ *
+ * 令牌覆盖每个把次的 ID、内部 seq、线路、结果、备注、撤回标记、rev 与创建时间，
+ * 以及每条场内关联的线路 ID 与加入时间。因此「把数不变，但结果/备注/原把被替换」
+ * 或同数量换线都会让令牌变化，旧确认只能重新读取后再确认。把次的显示编号不在这里：
+ * 它只按同日顺序推导，删除同一天其他场次后由页面按最新档案重算。
+ */
+function sessionScopeSnapshot(archive, session) {
+  const routeLinks = (archive.sessionRoutes || [])
+    .filter(link => link.sessionId === session.id)
+    .map(link => ({
+      routeId: link.routeId,
+      addedAt: hasText(link.addedAt) ? link.addedAt : ''
+    }))
+    .sort(
+      (left, right) =>
+        compareText(left.routeId, right.routeId) || compareText(left.addedAt, right.addedAt)
+    );
+  const scopedAttempts = (archive.attempts || []).filter(
+    item => item.sessionId === session.id
+  );
+  const attemptRows = scopedAttempts
+    .map(item => ({
+      id: item.id,
+      seq: item.seq || 0,
+      routeId: item.routeId,
+      result: item.result,
+      note: item.note || '',
+      undoneAt: hasText(item.undoneAt) ? item.undoneAt : '',
+      rev: attemptRev(item),
+      createdAt: item.createdAt || ''
+    }))
+    .sort(
+      (left, right) => left.seq - right.seq || compareText(left.id, right.id)
+    );
+  const gym = findById(archive.gyms, session.gymId);
+  const label = sessionLabel(archive, session);
+  const core = {
+    archiveId: archive.archiveId,
+    sessionId: session.id,
+    date: session.date,
+    gymId: session.gymId,
+    gymName: gym ? gym.name : '',
+    seq: session.seq,
+    label,
+    routeLinks,
+    attempts: attemptRows
+  };
+  return {
+    token: snapshotHash(JSON.stringify(stableSnapshotValue(core))),
+    archiveId: archive.archiveId,
+    sessionId: session.id,
+    date: session.date,
+    gymId: session.gymId,
+    gymName: gym ? gym.name : '',
+    seq: session.seq,
+    label,
+    routeIds: routeLinks.map(link => link.routeId),
+    attemptIds: attemptRows.map(item => item.id),
+    routeCount: routeLinks.length,
+    attemptCount: attemptRows.length,
+    effectiveAttemptCount: scopedAttempts.filter(isEffectiveAttempt).length,
+    undoneAttemptCount: scopedAttempts.filter(item => !isEffectiveAttempt(item)).length,
+    sendCount: scopedAttempts.filter(
+      item => isEffectiveAttempt(item) && item.result === 'send'
+    ).length
+  };
+}
+
+/**
+ * 本场是否已经完整、干净地不在档案里：场次本身、场内关联、全部把次和四类持久待办
+ * 都不再按这个原场次 ID 命中。只缺场次但还留着归属记录时不算「已删除」，不报成功。
+ */
+function sessionFullyAbsent(archive, sessionId) {
+  return Boolean(
+    archive &&
+      !findById(archive.sessions, sessionId) &&
+      !(archive.sessionRoutes || []).some(link => link.sessionId === sessionId) &&
+      !(archive.attempts || []).some(item => item.sessionId === sessionId) &&
+      !(archive.pendingSaves || []).some(item => item.sessionId === sessionId) &&
+      !(archive.pendingCorrections || []).some(item => item.sessionId === sessionId) &&
+      !(archive.pendingUndos || []).some(item => item.sessionId === sessionId) &&
+      !(archive.pendingRestores || []).some(item => item.sessionId === sessionId)
+  );
+}
+
+function sessionDeleteResult(fields) {
+  return Object.assign(
+    {
+      ok: false,
+      code: '',
+      error: '',
+      archive: null,
+      archiveId: '',
+      sessionId: '',
+      writeAttempted: false,
+      written: false,
+      removed: null,
+      receiptLost: false,
+      unknown: false,
+      removedAttemptIds: [],
+      removedRouteIds: [],
+      activeSessionId: '',
+      activeRouteId: '',
+      successor: null,
+      target: null,
+      snapshot: null,
+      pending: null
+    },
+    fields || {}
+  );
+}
+
+function requestedSessionSnapshot(data) {
+  const source = data.snapshot;
+  if (hasText(source)) return { token: source, archiveId: '', sessionId: '' };
+  if (source && typeof source === 'object' && !Array.isArray(source)) {
+    return {
+      token: hasText(source.token) ? source.token : '',
+      archiveId: hasText(source.archiveId) ? source.archiveId : '',
+      sessionId: hasText(source.sessionId) ? source.sessionId : ''
+    };
+  }
+  return {
+    token: hasText(data.snapshotToken) ? data.snapshotToken : '',
+    archiveId: '',
+    sessionId: ''
+  };
+}
+
+function sessionTargetView(archive, session, snapshot) {
+  return {
+    sessionId: snapshot.sessionId,
+    date: snapshot.date,
+    gymId: snapshot.gymId,
+    gymName: snapshot.gymName,
+    seq: snapshot.seq,
+    label: snapshot.label,
+    routeCount: snapshot.routeCount,
+    attemptCount: snapshot.attemptCount,
+    effectiveAttemptCount: snapshot.effectiveAttemptCount,
+    undoneAttemptCount: snapshot.undoneAttemptCount,
+    sendCount: snapshot.sendCount,
+    isActive: archive.activeSessionId === session.id
+  };
+}
+
+function latestSameGymSessionOnDate(archive, date, gymId) {
+  return (
+    (archive.sessions || [])
+      .filter(item => item.date === date && item.gymId === gymId)
+      .sort((left, right) => (left.seq || 0) - (right.seq || 0))
+      .pop() || null
+  );
+}
+
+function sessionHasRoute(archive, sessionId, routeId) {
+  if (!hasText(sessionId) || !hasText(routeId)) return false;
+  return (archive.sessionRoutes || []).some(
+    link => link.sessionId === sessionId && link.routeId === routeId
+  );
+}
+
+/**
+ * 读取整场删除的当前目标与确认快照（只读，不写盘）。
+ *
+ * 输入：{ archiveId, sessionId }。两者都必需：调用方渲染确认框时拿到的原档案与原场次
+ * 一起决定这次删除的对象，缺一个都不猜。
+ *
+ * 返回 { ok, code, error, archive, archiveId, sessionId, present, canDelete,
+ *        target, snapshot, pending, cleanlyAbsent }。code：
+ * - ready：目标仍在、没有命中本场的持久待办，可用 snapshot 打开二次确认；
+ * - pending：目标仍在，但有本场待保存/更正/撤回/恢复；canDelete:false，先处理；
+ * - missing：目标已经不在当前档案（present:false）；cleanlyAbsent 表示本场关联、
+ *   把次与待办也已全部清空，可把重复确认按「已删除」收尾；
+ * - 请求不完整、archive-mismatch 或 unreadable：不写盘，页面按可见错误处理。
+ */
+function inspectSessionDeletion(input) {
+  const data = input || {};
+  const archiveId = hasText(data.archiveId) ? data.archiveId : '';
+  const sessionId = hasText(data.sessionId) ? data.sessionId : '';
+  const base = {
+    ok: false,
+    code: '',
+    error: '',
+    archive: null,
+    archiveId,
+    sessionId,
+    present: false,
+    canDelete: false,
+    cleanlyAbsent: false,
+    target: null,
+    snapshot: null,
+    pending: null
+  };
+  if (!archiveId || !sessionId) {
+    return Object.assign(base, { code: 'incomplete-request', error: SESSION_DELETE_INCOMPLETE });
+  }
+
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return Object.assign(base, {
+      code: 'unreadable',
+      error: loaded.error,
+      archive: loaded.archive
+    });
+  }
+  const current = loaded.archive;
+  if (current.archiveId !== archiveId) {
+    return Object.assign(base, {
+      code: 'archive-mismatch',
+      error: SESSION_DELETE_ARCHIVE_MISMATCH,
+      archive: current
+    });
+  }
+
+  const session = findById(current.sessions, sessionId);
+  if (!session) {
+    return Object.assign(base, {
+      ok: true,
+      code: 'missing',
+      archive: current,
+      present: false,
+      canDelete: false,
+      cleanlyAbsent: sessionFullyAbsent(current, sessionId)
+    });
+  }
+
+  const snapshot = sessionScopeSnapshot(current, session);
+  const pending = sessionPendingSummary(current, sessionId);
+  return {
+    ok: true,
+    code: pending.total > 0 ? 'pending' : 'ready',
+    error: pending.text,
+    archive: current,
+    archiveId,
+    sessionId,
+    present: true,
+    canDelete: pending.total === 0,
+    cleanlyAbsent: false,
+    target: sessionTargetView(current, session, snapshot),
+    snapshot,
+    pending
+  };
+}
+
+/**
+ * 按原档案 + 原场次 + 确认快照一次提交整场删除（T051）。
+ *
+ * 输入：{ archiveId, sessionId, snapshot }。snapshot 是 inspectSessionDeletion 返回的
+ * 快照对象，或它里面的 token 字符串；两者都必须来自同一份原档案原场次。
+ *
+ * 一次档案写入只做这几件事：
+ * - 原场次本身、它自己的全部场内线路关联、全部把次（含已撤回）原样移出；
+ * - 当前场正是目标时，同日同馆剩余场次里选内部 seq 最大的一场接续；没有就把当前
+ *   场次与线路清空。接续场不包含原当前线路时清掉线路指针，仍包含则保留；
+ * - 其他场次、原 ID、内部 seq、next* 单调计数器、长期线路与场外照片一概不动。
+ * 本场有持久待办（待保存/更正/撤回/恢复）时整条拒绝，不写一个字节。
+ *
+ * 失败与回执语义复用现有档案层口径：
+ * - 写前失败、重读仍能看到原场次：code write-failed，written:false、removed:false；
+ * - 写抛错但重读同一份档案已完整移出：code removed-receipt-lost，removed:true；
+ * - 重读失败、换档或只移出了一半：code write-failed-unverified，removed:null、
+ *   unknown:true，绝不报已删除；
+ * - 目标在读取时就已经干净地不在：code already-removed，不写盘，removed:true。
+ *
+ * 返回 { ok, code, error, archive, writeAttempted, written, removed, receiptLost,
+ *        unknown, removedAttemptIds, removedRouteIds, activeSessionId, activeRouteId,
+ *        successor, target, snapshot, pending }。ok:true 只表示删除已确认（本次写入或
+ *        读取确认早已移出），不代表任何媒体被清理——媒体由 T052 协调器另做。
+ */
+function commitSessionDeletion(input) {
+  const data = input || {};
+  const archiveId = hasText(data.archiveId) ? data.archiveId : '';
+  const sessionId = hasText(data.sessionId) ? data.sessionId : '';
+  const requested = requestedSessionSnapshot(data);
+  const base = sessionDeleteResult({ archiveId, sessionId });
+  if (!archiveId || !sessionId || !requested.token) {
+    return Object.assign(base, { code: 'incomplete-request', error: SESSION_DELETE_INCOMPLETE });
+  }
+  if (requested.archiveId && requested.archiveId !== archiveId) {
+    return Object.assign(base, {
+      code: 'archive-mismatch',
+      error: SESSION_DELETE_ARCHIVE_MISMATCH,
+      unknown: true
+    });
+  }
+  if (requested.sessionId && requested.sessionId !== sessionId) {
+    return Object.assign(base, { code: 'stale', error: SESSION_DELETE_STALE });
+  }
+
+  const loaded = loadState();
+  if (!loaded.ok) {
+    return Object.assign(base, {
+      code: 'unreadable',
+      error: loaded.error,
+      archive: loaded.archive,
+      unknown: true
+    });
+  }
+  const current = loaded.archive;
+  if (current.archiveId !== archiveId) {
+    return Object.assign(base, {
+      code: 'archive-mismatch',
+      error: SESSION_DELETE_ARCHIVE_MISMATCH,
+      archive: current,
+      unknown: true
+    });
+  }
+
+  const session = findById(current.sessions, sessionId);
+  if (!session) {
+    if (sessionFullyAbsent(current, sessionId)) {
+      return Object.assign(base, {
+        ok: true,
+        code: 'already-removed',
+        archive: current,
+        removed: true,
+        activeSessionId: current.activeSessionId,
+        activeRouteId: current.activeRouteId
+      });
+    }
+    return Object.assign(base, {
+      code: 'missing',
+      error: '原场次已不在档案里，但还有本场归属记录残留；未做改动',
+      archive: current,
+      removed: false,
+      unknown: true
+    });
+  }
+
+  const snapshot = sessionScopeSnapshot(current, session);
+  const pending = sessionPendingSummary(current, sessionId);
+  const target = sessionTargetView(current, session, snapshot);
+  if (snapshot.token !== requested.token) {
+    return Object.assign(base, {
+      code: 'stale',
+      error: SESSION_DELETE_STALE,
+      archive: current,
+      removed: false,
+      target,
+      snapshot,
+      pending
+    });
+  }
+  if (pending.total > 0) {
+    return Object.assign(base, {
+      code: 'pending',
+      error: pending.text,
+      archive: current,
+      removed: false,
+      target,
+      snapshot,
+      pending
+    });
+  }
+
+  const removedAttemptIds = (current.attempts || [])
+    .filter(item => item.sessionId === sessionId)
+    .map(item => item.id);
+  const removedRouteIds = [];
+  (current.sessionRoutes || []).forEach(link => {
+    if (link.sessionId === sessionId && removedRouteIds.indexOf(link.routeId) === -1) {
+      removedRouteIds.push(link.routeId);
+    }
+  });
+
+  const next = clone(current);
+  next.sessions = next.sessions.filter(item => item.id !== sessionId);
+  next.sessionRoutes = next.sessionRoutes.filter(link => link.sessionId !== sessionId);
+  next.attempts = next.attempts.filter(item => item.sessionId !== sessionId);
+  // 待办已经在上面整条拒绝；这里只做防御性清理，正常路径不会命中。
+  next.pendingSaves = (next.pendingSaves || []).filter(item => item.sessionId !== sessionId);
+  next.pendingCorrections = (next.pendingCorrections || []).filter(
+    item => item.sessionId !== sessionId
+  );
+  next.pendingUndos = (next.pendingUndos || []).filter(item => item.sessionId !== sessionId);
+  next.pendingRestores = (next.pendingRestores || []).filter(
+    item => item.sessionId !== sessionId
+  );
+
+  let successor = null;
+  if (current.activeSessionId === sessionId) {
+    successor = latestSameGymSessionOnDate(next, session.date, session.gymId);
+    next.activeSessionId = successor ? successor.id : '';
+    if (!successor) {
+      next.activeRouteId = '';
+    } else if (
+      !sessionHasRoute(next, successor.id, next.activeRouteId) ||
+      !findById(next.routes, next.activeRouteId)
+    ) {
+      next.activeRouteId = '';
+    }
+  }
+
+  const saved = saveArchive(next);
+  if (saved.ok) {
+    return Object.assign(base, {
+      ok: true,
+      code: 'removed',
+      archive: next,
+      writeAttempted: true,
+      written: true,
+      removed: true,
+      removedAttemptIds,
+      removedRouteIds,
+      activeSessionId: next.activeSessionId,
+      activeRouteId: next.activeRouteId,
+      successor: successor ? clone(successor) : null,
+      target,
+      snapshot,
+      pending
+    });
+  }
+
+  // 回执不明确：重读当前档案后才允许报成功。
+  const reread = loadState();
+  if (!reread.ok || reread.archive.archiveId !== archiveId) {
+    return Object.assign(base, {
+      code: 'write-failed-unverified',
+      error: saved.error + '；记录是否已删除暂未确认，重开或重试时会重新核对',
+      archive: reread.ok ? reread.archive : current,
+      writeAttempted: true,
+      removed: null,
+      unknown: true,
+      target,
+      snapshot,
+      pending
+    });
+  }
+  if (sessionFullyAbsent(reread.archive, sessionId)) {
+    return Object.assign(base, {
+      ok: true,
+      code: 'removed-receipt-lost',
+      archive: reread.archive,
+      writeAttempted: true,
+      written: true,
+      removed: true,
+      receiptLost: true,
+      removedAttemptIds,
+      removedRouteIds,
+      activeSessionId: reread.archive.activeSessionId,
+      activeRouteId: reread.archive.activeRouteId,
+      successor: successor ? clone(successor) : null,
+      target,
+      snapshot,
+      pending
+    });
+  }
+  if (findById(reread.archive.sessions, sessionId)) {
+    return Object.assign(base, {
+      code: 'write-failed',
+      error: saved.error,
+      archive: reread.archive,
+      writeAttempted: true,
+      removed: false,
+      target,
+      snapshot,
+      pending
+    });
+  }
+  return Object.assign(base, {
+    code: 'write-failed-unverified',
+    error: saved.error + '；重读到不完整的本场数据，是否已删除暂未确认',
+    archive: reread.archive,
+    writeAttempted: true,
+    removed: null,
+    unknown: true,
+    target,
+    snapshot,
+    pending
+  });
+}
+
+// ------------------------------------------------------------------ *
 // 撤回 / 恢复同一把次（T032）
 // ------------------------------------------------------------------ *
 
@@ -2434,6 +2986,9 @@ module.exports = {
   correctAttempt,
   // T048–T050 追加返工：长按删除有效把次（物理移出记录；视频副本由调用方凭删除凭据清理）
   deleteAttempt,
+  // T051：整场删除的只读快照与一次档案提交（媒体由 T052 协调器另做）
+  inspectSessionDeletion,
+  commitSessionDeletion,
   undoAttempt,
   restoreAttempt,
   attemptSettledOp,
