@@ -26,17 +26,19 @@ const SEEK_REPORT_WAIT_MS = 900;
 // 视为对同一帧的重复点击（本地同步回执可能只有百余毫秒的间隔），只提示不重复写入。
 // 换成不同位置、不同片段或更晚的主动记点都照常保存；失败重试走 pending 路径，不经过这里。
 const MARKER_RAPID_DUPLICATE_WINDOW_MS = 1500;
-// 冷源（本次片源还没有有效推进过）不能直接 seek：先启动一小段播放，
-// 等本 token 报出**真实推进到约 1.1 秒**的原生进度后再下发跳转；bindplay、
-// 元数据、墙钟和起始 0.25/0.8 秒读数都不算就绪。真机正控制显示，太早 seek
-// 会让画面停在起始帧并忽略后续请求。
-// 启动等待有上限，重试次数有限；首次等待放宽到 3.5 秒，避免在播放器真正
-// 推进（观测到约 1.32 秒）之前就重发 play。
-const SEEK_COLD_PLAY_WAIT_MS = 3500;
-const SEEK_COLD_MAX_PLAY_ATTEMPTS = 2;
-// 正常片源的预热门槛：同源原生进度到这个位置才算播起来了。
+// 冷源（本次片源还没有有效推进过）在当前节点上直接 seek 在排查用的微信开发者
+// 工具原生诊断里没有解码到目标：先把播放器卡片滚到可见位置，再换一个新的节点
+// （同一本机片源、原生 initial-time = 目标秒数、该节点 autoplay），只等新节点
+// 回报落在目标附近的 timeupdate 作为实际落点。重挂载后的等待沿用冷加载预算
+// 3.5 秒；到期仍无目标附近回报就明确失败并保留重试，不把请求值当作落点。
+// 该诊断只覆盖开发者工具与无音轨合成片，手机与带音轨视频待验。
+const SEEK_COLD_LANDING_WAIT_MS = 3500;
+// 拉起播放器可见位置的上限：只用原生 pageScrollTo/选择器回调，正常应立刻返回；
+// 超时按可恢复失败处理（不重挂载、不伪造落点），可以再次点回或手动拖动。
+const SEEK_COLD_REVEAL_WAIT_MS = 1500;
+// 正常片源的预热门槛：同源原生进度到这个位置才算播起来了，后续点回可沿用
+// 当前实例的 VideoContext.seek。极短片段按时长比例收口。
 const SEEK_COLD_WARMUP_SECONDS = 1.1;
-// 极短片段按实际时长的这一比例取门槛，避免门槛超过片长而永远等不到。
 const SEEK_COLD_WARMUP_DURATION_RATIO = 0.5;
 
 function hasText(value) {
@@ -241,9 +243,9 @@ function markerDurationLimit(nativeDurationSeconds, clipDurationSeconds) {
 }
 
 /**
- * 冷源预热门槛：正常片源要等同源原生进度真实推进到约 1.1 秒，才允许下发
- * 第一次 seek。极短片段按实际时长的一半收口，否则门槛可能超过片长。
- * 时长还没回来时仍用正常门槛——元数据只决定门槛，不能单独当作就绪。
+ * 冷源"已真正推进"门槛：正常片源要等同源原生进度真实推进到约 1.1 秒，
+ * 之后的点回才走当前实例的直跳。极短片段按实际时长的一半收口，否则门槛可能
+ * 超过片长。时长还没回来时仍用正常门槛——元数据只决定门槛，不能单独当作就绪。
  */
 function coldWarmupProgressSeconds(durationSeconds) {
   const duration = safeNativeNumber(durationSeconds);
@@ -398,8 +400,8 @@ module.exports = {
   SEEK_CONFIRM_TOLERANCE_MS,
   SEEK_REPORT_WAIT_MS,
   MARKER_RAPID_DUPLICATE_WINDOW_MS,
-  SEEK_COLD_PLAY_WAIT_MS,
-  SEEK_COLD_MAX_PLAY_ATTEMPTS,
+  SEEK_COLD_LANDING_WAIT_MS,
+  SEEK_COLD_REVEAL_WAIT_MS,
   SEEK_COLD_WARMUP_SECONDS,
   SEEK_COLD_WARMUP_DURATION_RATIO,
   coldWarmupProgressSeconds,

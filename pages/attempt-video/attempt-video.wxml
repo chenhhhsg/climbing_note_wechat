@@ -91,12 +91,16 @@
         <text id="player-size" class="preview-meta">大小 {{playerSizeText}}</text>
         <text wx:if="{{playerDurationText}}" id="player-duration" class="preview-meta">时长 {{playerDurationText}} 秒</text>
         <text wx:if="{{playerDimensionText}}" id="player-dimension" class="preview-meta">{{playerDimensionText}}</text>
+        <!-- 冷源点回：本节点按原生 initial-time（秒）重新挂载，并仅对该节点 autoplay，
+             落到目标附近的 timeupdate 才确认实际画面。 -->
         <block wx:for="{{videoInstances}}" wx:key="token">
           <video
             id="{{item.domId}}"
             data-video-token="{{item.token}}"
             class="video"
             src="{{playerSrc}}"
+            initial-time="{{item.initialSeconds}}"
+            autoplay="{{item.autoplay}}"
             controls="{{true}}"
             show-center-play-btn="{{true}}"
             bindloadedmetadata="onVideoLoadedMetadata"
