@@ -1,6 +1,7 @@
 /**
  * T058 R3 首页旧云记录状态互斥与可重试（离线部分）
  * T060 R5 旧云表单保存成功后的终态（离线部分）
+ * T061 R6 旧云总量 count 查询（离线部分）
  *
  * 直接加载正式首页 pages/index/index.js，用隔离云替身驱动真实页面处理器：
  * - 旧记录区四态互斥：loading / error / 成功空 / 成功有数据；
@@ -16,7 +17,8 @@
  * - 页面卸载取消已排队的返回计划，离开后不再弹回；
  * - 明确失败不锁定、不删除已上传文件，原输入保留并可原地重试。
  *
- * 这里不提供 wx.cloud、不读取真实云环境或账号；真实云权限、原生渲染与手机实测待验。
+ * 这里不提供真实 wx.cloud、不读取真实云环境或账号；仅 R6 在文件末尾装入合成 count
+ * 替身来核对总量查询，真实云权限、原生渲染与手机实测待验。
  *
  * 运行：node --test tests/review-legacy-cloud.test.cjs
  */
@@ -608,4 +610,106 @@ test('R5 模板保留旧表单并绑定终态锁定与显式返回', () => {
   const page = openAddRecord();
   page.retryReturn();
   assert.equal(wxLog.backs.length, 0);
+});
+
+// ------------------------------------------------------------------ T061 R6 旧云总量
+//
+// db.getRecordsCount 与旧记录读取使用同一个集合、同一份授权范围，但只调用 count()，
+// 不拉取记录列表（getAllRecords 单批最多 20，看不到 37）。本段在文件末尾装入合成
+// wx.cloud 替身，记录集合名与 count/get 调用次数；不读取真实云环境或账号。
+
+function installSyntheticCloud() {
+  const box = {
+    response: { total: 0 },
+    reject: null,
+    collectionNames: [],
+    countCalls: 0,
+    listCalls: 0
+  };
+  global.wx.cloud = {
+    database() {
+      return {
+        collection(name) {
+          box.collectionNames.push(name);
+          return {
+            count() {
+              box.countCalls += 1;
+              if (box.reject) return Promise.reject(box.reject);
+              return Promise.resolve(box.response);
+            },
+            orderBy() { box.listCalls += 1; return this; },
+            skip() { box.listCalls += 1; return this; },
+            limit() { box.listCalls += 1; return this; },
+            get() { box.listCalls += 1; return Promise.resolve({ data: [] }); }
+          };
+        }
+      };
+    }
+  };
+  return box;
+}
+
+// db 会惰性缓存实例与集合：首个 R6 用例装入替身后，后续用例复用同一个盒子，
+// 只重置响应与计数，避免缓存指向旧替身。这样前面用例仍保持「不提供 wx.cloud」。
+let countCloudBox = null;
+
+function resetCountCloud() {
+  if (!countCloudBox) countCloudBox = installSyntheticCloud();
+  countCloudBox.response = { total: 0 };
+  countCloudBox.reject = null;
+  countCloudBox.collectionNames.length = 0;
+  countCloudBox.countCalls = 0;
+  countCloudBox.listCalls = 0;
+  return countCloudBox;
+}
+
+test('R6 旧云总量只走同一集合的 count 查询，0/1/37 原样返回且不拉取列表', async () => {
+  const box = resetCountCloud();
+
+  // 同一集合、同一授权范围：沿用旧记录集合，不换集合、不加额外的筛选。
+  for (const total of [0, 1, 37]) {
+    box.response = { total: total };
+    assert.equal(await db.getRecordsCount(), total, '0/1/37 都按真实 total 返回');
+  }
+  assert.equal(box.countCalls, 3, '每次总量各发起一次 count');
+  assert.equal(box.listCalls, 0, '不调用 orderBy/skip/limit/get，未拉取记录列表');
+  assert.deepEqual(box.collectionNames, ['climbing_records'], '仍是旧记录同一个集合');
+});
+
+test('R6 count 响应不是非负整数时按读取失败拒绝，不拿 0 冒充', async () => {
+  const box = resetCountCloud();
+
+  for (const bad of [{ total: '37' }, { total: -1 }, { total: 1.5 }, { total: NaN }, {}]) {
+    box.response = bad;
+    await assert.rejects(
+      () => db.getRecordsCount(),
+      error => error.code === db.COUNT_INVALID_CODE,
+      '不可识别的 total 必须拒绝：' + JSON.stringify(bad)
+    );
+    assert.equal(db.describeCloudError({ code: db.COUNT_INVALID_CODE, message: '旧云记录总数响应无法识别' }).kind, 'failed');
+  }
+  assert.equal(box.listCalls, 0, '非法响应也不回退到列表读取');
+});
+
+test('R6 count 的无权限与网络失败保留 db 既有分类，下一次可重试', async () => {
+  const box = resetCountCloud();
+
+  box.reject = Object.assign(new Error('denied'), { errCode: -502003 });
+  await assert.rejects(
+    () => db.getRecordsCount(),
+    error => db.describeCloudError(error).kind === 'denied'
+  );
+
+  box.reject = { errMsg: 'request:fail timeout' };
+  await assert.rejects(
+    () => db.getRecordsCount(),
+    error => db.describeCloudError(error).kind === 'failed'
+  );
+
+  // 恢复后重试成功，错误不粘住。
+  box.reject = null;
+  box.response = { total: 37 };
+  assert.equal(await db.getRecordsCount(), 37);
+  assert.equal(box.countCalls, 3);
+  assert.equal(box.listCalls, 0);
 });

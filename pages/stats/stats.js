@@ -15,10 +15,11 @@
  *   最高难度按 V 级（抱石）与 YDS（顶绳/先锋）分开显示，不把两套难度混成一条。
  *
  * 本机数字先算先显示，且完全同步、不依赖网络；旧云汇总单独一段只读展示
- * （db.getAllRecords），断网、旧云拒绝、空数据或迟到回传都只影响这一段，
- * 既不遮挡也不覆盖上面本机读数的数字。
+ * （T061：db.getRecordsCount，与旧记录同一授权范围的 count 查询，不拉取记录列表）。
+ * 断网、旧云拒绝、空数据或迟到回传都只影响这一段，既不遮挡也不覆盖上面本机读数的数字。
  *
- * 只读：进入、下拉刷新、切回 tab 与冷启动都重新读取当前档案，但从不写盘，
+ * 首次进入只由 onLoad 发起一次读取（紧随其后的首次 onShow 不重复请求），
+ * 之后下拉刷新、切回 tab 与冷启动都重新读取当前档案，但从不写盘，
  * 损坏档案也保持原字节（可见报错并与真实空档区分）。
  */
 const db = require('../../utils/db');
@@ -186,11 +187,18 @@ Page({
   },
 
   onLoad() {
+    // 首次进入由 onLoad 发起读取；紧随其后的第一次 onShow 不再重复请求。
+    this._skipFirstShow = true;
     this.loadStats();
   },
 
-  // 每次显示（冷启动、返回 tab、切回统计）都重读当前档案
+  // 每次显示（冷启动、返回 tab、切回统计）都重读当前档案；首次 onShow 紧跟在
+  // onLoad 之后，不重复请求，避免统计首次进入发两次旧云总量查询。
   onShow() {
+    if (this._skipFirstShow) {
+      this._skipFirstShow = false;
+      return;
+    }
     this.loadStats();
   },
 
@@ -235,7 +243,7 @@ Page({
   },
 
   /**
-   * 旧云汇总（只读）：只显示原记录的条数与读只说明，不拆分逐次尝试、
+   * 旧云汇总（只读）：只显示原记录的总条数与读只说明，不拉取记录列表、不拆分逐次尝试、
    * 不计入本机把数，也不向旧库写回。用请求序号丢弃迟到回执。
    */
   loadLegacyStats() {
@@ -243,13 +251,13 @@ Page({
     const token = this._legacyToken;
     this.setData({ legacyLoading: true, legacyState: 'loading' });
 
-    return db.getAllRecords().then(res => {
+    return db.getRecordsCount().then(total => {
       if (token !== this._legacyToken) return;
-      const records = res && Array.isArray(res.data) ? res.data : [];
+      // db.getRecordsCount 只返回非负整数；0 是真实空档，不是失败。
       this.setData({
         legacyLoading: false,
-        legacyState: records.length > 0 ? 'ok' : 'empty',
-        legacyRecordCount: records.length,
+        legacyState: total > 0 ? 'ok' : 'empty',
+        legacyRecordCount: total,
         legacyError: ''
       });
     }).catch(err => {

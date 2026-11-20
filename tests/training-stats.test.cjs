@@ -107,7 +107,7 @@ global.wx = {
 };
 
 const db = require(DB_JS);
-const realGetAllRecords = db.getAllRecords;
+const realGetRecordsCount = db.getRecordsCount;
 const store = require(STORE_JS);
 const fitness = require(FITNESS_JS);
 
@@ -165,9 +165,10 @@ function openStats() {
   return page;
 }
 
-// 旧云汇总替换入口：只统计页这一段受影响，本机读数不得跟着变。
-function useCloudRecords(handler) {
-  db.getAllRecords = () => handler();
+// 旧云总量替换入口：统计页只走 count 总量，本机读数不得跟着变。
+// handler 可以返回 Promise<Number>，也可以抛错/拒绝来模拟旧云失败。
+function useCloudTotal(handler) {
+  db.getRecordsCount = () => Promise.resolve().then(handler);
 }
 
 const FIXED_NOW = new Date(2026, 10, 9, 8, 30);
@@ -229,7 +230,7 @@ function writeLegacyArchive(raw) {
 beforeEach(() => {
   resetDevice();
   resetWxLog();
-  db.getAllRecords = realGetAllRecords;
+  db.getRecordsCount = realGetRecordsCount;
 });
 
 // ------------------------------------------------------------------ *
@@ -280,6 +281,9 @@ test('R1 统计页文案：本机区块在前、旧云单列在后，最高尝�
   assert.match(wxml, /id="stats-empty"/, '需要可辨别的空档空态');
   assert.match(wxml, /id="archive-error"/, '需要可辨别的读取失败态');
   assert.match(wxml, /id="legacy-error"/, '旧云失败要有单列的错误态');
+  // T061：总量查询后用真实总数显示有记录态，0 条仍落到明确的空态。
+  assert.match(wxml, /id="legacy-summary"[\s\S]*?旧云记录 \{\{legacyRecordCount\}\} 条/, '旧云有记录时显示真实总数');
+  assert.match(wxml, /id="legacy-empty"/, '旧云总量为 0 时有明确空态');
 });
 
 test('T047 四个统计标题各自贴着对应读数，旧标题不再出现', () => {
@@ -408,7 +412,7 @@ test('R1 断网、旧云拒绝、空数据都不遮挡也不覆盖本机数字',
   seedThreeAttempts();
 
   // 旧云拒绝权限。
-  useCloudRecords(() => Promise.reject(Object.assign(new Error('denied'), { errCode: -502003 })));
+  useCloudTotal(() => Promise.reject(Object.assign(new Error('denied'), { errCode: -502003 })));
   let page = openStats();
   await flush();
   assert.equal(page.data.legacyState, 'error');
@@ -416,8 +420,8 @@ test('R1 断网、旧云拒绝、空数据都不遮挡也不覆盖本机数字',
   assert.equal(page.data.totalAttempts, 3, '旧云拒绝不得影响本机把数');
   assert.equal(page.data.sendCount, 1, '旧云拒绝不得影响本机完攀');
 
-  // 旧云返回空集合。
-  useCloudRecords(() => Promise.resolve({ data: [] }));
+  // 旧云总量为 0：真实空档，不是失败。
+  useCloudTotal(() => 0);
   page = openStats();
   await flush();
   assert.equal(page.data.legacyState, 'empty');
@@ -425,8 +429,8 @@ test('R1 断网、旧云拒绝、空数据都不遮挡也不覆盖本机数字',
   assert.equal(page.data.totalAttempts, 3);
   assert.equal(page.data.sendCount, 1);
 
-  // 断网 / 无云能力（用真实 db.getAllRecords）：可判别为云不可用。
-  db.getAllRecords = realGetAllRecords;
+  // 断网 / 无云能力（用真实 db.getRecordsCount）：可判别为云不可用。
+  db.getRecordsCount = realGetRecordsCount;
   page = openStats();
   await flush();
   assert.equal(page.data.legacyState, 'error');
@@ -439,7 +443,7 @@ test('R1 迟到的旧云回执只丢弃，不覆盖更新的旧云读数与本�
   seedThreeAttempts();
 
   const queue = [];
-  useCloudRecords(() => {
+  useCloudTotal(() => {
     const request = deferred();
     queue.push(request);
     return request.promise;
@@ -447,20 +451,78 @@ test('R1 迟到的旧云回执只丢弃，不覆盖更新的旧云读数与本�
 
   const page = openStats();
   await flush();
+  assert.equal(queue.length, 1, '首次进入只发一次旧云总量查询');
+
+  // 首次 onShow 紧跟在 onLoad 之后：不重复请求。
   page.onShow();
   await flush();
-  assert.equal(queue.length, 2, '每次重读都要发起新的旧云请求');
+  assert.equal(queue.length, 1, '首次 onShow 不重复发旧云总量查询');
 
-  queue[1].resolve({ data: [{ _id: 'a', attempts: 5, status: '完成' }] });
+  // 返回 tab 才重新读取。
+  page.onShow();
+  await flush();
+  assert.equal(queue.length, 2, '每次重读都要发起新的旧云总量请求');
+
+  queue[1].resolve(1);
   await flush();
   assert.equal(page.data.legacyState, 'ok');
   assert.equal(page.data.legacyRecordCount, 1);
 
-  queue[0].resolve({ data: [{ _id: 'b' }, { _id: 'c' }, { _id: 'd' }] });
+  queue[0].resolve(37);
   await flush();
   assert.equal(page.data.legacyRecordCount, 1, '迟到的旧回执被丢弃');
   assert.equal(page.data.totalAttempts, 3, '旧云迟到不得改动本机把数');
   assert.equal(page.data.sendCount, 1);
+});
+
+test('T061 旧云总量按 count 显示 0/1/37，且不拉取记录列表', async () => {
+  seedThreeAttempts();
+
+  const realGetAllRecords = db.getAllRecords;
+  let listFetches = 0;
+  db.getAllRecords = () => {
+    listFetches += 1;
+    return Promise.resolve({ data: new Array(20).fill(null) });
+  };
+
+  try {
+    for (const total of [0, 1, 37]) {
+      useCloudTotal(() => total);
+      const page = openStats();
+      await flush();
+      assert.equal(page.data.legacyRecordCount, total, '页面显示真实总数 ' + total);
+      assert.equal(page.data.legacyState, total > 0 ? 'ok' : 'empty');
+      assert.equal(page.data.legacyError, '');
+      assert.equal(page.data.totalAttempts, 3, '旧云总量不得计入本机把数');
+      assert.equal(page.data.sendCount, 1, '旧云总量不得计入本机完攀');
+    }
+    assert.equal(listFetches, 0, '不得回退到列表读取（单批最多 20，会看不到 37）');
+  } finally {
+    db.getAllRecords = realGetAllRecords;
+  }
+});
+
+test('T061 首次进入只请求一次总量，下拉刷新重新请求', async () => {
+  seedThreeAttempts();
+
+  let totalCalls = 0;
+  useCloudTotal(() => {
+    totalCalls += 1;
+    return totalCalls;
+  });
+
+  const page = openStats();
+  await flush();
+  page.onShow();
+  await flush();
+  assert.equal(totalCalls, 1, '首次进入（onLoad + 首次 onShow）只请求一次');
+  assert.equal(page.data.legacyRecordCount, 1);
+
+  await page.onPullDownRefresh();
+  await flush();
+  assert.equal(totalCalls, 2, '下拉刷新重新请求总量');
+  assert.equal(page.data.legacyRecordCount, 2);
+  assert.equal(pullDownCount, 1, '下拉刷新仍会收起刷新态');
 });
 
 // ------------------------------------------------------------------ *
@@ -645,12 +707,8 @@ test('R3 旧汇总「尝试 5 次、完成」仍可只读回看，本机数字�
   seedThreeAttempts();
   const archiveBefore = bytesOf(ARCHIVE_KEY);
 
-  // 旧云返回一条合成旧记录：统计页只报条数与来源，不拆把、不计入本机。
-  useCloudRecords(() =>
-    Promise.resolve({
-      data: [{ _id: 'legacy-1', date: '2026-01-02', location: '旧岩馆', grade: 'V4', status: '完成', attempts: 5 }]
-    })
-  );
+  // 旧云返回一条合成旧记录：统计页只报总量与来源，不拆把、不计入本机。
+  useCloudTotal(() => 1);
 
   const page = openStats();
   await flush();
