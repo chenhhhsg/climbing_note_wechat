@@ -22,6 +22,10 @@
  * `wx.setClipboardData({ data, success, fail })`：原生成功回调显示「已复制」；原生失败
  * 不显示成功提示，保留刚输入的文字并在菜单里提供「点此重试」；取消不写剪贴板也不写
  * 存储。每次反馈或重试都递增操作序号，迟到的旧弹窗/剪贴板回执不能覆盖新操作。
+ *
+ * T066：资料入口改称「设置头像昵称」，只表达微信头像昵称在本页显示的能力：
+ * 不登录、不创建账号、不写存储，也不承诺跨设备同步。读取成功、用户拒绝与读取失败
+ * 各有独立的页面内存状态，和意见反馈的复制草稿/失败态互不覆盖。
  */
 const app = getApp();
 const trainingStore = require('../../utils/training-store.js');
@@ -33,6 +37,9 @@ Page({
   data: {
     userInfo: null,
     hasUserInfo: false,
+    // T066：资料读取结果只在本页说明当前能力，独立于意见反馈的复制状态。
+    profileNotice: '',
+    profileNoticeKind: '',
     // T059：复制失败时保留的用户文字；只在页面内存里，供「点此重试」再次复制。
     feedbackDraft: '',
     feedbackCopyFailed: false
@@ -62,22 +69,63 @@ Page({
   },
 
   /**
-   * 获取用户信息
+   * 获取用户信息（T066）
+   *
+   * 只从微信读取头像昵称，作为本页/本机内存里的显示资料：不登录、不创建账号、
+   * 不写存储，也不承诺跨设备同步。拒绝与读取失败只在资料区域说明，且不触碰
+   * 意见反馈的草稿和复制失败态；成功也不清除反馈状态。
    */
   getUserProfile() {
-    wx.getUserProfile({
-      desc: '用于完善个人资料',
-      success: (res) => {
-        app.globalData.userInfo = res.userInfo;
-        this.setData({
-          userInfo: res.userInfo,
-          hasUserInfo: true
-        });
-      },
-      fail: (err) => {
-        console.log('获取用户信息失败：', err);
-      }
-    });
+    const showProfileFailure = (err) => {
+      const errMsg = err && typeof err.errMsg === 'string' ? err.errMsg : '';
+      const denied = /deny|cancel/i.test(errMsg);
+      this.setData({
+        profileNoticeKind: denied ? 'denied' : 'failed',
+        profileNotice: denied
+          ? '已取消，头像昵称未更新；不影响意见反馈与训练记录。'
+          : '头像昵称读取失败，可点此重试；不影响意见反馈与训练记录。'
+      });
+    };
+
+    if (typeof wx.getUserProfile !== 'function') {
+      showProfileFailure({ errMsg: 'getUserProfile:fail unavailable' });
+      return;
+    }
+
+    let settled = false;
+    const settle = () => {
+      if (settled) return false;
+      settled = true;
+      return true;
+    };
+
+    try {
+      wx.getUserProfile({
+        desc: '用于完善个人资料',
+        success: (res) => {
+          if (!settle()) return;
+          const userInfo = res && res.userInfo ? res.userInfo : null;
+          if (!userInfo) {
+            showProfileFailure({ errMsg: 'getUserProfile:fail empty' });
+            return;
+          }
+          app.globalData.userInfo = userInfo;
+          this.setData({
+            userInfo,
+            hasUserInfo: true,
+            profileNotice: '',
+            profileNoticeKind: ''
+          });
+        },
+        fail: (err) => {
+          if (!settle()) return;
+          showProfileFailure(err);
+        }
+      });
+    } catch (err) {
+      if (!settle()) return;
+      showProfileFailure({ errMsg: (err && err.message) || 'getUserProfile:fail' });
+    }
   },
 
   /**
