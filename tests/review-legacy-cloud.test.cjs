@@ -355,6 +355,52 @@ test('R3 本机训练入口在晚到的失败之后仍保持可操作', async ()
   assert.equal(wxLog.navigations.at(-1).url, '/pages/training-session/training-session');
 });
 
+test('R3/T063 旧日期训练入口独立于旧云错误，补记仍走原场 ID 且不写档案', async () => {
+  const started = store.startSession({
+    gymName: '上次岩馆',
+    date: '2026-11-19',
+    now: new Date(2026, 10, 19, 9, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const before = storage.get(store.ARCHIVE_KEY);
+
+  stubCloud(() => Promise.reject({ errMsg: 'request:fail timeout' }));
+  const home = openHome();
+  home.refreshTrainingEntry(new Date(2026, 10, 20, 8, 0));
+  await flush();
+
+  // R3 旧云区仍是可重试的失败态，训练入口与下次想爬不受影响。
+  assert.equal(home.data.cloudState, 'error');
+  assert.equal(home.data.isEmpty, false);
+  assert.equal(home.data.trainingMode, 'previous');
+  assert.equal(home.data.trainingSectionTitle, '上次训练');
+  assert.equal(home.data.hasActiveSession, true);
+  assert.equal(home.data.activeSession.id, started.session.id);
+  assert.equal(home.data.activeSession.gymName, '上次岩馆');
+  assert.equal(home.data.activeSession.dateText, '2026-11-19');
+  assert.equal(home.data.activeSession.isToday, false);
+  assert.equal(home.data.wishlistItemCount, 0);
+  assert.equal(storage.get(store.ARCHIVE_KEY), before, '显示上次训练不改档案');
+
+  home.backfillPrevious();
+  assert.match(
+    wxLog.navigations.at(-1).url,
+    new RegExp('sessionId=' + started.session.id)
+  );
+  assert.equal(storage.get(store.ARCHIVE_KEY), before, '补记只导航，不改原场');
+
+  home.startTraining();
+  assert.equal(
+    wxLog.navigations.at(-1).url,
+    '/pages/training-session/training-session?start=1'
+  );
+
+  const wxml = fs.readFileSync(INDEX_WXML, 'utf8');
+  assert.ok(wxml.indexOf('id="wishlist-entry"') !== -1, '下次想爬入口仍在');
+  assert.ok(wxml.indexOf('id="cloud-error"') !== -1, '旧云错误态仍在');
+  assert.ok(wxml.indexOf('bindtap="retryRecentRecords"') !== -1, '旧云重试仍在');
+});
+
 // ------------------------------------------------------------------ getApp 云状态
 
 test('R3 getApp 明确不可用时首次进入不发请求，重试仍实际请求并可恢复', async () => {

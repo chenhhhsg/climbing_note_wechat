@@ -7,18 +7,28 @@
     <image class="field-cover-image" src="/images/field-cover.jpg" mode="aspectFill" aria-hidden="true" />
     <view class="field-cover-title"><text>岩馆</text><text>手册</text></view>
   </view>
-  <!-- 训练入口：开始训练 / 继续本场 -->
-  <view id="training-entry" class="training-entry">
-    <view class="field-section-head"><view class="field-mark"></view><text class="field-section-name">本次训练</text></view>
+  <!--
+    训练入口（T063）：按档案里保存的场次日期区分空档 / 今天 / 上次训练。
+    今天继续本场；旧日期主操作开始今天训练，次操作补记上次（只打开原场 ID）。
+    首页在这里只读，点开始或补记之前不写档案。
+  -->
+  <view id="training-entry" class="training-entry training-entry-{{trainingMode}}">
+    <view class="field-section-head">
+      <view class="field-mark"></view>
+      <text id="training-section-name" class="field-section-name">{{trainingSectionTitle}}</text>
+    </view>
     <view wx:if="{{hasActiveSession}}" class="training-current">
       <view class="training-current-head">
         <text class="training-gym">{{activeSession.gymName}}</text>
-        <text class="training-date">{{activeSession.dateText}} · {{activeSession.label}}</text>
+        <text id="training-session-date" class="training-date">{{activeSession.dateText}} · {{activeSession.label}}</text>
       </view>
-      <text class="training-route">当前线路 · {{activeSession.routeName || '还没选线路'}} · 本场 {{activeSession.attemptCountText}}</text>
+      <text id="training-route-line" class="training-route">{{activeSession.isToday ? '当前线路' : '上次线路'}} · {{activeSession.routeName || '还没选线路'}} · 本场 {{activeSession.attemptCountText}}</text>
+      <text wx:if="{{trainingMode === 'previous'}}" id="last-training-hint" class="training-hint">补记会回到这一场，不改原日期与岩馆归属。</text>
       <view class="training-actions">
-        <button id="continue-training" class="btn-training" bindtap="continueTraining">继续本场</button>
-        <button id="start-training" class="btn-training-secondary" bindtap="startTraining">另开一场</button>
+        <button wx:if="{{activeSession.isToday}}" id="continue-training" class="btn-training" bindtap="continueTraining">继续本场</button>
+        <button wx:else id="start-training" class="btn-training" bindtap="startTraining">开始今天训练</button>
+        <button wx:if="{{activeSession.isToday}}" id="start-training" class="btn-training-secondary" bindtap="startTraining">另开一场</button>
+        <button wx:else id="backfill-previous" class="btn-training-secondary" bindtap="backfillPrevious">补记上次</button>
       </view>
     </view>
 

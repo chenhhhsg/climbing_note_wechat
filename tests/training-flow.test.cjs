@@ -25,6 +25,8 @@ const { test, beforeEach } = require('node:test');
 const ROOT = path.resolve(__dirname, '..');
 const APP_JSON = path.join(ROOT, 'app.json');
 const INDEX_JS = path.join(ROOT, 'pages', 'index', 'index.js');
+const INDEX_WXML = path.join(ROOT, 'pages', 'index', 'index.wxml');
+const INDEX_WXSS = path.join(ROOT, 'pages', 'index', 'index.wxss');
 const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-session.js');
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
 const ROUTE_JS = path.join(ROOT, 'pages', 'training-route', 'training-route.js');
@@ -544,6 +546,103 @@ test('FM01 三个正式页面都注册了照片绑定，WXML 上的处理器真�
   // 个人页保持 T016 的「清除缓存」入口（照片可重建缓存的清理从这里发起）。
   const profileWxml = fs.readFileSync(PROFILE_WXML, 'utf8');
   assert.ok(profileWxml.indexOf('bindtap="clearCache"') !== -1, '个人页缺少清缓存入口');
+});
+
+test('T063 首页新进入时旧日期显示上次训练，不写档案、不自动建场', async () => {
+  const started = store.startSession({
+    gymName: '昨天岩馆',
+    date: '2026-11-19',
+    now: new Date(2026, 10, 19, 20, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const before = rawArchive();
+
+  const home = createPage(indexDefinition);
+  home.onLoad();
+  home.refreshTrainingEntry(new Date(2026, 10, 20, 8, 0));
+
+  assert.equal(home.data.trainingMode, 'previous');
+  assert.equal(home.data.trainingSectionTitle, '上次训练');
+  assert.equal(home.data.hasActiveSession, true);
+  assert.equal(home.data.activeSession.isToday, false);
+  assert.equal(home.data.activeSession.id, started.session.id);
+  assert.equal(home.data.activeSession.gymName, '昨天岩馆');
+  assert.equal(home.data.activeSession.dateText, '2026-11-19');
+  assert.equal(rawArchive(), before, '显示旧场不写档案');
+  assert.equal(store.loadState().archive.sessions.length, 1, '不自动新建场次');
+  assert.equal(store.loadState().archive.sessions[0].date, '2026-11-19', '不自动改旧场日期');
+});
+
+test('T063 首页同日继续、跨午夜转上次训练，开始与补记按原场 ID 进入', async () => {
+  // 空档：保持原有「开始训练」。
+  const emptyHome = createPage(indexDefinition);
+  emptyHome.onLoad();
+  assert.equal(emptyHome.data.trainingMode, 'empty');
+  assert.equal(emptyHome.data.trainingSectionTitle, '本次训练');
+  assert.equal(emptyHome.data.hasActiveSession, false);
+  assert.match(emptyHome.data.todayDate, /^\d{4}-\d{2}-\d{2}$/);
+  emptyHome.startTraining();
+  assert.equal(
+    wxLog.navigations.at(-1).url,
+    '/pages/training-session/training-session?start=1'
+  );
+
+  const started = store.startSession({
+    gymName: '今天岩馆',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 9, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const before = rawArchive();
+
+  // 同日（23:59）：继续本场，主次操作与原来一致。
+  const home = createPage(indexDefinition);
+  home.onLoad();
+  home.refreshTrainingEntry(new Date(2026, 10, 20, 23, 59));
+  assert.equal(home.data.trainingMode, 'today');
+  assert.equal(home.data.trainingSectionTitle, '本次训练');
+  assert.equal(home.data.activeSession.isToday, true);
+  assert.equal(home.data.activeSession.id, started.session.id);
+  assert.equal(home.data.activeSession.dateText, '2026-11-20');
+  assert.equal(rawArchive(), before, '显示今天不写档案');
+  home.continueTraining();
+  assert.equal(wxLog.navigations.at(-1).url, '/pages/training-session/training-session');
+  home.startTraining();
+  assert.equal(
+    wxLog.navigations.at(-1).url,
+    '/pages/training-session/training-session?start=1'
+  );
+
+  // 跨过午夜（00:01）：同一场次自动转为「上次训练」，旧场仍只读。
+  home.refreshTrainingEntry(new Date(2026, 10, 21, 0, 1));
+  assert.equal(home.data.trainingMode, 'previous');
+  assert.equal(home.data.trainingSectionTitle, '上次训练');
+  assert.equal(home.data.activeSession.isToday, false);
+  assert.equal(home.data.activeSession.id, started.session.id);
+  assert.equal(home.data.activeSession.dateText, '2026-11-20');
+  assert.equal(rawArchive(), before, '跨午夜只重算显示，不改档案');
+  assert.equal(store.loadState().archive.sessions.length, 1, '不自动新建场次');
+  assert.equal(store.loadState().archive.sessions[0].date, '2026-11-20');
+
+  // 补记上次：只导航到原场次 ID，不新建、不改原日期与归属。
+  home.backfillPrevious();
+  const url = wxLog.navigations.at(-1).url;
+  assert.match(url, /^\/pages\/training-session\/training-session\?sessionId=/);
+  assert.ok(url.indexOf(encodeURIComponent(started.session.id)) !== -1);
+  assert.equal(rawArchive(), before, '补记导航不改档案');
+  assert.equal(store.loadState().archive.activeSessionId, started.session.id);
+
+  // U2/U4 模板与压缩封面：主次操作可辨，品牌图保留但更小。
+  const wxml = fs.readFileSync(INDEX_WXML, 'utf8');
+  assert.ok(wxml.indexOf('{{trainingSectionTitle}}') !== -1);
+  assert.ok(wxml.indexOf('bindtap="backfillPrevious"') !== -1);
+  assert.ok(wxml.indexOf('id="backfill-previous"') !== -1);
+  assert.ok(wxml.indexOf('id="continue-training"') !== -1);
+  assert.ok(wxml.indexOf('id="start-training"') !== -1);
+  assert.ok(wxml.indexOf('/images/field-cover.jpg') !== -1, '保留原品牌图');
+  const wxss = fs.readFileSync(INDEX_WXSS, 'utf8');
+  assert.equal(wxss.indexOf('height:334rpx'), -1, '封面不再占 334rpx');
+  assert.match(wxss, /\.field-cover \{[^}]*height:176rpx/, '封面压缩到 176rpx');
 });
 
 test('R2 从正式首页「开始训练」进入场内页，选照片并确认（正式入口链路）', async () => {
