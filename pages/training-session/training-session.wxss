@@ -406,11 +406,53 @@ page {
   border-bottom: none;
 }
 
+.gym-route-title {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+
 .gym-route-name {
   display: block;
+  flex: 1;
+  min-width: 0;
   font-size: 28rpx;
   color: #182421;
   word-break: break-all;
+}
+
+/* 本馆候选完攀三态：未完攀 / 已完攀 / 完攀待确认，只读展示 */
+.gym-route-state {
+  flex: none;
+  padding: 2rpx 10rpx;
+  border-radius: 6rpx;
+  font-size: 22rpx;
+  line-height: 1.5;
+}
+
+.gym-route-state-open {
+  color: #53615B;
+  background: #F2F4F3;
+}
+
+.gym-route-state-done {
+  color: #1F5948;
+  background: #E3EFEA;
+  font-weight: 650;
+}
+
+.gym-route-state-pending {
+  color: #8A5A00;
+  background: #FFF1D6;
+  font-weight: 650;
+}
+
+.gym-route-hint {
+  display: block;
+  font-size: 22rpx;
+  line-height: 1.5;
+  color: #745241;
+  margin-top: 4rpx;
 }
 
 .gym-route-meta {

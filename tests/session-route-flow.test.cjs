@@ -4558,3 +4558,72 @@ test('T050 返工 撤销失败保留原把与重试；失效点击与过期目�
   assert.equal(page.data.notice, '', '迟到事件不覆盖当前提示');
   assert.equal(page.data.routeCountText, '2 把');
 });
+
+test('T062 U1 跨日已完攀抱石：本馆候选直达原历史，返回后档案与选择零写入', () => {
+  const prior = store.startSession({
+    gymName: '跨日岩馆',
+    date: '2026-11-19',
+    now: new Date(2026, 10, 19, 9, 0)
+  });
+  assert.equal(prior.ok, true, prior.error);
+  const route = store.createRoute({
+    sessionId: prior.session.id,
+    name: '跨日完攀线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(route.ok, true, route.error);
+  const sent = store.saveAttempt({
+    sessionId: prior.session.id,
+    routeId: route.route.id,
+    result: 'send'
+  });
+  assert.equal(sent.ok, true, sent.error);
+
+  const today = store.startSession({
+    gymName: '跨日岩馆',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 9, 0)
+  });
+  assert.equal(today.ok, true, today.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, today.session.id);
+  page.openAddRoute();
+  const candidate = page.data.gymRoutes.find(item => item.id === route.route.id);
+  assert.ok(candidate, '跨日已完攀抱石仍在本馆候选里');
+  assert.equal(candidate.stateText, '已完攀');
+  assert.equal(candidate.openHistory, true);
+
+  const bytesBefore = storage.get(ARCHIVE_KEY);
+  const before = archiveOf();
+  page.pickGymRoute(
+    tapDataset({
+      routeId: candidate.id,
+      sessionId: candidate.sessionId,
+      archiveId: candidate.archiveId,
+      contextPhase: candidate.contextPhase
+    })
+  );
+
+  // 直达原线路历史：不关联本场、不选中、不新建场次，档案一个字节都不变。
+  assert.equal(wxLog.navigations.length, 1);
+  assert.match(wxLog.navigations[0].url, /^\/pages\/training-route\/training-route\?/);
+  assert.match(wxLog.navigations[0].url, new RegExp('routeId=' + route.route.id));
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '打开历史不写档案');
+  const after = archiveOf();
+  assert.equal(after.activeSessionId, before.activeSessionId);
+  assert.equal(after.activeRouteId, before.activeRouteId);
+  assert.equal(after.sessions.length, before.sessions.length);
+  assert.equal(after.sessionRoutes.length, before.sessionRoutes.length);
+  assert.equal(linkCount(today.session.id, route.route.id), 0);
+
+  // 返回本场：只读重算，候选仍是已完攀，当前场次不变、仍没有关联。
+  page.onShow();
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '返回本场也不写盘');
+  const afterReturn = page.data.gymRoutes.find(item => item.id === route.route.id);
+  assert.equal(afterReturn.stateText, '已完攀');
+  assert.equal(afterReturn.openHistory, true);
+  assert.equal(page.data.activeSession.id, today.session.id);
+  assert.equal(linkCount(today.session.id, route.route.id), 0);
+});

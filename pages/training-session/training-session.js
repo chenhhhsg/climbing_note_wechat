@@ -1,5 +1,6 @@
 /**
- * 正式场内页（T017 开场 / T030 首屏加线 / T036 入口收敛到单线页 / T037 统一线路列表）
+ * 正式场内页（T017 开场 / T030 首屏加线 / T036 入口收敛到单线页 / T037 统一线路列表 /
+ * T062 本馆候选完攀三态与同日多馆短名）
  *
  * 从首页「开始训练」或「继续本场」进入，走通一次真实到馆记录的前半段：
  * 填自己的岩馆开始场次（同日可主动另开）→ 选原线或新建抱石/顶绳/先锋线路。
@@ -60,6 +61,102 @@ const SAME_TAP_WINDOW_MS = 300;
 const UNSET_COLOR_TEXT = '不指定';
 const COLOR_TOGGLE_CLOSED = '＋ 颜色（可选）';
 const COLOR_TOGGLE_OPEN = '收起颜色';
+
+// 同日多馆时场次按钮的岩馆短名：默认最多 4 个字符；同日里前缀相同的岩馆
+// 自动加长到能分辨。只改按钮文案，不改场次 ID、编号与短按/长按行为。
+const GYM_SHORT_NAME_LENGTH = 4;
+
+function normalizeGymText(name) {
+  return String(name || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * 为一组同日岩馆生成可辨的短名（按传入顺序返回）。
+ * 名称相同但 gymId 不同时在末尾追加 #1/#2，避免不同岩馆的按钮文案混为一个。
+ */
+function buildGymShortNames(gymNames) {
+  const charsList = gymNames.map(name => Array.from(normalizeGymText(name) || '未知岩馆'));
+  const lengths = charsList.map(chars => Math.min(GYM_SHORT_NAME_LENGTH, chars.length));
+
+  function valueAt(index) {
+    const chars = charsList[index];
+    const take = Math.min(lengths[index], chars.length);
+    return chars.slice(0, take).join('') + (chars.length > take ? '…' : '');
+  }
+
+  // 前缀撞车时逐个加长；完全同名时靠末尾序号区分。
+  for (let round = 0; round < 24; round += 1) {
+    const values = charsList.map((_, index) => valueAt(index));
+    let extended = false;
+    for (let i = 0; i < values.length; i += 1) {
+      for (let j = i + 1; j < values.length; j += 1) {
+        if (values[i] !== values[j]) continue;
+        if (lengths[i] < charsList[i].length) {
+          lengths[i] += 1;
+          extended = true;
+        }
+        if (lengths[j] < charsList[j].length) {
+          lengths[j] += 1;
+          extended = true;
+        }
+      }
+    }
+    if (!extended) break;
+  }
+
+  const values = charsList.map((_, index) => valueAt(index));
+  const used = new Map();
+  return values.map(value => {
+    const total = values.filter(item => item === value).length;
+    if (total <= 1) return value;
+    const ordinal = (used.get(value) || 0) + 1;
+    used.set(value, ordinal);
+    return value + ' #' + ordinal;
+  });
+}
+
+/**
+ * 本馆已有候选的展示行：完攀三态只按档案层 routeCompletion 判定（只读）。
+ * 已完攀抱石点按直达原线路历史；待确认抱石点按只提示、不写盘；顶绳/先锋不显示
+ * 单次完攀状态，仍按原路径关联进本场。
+ */
+function buildGymCandidate(archive, route, context) {
+  const completion = store.routeCompletion(archive, route.id);
+  const isBoulder = Boolean(completion.isBoulder);
+  const completed = Boolean(completion.completed);
+  const pending = isBoulder && !completed && Boolean(completion.hasPendingSend);
+  const stateText = !isBoulder
+    ? ''
+    : completed
+      ? '已完攀'
+      : pending
+        ? '完攀待确认'
+        : '未完攀';
+  return {
+    id: route.id,
+    name: route.name,
+    climbType: climbTypeOf(route),
+    grade: route.grade,
+    colorName: route.colorName || '',
+    isBoulder,
+    completed,
+    pending,
+    // 只有已完攀抱石可以绕过关联直接看原线路历史。
+    openHistory: isBoulder && completed,
+    stateText,
+    stateKind: !isBoulder ? '' : completed ? 'done' : pending ? 'pending' : 'open',
+    actionHint: isBoulder
+      ? completed
+        ? '点按查看原线路历史'
+        : pending
+          ? '完攀待确认，确认后再加入本场'
+          : '点按加入本场'
+      : '点按加入本场',
+    sessionId: context.sessionId,
+    archiveId: context.archiveId,
+    contextPhase: context.phase
+  };
+}
 
 /**
  * 新建线路表单的默认类型与等级：抱石 V3。
@@ -151,6 +248,8 @@ Page({
     // _formDirty / _newRouteDirty  正在填写的场次表单与新建线路表单（不冲掉输入）；
     // _lastCreateTap  快速重复点击「创建并选中」的窗口，避免连点建出两条线；
     // _openRecordTap  同一行快速连点的窗口，避免一次点击排出两个单线页；
+    // _candidatePhase  本馆候选每次重算的代次：候选行带着渲染时的代次，切场/切档后
+    //   才送到的旧点击不能借旧列表把线路关联到另一场；
     // _summarySessionId  小结入口要打开哪一场（只读目标，不写盘）；空表示跟着当前场次。
     // _displaySessionId 本页正在显示的那一场：首次载入钉在当时的当前场次，之后只由
     //   用户显式「开始新场次 / 切场次」改写。别处（另一页、同步回调）改了活动场次时，
@@ -159,6 +258,7 @@ Page({
     this._newRouteDirty = false;
     this._lastCreateTap = 0;
     this._openRecordTap = null;
+    this._candidatePhase = 0;
     this._displaySessionId = '';
     // ?sessionId=xxx：小结入口指向另一场（只读回看），不改当前场次。
     this._summarySessionId =
@@ -266,6 +366,11 @@ Page({
     let selectedRoute = null;
     let gymRoutes = [];
 
+    // 候选代次：每次按最新上下文重算候选列表时换一个号。候选行把它带在 dataset 里，
+    // 切场/换档之后才送到的旧行点击会被拒掉，不借旧列表串到另一场。
+    const candidatePhase = (this._candidatePhase || 0) + 1;
+    this._candidatePhase = candidatePhase;
+
     if (activeRaw) {
       activeSession = {
         id: activeRaw.id,
@@ -275,10 +380,26 @@ Page({
         label: store.sessionLabel(archive, activeRaw)
       };
 
-      sameDaySessions = store.sessionsOnDate(archive, activeRaw.date).map(session => ({
+      // 同日多馆：只有同一天出现不止一个岩馆时才给按钮加岩馆短名。
+      // 场次 ID、编号（第 N 场）与按钮上的短按/长按绑定都保持原样。
+      const sameDay = store.sessionsOnDate(archive, activeRaw.date);
+      const gymIds = [];
+      sameDay.forEach(session => {
+        if (gymIds.indexOf(session.gymId) === -1) gymIds.push(session.gymId);
+      });
+      const showGymShortName = gymIds.length > 1;
+      const shortNames = showGymShortName
+        ? buildGymShortNames(gymIds.map(gymId => store.gymName(archive, gymId)))
+        : [];
+      const shortNameByGymId = new Map();
+      gymIds.forEach((gymId, index) => shortNameByGymId.set(gymId, shortNames[index]));
+
+      sameDaySessions = sameDay.map(session => ({
         id: session.id,
         label: store.sessionLabel(archive, session),
         gymName: store.gymName(archive, session.gymId),
+        // 单馆同日的按钮文案保持原样；多馆时在「第 N 场」前加可辨短名。
+        shortName: showGymShortName ? shortNameByGymId.get(session.gymId) || '' : '',
         isActive: session.id === activeRaw.id
       }));
 
@@ -318,21 +439,22 @@ Page({
       selectedRoute = routes.find(route => route.isSelected) || null;
 
       // 选原线：本岩馆里还没有进本场次的线路。
+      // 候选行带完攀三态、渲染时的场次/档案与候选代次；已完攀抱石直达原线路历史，
+      // 待确认抱石只提示，未完攀与顶绳/先锋仍走原「关联 + 选中」路径。
       const linkedIds = new Set(
         (archive.sessionRoutes || [])
           .filter(link => link.sessionId === activeRaw.id)
           .map(link => link.routeId)
       );
+      const candidateContext = {
+        sessionId: activeRaw.id,
+        archiveId: archive.archiveId,
+        phase: candidatePhase
+      };
       gymRoutes = store
         .routesForGym(archive, activeRaw.gymId)
         .filter(route => !linkedIds.has(route.id))
-        .map(route => ({
-          id: route.id,
-          name: route.name,
-          climbType: climbTypeOf(route),
-          grade: route.grade,
-          colorName: route.colorName || ''
-        }));
+        .map(route => buildGymCandidate(archive, route, candidateContext));
     }
 
     this.setData({
@@ -803,13 +925,104 @@ Page({
   },
 
   /**
-   * 选原线：把本岩馆已有的线路关联到当前场次并选中。
-   * 关联本身幂等；关联成功后紧接着选中，两步都失败可原地重试，不会改动把次。
+   * 本馆候选点按：先按渲染时的档案、场次与候选代次核对是不是**当前**这一份列表。
+   * 切场/换档之后才送到的旧行不关联、不跳转、一个字都不写。
+   *
+   * 已完攀抱石：直接打开原线路历史（只读），不关联本场、不选中、不新建场次；
+   * 完攀待确认：只给稳定提示，同样不写盘；
+   * 未完攀与顶绳/先锋：照旧走「关联 + 选中」。
    */
   pickGymRoute(event) {
     if (this.data.loadError) return;
-    const routeId = event && event.currentTarget && event.currentTarget.dataset.routeId;
+    const dataset = (event && event.currentTarget && event.currentTarget.dataset) || {};
+    const routeId = dataset.routeId;
+    if (!routeId) return;
+
+    const currentSessionId = (this.data.activeSession && this.data.activeSession.id) || '';
+    const currentArchiveId =
+      (this.archive && this.archive.archiveId) || this.data.archiveId || '';
+    const phaseGiven =
+      dataset.contextPhase !== undefined &&
+      dataset.contextPhase !== null &&
+      dataset.contextPhase !== '';
+    const hasContext = phaseGiven || dataset.sessionId || dataset.archiveId;
+
+    if (phaseGiven && String(dataset.contextPhase) !== String(this._candidatePhase)) {
+      this.refreshView();
+      this.setData({ notice: '候选列表已经更新，请按当前列表重新选择。' });
+      return;
+    }
+    if (dataset.sessionId && currentSessionId && dataset.sessionId !== currentSessionId) {
+      this.refreshView();
+      this.setData({ notice: '这一下属于上一场的候选，已经切到别的场次，没有加入。' });
+      return;
+    }
+    if (dataset.archiveId && currentArchiveId && dataset.archiveId !== currentArchiveId) {
+      this.refreshView();
+      this.setData({ notice: '这一下属于原来的本机档案，档案已经更换，没有加入。' });
+      return;
+    }
+
+    let candidate = (this.data.gymRoutes || []).find(item => item.id === routeId) || null;
+    if (!candidate && hasContext) {
+      // 带上下文却已不在当前候选里：列表已刷新，不按旧行写入。
+      this.refreshView();
+      this.setData({ notice: '这条线路已经不在本馆候选里，已按最新档案刷新。' });
+      return;
+    }
+    if (!candidate) {
+      // 旧的直接调用（不带渲染上下文）保持原语义：按 routeId 关联，关联本身幂等。
+      const route = ((this.archive && this.archive.routes) || []).find(
+        item => item.id === routeId
+      );
+      if (!route) {
+        this.refreshView();
+        this.setData({ notice: '这条线路已经不在本馆候选里，已按最新档案刷新。' });
+        return;
+      }
+      candidate = buildGymCandidate(this.archive, route, {
+        sessionId: currentSessionId,
+        archiveId: currentArchiveId,
+        phase: this._candidatePhase
+      });
+    }
+
+    if (candidate.openHistory) return this.openCompletedRouteHistory(candidate);
+    if (candidate.pending) {
+      this.setData({
+        storageError: '',
+        notice:
+          '「' +
+          candidate.name +
+          '」的完攀还在等待确认；确认完成后再加入本场，这次没有新增关联。'
+      });
+      return;
+    }
     return this.resumeRouteInSession(routeId);
+  },
+
+  /**
+   * 已完攀抱石：只打开原线路历史（带本机档案与长期线路 ID），不调用关联/选中，
+   * 不建场次、不改当前归属。返回本场时 onShow 会按原档案重读。
+   */
+  openCompletedRouteHistory(candidate) {
+    const archiveId = (this.archive && this.archive.archiveId) || '';
+    const routeId = candidate && candidate.id;
+    if (!archiveId || !routeId) {
+      this.setData({ notice: '无法打开原线路历史：缺少本机档案或线路归属。' });
+      return;
+    }
+    // 收起加线面板只是页面展示状态，不写盘。
+    this._newRouteDirty = false;
+    this.setData(Object.assign(this.addRouteFormPatch(), { storageError: '', notice: '' }));
+    wx.navigateTo({
+      url:
+        '/pages/training-route/training-route?archiveId=' +
+        encodeURIComponent(archiveId) +
+        '&routeId=' +
+        encodeURIComponent(routeId),
+      fail: () => this.setData({ notice: '原线路历史没有打开，请再点一次这条线路。' })
+    });
   },
 
   /**
