@@ -612,6 +612,79 @@ test('R5 模板保留旧表单并绑定终态锁定与显式返回', () => {
   assert.equal(wxLog.backs.length, 0);
 });
 
+test('R5 卸载后迟到的写入成功：不落终态、不弹提示、不再排返回', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const write = deferred();
+  stubWrites({ addRecord: () => write.promise });
+
+  const page = openAddRecord();
+  page.setData({ location: '迟到成功岩馆' });
+
+  const submitting = page.submitForm();
+  await flush();
+  assert.equal(writeLog.addRecord, 1, '写入在页面存活时发起');
+
+  // 页面先卸载，之后写入才成功返回。
+  page.onUnload();
+  write.resolve({ _id: 'synthetic-late' });
+  await submitting;
+  await flush();
+
+  assert.equal(page.data.saveState, '', '卸载后迟到的成功不再落终态');
+  assert.equal(page.data.returnFailed, false, '卸载后不再改 UI 状态');
+  assert.equal(
+    wxLog.toasts.filter(item => item.title === '保存成功').length,
+    0,
+    '卸载后不再弹保存成功提示'
+  );
+
+  t.mock.timers.tick(5000);
+  assert.equal(wxLog.backs.length, 0, '卸载后不再创建新的返回计划');
+  assert.equal(writeLog.addRecord, 1, '迟到的成功不产生第二次写库');
+});
+
+test('R5 返回失败后连点重试：同一时刻只保留一个在飞原生返回请求', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  stubWrites();
+
+  // 原生回调保持未决，用来观察连点重试是否叠加请求。
+  const pending = [];
+  navigateBackImpl = options => {
+    pending.push(options);
+  };
+
+  const page = openAddRecord();
+  page.setData({ location: '单飞岩馆' });
+
+  await page.submitForm();
+  await flush();
+  assert.equal(writeLog.addRecord, 1);
+
+  // 首次延迟返回发出，原生回调未决；随后回调失败。
+  t.mock.timers.tick(1500);
+  assert.equal(wxLog.backs.length, 1);
+  assert.equal(pending.length, 1);
+  pending[0].fail({ errMsg: 'navigateBack:fail' });
+  assert.equal(page.data.returnFailed, true);
+  assert.equal(page.data.saveState, 'saved');
+
+  // 失败回调后快速连点三次：回调仍未决，只允许一个在飞的原生返回请求。
+  page.retryReturn();
+  page.retryReturn();
+  page.retryReturn();
+  assert.equal(wxLog.backs.length, 2, '连点重试只发起一次原生返回');
+  assert.equal(pending.length, 2);
+
+  // 在飞请求失败后解除单飞，才允许下一次显式重试。
+  pending[1].fail({ errMsg: 'navigateBack:fail' });
+  page.retryReturn();
+  assert.equal(wxLog.backs.length, 3);
+
+  assert.equal(writeLog.addRecord, 1, '重试返回全程零重复写');
+  assert.equal(writeLog.uploads, 0);
+  assert.equal(writeLog.deletes, 0);
+});
+
 // ------------------------------------------------------------------ T061 R6 旧云总量
 //
 // db.getRecordsCount 与旧记录读取使用同一个集合、同一份授权范围，但只调用 count()，

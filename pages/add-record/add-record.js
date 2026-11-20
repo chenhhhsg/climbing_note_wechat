@@ -35,6 +35,11 @@ Page({
   },
 
   onLoad() {
+    // 页面实例级返回状态：卸载后不得再排返回或弹 UI；同一时刻只允许一个在飞返回请求。
+    this.unloaded = false;
+    this.departed = false;
+    this.returning = false;
+
     // 初始化表单数据
     this.setData({
       date: dateUtil.getToday(),
@@ -50,8 +55,10 @@ Page({
 
   /**
    * 页面卸载：取消已排队的延迟返回，离开本页后不再弹回上一页。
+   * 置卸载标记后，迟到的写入成功与原生返回回调都不得再改 data 或弹 UI。
    */
   onUnload() {
+    this.unloaded = true;
     this.clearReturnTimer();
   },
 
@@ -67,8 +74,10 @@ Page({
 
   /**
    * 排一次延迟返回：重复触发不叠加定时器，成功写入后只有一个返回回执。
+   * 页面已卸载或已成功离开时不再创建新的返回计划。
    */
   scheduleReturn() {
+    if (this.unloaded || this.departed) return;
     if (this.returnTimer) return;
     this.returnTimer = setTimeout(() => {
       this.returnTimer = null;
@@ -79,30 +88,52 @@ Page({
   /**
    * 保存成功后的返回：只做页面返回，不再上传图片、不再写库。
    * 返回失败保留「已保存」锁定，改为用户显式重试返回。
+   * 页面实例级单飞：一次原生返回请求未回调前，连点重试不会叠加第二次。
    */
   goBackAfterSave() {
     if (this.data.saveState !== 'saved') return;
+    if (this.unloaded || this.departed || this.returning) return;
     if (typeof wx === 'undefined' || typeof wx.navigateBack !== 'function') {
       this.markReturnFailed();
       return;
     }
-    wx.navigateBack({
+
+    this.returning = true;
+    const options = {
       delta: 1,
+      success: () => {
+        // 成功离开：保持单飞，页面随即卸载，不再接受新的返回请求。
+        this.departed = true;
+      },
       fail: () => {
+        // 回调失败才解除单飞，允许用户显式重试返回。
+        if (this.unloaded || this.departed) return;
+        this.returning = false;
         this.markReturnFailed();
       }
-    });
+    };
+    try {
+      wx.navigateBack(options);
+    } catch (err) {
+      // 原生 API 同步不可用或抛错：安全退回显式重试返回。
+      this.returning = false;
+      this.markReturnFailed();
+    }
   },
 
   /**
    * 返回失败：记录已保存，只提示并可显式重试返回；保存状态保持锁定。
+   * 页面已卸载或已成功离开后不再写 data、不再弹提示。
    */
   markReturnFailed() {
+    if (this.unloaded || this.departed) return;
     this.setData({ returnFailed: true });
-    wx.showToast({
-      title: '已保存，返回失败',
-      icon: 'none'
-    });
+    if (typeof wx !== 'undefined' && typeof wx.showToast === 'function') {
+      wx.showToast({
+        title: '已保存，返回失败',
+        icon: 'none'
+      });
+    }
   },
 
   /**
@@ -285,6 +316,12 @@ Page({
       // 保存到数据库
       await db.addRecord(record);
 
+      // 先摘掉全局 loading；写入可能在本页卸载后才返回。
+      wx.hideLoading();
+
+      // 页面已卸载：迟到的写入成功不再落终态、不再提示、不再排返回。
+      if (this.unloaded) return;
+
       // 写入成功即终态：先锁定提交并清掉旧返回计划，再排唯一的延迟返回。
       this.clearReturnTimer();
       this.setData({
@@ -293,7 +330,6 @@ Page({
         isSubmitting: false
       });
 
-      wx.hideLoading();
       wx.showToast({
         title: '保存成功',
         icon: 'success'
@@ -301,15 +337,17 @@ Page({
       this.scheduleReturn();
 
     } catch (err) {
-      console.error('保存失败：', err);
       wx.hideLoading();
+      // 页面已卸载：迟到的失败同样不弹提示，保持页面实例数据不变。
+      if (this.unloaded) return;
+      console.error('保存失败：', err);
       wx.showToast({
         title: '保存失败',
         icon: 'none'
       });
       // 明确失败：不锁定提交、不清理云文件（结果不明时不删除），原表单可重试。
     } finally {
-      this.setData({ isSubmitting: false });
+      if (!this.unloaded) this.setData({ isSubmitting: false });
     }
   }
 });
