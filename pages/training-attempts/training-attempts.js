@@ -68,6 +68,9 @@ Page({
     this._correctionFailures = {};
     this._correctionPrompt = null;
     this._unloaded = false;
+    // T056 R1：未提交的逐把备注草稿只存在本页实例，按档案/场次/线路/原把四个 ID 分开；
+    // 切换把次或 onShow 都不释放，只有明确取消或保存读回成功才释放对应一把。
+    this._noteDrafts = Object.create(null);
     this._context = actions.parseRecordQuery(query);
     // T046 入口来源：只影响本页的返回文案与回退落点，不参与把次归属。
     this._fromSummary = Boolean(query && (query.from === 'summary' || query.source === 'summary'));
@@ -207,8 +210,10 @@ Page({
     });
 
     // 编辑中的这一把若已不在有效列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
+    // T056 R1：只释放这一把自己的草稿，其他把的未提交草稿继续留在本页。
     let noteEditor = this.data.noteEditor;
     if (noteEditor && !attempts.some(item => item.id === noteEditor.attemptId)) {
+      actions.dropNoteDraft(this, noteEditor);
       noteEditor = null;
     }
 

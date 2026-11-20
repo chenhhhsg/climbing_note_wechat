@@ -259,7 +259,7 @@
   font-size: 24rpx;
 }
 
-/* 旧云记录读取失败：只影响本区 */
+/* 旧云记录读取失败：只影响本区；原因与重试同屏，入口保持可操作 */
 .cloud-error {
   background-color: #f3edda;
   color: #745241;
@@ -267,6 +267,23 @@
   padding: 24rpx;
   margin-bottom: 16rpx;
   font-size: 24rpx;
+}
+.cloud-error-text { display:block; line-height:1.6; }
+.btn-cloud-retry {
+  margin:16rpx 0 0;
+  min-height:44px;
+  box-sizing:border-box;
+  width:auto;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:0 32rpx;
+  background:#FFFFFF;
+  color:#1F5948;
+  border:2rpx solid #1F5948;
+  border-radius:8rpx;
+  font-size:26rpx;
+  line-height:1.35;
 }
 
 /* 岩馆手册 */

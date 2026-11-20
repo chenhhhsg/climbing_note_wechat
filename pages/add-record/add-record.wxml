@@ -104,12 +104,23 @@
     </view>
   </view>
 
-  <!-- 提交按钮 -->
+  <!-- 提交按钮：保存成功后进入终态并锁定，直到离开本页 -->
   <button
+    id="submit-record"
     class="btn-submit"
     bindtap="submitForm"
-    disabled="{{isSubmitting}}"
+    disabled="{{isSubmitting || saveState === 'saved'}}"
   >
-    {{isSubmitting ? '保存中...' : '保存记录'}}
+    {{saveState === 'saved' ? '已保存' : (isSubmitting ? '保存中...' : '保存记录')}}
   </button>
+
+  <!-- 已保存但返回失败：保持锁定，只提供显式重试返回，不重复上传或写库 -->
+  <view wx:if="{{returnFailed}}" id="return-failed" class="return-failed">
+    <text class="return-failed-hint">记录已保存，返回失败。可重试返回，不会重复保存。</text>
+    <button
+      id="retry-return"
+      class="btn-return"
+      bindtap="retryReturn"
+    >重试返回</button>
+  </view>
 </view>

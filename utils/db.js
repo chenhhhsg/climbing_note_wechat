@@ -25,6 +25,9 @@ const CLOUD_KINDS = ['unavailable', 'denied', 'not-found', 'failed'];
 // 未列出的错误码不猜类别，落到 failed，由页面给出通用重试入口。
 const DENIED_ERR_CODES = [-502003];
 const NOT_FOUND_ERR_CODES = [-502004];
+// T061：旧云总量查询的响应不是可识别的非负整数总数时，用这个可判别错误拒绝，
+// 由页面落到既有的「读取失败」状态，而不是拿 0 或列表长度冒充总数。
+const COUNT_INVALID_CODE = 'LEGACY_COUNT_INVALID';
 
 let cachedDb = null;
 let cachedCollection = null;
@@ -291,6 +294,27 @@ const getAllRecords = () => withCloud(() => getRecordsCollection()
   .orderBy('date', 'desc')
   .get());
 
+/**
+ * 旧云记录总量（T061）：与 getAllRecords 使用同一个集合、同一份授权范围，
+ * 但只做 count 查询，不拉取记录列表，因此不受单批 20 条的限制。
+ *
+ * 成功时 resolve 非负整数 total（0 也原样返回）；响应缺少可识别的 total 时，
+ * 以 code = COUNT_INVALID_CODE 的 Error reject，保持「调用即拿到 Promise、
+ * 失败走 reject」的既有契约；云不可用、无权限与网络失败仍按原错误对象透传，
+ * 交给 describeCloudError 分类。
+ *
+ * @returns {Promise<Number>} 旧云记录总条数
+ */
+const getRecordsCount = () => withCloud(() => getRecordsCollection().count().then(response => {
+  const total = response && response.total;
+  if (typeof total !== 'number' || !Number.isInteger(total) || total < 0) {
+    const error = new Error('旧云记录总数响应无法识别');
+    error.code = COUNT_INVALID_CODE;
+    throw error;
+  }
+  return total;
+}));
+
 function requireCloud() {
   if (!wx || !wx.cloud) {
     throw cloudUnavailable('云开发不可用：当前环境没有 wx.cloud');
@@ -341,6 +365,7 @@ module.exports = {
   deleteRecord,
   getRecentRecords,
   getAllRecords,
+  getRecordsCount,
   uploadImage,
   deleteImage,
   // 便于页面与测试识别「云不可用」这一类可判别失败。
@@ -350,6 +375,7 @@ module.exports = {
   CLOUD_KINDS,
   DENIED_ERR_CODES,
   NOT_FOUND_ERR_CODES,
+  COUNT_INVALID_CODE,
   LEGACY_SUMMARY_HINT,
   LEGACY_DETAIL_HINT,
   classifyCloudError,

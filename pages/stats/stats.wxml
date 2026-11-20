@@ -133,7 +133,7 @@
     <view wx:if="{{legacyState === 'ok'}}" id="legacy-summary" class="legacy-line">
       <text>旧云记录 {{legacyRecordCount}} 条</text>
     </view>
-    <view wx:elif="{{legacyState === 'empty'}}" class="legacy-line">
+    <view wx:elif="{{legacyState === 'empty'}}" id="legacy-empty" class="legacy-line">
       <text>旧云暂无记录</text>
     </view>
     <view wx:elif="{{legacyState === 'error'}}" id="legacy-error" class="legacy-error">

@@ -1,5 +1,5 @@
 /**
- * T048–T050 现场返工：单线记录页的「备注」入口与直接「撤销」
+ * T048–T050 现场返工与 T056 R1 逐把备注草稿：单线记录页的「备注」入口与直接「撤销」
  *
  * 只覆盖本需求（tests/ 下的其它文件保持各自的原断言），直接加载真实的
  * pages/training-record 与 utils/training-store.js，用隔离的本机存储替身与可注入故障
@@ -27,6 +27,12 @@ const { test, beforeEach } = require('node:test');
 const ROOT = path.resolve(__dirname, '..');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
+const ATTEMPTS_JS = path.join(
+  ROOT,
+  'pages',
+  'training-attempts',
+  'training-attempts.js'
+);
 
 const ARCHIVE_KEY = 'climbingNote.training.v1.archive';
 const VIDEO_INDEX_KEY = 'climbingNote.training.v1.attempt-video';
@@ -92,10 +98,16 @@ global.Page = def => {
 };
 require(RECORD_JS);
 assert.ok(definition, 'training-record 应注册 Page 定义');
+const recordDefinition = definition;
+definition = null;
+require(ATTEMPTS_JS);
+assert.ok(definition, 'training-attempts 应注册 Page 定义');
+const attemptsDefinition = definition;
 
-function createPage() {
-  const page = Object.create(definition);
-  page.data = JSON.parse(JSON.stringify(definition.data));
+function createPage(baseDefinition) {
+  const base = baseDefinition || recordDefinition;
+  const page = Object.create(base);
+  page.data = JSON.parse(JSON.stringify(base.data));
   page.setData = function setData(patch) {
     Object.keys(patch || {}).forEach(key => {
       const parts = key.split('.');
@@ -125,6 +137,33 @@ function openRecord(sessionId, routeId) {
   page.onLoad({ archiveId: archive.archiveId, sessionId, routeId });
   assert.equal(page.data.contextError, '', '单线页应能按原归属打开');
   return page;
+}
+
+/** 本场逐把页（T056 两页共用同一份备注事件处理）。 */
+function openAttempts(sessionId, routeId) {
+  const archive = archiveOf();
+  const page = createPage(attemptsDefinition);
+  page.onLoad({ archiveId: archive.archiveId, sessionId, routeId });
+  assert.equal(page.data.contextError, '', '本场逐把页应能按原归属打开');
+  return page;
+}
+
+/** 当前编辑器输入事件：与 WXML 的输入框一样带原 attemptId 与本次编辑代次。 */
+function noteInput(page, value) {
+  return {
+    detail: { value },
+    currentTarget: {
+      dataset: {
+        attemptId: page.data.noteEditor.attemptId,
+        editVersion: page.data.noteEditor.version
+      }
+    }
+  };
+}
+
+/** 保存/取消按钮的 dataset（WXML 绑定打开时那一把与那一代次）。 */
+function noteButtonEvent(editor) {
+  return tapDataset({ attemptId: editor.attemptId, editVersion: editor.version });
 }
 
 function tapDataset(dataset) {
@@ -734,5 +773,482 @@ test('T050 返工：撤销命中盒固定 44×44，重试只做有限加宽', ()
     ruleOf('.record-attempt-latest .record-attempt-time'),
     /white-space:\s*nowrap;/,
     '最新时间保持单行'
+  );
+});
+
+// ------------------------------------------------------------------ *
+// T056 R1：逐把备注草稿按四个原 ID 隔离，A → B → A 不丢
+// ------------------------------------------------------------------ *
+
+test('T056 R1 单线页 A→B→A：各自草稿保留，保存 B 不动 A 的草稿与原值，取消只丢同一把', () => {
+  const session = startSession('岩馆 T056 单线');
+  const route = createRoute(session.id, 'T056 单线', '顶绳');
+  const attempts = saveAttempts(
+    session.id,
+    route.id,
+    ['fail', 'fail', 'fail'],
+    ['A 原备注', 'B 原备注', 'C 原备注']
+  );
+  const page = openRecord(session.id, route.id);
+  const cardsBefore = page.data.attemptCards.map(row => row.id);
+  const expandedBefore = page.data.expandedAttemptId;
+
+  // A：输入未提交草稿，切到 B，再回 A。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, 'A 原备注');
+  page.onNoteInput(noteInput(page, 'A 未保存草稿'));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  assert.equal(page.data.noteEditor.text, 'B 原备注', '切到 B 带出 B 的原值');
+  page.onNoteInput(noteInput(page, 'B 未保存草稿'));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.attemptId, attempts[0].id);
+  assert.equal(page.data.noteEditor.text, 'A 未保存草稿', '回到 A 草稿仍在');
+  assert.deepEqual(
+    page.data.attemptCards.map(row => row.id),
+    cardsBefore,
+    '切换备注不改现场卡片顺序'
+  );
+  assert.equal(page.data.expandedAttemptId, expandedBefore, '切换备注不改展开态');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    'A 原备注',
+    '草稿没有写盘'
+  );
+
+  // 保存 B：只落 B，A 的草稿与已保存原值都保持。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[1].id).note,
+    'B 未保存草稿'
+  );
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    'A 原备注',
+    '保存 B 不改 A 的原值'
+  );
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, 'A 未保存草稿', '保存 B 后 A 草稿仍在');
+
+  // 未提交的空字符串也是草稿：切走再回来不能被原值顶掉。
+  page.onNoteInput(noteInput(page, ''));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, '', '空草稿保持为空，不回填原值');
+
+  // 明确取消只丢弃这一把：A 的草稿清掉，B 自己的草稿不受影响。
+  page.cancelNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.noteEditor, null);
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, 'A 原备注', '取消 A 后回到 A 的已保存原值');
+  page.onNoteInput(noteInput(page, 'A 第二次草稿'));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  page.onNoteInput(noteInput(page, 'B 第二次草稿'));
+  page.cancelNote(noteButtonEvent(page.data.noteEditor));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  assert.equal(page.data.noteEditor.text, 'B 未保存草稿', '取消 B 只丢 B 的草稿');
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, 'A 第二次草稿', '取消 B 不动 A 的草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[2].id).note,
+    'C 原备注',
+    '没打开过的第三把原值不变'
+  );
+
+  // 展开 A 的备注区后折叠再展开：草稿仍跟着原把，不因收起而释放。
+  page.toggleAttemptRow(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.expandedAttemptId, attempts[0].id);
+  page.toggleAttemptRow(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.expandedAttemptId, '', '折叠后编辑器区域收起');
+  assert.equal(page.data.noteEditor.text, 'A 第二次草稿', '折叠不释放草稿');
+  page.toggleAttemptRow(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, 'A 第二次草稿', '再展开仍可继续编辑');
+});
+
+test('T056 R1 本场逐把页 A→B→A：草稿保留，旧代次输入/保存/取消不读写，跨页面实例隔离', () => {
+  const session = startSession('岩馆 T056 逐把');
+  const route = createRoute(session.id, 'T056 逐把线', '顶绳');
+  const attempts = saveAttempts(
+    session.id,
+    route.id,
+    ['fail', 'fail'],
+    ['A 原备注', 'B 原备注']
+  );
+  const neighbor = createRoute(session.id, 'T056 旁线', '顶绳');
+  const neighborAttempt = store.saveAttempt({
+    sessionId: session.id,
+    routeId: neighbor.id,
+    result: 'fail',
+    note: '旁线原备注',
+    now: new Date(2026, 10, 18, 10, 0)
+  });
+  assert.equal(neighborAttempt.ok, true, neighborAttempt.error);
+
+  const page = openAttempts(session.id, route.id);
+  const rowsBefore = page.data.attempts.map(row => row.id);
+
+  // 旧代次：取消并重新打开同一把后，旧编辑器的输入/保存/取消都不能落到新草稿上。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  const staleEditor = page.data.noteEditor;
+  page.onNoteInput(noteInput(page, '旧代次草稿'));
+  page.cancelNote(noteButtonEvent(staleEditor));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.notEqual(
+    page.data.noteEditor.version,
+    staleEditor.version,
+    '取消后重新打开换编辑代次'
+  );
+  page.onNoteInput(noteInput(page, '新代次草稿'));
+
+  page.onNoteInput({
+    detail: { value: '旧代次迟到输入' },
+    currentTarget: {
+      dataset: { attemptId: staleEditor.attemptId, editVersion: staleEditor.version }
+    }
+  });
+  assert.equal(page.data.noteEditor.text, '新代次草稿', '旧输入不覆盖新草稿');
+
+  const beforeStaleSave = rawArchive();
+  page.saveNote(noteButtonEvent(staleEditor));
+  assert.equal(rawArchive(), beforeStaleSave, '旧保存不写盘');
+  assert.equal(page.data.noteEditor.text, '新代次草稿', '旧保存不收新草稿');
+  assert.match(page.data.notice, /之前打开的备注编辑/);
+
+  page.cancelNote(noteButtonEvent(staleEditor));
+  assert.equal(page.data.noteEditor.text, '新代次草稿', '旧取消不清新草稿');
+
+  // A → B → A：B 用自己的原值，回到 A 仍是 A 的草稿。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  assert.equal(page.data.noteEditor.text, 'B 原备注');
+  page.onNoteInput(noteInput(page, 'B 未保存草稿'));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, '新代次草稿', '回到 A 草稿仍在');
+  assert.deepEqual(page.data.attempts.map(row => row.id), rowsBefore, '逐把行顺序不变');
+
+  // 保存 B 后 A 的草稿仍在，且旁线、第三条线都不受影响。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[1].id).note,
+    'B 未保存草稿'
+  );
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(page.data.noteEditor.text, '新代次草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    'A 原备注',
+    'A 的原值没被草稿或 B 的保存改写'
+  );
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === neighborAttempt.attempt.id).note,
+    '旁线原备注',
+    '同场另一条线的原备注不变'
+  );
+
+  // 跨页面实例隔离：另一页实例只按已保存档案带出，不共享本实例的草稿。
+  const otherPage = openAttempts(session.id, route.id);
+  otherPage.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(
+    otherPage.data.noteEditor.text,
+    'A 原备注',
+    '草稿只在所在页面实例内，不串到另一实例'
+  );
+  // 另一实例自己的查看草稿也按它自己的明确取消释放，不影响本页。
+  otherPage.cancelNote(noteButtonEvent(otherPage.data.noteEditor));
+
+  // 本页保存 A 成功后才释放草稿；另一实例重新读档看到已保存的新备注。
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    '新代次草稿'
+  );
+  otherPage.onShow();
+  otherPage.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  assert.equal(otherPage.data.noteEditor.text, '新代次草稿', '另一实例读到已保存备注');
+});
+
+test('T056 R1 保存故障保留草稿可重试；写后读回确认成功才释放，读回不一致不丢草稿', () => {
+  const session = startSession('岩馆 T056 重试');
+  const route = createRoute(session.id, 'T056 重试线', '顶绳');
+  const attempts = saveAttempts(session.id, route.id, ['fail'], ['原备注']);
+  const page = openRecord(session.id, route.id);
+  const attemptId = attempts[0].id;
+
+  // 写前失败：编辑器和草稿都保留，原值不变。
+  page.openNoteEditor(tapDataset({ attemptId }));
+  page.onNoteInput(noteInput(page, '失败后重试的草稿'));
+  armSetFailAt(1);
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  armSetFailAt(0);
+  assert.match(page.data.storageError, /保存本机训练档案失败/);
+  assert.match(page.data.notice, /备注未保存/);
+  assert.equal(page.data.noteEditor.attemptId, attemptId);
+  assert.equal(page.data.noteEditor.text, '失败后重试的草稿', '失败不丢输入');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '原备注',
+    '失败不报已保存'
+  );
+
+  // 原样重试成功：读回确认后才收起编辑器。
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '失败后重试的草稿'
+  );
+
+  // 写成但回执丢失：页面按失败保留草稿；重试走同一把的重复写入，读回后释放。
+  page.openNoteEditor(tapDataset({ attemptId }));
+  page.onNoteInput(noteInput(page, '回执丢失的草稿'));
+  armSetLoseResponseAt(1);
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  armSetLoseResponseAt(0);
+  assert.match(page.data.notice, /备注未保存/);
+  assert.equal(page.data.noteEditor.text, '回执丢失的草稿', '回执丢失仍保留草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '回执丢失的草稿',
+    '这一次其实已经落盘'
+  );
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null, '重试读回确认后才释放');
+
+  // 档案层声称成功但盘上没有这次内容：页面读回不一致，不释放草稿。
+  page.openNoteEditor(tapDataset({ attemptId }));
+  page.onNoteInput(noteInput(page, '读回不一致的草稿'));
+  const realSetAttemptNote = store.setAttemptNote;
+  store.setAttemptNote = () => {
+    const loaded = store.loadState();
+    return { ok: true, code: 'saved', error: '', archive: loaded.archive };
+  };
+  try {
+    page.saveNote(noteButtonEvent(page.data.noteEditor));
+  } finally {
+    store.setAttemptNote = realSetAttemptNote;
+  }
+  assert.match(page.data.storageError, /读回/);
+  assert.equal(page.data.noteEditor.text, '读回不一致的草稿', '读回不一致不丢草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '回执丢失的草稿',
+    '没有把未落盘的内容当作已保存'
+  );
+
+  // 恢复真实写入后可重试成功。
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '读回不一致的草稿'
+  );
+});
+
+// ------------------------------------------------------------------ *
+// T056 R1-E：A→B→A 后早前 A 的迟到输入/保存/取消仍失效；新 A 读回确认后才保存
+// ------------------------------------------------------------------ *
+
+test('T056 R1-E 单线页 A→B→A：旧 A 迟到输入/保存/取消失效，新 A 读回确认后才释放草稿', () => {
+  const session = startSession('岩馆 T056 R1E 单线');
+  const route = createRoute(session.id, 'T056 R1E 单线', '顶绳');
+  const attempts = saveAttempts(
+    session.id,
+    route.id,
+    ['fail', 'fail'],
+    ['A 原备注', 'B 原备注']
+  );
+  const page = openRecord(session.id, route.id);
+
+  // A 第一次挂载：留住这一次编辑器原生事件（原 attemptId + 原代次）。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  const oldA = page.data.noteEditor;
+  page.onNoteInput(noteInput(page, 'A 第一次草稿'));
+  const staleInput = {
+    detail: { value: 'A 迟到的旧输入' },
+    currentTarget: {
+      dataset: { attemptId: oldA.attemptId, editVersion: oldA.version }
+    }
+  };
+  const staleSave = noteButtonEvent(oldA);
+  const staleCancel = noteButtonEvent(oldA);
+
+  // A → B → A：草稿文字保留，但重新挂载必须换新代次。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  page.onNoteInput(noteInput(page, 'B 未保存草稿'));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  const newA = page.data.noteEditor;
+  assert.equal(newA.text, 'A 第一次草稿', '回到 A 草稿文字仍在');
+  assert.notEqual(newA.version, oldA.version, '重新挂载换新代次');
+
+  page.onNoteInput(noteInput(page, 'A 回来后继续写'));
+  const committed = rawArchive();
+
+  // 早前 A 的迟到输入不能覆盖新 A 的草稿。
+  page.onNoteInput(staleInput);
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '旧 A 输入不覆盖新 A 草稿');
+  assert.equal(rawArchive(), committed, '旧 A 输入不写盘');
+
+  // 早前 A 的迟到保存不能提交新 A 的内容。
+  page.saveNote(staleSave);
+  assert.equal(rawArchive(), committed, '旧 A 保存不写盘');
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '旧 A 保存不收新草稿');
+  assert.match(page.data.notice, /之前打开的备注编辑/);
+
+  // 早前 A 的迟到取消不能丢弃新 A 的草稿。
+  page.cancelNote(staleCancel);
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '旧 A 取消不清新 A 草稿');
+  assert.notEqual(page.data.noteEditor, null);
+
+  // 新 A 保存：档案层声称成功但读回不一致时不释放草稿。
+  const realSetAttemptNote = store.setAttemptNote;
+  store.setAttemptNote = () => {
+    const loaded = store.loadState();
+    return { ok: true, code: 'saved', error: '', archive: loaded.archive };
+  };
+  try {
+    page.saveNote(noteButtonEvent(page.data.noteEditor));
+  } finally {
+    store.setAttemptNote = realSetAttemptNote;
+  }
+  assert.match(page.data.storageError, /读回/);
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '读回不一致不释放草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    'A 原备注',
+    '未落盘的输入没有被当作已保存'
+  );
+
+  // 恢复真实写入：读回确认成功后才释放草稿。
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    'A 回来后继续写'
+  );
+
+  // B 的未提交草稿全程没被 A 的保存释放。
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  assert.equal(page.data.noteEditor.text, 'B 未保存草稿', '保存 A 不动 B 的草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[1].id).note,
+    'B 原备注',
+    'B 的原值也没被 A 的保存改写'
+  );
+});
+
+test('T056 R1-E 本场逐把页 A→B→A：旧 A 迟到输入/保存/取消失效，新 A 读回确认后才释放草稿', () => {
+  const session = startSession('岩馆 T056 R1E 逐把');
+  const route = createRoute(session.id, 'T056 R1E 逐把线', '顶绳');
+  const attempts = saveAttempts(
+    session.id,
+    route.id,
+    ['fail', 'fail'],
+    ['A 原备注', 'B 原备注']
+  );
+  const page = openAttempts(session.id, route.id);
+
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  const oldA = page.data.noteEditor;
+  page.onNoteInput(noteInput(page, 'A 第一次草稿'));
+  const staleInput = {
+    detail: { value: 'A 迟到的旧输入' },
+    currentTarget: {
+      dataset: { attemptId: oldA.attemptId, editVersion: oldA.version }
+    }
+  };
+  const staleSave = noteButtonEvent(oldA);
+  const staleCancel = noteButtonEvent(oldA);
+
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  page.onNoteInput(noteInput(page, 'B 未保存草稿'));
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  const newA = page.data.noteEditor;
+  assert.equal(newA.text, 'A 第一次草稿', '回到 A 草稿文字仍在');
+  assert.notEqual(newA.version, oldA.version, '重新挂载换新代次');
+
+  page.onNoteInput(noteInput(page, 'A 回来后继续写'));
+  const committed = rawArchive();
+  page.onNoteInput(staleInput);
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '旧 A 输入不覆盖新 A 草稿');
+  assert.equal(rawArchive(), committed, '旧 A 输入不写盘');
+
+  page.saveNote(staleSave);
+  assert.equal(rawArchive(), committed, '旧 A 保存不写盘');
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '旧 A 保存不收新草稿');
+
+  page.cancelNote(staleCancel);
+  assert.equal(page.data.noteEditor.text, 'A 回来后继续写', '旧 A 取消不清新 A 草稿');
+  assert.notEqual(page.data.noteEditor, null);
+
+  // 新 A 保存走完整读回确认：成功后才收起编辑器并释放草稿。
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    'A 回来后继续写'
+  );
+  page.openNoteEditor(tapDataset({ attemptId: attempts[1].id }));
+  assert.equal(page.data.noteEditor.text, 'B 未保存草稿', '保存 A 不动 B 的草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[1].id).note,
+    'B 原备注',
+    'B 的原值不变'
+  );
+});
+
+test('T056 R1 读回必须仍是原来那一把：档案身份不符时不释放草稿', () => {
+  const session = startSession('岩馆 T056 身份');
+  const route = createRoute(session.id, 'T056 身份线', '顶绳');
+  const attempts = saveAttempts(session.id, route.id, ['fail'], ['原备注']);
+  const page = openRecord(session.id, route.id);
+  const attemptId = attempts[0].id;
+
+  page.openNoteEditor(tapDataset({ attemptId }));
+  page.onNoteInput(noteInput(page, '身份核对草稿'));
+  const originalRaw = rawArchive();
+
+  // 写成功但读回落在**另一份档案身份**上（同 ID、同文字也不算这一把）。
+  const realSetAttemptNote = store.setAttemptNote;
+  store.setAttemptNote = () => {
+    const loaded = store.loadState();
+    const crafted = JSON.parse(JSON.stringify(loaded.archive));
+    crafted.archiveId = crafted.archiveId + '-replaced';
+    const target = crafted.attempts.find(item => item.id === attemptId);
+    target.note = '身份核对草稿';
+    storage.set(ARCHIVE_KEY, JSON.stringify(crafted));
+    return { ok: true, code: 'saved', error: '', archive: crafted };
+  };
+  try {
+    page.saveNote(noteButtonEvent(page.data.noteEditor));
+  } finally {
+    store.setAttemptNote = realSetAttemptNote;
+    storage.set(ARCHIVE_KEY, originalRaw);
+  }
+  assert.match(page.data.storageError, /读回/);
+  assert.notEqual(page.data.noteEditor, null, '身份不符不释放草稿');
+  assert.equal(page.data.noteEditor.text, '身份核对草稿');
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '原备注',
+    '原档案里的这一把仍是原值'
+  );
+
+  // 恢复真实写入后可重试成功。
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.storageError, '');
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attemptId).note,
+    '身份核对草稿'
   );
 });
