@@ -32,7 +32,10 @@
  * - 'archived'  已归档：岩馆拆线，用户把这条从活跃清单归档，保留照片、把次与历史。
  *
  * 存储键（正式本机命名空间，受保护，普通清缓存不动）：
- *   climbingNote.training.v1.wishlist   下次想爬清单
+ *   climbingNote.training.v1.wishlist   下次想爬清单（没有文本恢复时的默认键）
+ * T067 文本恢复提交后，本层跟随 utils/training-store.js 的代际布局读写同一代的清单键；
+ * 旧 wishlist 键原样保留，不被删除或改写。档案与清单的读取都按同一个 commit 记录选代，
+ * 因此不会出现「档案已经是新的、清单还是旧的」这种半提交状态。
  * 无键是正常的「还没收藏过」，返回空清单；键存在但损坏或版本不受支持时返回可见错误、
  * 保留原数据，并且此后所有写入口一律拒绝落盘（不会用空清单覆盖用户已保存的收藏）。
  *
@@ -43,6 +46,7 @@
 const store = require('./training-store.js');
 const rules = require('./training-rules.js');
 
+// 旧键是默认布局；文本恢复提交后由本层跟随 store 的代际选择，旧键原样保留。
 const WISHLIST_KEY = store.NAMESPACE + 'wishlist';
 const WISHLIST_VERSION = 1;
 
@@ -203,21 +207,56 @@ function normalizeWishlist(raw) {
  * state 始终可用于只读展示（损坏时为空清单），但写入口在 ok:false 时一律拒绝落盘。
  */
 function loadWishlist() {
+  const layout = store.resolveLayout();
+  if (!layout.ok) {
+    return {
+      ok: false,
+      error: WISHLIST_READ_FAILED + layout.error,
+      present: false,
+      corrupt: false,
+      state: createEmptyWishlist(),
+      key: '',
+      layout
+    };
+  }
+  const key = layout.wishlistKey;
   let raw;
   try {
-    raw = wx.getStorageSync(WISHLIST_KEY);
+    raw = wx.getStorageSync(key);
   } catch (error) {
     return {
       ok: false,
       error: WISHLIST_READ_FAILED + errorText(error),
       present: false,
       corrupt: false,
-      state: createEmptyWishlist()
+      state: createEmptyWishlist(),
+      key,
+      layout
     };
   }
 
   if (raw === '' || raw === null || raw === undefined) {
-    return { ok: true, error: '', present: false, corrupt: false, state: createEmptyWishlist() };
+    // 恢复过之后 active 清单键缺失不能当成「还没收藏过」，否则会和档案代际不一致。
+    if (!layout.legacy) {
+      return {
+        ok: false,
+        error: WISHLIST_BROKEN,
+        present: true,
+        corrupt: true,
+        state: createEmptyWishlist(),
+        key,
+        layout
+      };
+    }
+    return {
+      ok: true,
+      error: '',
+      present: false,
+      corrupt: false,
+      state: createEmptyWishlist(),
+      key,
+      layout
+    };
   }
 
   let parsed;
@@ -229,7 +268,9 @@ function loadWishlist() {
       error: WISHLIST_BROKEN,
       present: true,
       corrupt: true,
-      state: createEmptyWishlist()
+      state: createEmptyWishlist(),
+      key,
+      layout
     };
   }
 
@@ -245,7 +286,9 @@ function loadWishlist() {
       error: WISHLIST_UNSUPPORTED,
       present: true,
       corrupt: true,
-      state: createEmptyWishlist()
+      state: createEmptyWishlist(),
+      key,
+      layout
     };
   }
 
@@ -256,21 +299,26 @@ function loadWishlist() {
       error: WISHLIST_BROKEN,
       present: true,
       corrupt: true,
-      state: createEmptyWishlist()
+      state: createEmptyWishlist(),
+      key,
+      layout
     };
   }
-  return { ok: true, error: '', present: true, corrupt: false, state };
+  return { ok: true, error: '', present: true, corrupt: false, state, key, layout };
 }
 
 /**
  * 落盘清单。失败只返回错误，不抛出、不重试其他写入。
+ * 文本恢复提交后写入当前代际的清单键，旧键保持原样。
  */
 function saveWishlist(state) {
+  const layout = store.resolveLayout();
+  if (!layout.ok) return { ok: false, error: layout.error, key: '' };
   try {
-    wx.setStorageSync(WISHLIST_KEY, JSON.stringify(state));
-    return { ok: true, error: '' };
+    wx.setStorageSync(layout.wishlistKey, JSON.stringify(state));
+    return { ok: true, error: '', key: layout.wishlistKey };
   } catch (error) {
-    return { ok: false, error: WISHLIST_WRITE_FAILED + errorText(error) };
+    return { ok: false, error: WISHLIST_WRITE_FAILED + errorText(error), key: layout.wishlistKey };
   }
 }
 
