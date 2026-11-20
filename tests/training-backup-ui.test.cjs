@@ -158,7 +158,9 @@ function capturePage() {
 function createPage() {
   const page = Object.create(profileDefinition);
   page.data = JSON.parse(JSON.stringify(profileDefinition.data));
+  page.viewPatches = [];
   page.setData = function setData(patch) {
+    page.viewPatches.push({ patch, bytes: Buffer.byteLength(JSON.stringify(patch)) });
     Object.keys(patch || {}).forEach(key => {
       const parts = key.split('.');
       let node = this.data;
@@ -184,6 +186,78 @@ function failClipboard(index) {
 
 function setImportText(page, text) {
   page.onBackupImportInput({ detail: { value: text } });
+}
+
+function importText(page) {
+  return typeof page._backupImportText === 'string' ? page._backupImportText : '';
+}
+
+function exportText(page) {
+  return typeof page._backupExportText === 'string' ? page._backupExportText : '';
+}
+
+function diagnosticsText(page) {
+  return typeof page._backupDiagnosticsText === 'string'
+    ? page._backupDiagnosticsText
+    : '';
+}
+
+// 视图补丁里最大的字符串；完整备份/诊断/粘贴原文都不得出现在这里。
+function maxStringBytes(value) {
+  if (typeof value === 'string') return Buffer.byteLength(value);
+  if (Array.isArray(value)) return value.reduce((max, item) => Math.max(max, maxStringBytes(item)), 0);
+  if (value && typeof value === 'object') {
+    return Object.keys(value).reduce(
+      (max, key) => Math.max(max, maxStringBytes(value[key])),
+      0
+    );
+  }
+  return 0;
+}
+
+function assertLoneSurrogateSafe(text, label) {
+  if (!text) return;
+  const first = text.charCodeAt(0);
+  const last = text.charCodeAt(text.length - 1);
+  assert.equal(
+    first >= 0xdc00 && first <= 0xdfff,
+    false,
+    label + ' 不得从代理对中间开始'
+  );
+  assert.equal(
+    last >= 0xd800 && last <= 0xdbff,
+    false,
+    label + ' 不得在代理对中间结束'
+  );
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      const next = text.charCodeAt(index + 1);
+      assert.ok(next >= 0xdc00 && next <= 0xdfff, label + ' 含未配对的高代理项');
+      index += 1;
+    } else {
+      assert.equal(code >= 0xdc00 && code <= 0xdfff, false, label + ' 含未配对的低代理项');
+    }
+  }
+}
+
+function collectSlices(page, kind) {
+  const diagnostics = kind === 'diagnostics';
+  const countField = diagnostics ? 'backupDiagnosticsSliceCount' : 'backupExportSliceCount';
+  const indexField = diagnostics ? 'backupDiagnosticsSliceIndex' : 'backupExportSliceIndex';
+  const sliceField = diagnostics ? 'backupDiagnosticsSlice' : 'backupExportSlice';
+  const prev = diagnostics ? 'prevBackupDiagnosticsSlice' : 'prevBackupExportSlice';
+  const next = diagnostics ? 'nextBackupDiagnosticsSlice' : 'nextBackupExportSlice';
+  const count = page.data[countField];
+  assert.ok(count > 0, kind + ' 应有可显示分段');
+  while (page.data[indexField] > 0) page[prev]();
+  const slices = [];
+  for (let index = 0; index < count; index += 1) {
+    slices.push(page.data[sliceField]);
+    if (index < count - 1) page[next]();
+  }
+  assert.equal(page.data[indexField], count - 1, kind + ' 应能走到最后一段');
+  return slices;
 }
 
 function protectedSnapshot() {
@@ -300,6 +374,37 @@ function seedFixture() {
   return { archiveId, photoRaw, videoRaw, routes: [r1.route.id, r2.route.id] };
 }
 
+// 合成大档案：35 把逐把备注，正文含引号与代理对（emoji），但仍是隔离测试数据。
+function seedLargeFixture() {
+  storage.clear();
+  store.resetLayoutCache();
+  const session = store.startSession({ gymName: 'QA 合成大文本馆', date: '2026-11-19' });
+  assert.equal(session.ok, true, session.error);
+  const route = store.createRoute({
+    sessionId: session.session.id,
+    name: 'QA 恢复边界',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(route.ok, true, route.error);
+  const loaded = store.loadState();
+  assert.equal(loaded.ok, true, loaded.error);
+  const archiveId = loaded.archive.archiveId;
+  const note = '"😀'.repeat(1800);
+  for (let index = 0; index < 35; index += 1) {
+    const saved = store.saveAttempt({
+      archiveId,
+      sessionId: session.session.id,
+      routeId: route.route.id,
+      opId: 'qa-large-note-' + index,
+      result: 'fail',
+      note
+    });
+    assert.equal(saved.ok, true, saved.error);
+  }
+  return { archiveId, attempts: 35, note };
+}
+
 function previewFor(page, text) {
   setImportText(page, text);
   const result = page.previewBackupImport();
@@ -347,6 +452,13 @@ test('T068-UI-A 既有页面内提供入口，范围说明点名媒体/时间点
   );
   assert.ok(wxml.indexOf('selectable="{{true}}"') !== -1, '导出文本应可长按自选保存');
 
+  // 原生非受控输入：只监听 input，不回绑完整原文。
+  const textareaMarkup = wxml.slice(wxml.indexOf('<textarea'), wxml.indexOf('</textarea>'));
+  assert.ok(textareaMarkup.indexOf('bindinput="onBackupImportInput"') !== -1);
+  assert.equal(textareaMarkup.indexOf('value='), -1, '导入输入不得回绑 value');
+  assert.ok(wxml.indexOf('backupExportSlice') !== -1, '大导出必须走有界分段展示');
+  assert.ok(wxml.indexOf('backupDiagnosticsSlice') !== -1, '大诊断必须走有界分段展示');
+
   const scope = wxml.slice(wxml.indexOf('id="backup-scope"'), wxml.indexOf('id="backup-notice"'));
   ['照片', '视频', '时间点', '操作日志', '云端记录', '旧档案', '可播放副本'].forEach(word => {
     assert.ok(scope.indexOf(word) !== -1, '备份说明应包含 ' + word);
@@ -390,27 +502,27 @@ test('T068-UI-B 导出只读且不碰剪贴板；读取失败不清掉此前导�
   assert.equal(exported.ok, true, exported.error);
   assert.equal(writes.length, before, '导出不得写任何键');
   assert.equal(clipboardCalls.length, 0, '生成备份不得自动复制');
-  assert.ok(page.data.backupExportText.length > 0);
+  assert.ok(exportText(page).length > 0);
   assert.match(page.data.backupExportMeta, /场/);
   assert.match(page.data.backupNotice, /已生成文本备份/);
 
-  const parsed = JSON.parse(page.data.backupExportText);
+  const parsed = JSON.parse(exportText(page));
   assert.equal(parsed.summary.attempts, exported.summary.attempts);
   assert.ok(parsed.contents.excludes.indexOf('photos') !== -1);
 
-  const keptText = page.data.backupExportText;
+  const keptText = exportText(page);
   arm('get', key => key === store.ARCHIVE_KEY, 1);
   const failed = page.exportBackupText();
   assert.equal(failed.ok, false);
   assert.equal(page.data.backupNoticeKind, 'error');
-  assert.equal(page.data.backupExportText, keptText, '读取失败不得隐藏此前导出文字');
+  assert.equal(exportText(page), keptText, '读取失败不得隐藏此前导出文字');
   assert.equal(writes.length, before, '失败的导出同样不写');
 
   // 导入框里的原文也必须保留。
   setImportText(page, '用户此前粘贴的原文');
   arm('get', key => key === store.ARCHIVE_KEY, 1);
   page.exportBackupText();
-  assert.equal(page.data.backupImportText, '用户此前粘贴的原文');
+  assert.equal(importText(page), '用户此前粘贴的原文');
 });
 
 test('T068-UI-C 复制必须显式点击，成功只来自原生回调；新操作使旧回执失效', () => {
@@ -421,7 +533,7 @@ test('T068-UI-C 复制必须显式点击，成功只来自原生回调；新操�
   page.copyBackupText();
   assert.equal(clipboardCalls.length, 1);
   assert.equal(clipboardCalls[0].argCount, 1, '只允许一个原生参数对象');
-  assert.equal(clipboardCalls[0].options.data, page.data.backupExportText);
+  assert.equal(clipboardCalls[0].options.data, exportText(page));
   assert.equal(toasts.length, 0, '原生回调前不得提示成功');
 
   succeedClipboard(0);
@@ -439,7 +551,7 @@ test('T068-UI-C 复制必须显式点击，成功只来自原生回调；新操�
   assert.equal(page.data.backupCopyFailed, true);
   assert.equal(page.data.backupCopyFailureKind, 'failed');
   assert.match(page.data.backupNotice, /仍保留/);
-  assert.ok(page.data.backupExportText.length > 0, '失败不得清空文本');
+  assert.ok(exportText(page).length > 0, '失败不得清空文本');
   const toastCount = toasts.length;
   page.copyBackupText();
   succeedClipboard(clipboardCalls.length - 1);
@@ -462,7 +574,7 @@ test('T068-UI-D 大文档复制失败与普通失败区分，且不隐藏原文'
   page.exportBackupText();
 
   // 直接放一段超过页面「大文档」提示阈值的合成文本（不是产品上限）。
-  page.data.backupExportText = '你'.repeat(Math.ceil((256 * 1024) / 3) + 100);
+  page._backupExportText = '你'.repeat(Math.ceil((256 * 1024) / 3) + 100);
   page.copyBackupText();
   failClipboard(clipboardCalls.length - 1);
 
@@ -471,7 +583,7 @@ test('T068-UI-D 大文档复制失败与普通失败区分，且不隐藏原文'
   assert.match(page.data.backupCopyIssueText, /剪贴板可能放不下/);
   assert.match(page.data.backupNotice, /剪贴板可能放不下/);
   assert.equal(toasts.at(-1).title, '文本较大，未复制');
-  assert.ok(page.data.backupExportText.length > 0, '失败不得清空文本');
+  assert.ok(exportText(page).length > 0, '失败不得清空文本');
 });
 
 test('T068-UI-E 备份复制与诊断复制各自回执，不互相冒充', () => {
@@ -512,7 +624,7 @@ test('T068-UI-F 预演零写入；改动输入使预演失效，旧确认零写�
   setImportText(page, exported.text + ' ');
   assert.equal(page.data.backupPreview, null);
   assert.match(page.data.backupNotice, /预演已失效/);
-  assert.equal(page.data.backupImportText, exported.text + ' ');
+  assert.equal(importText(page), exported.text + ' ');
 
   const modalBefore = modals.length;
   page.confirmBackupRestore();
@@ -526,7 +638,7 @@ test('T068-UI-F 预演零写入；改动输入使预演失效，旧确认零写�
   assert.equal(modals.length, modalBefore + 1);
   assert.equal(writes.length, before, '取消不得写入');
   assert.match(page.data.backupNotice, /已取消恢复/);
-  assert.equal(page.data.backupImportText, exported.text);
+  assert.equal(importText(page), exported.text);
   assert.ok(page.data.backupPreview, '取消后仍可再次确认');
 });
 
@@ -542,7 +654,7 @@ test('T068-UI-G 显式确认后恢复文字，旧档/媒体/索引/stage 保留�
 
   assert.match(page.data.backupNotice, /恢复完成/);
   assert.equal(page.data.backupPreview, null);
-  assert.equal(page.data.backupImportText, exported.text, '成功后仍保留粘贴原文');
+  assert.equal(importText(page), exported.text, '成功后仍保留粘贴原文');
   assert.ok(stageKeys().length >= 2, 'stage 原文应保留');
   assert.ok(storage.has(store.BACKUP_COMMIT_KEY), '提交记录应存在');
   assert.ok(storage.has(store.BACKUP_PENDING_KEY), '提交计划原文应保留');
@@ -572,7 +684,7 @@ test('T068-UI-H 无效文本与受损诊断都不能导入；诊断逐字保留�
 
   const diagnostics = page.exportBackupDiagnostics();
   assert.equal(diagnostics.ok, true, diagnostics.error);
-  const parsed = JSON.parse(page.data.backupDiagnosticsText);
+  const parsed = JSON.parse(diagnosticsText(page));
   assert.equal(parsed.current.archive.text, damaged, '诊断必须逐字保留受损原文');
   assert.equal(parsed.current.archive.parseOk, false);
   assert.match(page.data.backupNotice, /不能作为备份导入/);
@@ -582,16 +694,16 @@ test('T068-UI-H 无效文本与受损诊断都不能导入；诊断逐字保留�
   let result = page.previewBackupImport();
   assert.equal(result.ok, false);
   assert.equal(writes.length, before, '无效文本零写入');
-  assert.equal(page.data.backupImportText, '这只是一段普通文字', '失败不得隐藏原文');
+  assert.equal(importText(page), '这只是一段普通文字', '失败不得隐藏原文');
   assert.match(page.data.backupNotice, /检查未通过/);
 
   // 诊断原文格式不同：不得被当作验证过的备份封套接受。
-  setImportText(page, page.data.backupDiagnosticsText);
+  setImportText(page, diagnosticsText(page));
   before = writes.length;
   result = page.previewBackupImport();
   assert.equal(result.ok, false);
   assert.equal(writes.length, before, '诊断原文零写入');
-  assert.equal(page.data.backupImportText, page.data.backupDiagnosticsText);
+  assert.equal(importText(page), diagnosticsText(page));
 
   const modalBefore = modals.length;
   page.confirmBackupRestore();
@@ -612,12 +724,12 @@ test('T068-UI-I 预演读取当前档案失败：不写、不隐藏粘贴原文�
   assert.equal(failed.code, 'current-read-failed');
   assert.equal(writes.length, before);
   assert.equal(page.data.backupPreview, null);
-  assert.equal(page.data.backupImportText, exported.text);
+  assert.equal(importText(page), exported.text);
   assert.match(page.data.backupNotice, /检查未通过/);
 
   const retried = page.previewBackupImport();
   assert.equal(retried.ok, true, retried.error);
-  assert.equal(page.data.backupImportText, exported.text);
+  assert.equal(importText(page), exported.text);
 });
 
 test('T068-UI-J 写前失败：页面保留原文与旧档案，要求重新预演而非盲目重试', () => {
@@ -633,7 +745,7 @@ test('T068-UI-J 写前失败：页面保留原文与旧档案，要求重新预�
   assert.match(page.data.backupNotice, /恢复未写入/);
   assert.match(page.data.backupNotice, /重新检查/);
   assert.equal(page.data.backupPreview, null, '失败后必须重新预演');
-  assert.equal(page.data.backupImportText, exported.text, '失败不得隐藏原文');
+  assert.equal(importText(page), exported.text, '失败不得隐藏原文');
   assert.equal(storage.has(store.BACKUP_COMMIT_KEY), false);
   assert.equal(store.loadState().archive.archiveId, oldArchiveId);
 });
@@ -648,7 +760,7 @@ test('T068-UI-K 已提交但回读未验证：提示先诊断，不引导原样�
   page.confirmBackupRestore();
 
   assert.equal(page.data.backupPreview, null, '未验证提交后必须撤销预演');
-  assert.equal(page.data.backupImportText, exported.text);
+  assert.equal(importText(page), exported.text);
   assert.match(page.data.backupNotice, /提交结果未能核对/);
   assert.match(page.data.backupNotice, /导出受损诊断/);
   assert.match(page.data.backupNotice, /不要用同一段文本再次恢复/);
@@ -674,7 +786,7 @@ test('T068-UI-L 输入改动/离开页面使旧确认与旧剪贴板回执失效
   setImportText(page, exported.text + '改');
   heldModals[0].success({ confirm: true, cancel: false });
   assert.equal(writes.length, before, '输入改动后的旧确认不得写入');
-  assert.equal(page.data.backupImportText, exported.text + '改');
+  assert.equal(importText(page), exported.text + '改');
 
   // 再次预演并打开弹窗，然后页面隐藏：旧确认不得写。
   previewFor(page, exported.text);
@@ -738,4 +850,192 @@ test('T068-UI-M 普通清缓存保留档案/清单/媒体索引/commit/stage/pen
   assert.equal(fileSystemCalls, 0, '清缓存不得访问照片/视频文件');
   assert.equal(toasts.length, toastBefore + 1);
   assert.equal(toasts.at(-1).title, '清除成功');
+});
+
+// ------------------------------------------------------------------ *
+// 大文本：视图运输有界、分段可逐字复原、复制全文、粘贴不回绑
+// ------------------------------------------------------------------ *
+
+const DISPLAY_SLICE_BYTES = 32 * 1024;
+
+test('T068-UI-N 大备份与诊断只在视图放有界分段；分段逐字覆盖全文，复制传全文', () => {
+  const fixture = seedLargeFixture();
+  const page = createPage();
+
+  const exported = page.exportBackupText();
+  assert.equal(exported.ok, true, exported.error);
+  assert.equal(exported.summary.attempts, fixture.attempts);
+  const full = exportText(page);
+  assert.equal(full, exported.text, '完整备份原文必须留在页面实例');
+  assert.ok(Buffer.byteLength(full) > DISPLAY_SLICE_BYTES * 4, '合成档案应明显大于单段上限');
+
+  // 任何一个视图补丁里的字符串都不超过一段上限；页面 data 里也不得出现完整大文本。
+  page.viewPatches.forEach(call => {
+    assert.ok(
+      maxStringBytes(call.patch) <= DISPLAY_SLICE_BYTES,
+      '视图补丁含超过 32 KiB 的字符串：' + call.bytes + ' 字节补丁'
+    );
+  });
+  assert.ok(
+    maxStringBytes(page.data) <= DISPLAY_SLICE_BYTES,
+    '页面 data 不得携带完整大文本'
+  );
+
+  const exportCount = page.data.backupExportSliceCount;
+  assert.ok(exportCount > 1, '大备份应分成多段');
+  assert.match(page.data.backupExportSliceLabel, /第 1 \/ \d+ 段/);
+  assert.match(page.data.backupExportSliceLabel, /不是完整备份/);
+  assert.match(page.data.backupExportSliceLabel, /复制全文/);
+
+  const exportSlices = collectSlices(page, 'backup');
+  assert.equal(exportSlices.length, exportCount);
+  exportSlices.forEach((slice, index) => {
+    assert.ok(
+      Buffer.byteLength(slice) <= DISPLAY_SLICE_BYTES,
+      '第 ' + (index + 1) + ' 段超过 32 KiB：' + Buffer.byteLength(slice)
+    );
+    assertLoneSurrogateSafe(slice, '备份第 ' + (index + 1) + ' 段');
+  });
+  assert.equal(exportSlices.join(''), full, '逐段拼接必须逐字等于完整备份');
+
+  // 复制显式复制全文，而不是当前显示的一段。
+  page.copyBackupText();
+  assert.equal(clipboardCalls.at(-1).options.data, full);
+  assert.ok(clipboardCalls.at(-1).options.data.length > page.data.backupExportSlice.length);
+
+  // 诊断同样有界；它可能比备份更大，分段必须能覆盖每个字符。
+  const diagnostics = page.exportBackupDiagnostics();
+  assert.equal(diagnostics.ok, true, diagnostics.error);
+  const diagFull = diagnosticsText(page);
+  assert.equal(diagFull, diagnostics.text, '完整诊断原文必须留在页面实例');
+  page.viewPatches.forEach(call => {
+    assert.ok(
+      maxStringBytes(call.patch) <= DISPLAY_SLICE_BYTES,
+      '诊断视图补丁含超过 32 KiB 的字符串'
+    );
+  });
+  assert.ok(maxStringBytes(page.data) <= DISPLAY_SLICE_BYTES);
+  const diagCount = page.data.backupDiagnosticsSliceCount;
+  assert.ok(diagCount > 1, '大诊断应分成多段');
+  assert.match(page.data.backupDiagnosticsSliceLabel, /不是完整备份/);
+
+  const diagSlices = collectSlices(page, 'diagnostics');
+  diagSlices.forEach((slice, index) => {
+    assert.ok(
+      Buffer.byteLength(slice) <= DISPLAY_SLICE_BYTES,
+      '诊断第 ' + (index + 1) + ' 段超过 32 KiB'
+    );
+    assertLoneSurrogateSafe(slice, '诊断第 ' + (index + 1) + ' 段');
+  });
+  assert.equal(diagSlices.join(''), diagFull, '逐段拼接必须逐字等于完整诊断');
+
+  page.copyBackupDiagnostics();
+  assert.equal(clipboardCalls.at(-1).options.data, diagFull);
+  assert.ok(clipboardCalls.at(-1).options.data.length > page.data.backupDiagnosticsSlice.length);
+});
+
+test('T068-UI-O 大文本粘贴不回绑 value；预演与原文逐字对应且视图补丁有界', () => {
+  const fixture = seedLargeFixture();
+  const page = createPage();
+  const exported = page.exportBackupText();
+  const full = exportText(page);
+  assert.equal(exported.summary.attempts, fixture.attempts);
+
+  page.viewPatches.length = 0;
+  setImportText(page, full);
+  assert.equal(importText(page), full, '粘贴原文必须完整留在页面实例');
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(page.data, 'backupImportText'),
+    false,
+    '输入框不得通过 data 回绑完整原文'
+  );
+  assert.ok(page.viewPatches.length > 0, '输入事件应只更新失效状态');
+  page.viewPatches.forEach(call => {
+    assert.ok(call.bytes < 64 * 1024, '输入事件视图补丁必须很小');
+    assert.ok(maxStringBytes(call.patch) <= DISPLAY_SLICE_BYTES);
+  });
+
+  page.viewPatches.length = 0;
+  const preview = page.previewBackupImport();
+  assert.equal(preview.ok, true, preview.error);
+  assert.equal(preview.summary.attempts, fixture.attempts);
+  assert.equal(page._backupPreviewText, full, '预演令牌必须对应完整原文');
+  assert.equal(page.data.backupPreview.token, preview.token);
+  page.viewPatches.forEach(call => {
+    assert.ok(call.bytes < 64 * 1024, '预演视图补丁必须很小');
+    assert.ok(maxStringBytes(call.patch) <= DISPLAY_SLICE_BYTES);
+  });
+
+  // 失败路径也保留完整原文；旧预演失效但文字不变。
+  page._backupImportText = full + 'x';
+  const failed = page.previewBackupImport();
+  assert.equal(failed.ok, false);
+  assert.equal(failed.code, 'broken-text');
+  assert.equal(importText(page), full + 'x', '失败不得截断或清空粘贴原文');
+});
+
+test('T068-UI-P 旧复制回执不得覆盖更新的编辑/预演/取消/失败/确认消息', () => {
+  seedFixture();
+  const page = createPage();
+  const exported = page.exportBackupText();
+
+  // 1) 旧复制回执 vs 更晚的输入改动消息。
+  previewFor(page, exported.text);
+  page.copyBackupText();
+  const afterEditCopy = clipboardCalls.length - 1;
+  setImportText(page, exported.text + ' ');
+  const editNotice = page.data.backupNotice;
+  assert.match(editNotice, /预演已失效/);
+  const editToasts = toasts.length;
+  succeedClipboard(afterEditCopy);
+  assert.equal(page.data.backupNotice, editNotice, '旧复制成功不得覆盖编辑提示');
+  assert.equal(toasts.length, editToasts, '旧复制成功不得提示');
+
+  // 2) 旧复制失败回执 vs 更晚的预演成功消息。
+  setImportText(page, exported.text);
+  page.copyBackupText();
+  const afterPreviewCopy = clipboardCalls.length - 1;
+  const previewed = page.previewBackupImport();
+  assert.equal(previewed.ok, true, previewed.error);
+  const previewNotice = page.data.backupNotice;
+  const previewToasts = toasts.length;
+  failClipboard(afterPreviewCopy);
+  assert.equal(page.data.backupNotice, previewNotice, '旧复制失败不得覆盖预演提示');
+  assert.equal(page.data.backupCopyFailed, false, '旧复制失败不得写失败态');
+  assert.equal(toasts.length, previewToasts);
+
+  // 3) 旧复制回执 vs 取消确认；取消说明必须保持可读。
+  page.copyBackupText();
+  const afterCancelCopy = clipboardCalls.length - 1;
+  modalQueue.push('cancel');
+  page.confirmBackupRestore();
+  const cancelNotice = page.data.backupNotice;
+  assert.match(cancelNotice, /已取消恢复/);
+  const cancelToasts = toasts.length;
+  succeedClipboard(afterCancelCopy);
+  assert.equal(page.data.backupNotice, cancelNotice, '旧复制回执不得覆盖取消说明');
+  assert.equal(toasts.length, cancelToasts);
+
+  // 4) 旧复制回执 vs 确认弹窗失败；失败说明必须保持可读。
+  page.copyBackupText();
+  const afterModalFailCopy = clipboardCalls.length - 1;
+  modalQueue.push('fail');
+  page.confirmBackupRestore();
+  const modalFailNotice = page.data.backupNotice;
+  assert.match(modalFailNotice, /无法打开确认窗口/);
+  const modalFailToasts = toasts.length;
+  failClipboard(afterModalFailCopy);
+  assert.equal(page.data.backupNotice, modalFailNotice, '旧复制失败不得覆盖弹窗失败说明');
+  assert.equal(toasts.length, modalFailToasts);
+
+  // 5) 旧复制回执 vs 恢复完成；成功说明必须保持可读。
+  page.copyBackupText();
+  const afterRestoreCopy = clipboardCalls.length - 1;
+  page.confirmBackupRestore();
+  const restoreNotice = page.data.backupNotice;
+  assert.match(restoreNotice, /恢复完成/);
+  const restoreToasts = toasts.length;
+  succeedClipboard(afterRestoreCopy);
+  assert.equal(page.data.backupNotice, restoreNotice, '旧复制回执不得覆盖恢复完成说明');
+  assert.equal(toasts.length, restoreToasts);
 });

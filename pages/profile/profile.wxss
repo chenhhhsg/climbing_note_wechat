@@ -161,6 +161,13 @@
   margin-bottom: 16rpx;
 }
 
+.backup-pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16rpx;
+  margin-bottom: 16rpx;
+}
+
 .backup-button {
   flex: 1 1 240rpx;
   min-width: 0;
@@ -177,6 +184,10 @@
 
 .backup-button::after {
   border: none;
+}
+
+.backup-button[disabled] {
+  opacity: 0.45;
 }
 
 .backup-button.secondary {

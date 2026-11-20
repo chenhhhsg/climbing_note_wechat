@@ -46,21 +46,51 @@
       <button id="export-diagnostics" class="backup-button secondary" bindtap="exportBackupDiagnostics">导出受损诊断</button>
     </view>
 
-    <view wx:if="{{backupExportText}}" id="backup-export" class="backup-output">
+    <view wx:if="{{backupExportReady}}" id="backup-export" class="backup-output">
       <text id="backup-export-meta" class="backup-meta">{{backupExportMeta}}</text>
+      <text id="backup-export-slice-label" class="backup-meta">{{backupExportSliceLabel}}</text>
       <scroll-view class="backup-text-box" scroll-y="{{true}}">
-        <text class="backup-text" selectable="{{true}}" user-select="{{true}}">{{backupExportText}}</text>
+        <text class="backup-text" selectable="{{true}}" user-select="{{true}}">{{backupExportSlice}}</text>
       </scroll-view>
-      <button id="copy-backup" class="backup-button" bindtap="copyBackupText">复制备份文本</button>
+      <view wx:if="{{backupExportSliceCount > 1}}" class="backup-pager">
+        <button
+          id="prev-backup-slice"
+          class="backup-button secondary"
+          disabled="{{backupExportSliceIndex <= 0}}"
+          bindtap="prevBackupExportSlice"
+        >上一段</button>
+        <button
+          id="next-backup-slice"
+          class="backup-button secondary"
+          disabled="{{backupExportSliceIndex >= backupExportSliceCount - 1}}"
+          bindtap="nextBackupExportSlice"
+        >下一段</button>
+      </view>
+      <button id="copy-backup" class="backup-button" bindtap="copyBackupText">复制备份文本（全文）</button>
       <text wx:if="{{backupCopyFailed}}" id="backup-copy-failed" class="backup-warn">{{backupCopyIssueText}}</text>
     </view>
 
-    <view wx:if="{{backupDiagnosticsText}}" id="backup-diagnostics" class="backup-output">
+    <view wx:if="{{backupDiagnosticsReady}}" id="backup-diagnostics" class="backup-output">
       <text id="backup-diagnostics-meta" class="backup-meta">{{backupDiagnosticsMeta}}</text>
+      <text id="backup-diagnostics-slice-label" class="backup-meta">{{backupDiagnosticsSliceLabel}}</text>
       <scroll-view class="backup-text-box" scroll-y="{{true}}">
-        <text class="backup-text" selectable="{{true}}" user-select="{{true}}">{{backupDiagnosticsText}}</text>
+        <text class="backup-text" selectable="{{true}}" user-select="{{true}}">{{backupDiagnosticsSlice}}</text>
       </scroll-view>
-      <button id="copy-diagnostics" class="backup-button secondary" bindtap="copyBackupDiagnostics">复制诊断原文</button>
+      <view wx:if="{{backupDiagnosticsSliceCount > 1}}" class="backup-pager">
+        <button
+          id="prev-diagnostics-slice"
+          class="backup-button secondary"
+          disabled="{{backupDiagnosticsSliceIndex <= 0}}"
+          bindtap="prevBackupDiagnosticsSlice"
+        >上一段</button>
+        <button
+          id="next-diagnostics-slice"
+          class="backup-button secondary"
+          disabled="{{backupDiagnosticsSliceIndex >= backupDiagnosticsSliceCount - 1}}"
+          bindtap="nextBackupDiagnosticsSlice"
+        >下一段</button>
+      </view>
+      <button id="copy-diagnostics" class="backup-button secondary" bindtap="copyBackupDiagnostics">复制诊断原文（全文）</button>
       <text wx:if="{{backupDiagnosticsCopyFailed}}" id="backup-diagnostics-copy-failed" class="backup-warn">{{backupDiagnosticsCopyIssueText}}</text>
     </view>
 
@@ -69,10 +99,10 @@
       <text class="backup-hint">
         把之前复制到别处保存的备份文本粘贴到这里。正常导入只接受本页「生成文本备份」的格式；受损诊断原文只能用于排查，不能当作备份导入。
       </text>
+      <!-- 原生非受控输入：不回绑 value，粘贴的大文本只留在页面实例，避免 setData 放大。 -->
       <textarea
         id="backup-import-input"
         class="backup-import"
-        value="{{backupImportText}}"
         maxlength="{{backupImportMaxLength}}"
         placeholder="粘贴备份文本…"
         cursor-spacing="24"

@@ -29,9 +29,11 @@
  *
  * T068：在既有个人页内交付文本备份。导出只生成文字并留给用户显式复制/自行保存；
  * 导入必须在有界输入框里重新粘贴，先预演核对数量，再用独立弹窗明确确认。
- * 取消、改动输入、离开页面或迟到的旧回执都不写档案；提交后回读未通过的恢复不引导
- * 原样重试，而是要求先导出诊断、重新检查后重新确认。照片、视频、时间点与操作日志
- * 始终不进入备份文本，已有媒体保持旧档案归属。
+ * 完整导出、诊断与粘贴原文只留在页面实例（JS 局部状态），视图只拿摘要和不超过
+ * 32 KiB 的有界分段，避免 setData 把大文本连同 JSON 转义再复制一份；复制仍由
+ * 用户显式点击并复制全文。取消、改动输入、离开页面或迟到的旧回执都不写档案；
+ * 提交后回读未通过的恢复不引导原样重试，而是要求先导出诊断、重新检查后重新确认。
+ * 照片、视频、时间点与操作日志始终不进入备份文本，已有媒体保持旧档案归属。
  */
 const app = getApp();
 const trainingStore = require('../../utils/training-store.js');
@@ -43,6 +45,59 @@ const {
 // 只用于把「复制失败」分成「文档较大，剪贴板可能放不下」和普通失败两种提示。
 // 它不是微信剪贴板硬上限，也不是产品承诺；实际能否复制仍以原生回调为准。
 const LARGE_CLIPBOARD_BYTES = 256 * 1024;
+
+// 单次 setData 最多带这么多 UTF-8 字节的展示文字。完整导出与粘贴原文只留在
+// 页面实例（JS 局部状态）里；视图只拿有界分段，避免微信 setData 序列化时把
+// 大文本的转义再复制一份（实测会把 636 KB 备份放大到 1.2 MB 以上）。
+const BACKUP_DISPLAY_SLICE_BYTES = 32 * 1024;
+
+function utf8WidthOfCodePoint(codePoint) {
+  if (codePoint <= 0x7f) return 1;
+  if (codePoint <= 0x7ff) return 2;
+  if (codePoint <= 0xffff) return 3;
+  return 4;
+}
+
+/**
+ * 按 UTF-8 字节把文本切成有界分段，只在完整码点边界落刀（不会拆开代理对）。
+ * 返回 [0, ...] 的字符下标边界；段数 = boundaries.length - 1。
+ */
+function buildSliceBoundaries(text, maxBytes) {
+  const boundaries = [0];
+  let bytes = 0;
+  let index = 0;
+  while (index < text.length) {
+    const codePoint = text.codePointAt(index);
+    const units = codePoint > 0xffff ? 2 : 1;
+    const width = utf8WidthOfCodePoint(codePoint);
+    const sliceStart = boundaries[boundaries.length - 1];
+    if (index > sliceStart && bytes + width > maxBytes) {
+      boundaries.push(index);
+      bytes = 0;
+    }
+    bytes += width;
+    index += units;
+  }
+  if (boundaries[boundaries.length - 1] !== text.length) {
+    boundaries.push(text.length);
+  }
+  return boundaries;
+}
+
+function sliceLabel(index, count, options) {
+  if (!count) return '';
+  const range = '第 ' + (index + 1) + ' / ' + count + ' 段';
+  if (count === 1) {
+    return range + ' · 全文不超过 32 KiB，下方为完整文字；复制会复制全文。';
+  }
+  return (
+    range +
+    ' · 每段最多 32 KiB。下方只是全文的一段，不是完整备份；' +
+    (options && options.diagnostics
+      ? '复制诊断会复制全文。'
+      : '点「复制备份文本」会复制全文。')
+  );
+}
 
 function formatBackupBytes(bytes) {
   if (typeof bytes !== 'number' || !(bytes > 0)) return '0 KB';
@@ -77,20 +132,29 @@ Page({
     feedbackDraft: '',
     feedbackCopyFailed: false,
     // T068：文本备份全部只在页面内存里流转；导出文本与导入原文都不写本机额外存储。
+    // 视图只接收摘要与不超过 BACKUP_DISPLAY_SLICE_BYTES 的分段，完整文字在页面实例上。
     backupNotice: '',
     backupNoticeKind: '',
-    backupExportText: '',
+    backupExportReady: false,
     backupExportMeta: '',
+    backupExportSlice: '',
+    backupExportSliceIndex: 0,
+    backupExportSliceCount: 0,
+    backupExportSliceLabel: '',
     backupCopyFailed: false,
     backupCopyFailureKind: '',
     backupCopyIssueText: '',
-    backupImportText: '',
+    // 输入框是原生非受控 textarea：不回绑 value，粘贴的大文本只留在页面实例里。
     // 有界输入：最大字符数按备份核心的字节护栏设置；UTF-8 字节数只会不少于字符数，
     // 因此这个上限不会提前拒绝核心本来允许的文本。
     backupImportMaxLength: trainingBackup.MAX_BACKUP_BYTES,
     backupPreview: null,
-    backupDiagnosticsText: '',
+    backupDiagnosticsReady: false,
     backupDiagnosticsMeta: '',
+    backupDiagnosticsSlice: '',
+    backupDiagnosticsSliceIndex: 0,
+    backupDiagnosticsSliceCount: 0,
+    backupDiagnosticsSliceLabel: '',
     backupDiagnosticsCopyFailed: false,
     backupDiagnosticsCopyFailureKind: '',
     backupDiagnosticsCopyIssueText: ''
@@ -101,6 +165,14 @@ Page({
     this._backupCopyOp = 0;
     this._restoreOp = 0;
     this._backupPreviewText = '';
+    // 完整导出/诊断原文与粘贴原文只放在页面实例上，绝不整体进入 setData。
+    this._backupImportText = '';
+    this._backupExportText = '';
+    this._backupExportBoundaries = [];
+    this._backupExportSliceIndex = 0;
+    this._backupDiagnosticsText = '';
+    this._backupDiagnosticsBoundaries = [];
+    this._backupDiagnosticsSliceIndex = 0;
 
     // 检查是否已获取用户信息
     if (app.globalData.userInfo) {
@@ -391,17 +463,19 @@ Page({
 
   /**
    * 输入框每次变化都让旧预演失效：恢复按钮随之隐藏，旧确认弹窗的回执也按序号丢弃。
-   * 只改页面内存，粘贴的原文继续留在输入框里。
+   * 这是原生非受控 textarea：原文只写页面实例，不进入 setData，也不整段回绑。
+   * 同时作废悬挂中的剪贴板回执，避免旧复制结果覆盖这次编辑提示。
    */
   onBackupImportInput(event) {
     const value = event && event.detail && typeof event.detail.value === 'string'
       ? event.detail.value
       : '';
     const hadPreview = Boolean(this.data.backupPreview);
+    this._backupImportText = value;
     this.nextRestoreOp();
+    this.nextBackupCopyOp();
     this._backupPreviewText = '';
     const patch = {
-      backupImportText: value,
       backupPreview: null
     };
     if (hadPreview) {
@@ -411,8 +485,78 @@ Page({
     this.setData(patch);
   },
 
+  /** 当前粘贴原文只在页面实例上，不经过视图层。 */
+  backupImportValue() {
+    return typeof this._backupImportText === 'string' ? this._backupImportText : '';
+  },
+
+  /** 把当前导出段边界算成一次小的 setData 更新。 */
+  backupExportSlicePatch() {
+    const boundaries = this._backupExportBoundaries || [];
+    const count = Math.max(0, boundaries.length - 1);
+    const index = count
+      ? Math.min(Math.max(0, this._backupExportSliceIndex || 0), count - 1)
+      : 0;
+    const text = typeof this._backupExportText === 'string' ? this._backupExportText : '';
+    this._backupExportSliceIndex = index;
+    return {
+      backupExportReady: true,
+      backupExportSlice: count ? text.slice(boundaries[index], boundaries[index + 1]) : '',
+      backupExportSliceIndex: index,
+      backupExportSliceCount: count,
+      backupExportSliceLabel: sliceLabel(index, count, { diagnostics: false })
+    };
+  },
+
+  /** 把当前诊断段边界算成一次小的 setData 更新。 */
+  backupDiagnosticsSlicePatch() {
+    const boundaries = this._backupDiagnosticsBoundaries || [];
+    const count = Math.max(0, boundaries.length - 1);
+    const index = count
+      ? Math.min(Math.max(0, this._backupDiagnosticsSliceIndex || 0), count - 1)
+      : 0;
+    const text = typeof this._backupDiagnosticsText === 'string'
+      ? this._backupDiagnosticsText
+      : '';
+    this._backupDiagnosticsSliceIndex = index;
+    return {
+      backupDiagnosticsReady: true,
+      backupDiagnosticsSlice: count ? text.slice(boundaries[index], boundaries[index + 1]) : '',
+      backupDiagnosticsSliceIndex: index,
+      backupDiagnosticsSliceCount: count,
+      backupDiagnosticsSliceLabel: sliceLabel(index, count, { diagnostics: true })
+    };
+  },
+
+  prevBackupExportSlice() {
+    if (!this._backupExportSliceIndex) return;
+    this._backupExportSliceIndex -= 1;
+    this.setData(this.backupExportSlicePatch());
+  },
+
+  nextBackupExportSlice() {
+    const count = Math.max(0, (this._backupExportBoundaries || []).length - 1);
+    if (this._backupExportSliceIndex >= count - 1) return;
+    this._backupExportSliceIndex += 1;
+    this.setData(this.backupExportSlicePatch());
+  },
+
+  prevBackupDiagnosticsSlice() {
+    if (!this._backupDiagnosticsSliceIndex) return;
+    this._backupDiagnosticsSliceIndex -= 1;
+    this.setData(this.backupDiagnosticsSlicePatch());
+  },
+
+  nextBackupDiagnosticsSlice() {
+    const count = Math.max(0, (this._backupDiagnosticsBoundaries || []).length - 1);
+    if (this._backupDiagnosticsSliceIndex >= count - 1) return;
+    this._backupDiagnosticsSliceIndex += 1;
+    this.setData(this.backupDiagnosticsSlicePatch());
+  },
+
   /**
    * 只读生成文本备份。不会自动复制；复制必须由用户再点一次。
+   * 完整原文只留在页面实例，视图只拿摘要和第一段有界文本。
    * 读取失败时不清空此前导出或粘贴的文字。
    */
   exportBackupText() {
@@ -425,30 +569,38 @@ Page({
       });
       return result;
     }
+    this._backupExportText = result.text;
+    this._backupExportBoundaries = buildSliceBoundaries(
+      result.text,
+      BACKUP_DISPLAY_SLICE_BYTES
+    );
+    this._backupExportSliceIndex = 0;
     const warning = result.warnings && result.warnings.length
       ? ' 注意：' + result.warnings.join('；') + '。'
       : '';
-    this.setData({
-      backupExportText: result.text,
-      backupExportMeta:
-        backupSummaryText(result.summary) + ' · ' + formatBackupBytes(result.bytes),
-      backupCopyFailed: false,
-      backupCopyFailureKind: '',
-      backupCopyIssueText: '',
-      backupNoticeKind: 'success',
-      backupNotice:
-        '已生成文本备份（' +
-        formatBackupBytes(result.bytes) +
-        '）。点「复制备份文本」后自行保存；照片、视频、时间点与操作日志不在文本内。' +
-        warning
-    });
+    this.setData(
+      Object.assign(
+        {
+          backupExportMeta:
+            backupSummaryText(result.summary) + ' · 全文 ' + formatBackupBytes(result.bytes),
+          backupCopyFailed: false,
+          backupCopyFailureKind: '',
+          backupCopyIssueText: '',
+          backupNoticeKind: 'success',
+          backupNotice:
+            '已生成文本备份（' +
+            formatBackupBytes(result.bytes) +
+            '）。点「复制备份文本」后自行保存；照片、视频、时间点与操作日志不在文本内。' +
+            warning
+        },
+        this.backupExportSlicePatch()
+      )
+    );
     return result;
   },
 
   copyBackupText() {
-    const text = typeof this.data.backupExportText === 'string'
-      ? this.data.backupExportText
-      : '';
+    const text = typeof this._backupExportText === 'string' ? this._backupExportText : '';
     if (!text) {
       this.setData({
         backupNoticeKind: 'error',
@@ -461,7 +613,7 @@ Page({
 
   /**
    * 受损诊断只读导出：保留当前与上一代原文的精确文本（含无法解析的原文）。
-   * 生成的诊断不能再作为正常备份导入，页面会明确说明。
+   * 完整诊断原文只留在页面实例；生成的诊断不能再作为正常备份导入，页面会明确说明。
    */
   exportBackupDiagnostics() {
     this.nextBackupCopyOp();
@@ -473,31 +625,41 @@ Page({
       });
       return result;
     }
+    this._backupDiagnosticsText = result.text;
+    this._backupDiagnosticsBoundaries = buildSliceBoundaries(
+      result.text,
+      BACKUP_DISPLAY_SLICE_BYTES
+    );
+    this._backupDiagnosticsSliceIndex = 0;
     const hasCurrent = Boolean(
       result.current && result.current.archive && result.current.archive.present
     );
     const hasPrevious = Boolean(
       result.previous && result.previous.archive && result.previous.archive.present
     );
-    this.setData({
-      backupDiagnosticsText: result.text,
-      backupDiagnosticsMeta:
-        formatBackupBytes(result.bytes) +
-        (hasCurrent ? ' · 含当前档案原文' : ' · 当前档案原文为空') +
-        (hasPrevious ? ' · 含上一代原文' : ' · 当前没有上一代原文'),
-      backupDiagnosticsCopyFailed: false,
-      backupDiagnosticsCopyFailureKind: '',
-      backupDiagnosticsCopyIssueText: '',
-      backupNoticeKind: 'info',
-      backupNotice:
-        '诊断原文已生成。它用于排查受损或无法解析的原文，不能作为备份导入；请复制后私下保存，不要公开分享。'
-    });
+    this.setData(
+      Object.assign(
+        {
+          backupDiagnosticsMeta:
+            formatBackupBytes(result.bytes) +
+            (hasCurrent ? ' · 含当前档案原文' : ' · 当前档案原文为空') +
+            (hasPrevious ? ' · 含上一代原文' : ' · 当前没有上一代原文'),
+          backupDiagnosticsCopyFailed: false,
+          backupDiagnosticsCopyFailureKind: '',
+          backupDiagnosticsCopyIssueText: '',
+          backupNoticeKind: 'info',
+          backupNotice:
+            '诊断原文已生成。它用于排查受损或无法解析的原文，不能作为备份导入；请复制后私下保存，不要公开分享。'
+        },
+        this.backupDiagnosticsSlicePatch()
+      )
+    );
     return result;
   },
 
   copyBackupDiagnostics() {
-    const text = typeof this.data.backupDiagnosticsText === 'string'
-      ? this.data.backupDiagnosticsText
+    const text = typeof this._backupDiagnosticsText === 'string'
+      ? this._backupDiagnosticsText
       : '';
     if (!text) {
       this.setData({
@@ -594,9 +756,9 @@ Page({
    */
   previewBackupImport() {
     this.nextRestoreOp();
-    const text = typeof this.data.backupImportText === 'string'
-      ? this.data.backupImportText
-      : '';
+    // 预演是一条比悬挂复制更新的页面消息，旧复制回执不得再改共享状态。
+    this.nextBackupCopyOp();
+    const text = this.backupImportValue();
     if (!text.trim()) {
       this._backupPreviewText = '';
       this.setData({
@@ -640,9 +802,9 @@ Page({
    */
   confirmBackupRestore() {
     const preview = this.data.backupPreview;
-    const text = typeof this.data.backupImportText === 'string'
-      ? this.data.backupImportText
-      : '';
+    const text = this.backupImportValue();
+    // 确认是更新的页面消息：悬挂中的复制回执不得覆盖确认/取消/失败说明。
+    this.nextBackupCopyOp();
     if (
       !preview ||
       !preview.token ||
@@ -676,7 +838,7 @@ Page({
           return;
         }
         if (
-          this.data.backupImportText !== text ||
+          this.backupImportValue() !== text ||
           this._backupPreviewText !== text ||
           !this.data.backupPreview ||
           this.data.backupPreview.token !== token
@@ -707,6 +869,7 @@ Page({
    */
   applyBackupRestore(text, token) {
     this.nextRestoreOp();
+    this.nextBackupCopyOp();
     let result;
     try {
       result = trainingBackup.confirmRestore(text, {
