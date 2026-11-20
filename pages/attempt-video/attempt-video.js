@@ -589,12 +589,32 @@ Page({
       result => {
         if (this._unloaded) return;
         if (result && result.ok) {
+          // 按实际结果提示：确认删除才报「已清理」；在途/状态未知的副本保留凭据，
+          // 不能把 pendingCount > 0 说成「没有发现可清理」。
+          const deletedCount = Number(result.deletedCount) || 0;
+          const settledCount = Number(result.settledCount) || 0;
+          const pendingCount = Number(result.pendingCount) || 0;
+          const parts = [];
+          if (deletedCount > 0) {
+            parts.push('已清理 ' + deletedCount + ' 个无引用副本。');
+          }
+          if (settledCount > 0) {
+            parts.push(
+              '已确认 ' + settledCount + ' 个待清理副本不在本机，清理凭据已结清。'
+            );
+          }
+          if (pendingCount > 0) {
+            parts.push(
+              '还有 ' +
+                pendingCount +
+                ' 个待清理副本正在写入或状态未确认，已保留清理凭据，稍后重试。'
+            );
+          }
           this.setData({
             cleanupBusy: false,
-            cleanupNotice:
-              result.deletedCount > 0
-                ? '已清理 ' + result.deletedCount + ' 个无引用副本。'
-                : '没有发现可清理的无引用副本。'
+            cleanupNotice: parts.length
+              ? parts.join('')
+              : '没有发现可清理的无引用副本。'
           });
           this.refreshSpaceUsage();
           return;

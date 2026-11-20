@@ -33,6 +33,14 @@
  * - 每次操作带操作标识（opId）并写入索引条目，页面据此区分「本次提交」与
  *   「另一页刚更新的版本」。
  *
+ * 失败副本的清理凭据（T057）：
+ * - 写后核对或撤销副本失败时，pending 只有在 unlink 成功、或失败后复核确认文件
+ *   已缺失时才结清；回执不明/删除失败时凭据必须保留，供 cleanupOrphans/recover 继续回收；
+ * - 目录快照里没有目标不等于文件不存在：先检查同运行期在途写入，再 stat 复核；
+ *   快照后才发布、在途写入或状态未知的副本都保留凭据；
+ * - 清理结果如实区分实际删除（deleted）、确认缺失后结清（settled）与保留待重试
+ *   （preserved），页面按 pendingCount 给出实际提示。
+ *
  * 空间：
  * - 按各档案视频目录里的实际文件字节计量（包含失败操作留下的无引用文件与
  *   其他档案的副本），总视频预算在小程序内各档案之间共用；
@@ -706,6 +714,14 @@ function createWxAttemptVideoFiles(options) {
     return toPromiseApi(fs, 'unlink', { filePath });
   }
 
+  /**
+   * 删除一个文件，并把结果收敛成**可证实**的三种状态：
+   * - ok + existed=true：删除成功；
+   * - ok + existed=false：文件本来就不存在（含 unlink 成功但回执丢失后复核缺失）；
+   * - ok=false：回执不明且复核仍看到文件/无法复核，exists 给 true 或 null。
+   * 回执丢失不能直接算成功，也不能把已经删掉的文件永久留成待清理：失败后重新
+   * stat 一次，只有确认缺失才按已完成返回。
+   */
   async function remove(filePath) {
     if (!hasText(filePath)) return { ok: true, existed: false };
     const invalid = requireRoot();
@@ -713,7 +729,15 @@ function createWxAttemptVideoFiles(options) {
     const result = await unlink(filePath);
     if (result.ok) return { ok: true, existed: true };
     if (isMissingPathError(result.error)) return { ok: true, existed: false };
-    return { ok: false, error: '删除视频文件失败：' + result.error };
+    const checked = await stat(filePath);
+    if (checked.ok && !checked.exists) {
+      return { ok: true, existed: false, unconfirmed: true };
+    }
+    return {
+      ok: false,
+      error: '删除视频文件失败：' + result.error,
+      exists: checked.ok ? checked.exists : null
+    };
   }
 
   /**
@@ -1123,6 +1147,21 @@ function createAttemptVideoStore(options) {
     return index.pending.find(entry => entry.fileId === fileId) || null;
   }
 
+  /** 一条待清理记录是否仍是「本档案 + 本片段 + 本文件」这同一份所有权证据。 */
+  function pendingIdentityMatches(entry, clipId, fileId) {
+    return Boolean(
+      entry &&
+        entry.archiveId === archiveId &&
+        entry.clipId === clipId &&
+        entry.fileId === fileId
+    );
+  }
+
+  function pendingEntryFor(index, clipId, fileId) {
+    if (!index || !Array.isArray(index.pending)) return null;
+    return index.pending.find(entry => pendingIdentityMatches(entry, clipId, fileId)) || null;
+  }
+
   function pendingRecord(clipId, fileId, opId, createdAt) {
     return {
       archiveId,
@@ -1146,12 +1185,17 @@ function createAttemptVideoStore(options) {
     return { ok: true };
   }
 
-  /** 清掉一条待清理记录；清不掉时记录留在索引里，后续恢复可继续处理。 */
-  function forgetPending(fileId) {
+  /**
+   * 清掉一条待清理记录；只有「本档案 + 本片段 + 本文件」完全同身份的那一条会被
+   * 移除，同名文件的其他记录不动。清不掉时记录留在索引里，后续恢复可继续处理。
+   */
+  function forgetPending(clipId, fileId) {
     const fresh = readIndex(storage);
     if (!fresh.ok) return fresh;
-    if (!pendingOf(fresh.index, fileId)) return { ok: true };
-    fresh.index.pending = fresh.index.pending.filter(entry => entry.fileId !== fileId);
+    if (!pendingEntryFor(fresh.index, clipId, fileId)) return { ok: true };
+    fresh.index.pending = fresh.index.pending.filter(
+      entry => !pendingIdentityMatches(entry, clipId, fileId)
+    );
     // 失败后回到完全没有视频资料的状态时不留下空索引键（等价于从未创建）。
     if (
       fresh.index.clips.length === 0 &&
@@ -1237,13 +1281,16 @@ function createAttemptVideoStore(options) {
    * 清掉已成功回收的待清理记录。这里保留索引键（即使最后一段视频刚被移除），
    * 与「提交过就有一个可读索引」的既有语义一致。
    */
-  function forgetPendingRecords(fileIds) {
-    if (!fileIds || !fileIds.length) return { ok: true };
+  function forgetPendingRecords(records) {
+    if (!records || !records.length) return { ok: true };
+    const keyOf = entry =>
+      [entry.archiveId, entry.clipId, entry.fileId].join('|');
+    const wanted = new Set(records.map(keyOf));
     const fresh = readIndex(storage);
     if (!fresh.ok) return fresh;
     const before = fresh.index.pending.length;
     fresh.index.pending = fresh.index.pending.filter(
-      entry => fileIds.indexOf(entry.fileId) === -1
+      entry => !wanted.has(keyOf(entry))
     );
     if (fresh.index.pending.length === before) return { ok: true };
     return saveIndex(storage, fresh.index);
@@ -1411,59 +1458,107 @@ function createAttemptVideoStore(options) {
   }
 
   /**
+   * 本次复制失败后撤销自己写下的副本，并如实区分：
+   * - copyRemoved=true：已确认删除或本来就不存在，调用方可以结清待清理凭据；
+   * - copyRemoved=false：回执不明/删除失败，文件可能还在，凭据必须保留。
+   */
+  async function discardFailedCopy(targetPath) {
+    const removed = await files.remove(targetPath);
+    if (removed.ok) return { copyRemoved: true, cleanupError: '' };
+    return {
+      copyRemoved: false,
+      keptCopy: true,
+      cleanupError: removed.error || '本次副本清理失败',
+      copyExists: removed.exists === undefined ? null : removed.exists
+    };
+  }
+
+  function keptCopySuffix(cleanup, removedText) {
+    if (cleanup.copyRemoved !== false) return removedText;
+    return '；本次副本暂时保留，已保留待清理凭据，稍后可重试清理';
+  }
+
+  /**
    * 写新副本并核对：目录就绪、复制成功、目标存在且字节真实有效、与来源字节一致
    * （来源能读到大小时）。返回的 bytes 就是索引要记录的实际字节。
    * 目标位置只由 chooseTarget 选出的空位置；失败时只撤销本次复制写下的文件。
+   * 撤销本身失败时保留待清理凭据，绝不因为「没删掉」而丢掉所有权证据。
    */
   async function writeCopy(targetPath, sourcePath, expectedBytes) {
     const ready = await files.ensureReady();
-    if (!ready.ok) return { ok: false, code: 'file-write-failed', error: ready.error };
+    if (!ready.ok) {
+      return { ok: false, code: 'file-write-failed', error: ready.error, copyRemoved: true };
+    }
 
     const copied = await files.copyFile(sourcePath, targetPath);
     if (!copied.ok) {
-      await files.remove(targetPath);
-      return {
-        ok: false,
-        code: isSpaceError(copied.error) ? 'space-insufficient' : 'file-write-failed',
-        error: isSpaceError(copied.error)
-          ? '本机空间不足（' + copied.error + '）；没有提交这段视频，原视频和记录都还在'
-          : '视频文件写入失败：' + copied.error + '；原视频与记录未改动，可以重试'
-      };
+      const cleanup = await discardFailedCopy(targetPath);
+      return Object.assign(
+        {
+          ok: false,
+          code: isSpaceError(copied.error) ? 'space-insufficient' : 'file-write-failed',
+          error: isSpaceError(copied.error)
+            ? '本机空间不足（' +
+              copied.error +
+              '）；没有提交这段视频，原视频和记录都还在' +
+              keptCopySuffix(cleanup, '')
+            : '视频文件写入失败：' +
+              copied.error +
+              '；原视频与记录未改动，可以重试' +
+              keptCopySuffix(cleanup, '')
+        },
+        cleanup
+      );
     }
 
     const statResult = await files.stat(targetPath);
     if (!statResult.ok || !statResult.exists || !(statResult.bytes > 0)) {
-      await files.remove(targetPath);
-      return {
-        ok: false,
-        code: isSpaceError(statResult.error) ? 'space-insufficient' : 'file-write-failed',
-        error:
-          '视频文件写入后核对失败：' +
-          (statResult.ok ? '文件为空或不存在' : statResult.error) +
-          '；原视频与记录未改动'
-      };
+      const cleanup = await discardFailedCopy(targetPath);
+      return Object.assign(
+        {
+          ok: false,
+          code: isSpaceError(statResult.error) ? 'space-insufficient' : 'file-write-failed',
+          error:
+            '视频文件写入后核对失败：' +
+            (statResult.ok ? '文件为空或不存在' : statResult.error) +
+            keptCopySuffix(cleanup, '；已撤销这次写入') +
+            '；原视频与记录未改动'
+        },
+        cleanup
+      );
     }
     if (expectedBytes > 0 && statResult.bytes !== expectedBytes) {
-      await files.remove(targetPath);
-      return {
-        ok: false,
-        code: 'file-write-failed',
-        error:
-          '视频文件写入后的实际大小（' +
-          statResult.bytes +
-          ' B）与来源（' +
-          expectedBytes +
-          ' B）不一致，已撤销这次写入；原视频与记录未改动'
-      };
+      const cleanup = await discardFailedCopy(targetPath);
+      return Object.assign(
+        {
+          ok: false,
+          code: 'file-write-failed',
+          error:
+            '视频文件写入后的实际大小（' +
+            statResult.bytes +
+            ' B）与来源（' +
+            expectedBytes +
+            ' B）不一致' +
+            keptCopySuffix(cleanup, '，已撤销这次写入') +
+            '；原视频与记录未改动'
+        },
+        cleanup
+      );
     }
     const readable = await files.access(targetPath);
     if (!readable.ok) {
-      await files.remove(targetPath);
-      return {
-        ok: false,
-        code: 'file-write-failed',
-        error: readable.error + '；已撤销这次写入，原视频与记录未改动'
-      };
+      const cleanup = await discardFailedCopy(targetPath);
+      return Object.assign(
+        {
+          ok: false,
+          code: 'file-write-failed',
+          error:
+            readable.error +
+            keptCopySuffix(cleanup, '；已撤销这次写入') +
+            '；原视频与记录未改动'
+        },
+        cleanup
+      );
     }
     return { ok: true, bytes: statResult.bytes };
   }
@@ -1518,9 +1613,13 @@ function createAttemptVideoStore(options) {
     }
     const removed = await files.remove(target.path);
     if (!removed.ok) {
-      return { ok: false, error: removed.error || '本次新副本清理失败' };
+      return {
+        ok: false,
+        error: removed.error || '本次新副本清理失败',
+        keptCopy: true
+      };
     }
-    await forgetPending(target.fileId);
+    await forgetPending(target.clipId, target.fileId);
     return { ok: true };
   }
 
@@ -1542,9 +1641,9 @@ function createAttemptVideoStore(options) {
 
   /**
    * 提交成功后回收旧副本：只回收索引曾经引用过、现在已无引用的文件。
-   * 退役记录的清理意图已在本次引用切换的同一个索引写里落盘；回收前先把这些记录
-   * 移出索引（删除只发生在这份引用切换已经持久之后），删除失败再写回记录，重启
-   * 后由 recover 继续安全回收。
+   * 退役记录的清理意图已在本次引用切换的同一个索引写里落盘；这里**先删除、后结清**
+   * 记录：只有删除成功或复核确认文件已不存在时，才按同一身份移除 pending。
+   * 删除失败/回执不明时记录继续留在索引里，重启后由 recover 继续安全回收。
    */
   async function reclaimCopies(index, previous) {
     const referenced = new Set(
@@ -1563,18 +1662,23 @@ function createAttemptVideoStore(options) {
     }
     if (!candidates.length) return cleanupError;
 
-    const cleared = forgetPendingRecords(candidates.map(item => item.entry.fileId));
-    if (!cleared.ok && !cleanupError) cleanupError = cleared.error;
-
+    const settled = [];
     const failed = [];
     for (const item of candidates) {
       const removed = await files.remove(item.targetPath);
-      if (!removed.ok) {
-        cleanupError = removed.error;
-        failed.push(
-          pendingRecord(item.entry.clipId, item.entry.fileId, 'cleanup', now())
-        );
+      if (removed.ok) {
+        // 删除成功或复核确认已缺失：这是唯一可以结清凭据的时机。
+        settled.push(item.entry);
+        continue;
       }
+      cleanupError = removed.error;
+      failed.push(
+        pendingRecord(item.entry.clipId, item.entry.fileId, 'cleanup', now())
+      );
+    }
+    if (settled.length) {
+      const cleared = forgetPendingRecords(settled);
+      if (!cleared.ok && !cleanupError) cleanupError = cleared.error;
     }
     if (failed.length) {
       const remembered = rememberCleanup(failed);
@@ -1647,8 +1751,11 @@ function createAttemptVideoStore(options) {
 
       const written = await writeCopy(target.path, input.tempFilePath, source.bytes);
       if (!written.ok) {
-        // writeCopy 只撤销本次复制写下的文件；再清掉所有权记录。
-        await forgetPending(target.fileId);
+        // 只有确认本次副本已经删除/不存在时才清掉所有权记录；撤销失败时凭据
+        // 必须留着，后续 cleanupOrphans / recover 才能继续回收这个失败副本。
+        if (written.copyRemoved !== false) {
+          await forgetPending(target.clipId, target.fileId);
+        }
         return written;
       }
 
@@ -1795,7 +1902,9 @@ function createAttemptVideoStore(options) {
 
       const written = await writeCopy(target.path, input.tempFilePath, source.bytes);
       if (!written.ok) {
-        await forgetPending(target.fileId);
+        if (written.copyRemoved !== false) {
+          await forgetPending(target.clipId, target.fileId);
+        }
         return written;
       }
 
@@ -2172,36 +2281,103 @@ function createAttemptVideoStore(options) {
    * 无引用副本清理：只处理本档案视频目录里、当前索引不再引用、并且能证实由本功能
    * 创建的文件——即出现在持久待清理记录（pending）里的相对文件标识。
    * 仅仅命名合法但没有所有权记录的 clip-* 文件保留不动，只计入实际占用。
-   * 每次删除前重读索引，异步窗口内新提交的视频不会被删；索引/目录读失败时不删。
+   *
+   * T057：目录快照只是开始时的观察，不是「文件不存在」的证据。目标不在快照里时，
+   * 先看同运行期是否有在途写入，再 stat 复核；只有确认缺失（或 unlink 成功）才
+   * 结清 pending。快照之后才发布、状态未知或在途写入的副本都保留凭据，并如实
+   * 返回 deleted / settled / preserved 与实际 pendingCount。
    */
   async function cleanupOrphans() {
     const loaded = readIndex(storage);
     if (!loaded.ok) {
-      return Object.assign({}, loaded, { deleted: [] });
+      return Object.assign({}, loaded, {
+        deleted: [],
+        deletedCount: 0,
+        settled: [],
+        settledCount: 0,
+        preserved: [],
+        preservedCount: 0,
+        pendingCount: 0
+      });
     }
     const listed = await files.listClips();
     if (!listed.ok) {
-      return fail('cleanup-failed', '读取视频目录失败，未删除任何文件：' + listed.error);
+      return Object.assign(
+        fail('cleanup-failed', '读取视频目录失败，未删除任何文件：' + listed.error),
+        {
+          deleted: [],
+          deletedCount: 0,
+          settled: [],
+          settledCount: 0,
+          preserved: [],
+          preservedCount: 0,
+          pendingCount: (loaded.index.pending || []).filter(
+            entry => entry.archiveId === archiveId
+          ).length
+        }
+      );
     }
 
     const present = new Set(listed.files.map(file => file.fileId));
     const deleted = [];
+    const settled = [];
+    const preserved = [];
     const errors = [];
 
-    // 待清理记录有、文件已经不存在的：只去掉记录，不碰任何文件。
+    function preserve(fileId, path, exists, reason) {
+      preserved.push({ fileId, path, exists, reason });
+    }
+
+    // 快照里没有本档案的待清理目标：不能直接清记录。复核在途写入与实际存在性。
     const stalePending = (loaded.index.pending || []).filter(
       entry => entry.archiveId === archiveId && !present.has(entry.fileId)
     );
-    if (stalePending.length) {
+    for (const entry of stalePending) {
+      const targetPath = files.pathForFileId(entry.fileId);
+      if (!hasText(targetPath)) {
+        preserve(entry.fileId, '', null, 'foreign-path');
+        continue;
+      }
+      if (RUNTIME_WRITES.has(targetPath)) {
+        preserve(entry.fileId, targetPath, null, 'in-flight');
+        continue;
+      }
+      const checked = await files.stat(targetPath);
+      if (!checked.ok) {
+        preserve(entry.fileId, targetPath, null, 'check-failed');
+        errors.push(checked.error);
+        continue;
+      }
+      if (checked.exists) {
+        // 目录快照拍完之后才发布出来的副本：凭据必须留着等下一轮清理。
+        preserve(entry.fileId, targetPath, true, 'published-after-snapshot');
+        continue;
+      }
+      // 确认缺失后再按同一身份核对一次索引与在途登记，然后才结清记录。
       const fresh = readIndex(storage);
       if (!fresh.ok) {
+        preserve(entry.fileId, targetPath, false, 'index-read-failed');
         errors.push(fresh.error);
+        continue;
+      }
+      if (RUNTIME_WRITES.has(targetPath)) {
+        preserve(entry.fileId, targetPath, false, 'in-flight');
+        continue;
+      }
+      if (fresh.index.clips.some(item => item.fileId === entry.fileId)) {
+        // 文件已缺失但索引刚引用它：交给缺失副本展示，不在这里删记录。
+        continue;
+      }
+      if (!pendingEntryFor(fresh.index, entry.clipId, entry.fileId)) continue;
+      fresh.index.pending = fresh.index.pending.filter(
+        item => !pendingIdentityMatches(item, entry.clipId, entry.fileId)
+      );
+      const saved = saveIndex(storage, fresh.index);
+      if (!saved.ok) {
+        errors.push(saved.error);
+        preserve(entry.fileId, targetPath, false, 'settle-failed');
       } else {
-        fresh.index.pending = (fresh.index.pending || []).filter(
-          entry => !(entry.archiveId === archiveId && !present.has(entry.fileId))
-        );
-        const saved = saveIndex(storage, fresh.index);
-        if (!saved.ok) errors.push(saved.error);
+        settled.push(entry.fileId);
       }
     }
 
@@ -2213,36 +2389,59 @@ function createAttemptVideoStore(options) {
         break;
       }
       if (fresh.index.clips.some(entry => entry.fileId === file.fileId)) continue;
-      if (!pendingOf(fresh.index, file.fileId)) continue;
-      if (RUNTIME_WRITES.has(file.path)) continue;
+      // 只认「本档案 + 本片段 + 本文件」完全同身份的所有权记录。
+      if (!pendingEntryFor(fresh.index, file.clipId, file.fileId)) continue;
       const removed = await files.remove(file.path);
       if (!removed.ok) {
         errors.push(removed.error);
+        preserve(
+          file.fileId,
+          file.path,
+          removed.exists === undefined ? null : removed.exists,
+          'unlink-failed'
+        );
         continue;
       }
       if (removed.existed) deleted.push(file.path);
+      else settled.push(file.fileId);
       const after = readIndex(storage);
       if (!after.ok) {
         errors.push(after.error);
         continue;
       }
-      after.index.pending = (after.index.pending || []).filter(
-        entry => entry.fileId !== file.fileId
+      // 等待删除期间同一文件可能被重新登记：只结清仍同身份的那一条。
+      if (!pendingEntryFor(after.index, file.clipId, file.fileId)) continue;
+      after.index.pending = after.index.pending.filter(
+        entry => !pendingIdentityMatches(entry, file.clipId, file.fileId)
       );
       const saved = saveIndex(storage, after.index);
       if (!saved.ok) errors.push(saved.error);
     }
 
+    const finalIndex = readIndex(storage);
+    const pendingCount = (
+      finalIndex.ok ? finalIndex.index : loaded.index
+    ).pending.filter(entry => entry.archiveId === archiveId).length;
+    const result = {
+      deleted,
+      deletedCount: deleted.length,
+      settled,
+      settledCount: settled.length,
+      preserved,
+      preservedCount: preserved.length,
+      pendingCount
+    };
     if (errors.length) {
-      return {
-        ok: false,
-        code: 'cleanup-failed',
-        error: '无引用副本未完全清理：' + errors.join('；'),
-        deleted,
-        deletedCount: deleted.length
-      };
+      return Object.assign(
+        {
+          ok: false,
+          code: 'cleanup-failed',
+          error: '无引用副本未完全清理：' + errors.join('；')
+        },
+        result
+      );
     }
-    return { ok: true, deleted, deletedCount: deleted.length };
+    return Object.assign({ ok: true }, result);
   }
 
   /**
@@ -2258,18 +2457,18 @@ function createAttemptVideoStore(options) {
         code: loaded.code,
         error: loaded.error,
         deleted: [],
+        deletedCount: 0,
+        settled: [],
+        settledCount: 0,
+        preserved: [],
+        preservedCount: 0,
+        pendingCount: 0,
         missing: []
       };
     }
     const cleanup = await cleanupOrphans();
     if (!cleanup.ok) {
-      return {
-        ok: false,
-        code: cleanup.code,
-        error: cleanup.error,
-        deleted: cleanup.deleted || [],
-        missing: []
-      };
+      return Object.assign({}, cleanup, { missing: [] });
     }
     const fresh = readIndex(storage);
     const index = fresh.ok ? fresh.index : loaded.index;
@@ -2284,7 +2483,17 @@ function createAttemptVideoStore(options) {
         }
       }
     }
-    return { ok: true, deleted: cleanup.deleted || [], missing, deletedCount: cleanup.deletedCount || 0 };
+    return {
+      ok: true,
+      deleted: cleanup.deleted || [],
+      deletedCount: cleanup.deletedCount || 0,
+      settled: cleanup.settled || [],
+      settledCount: cleanup.settledCount || 0,
+      preserved: cleanup.preserved || [],
+      preservedCount: cleanup.preservedCount || 0,
+      pendingCount: cleanup.pendingCount || 0,
+      missing
+    };
   }
 
   /** 本档案视频占用：按实际文件字节，含各档案副本与无引用副本。 */

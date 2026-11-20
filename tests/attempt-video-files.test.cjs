@@ -60,8 +60,15 @@ const faults = {
   mkdir: false,
   copy: '',
   unlink: false,
+  // unlink 回执丢失但文件已经实际删除：删除结果不明，需要重新核对存在性。
+  unlinkUnknown: false,
   stat: false,
+  // 复制完成后第一次 stat 受管文件失败：只影响写后核对，不影响复制前的预检。
+  statAfterCopy: false,
+  statAfterCopyFailures: 0,
   readdir: false,
+  // readdir 已算出名字、返回给调用方之前执行的钩子：模拟快照拍完后副本才发布。
+  afterReaddir: null,
   access: false,
   storageFail: new Set(),
   // 匹配的索引写入先落盘再抛错；随后同一键的 N 次读取抛错（写入回执与读回同时丢失）。
@@ -92,8 +99,12 @@ function resetAll() {
   faults.mkdir = false;
   faults.copy = '';
   faults.unlink = false;
+  faults.unlinkUnknown = false;
   faults.stat = false;
+  faults.statAfterCopy = false;
+  faults.statAfterCopyFailures = 0;
   faults.readdir = false;
+  faults.afterReaddir = null;
   faults.access = false;
   faults.storageFail = new Set();
   faults.storageAfter = [];
@@ -201,6 +212,8 @@ function fileSystem() {
           options.destPath,
           Buffer.from(virtual.files.get(options.srcPath))
         );
+        // 只让复制后的第一次受管 stat 失败：复制前的目标探测与占用统计照常。
+        if (faults.statAfterCopy) faults.statAfterCopyFailures = 1;
         options.success({});
       };
       if (copyHold.matches && copyHold.matches(options)) {
@@ -212,6 +225,16 @@ function fileSystem() {
     },
     unlink(options) {
       virtual.calls.unlink.push(options.filePath);
+      if (faults.unlinkUnknown) {
+        if (!virtual.files.has(options.filePath)) {
+          options.fail({ errMsg: 'unlink:fail no such file or directory' });
+          return;
+        }
+        // 真实删除已经发生，但成功回执丢失：调用方只能重新核对存在性。
+        virtual.files.delete(options.filePath);
+        options.fail({ errMsg: 'unlink:fail mock receipt lost after delete' });
+        return;
+      }
       if (faults.unlink) {
         options.fail({ errMsg: 'unlink:fail mock delete failed' });
         return;
@@ -225,6 +248,14 @@ function fileSystem() {
     },
     stat(options) {
       virtual.calls.stat.push(options.path);
+      if (
+        faults.statAfterCopyFailures > 0 &&
+        options.path.indexOf(USER_DATA_PATH + '/attempt-video/') === 0
+      ) {
+        faults.statAfterCopyFailures -= 1;
+        options.fail({ errMsg: 'stat:fail mock post-copy stat failed' });
+        return;
+      }
       if (faults.stat) {
         options.fail({ errMsg: 'stat:fail mock stat failed' });
         return;
@@ -248,6 +279,9 @@ function fileSystem() {
         const rest = key.slice(prefix.length);
         if (rest && rest.indexOf('/') === -1) names.push(rest);
       });
+      const afterReaddir = faults.afterReaddir;
+      faults.afterReaddir = null;
+      if (afterReaddir) afterReaddir();
       options.success({ files: names });
     },
     access(options) {
@@ -2231,4 +2265,304 @@ test('T025-F2 同一页面生命周期：确认更换立即清空旧片时间点
     [4500],
     '新片只保存自己的时间点'
   );
+});
+
+// ------------------------------------------------------------------ *
+// T057 R2：失败副本的清理凭据
+// ------------------------------------------------------------------ *
+
+/** 只让前 N 次读索引抛错的存储；写入仍然真实落盘。 */
+function makeReadFailStorage(failures) {
+  let remaining = failures;
+  return {
+    get(key) {
+      if (remaining > 0) {
+        remaining -= 1;
+        throw { errMsg: 'getStorageSync:fail mock read error' };
+      }
+      return storage.has(key) ? storage.get(key) : '';
+    },
+    set(key, value) {
+      storage.set(key, value);
+    },
+    remove(key) {
+      storage.delete(key);
+    }
+  };
+}
+
+function pendingEntries() {
+  const index = videoIndex();
+  return index && Array.isArray(index.pending) ? index.pending : [];
+}
+
+test('T057-1 首次保存 access 失败、更换 stat 失败且 unlink 失败：凭据保留，恢复后只回收失败副本', async () => {
+  const flow = seedTwoAttempts();
+  const service = makeService(flow);
+
+  // 首次保存：复制成功，写后 access 与撤销 unlink 都失败。
+  const firstTemp = addTempVideo('first-fail.mp4', 4096);
+  faults.access = true;
+  faults.unlink = true;
+  const firstFailed = await service.commit(requestFor(flow, flow.attemptB, firstTemp));
+  assert.equal(firstFailed.ok, false);
+  assert.equal(firstFailed.code, 'file-write-failed');
+  assert.equal(firstFailed.copyRemoved, false, '无法确认副本已撤销');
+  assert.equal(firstFailed.keptCopy, true);
+  assert.equal(filesInRoot(flow.archiveId).length, 1, '失败副本仍在目录里');
+  const firstPaths = filesInRoot(flow.archiveId);
+  assert.equal(pendingEntries().length, 1, '失败副本的待清理凭据必须保留');
+  assert.equal(
+    pendingEntries()[0].fileId,
+    firstPaths[0].slice((USER_DATA_PATH + '/').length),
+    '凭据指向同一个文件'
+  );
+
+  faults.access = false;
+  faults.unlink = false;
+  files.resetAttemptVideoServices();
+  const firstRecovered = await makeService(flow).recover();
+  assert.equal(firstRecovered.ok, true, firstRecovered.error);
+  assert.deepEqual(firstRecovered.deleted, firstPaths, '只回收失败副本');
+  assert.equal(firstRecovered.deletedCount, 1);
+  assert.equal(virtual.files.has(firstPaths[0]), false);
+  assert.deepEqual(pendingEntries(), []);
+
+  // 更换：复制成功，写后 stat 与撤销 unlink 都失败；旧片与索引必须保持。
+  const oldTemp = addTempVideo('old.mp4', 2048);
+  const old = await makeService(flow).commit(requestFor(flow, flow.attemptB, oldTemp));
+  assert.equal(old.ok, true, old.error);
+  const oldPath = USER_DATA_PATH + '/' + old.clip.fileId;
+  const nextTemp = addTempVideo('next-fail.mp4', 3072);
+  faults.statAfterCopy = true;
+  faults.unlink = true;
+  const replacedFailed = await makeService(flow).replace(
+    requestFor(flow, flow.attemptB, nextTemp, {
+      action: 'replace',
+      clipId: old.clip.clipId,
+      rev: old.clip.rev,
+      fileId: old.clip.fileId,
+      bytes: old.clip.bytes
+    })
+  );
+  assert.equal(replacedFailed.ok, false);
+  assert.equal(replacedFailed.code, 'file-write-failed');
+  assert.equal(replacedFailed.copyRemoved, false);
+  assert.equal(replacedFailed.keptCopy, true);
+  const failedNext = filesInRoot(flow.archiveId).filter(name => name !== oldPath);
+  assert.equal(failedNext.length, 1, '更换失败副本保留');
+  assert.equal(pendingEntries().length, 1, '更换失败副本的凭据保留');
+  assert.equal(virtual.files.has(oldPath), true, '原正常副本保留');
+  assert.equal(videoIndex().clips.length, 1);
+  assert.equal(videoIndex().clips[0].fileId, old.clip.fileId, '原关联未改');
+
+  faults.statAfterCopy = false;
+  faults.unlink = false;
+  files.resetAttemptVideoServices();
+  const replaceRecovered = await makeService(flow).recover();
+  assert.equal(replaceRecovered.ok, true, replaceRecovered.error);
+  assert.deepEqual(replaceRecovered.deleted, failedNext, '恢复只回收失败的新副本');
+  assert.equal(virtual.files.has(oldPath), true, '正常旧片不被误删');
+  assert.equal(virtual.files.has(nextTemp), true, '相册临时原片不属于清理范围');
+  assert.deepEqual(pendingEntries(), []);
+});
+
+test('T057-2 挂起复制与清理/恢复并发：pending 不提前消失，索引临时读失败后仍可恢复', async () => {
+  const flow = seedTwoAttempts();
+  const service = makeService(flow);
+  const temp = addTempVideo('held.mp4', 4096);
+  const hold = holdNextCopy(options => options.srcPath === temp);
+  const commitPending = service.commit(requestFor(flow, flow.attemptB, temp));
+  await settle();
+  assert.equal(hold.arrived, true, '复制已挂起');
+  const heldEntry = pendingEntries()[0];
+  assert.ok(heldEntry, '复制在途时已经有所有权记录');
+  const heldPath = USER_DATA_PATH + '/' + heldEntry.fileId;
+  assert.equal(virtual.files.has(heldPath), false, '目录快照里还没有目标文件');
+
+  // 目录快照看不到在途目标时，清理与恢复都不能把 pending 提前清掉。
+  const cleanup = await service.cleanupOrphans();
+  assert.equal(cleanup.ok, true, cleanup.error);
+  assert.equal(cleanup.deletedCount, 0);
+  assert.equal(cleanup.pendingCount, 1, '在途写入的凭据仍在');
+  assert.equal(cleanup.preservedCount, 1);
+  assert.equal(cleanup.preserved[0].reason, 'in-flight');
+  assert.equal(cleanup.preserved[0].exists, null, '在途文件存在性未知，不能当成已清');
+  assert.equal(pendingEntries().length, 1);
+
+  const concurrentRecover = await service.recover();
+  assert.equal(concurrentRecover.ok, true, concurrentRecover.error);
+  assert.equal(concurrentRecover.pendingCount, 1, '恢复也不能提前清掉在途凭据');
+  assert.equal(pendingEntries().length, 1);
+
+  // 释放复制，但让写后 stat 与撤销 unlink 都失败：失败副本与凭据一起留下。
+  faults.statAfterCopy = true;
+  faults.unlink = true;
+  hold.release();
+  const failed = await commitPending;
+  assert.equal(failed.ok, false);
+  assert.equal(failed.copyRemoved, false);
+  assert.equal(virtual.files.has(heldPath), true);
+  assert.equal(pendingEntries().length, 1);
+  assert.equal(pendingEntries()[0].fileId, heldEntry.fileId);
+
+  // 索引临时读失败：不删文件，不改 pending；恢复可读后按同一凭据回收。
+  const flaky = makeService(flow, { storage: makeReadFailStorage(1) });
+  const readFailed = await flaky.recover();
+  assert.equal(readFailed.ok, false);
+  assert.equal(readFailed.code, 'index-read-failed');
+  assert.equal(readFailed.deletedCount, 0);
+  assert.equal(virtual.files.has(heldPath), true, '索引读失败时不删任何文件');
+  assert.equal(pendingEntries().length, 1, '索引读失败后凭据仍在');
+
+  faults.statAfterCopy = false;
+  faults.unlink = false;
+  files.resetAttemptVideoServices();
+  const recovered = await makeService(flow).recover();
+  assert.equal(recovered.ok, true, recovered.error);
+  assert.deepEqual(recovered.deleted, [heldPath]);
+  assert.equal(virtual.files.has(heldPath), false);
+  assert.deepEqual(pendingEntries(), []);
+});
+
+test('T057-2b 目录快照后才发布的副本：先保留凭据，下一轮确认无引用再回收', async () => {
+  const flow = seedTwoAttempts();
+  const owned = addPendingOwnership(flow.archiveId, 'clip-94', 'clip-94.mp4');
+  const service = makeService(flow);
+
+  // readdir 已经算出快照文件列表，返回前才把目标文件发布出来。
+  faults.afterReaddir = () => {
+    addManagedFile(flow.archiveId, 'clip-94.mp4', 384);
+  };
+  const first = await service.cleanupOrphans();
+  assert.equal(first.ok, true, first.error);
+  assert.equal(first.deletedCount, 0, '快照没看到、复核才看到，不能报已删除');
+  assert.equal(first.pendingCount, 1, '凭据保留');
+  assert.equal(first.preservedCount, 1);
+  assert.equal(first.preserved[0].fileId, owned.fileId);
+  assert.equal(first.preserved[0].reason, 'published-after-snapshot');
+  assert.equal(first.preserved[0].exists, true, '复核确认文件已经存在');
+  assert.equal(virtual.files.has(owned.path), true);
+  assert.equal(pendingEntries().length, 1);
+
+  const second = await service.cleanupOrphans();
+  assert.equal(second.ok, true, second.error);
+  assert.deepEqual(second.deleted, [owned.path], '下一轮确认无引用后才回收');
+  assert.equal(second.deletedCount, 1);
+  assert.equal(second.pendingCount, 0);
+  assert.equal(virtual.files.has(owned.path), false);
+});
+
+test('T057-3 unlink 回执不明但文件已删除：复核缺失后才结清 pending', async () => {
+  const flow = seedTwoAttempts();
+  const orphan = addManagedFile(flow.archiveId, 'clip-93.mp4', 512);
+  const owned = addPendingOwnership(flow.archiveId, 'clip-93', 'clip-93.mp4');
+  assert.equal(owned.path, orphan);
+  const service = makeService(flow);
+
+  faults.unlinkUnknown = true;
+  const cleaned = await service.cleanupOrphans();
+  assert.equal(cleaned.ok, true, cleaned.error);
+  assert.equal(virtual.files.has(orphan), false, '删除实际已经发生');
+  assert.equal(cleaned.deletedCount, 0, '回执不明时不能虚报为已删除');
+  assert.equal(cleaned.settledCount, 1, '复核确认缺失后才结清凭据');
+  assert.deepEqual(cleaned.settled, [owned.fileId]);
+  assert.equal(cleaned.pendingCount, 0);
+  assert.deepEqual(pendingEntries(), []);
+  assert.equal(cleaned.preservedCount, 0);
+  assert.equal(filesInRoot(flow.archiveId).length, 0);
+});
+
+test('T057-4 恢复只回收失败副本：旧片、旧时间点、相册原片、未知文件都保持', async () => {
+  const flow = seedTwoAttempts();
+  const service = makeService(flow);
+  const oldTemp = addTempVideo('old-marked.mp4', 2048);
+  const old = await service.commit(requestFor(flow, flow.attemptB, oldTemp));
+  assert.equal(old.ok, true, old.error);
+  const oldPath = USER_DATA_PATH + '/' + old.clip.fileId;
+  const marked = service.addMarker({
+    action: 'addMarker',
+    archiveId: flow.archiveId,
+    sessionId: flow.session.id,
+    routeId: flow.route.id,
+    attemptId: flow.attemptB.id,
+    clipId: old.clip.clipId,
+    rev: old.clip.rev,
+    fileId: old.clip.fileId,
+    markerId: 'mark-t057-keep',
+    atMs: 2500,
+    durationSeconds: 7.5
+  });
+  assert.equal(marked.ok, true, marked.error);
+
+  const unknownPath = addManagedFile(flow.archiveId, 'clip-92-unknown.mp4', 256);
+  const foreignPath = addManagedFile(flow.archiveId, 'notes.txt', 32);
+  const nextTemp = addTempVideo('replacement-fail.mp4', 3072);
+  faults.statAfterCopy = true;
+  faults.unlink = true;
+  const failed = await service.replace(
+    requestFor(flow, flow.attemptB, nextTemp, {
+      action: 'replace',
+      clipId: old.clip.clipId,
+      rev: old.clip.rev,
+      fileId: old.clip.fileId,
+      bytes: old.clip.bytes
+    })
+  );
+  assert.equal(failed.ok, false);
+  assert.equal(failed.copyRemoved, false);
+  const failedPath = filesInRoot(flow.archiveId).find(
+    name => name !== oldPath && name !== unknownPath && name !== foreignPath
+  );
+  assert.ok(failedPath, '失败的新副本保留');
+  assert.equal(pendingEntries().length, 1);
+
+  faults.statAfterCopy = false;
+  faults.unlink = false;
+  files.resetAttemptVideoServices();
+  const recovered = await makeService(flow).recover();
+  assert.equal(recovered.ok, true, recovered.error);
+  assert.deepEqual(recovered.deleted, [failedPath], '只回收本次失败副本');
+  assert.equal(virtual.files.has(failedPath), false);
+  assert.equal(virtual.files.has(oldPath), true, '旧片保持');
+  assert.equal(virtual.files.has(oldTemp), true, '相册临时原片保持');
+  assert.equal(virtual.files.has(unknownPath), true, '未知受管文件保持');
+  assert.equal(virtual.files.has(foreignPath), true, '非本功能文件保持');
+  const kept = videoIndex().clips.find(clip => clip.attemptId === flow.attemptB.id);
+  assert.equal(kept.fileId, old.clip.fileId, '旧关联仍在');
+  assert.deepEqual(kept.markers.map(marker => marker.atMs), [2500], '旧时间点保持');
+  assert.deepEqual(pendingEntries(), []);
+});
+
+test('T057-5 页面清理提示按实际结果：在途凭据保留，确认删除才报已清理', async () => {
+  const flow = seedTwoAttempts();
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+
+  const service = makeService(flow);
+  const temp = addTempVideo('page-held.mp4', 2048);
+  const hold = holdNextCopy(options => options.srcPath === temp);
+  const commitPending = service.commit(requestFor(flow, flow.attemptA, temp));
+  await settle();
+  assert.equal(hold.arrived, true);
+
+  page.cleanupVideoOrphans();
+  await settle();
+  assert.equal(page.data.cleanupBusy, false);
+  assert.match(page.data.cleanupNotice, /还有 1 个待清理副本/);
+  assert.match(page.data.cleanupNotice, /保留清理凭据/);
+  assert.equal(page.data.spaceError, '');
+  assert.equal(pendingEntries().length, 1, '页面清理没有提前丢掉在途凭据');
+
+  hold.release();
+  const committed = await commitPending;
+  assert.equal(committed.ok, true, committed.error);
+
+  const orphan = addManagedFile(flow.archiveId, 'clip-91.mp4', 128);
+  addPendingOwnership(flow.archiveId, 'clip-91', 'clip-91.mp4');
+  page.cleanupVideoOrphans();
+  await settle();
+  assert.equal(virtual.files.has(orphan), false, '确认删除后文件确实不存在');
+  assert.equal(page.data.cleanupNotice, '已清理 1 个无引用副本。');
+  assert.equal(pendingEntries().length, 0);
 });
