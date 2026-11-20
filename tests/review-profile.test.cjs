@@ -355,6 +355,53 @@ test('U7 拒绝与失败分别说明，且都不影响意见反馈', () => {
   assert.equal(log.toasts.length, 0, '资料失败不弹提示、不干扰复制反馈');
 });
 
+test('U7 资料失败提示点名真实控件，且连续两次读取（失败后成功）不改反馈与存储', () => {
+  const wxml = fs.readFileSync(PROFILE_WXML, 'utf8');
+  const noticeTag = wxml.match(/<text[^>]*id="profile-notice"[^>]*>/);
+  assert.ok(noticeTag, '#profile-notice 应存在');
+  assert.equal(
+    /bindtap|catchtap/.test(noticeTag[0]),
+    false,
+    '提示文字本身不应再成为第二个点击路径'
+  );
+
+  // 只从页面实际绑定的资料控件取处理函数，避免测试绕过绑定直接调方法。
+  const controlMatch = wxml.match(/<view[^>]*bindtap="(getUserProfile)"[^>]*>/);
+  assert.ok(controlMatch, '页面应保留绑定的「设置头像昵称」控件');
+  const handler = page => page[controlMatch[1]];
+  assert.equal(typeof profileDefinition[controlMatch[1]], 'function');
+
+  const page = createPage(profileDefinition);
+  page.feedback();
+  confirmModal(0, '失败后仍保留的反馈草稿');
+  failClipboard(0);
+  const draft = page.data.feedbackDraft;
+  assert.equal(page.data.feedbackCopyFailed, true);
+  assert.equal(log.toasts.length, 1);
+
+  // 第一次：失败。提示必须点名可用的「设置头像昵称」控件。
+  handler(page).call(page);
+  assert.equal(log.profileCalls.length, 1);
+  failProfile(0, 'getUserProfile:fail internal error');
+  assert.equal(page.data.profileNoticeKind, 'failed');
+  assert.match(page.data.profileNotice, /「设置头像昵称」/, '失败提示应点名真实控件');
+  assert.equal(page.data.profileNotice.includes('可点此重试'), false, '不应暗示提示文字可点');
+
+  // 第二次：同一个绑定控件再试一次并成功。
+  handler(page).call(page);
+  assert.equal(log.profileCalls.length, 2);
+  succeedProfile(1, { nickName: '阿岩', avatarUrl: 'https://example.invalid/a.png' });
+  assert.equal(page.data.hasUserInfo, true);
+  assert.equal(page.data.profileNotice, '');
+  assert.equal(page.data.profileNoticeKind, '');
+
+  assert.equal(page.data.feedbackCopyFailed, true, '资料读取不得改复制失败态');
+  assert.equal(page.data.feedbackDraft, draft, '资料读取不得改反馈草稿');
+  assert.equal(log.clipboardCalls.length, 1, '资料读取不得触碰剪贴板');
+  assert.equal(log.toasts.length, 1, '资料读取不弹提示、不冒充复制结果');
+  assert.equal(log.storageWrites.length, 0, '资料只保留在本机内存');
+});
+
 test('U7 复制结果不覆盖资料读取提示', () => {
   const page = createPage(profileDefinition);
   page.getUserProfile();

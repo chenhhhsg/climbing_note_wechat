@@ -83,7 +83,7 @@ Page({
         profileNoticeKind: denied ? 'denied' : 'failed',
         profileNotice: denied
           ? '已取消，头像昵称未更新；不影响意见反馈与训练记录。'
-          : '头像昵称读取失败，可点此重试；不影响意见反馈与训练记录。'
+          : '头像昵称读取失败，请再点「设置头像昵称」重试；不影响意见反馈与训练记录。'
       });
     };
 
