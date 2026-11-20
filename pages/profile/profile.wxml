@@ -40,6 +40,20 @@
       <text class="menu-arrow">></text>
     </view>
 
+    <!-- T059：原生剪贴板复制失败时保留原文，提供同一段文字的重试入口 -->
+    <view
+      wx:if="{{feedbackCopyFailed}}"
+      id="feedback-retry"
+      class="menu-item"
+      bindtap="retryFeedback"
+    >
+      <view class="menu-left">
+        <view class="field-menu-mark"></view>
+        <text class="menu-text">反馈未复制，点此重试</text>
+      </view>
+      <text class="menu-arrow">></text>
+    </view>
+
     <view class="menu-item" bindtap="clearCache">
       <view class="menu-left">
         <view class="field-menu-mark"></view>

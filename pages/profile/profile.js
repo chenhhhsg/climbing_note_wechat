@@ -17,6 +17,11 @@
  * 属于受保护键；视频副本写在 USER_DATA_PATH 下的档案专属目录，不属于照片可重建缓存。
  * 因此普通清缓存不会删除已关联的视频（含撤回后待恢复的把次对应副本），页面提示里
  * 一并说明本机训练记录、线路照片与逐把视频都会保留。
+ *
+ * T059：意见反馈改为显式剪贴板交付，不再假装已经发送。用户确认反馈内容后只发出一次
+ * `wx.setClipboardData({ data, success, fail })`：原生成功回调显示「已复制」；原生失败
+ * 不显示成功提示，保留刚输入的文字并在菜单里提供「点此重试」；取消不写剪贴板也不写
+ * 存储。每次反馈或重试都递增操作序号，迟到的旧弹窗/剪贴板回执不能覆盖新操作。
  */
 const app = getApp();
 const trainingStore = require('../../utils/training-store.js');
@@ -27,7 +32,10 @@ const {
 Page({
   data: {
     userInfo: null,
-    hasUserInfo: false
+    hasUserInfo: false,
+    // T059：复制失败时保留的用户文字；只在页面内存里，供「点此重试」再次复制。
+    feedbackDraft: '',
+    feedbackCopyFailed: false
   },
 
   onLoad() {
@@ -143,23 +151,90 @@ Page({
   },
 
   /**
-   * 意见反馈
+   * 开始一次新的反馈操作。
+   * 弹窗与剪贴板回调都带着发起时的序号；序号不匹配说明用户已经开始了更新的操作，
+   * 旧回执只允许被丢弃，不能改状态、不能再发提示。
+   */
+  beginFeedbackOp() {
+    this._feedbackOp = (this._feedbackOp || 0) + 1;
+    return this._feedbackOp;
+  },
+
+  /**
+   * 意见反馈（T059）
+   *
+   * 确认后把原文交给原生剪贴板，由用户自己粘贴发送；不写云、不写本机存储。
+   * 取消或空内容都没有副作用。
    */
   feedback() {
+    const op = this.beginFeedbackOp();
+
     wx.showModal({
       title: '意见反馈',
-      content: '如有问题或建议，请在下方留言',
+      content: '写下问题或建议。确认后会复制到剪贴板，可粘贴发送给开发者。',
       editable: true,
       placeholderText: '请输入你的反馈...',
       success: (res) => {
-        if (res.confirm && res.content) {
-          // 这里可以将反馈发送到云数据库
-          wx.showToast({
-            title: '感谢反馈',
-            icon: 'success'
-          });
+        if (this._feedbackOp !== op) return; // 迟到的旧弹窗回执
+        if (!res || !res.confirm) return; // 取消：不复制、不写存储
+
+        const text = typeof res.content === 'string' ? res.content : '';
+        if (!text.trim()) {
+          wx.showToast({ title: '请先输入反馈', icon: 'none' });
+          return;
         }
+        this.copyFeedbackText(text);
       }
     });
+  },
+
+  /**
+   * 用同一个原生参数对象发起一次复制。
+   * success / fail 每个回执只处理一次；旧操作的回执直接忽略。
+   */
+  copyFeedbackText(text) {
+    const op = this.beginFeedbackOp();
+    let settled = false;
+
+    this.setData({
+      feedbackDraft: text,
+      feedbackCopyFailed: false
+    });
+
+    wx.setClipboardData({
+      data: text,
+      success: () => {
+        if (settled) return;
+        settled = true;
+        if (this._feedbackOp !== op) return;
+        this.setData({
+          feedbackDraft: '',
+          feedbackCopyFailed: false
+        });
+        wx.showToast({ title: '已复制', icon: 'success' });
+      },
+      fail: () => {
+        if (settled) return;
+        settled = true;
+        if (this._feedbackOp !== op) return;
+        // 不落存储，只把原文留在页面内存，供下面的重试入口再复制一次。
+        this.setData({
+          feedbackDraft: text,
+          feedbackCopyFailed: true
+        });
+        wx.showToast({ title: '复制失败，文字已保留', icon: 'none' });
+      }
+    });
+  },
+
+  /**
+   * 重试复制上一段没有被原生剪贴板接收的反馈文字。
+   */
+  retryFeedback() {
+    const text = typeof this.data.feedbackDraft === 'string'
+      ? this.data.feedbackDraft
+      : '';
+    if (!text.trim()) return;
+    this.copyFeedbackText(text);
   }
 });
