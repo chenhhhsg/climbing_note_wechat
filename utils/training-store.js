@@ -27,8 +27,9 @@
  * 同一 opId 带原场次、原线路、原结果与原备注重试就能补齐那一把（含抱石首个完攀——
  * 恢复自己的在途完攀不被它自己封锁），别的操作不能借用别人的 opId 绕过封锁或改写它。
  *
- * 读取只发生在档案键上：无键是正常的首次进入，返回空档案；键存在但损坏、或版本
- * 不被支持时返回可见错误且**保留原数据**（读写入口都不会覆盖它）。
+ * 档案内容读取只发生在当前代际的档案键上（没有文本恢复时就是 archive 键）：无键是正常
+ * 的首次进入，返回空档案；键存在但损坏、或版本不被支持时返回可见错误且**保留原数据**
+ * （读写入口都不会覆盖它）。文本恢复过之后 active 档案键缺失按损坏处理，不当成首次进入。
  *
  * 抱石沿用 v0.3 语义：已确认完攀后不再新增把次，只能按原把次显式「改为未完成」——
  * 只翻那一把的 result，把数、ID、序号、场次与备注都不变；顶绳和先锋可重复完攀。
@@ -61,12 +62,34 @@
  * 一次档案写入只移出目标场次、它的场内关联与全部把次，其他场次、原 ID、内部 seq 与单调
  * 计数器保持原值；删当前场时接续同日同馆剩余最近一场，没有可接续场则清空当前选择。
  * 媒体归属与清理不在本层，由 T052 的协调器在档案确认删除后按持久凭据处理。
+ *
+ * T067 在本层加的是「文本恢复后的档案代际选择」，不改数据模型，也不迁移旧档：
+ *   climbingNote.training.v1.backup.commit    很小的提交记录（指向当前代际的两把键）
+ *   climbingNote.training.v1.backup.pending   很小的预演/提交计划（不含原文）
+ *   climbingNote.training.v1.backup.stage.<g>.archive   新一代档案原文（单独一把键）
+ *   climbingNote.training.v1.backup.stage.<g>.wishlist  新一代清单原文（单独一把键）
+ * 没有提交记录时，档案与清单仍读写原来的 archive / wishlist 键，行为与旧版完全一致。
+ * 恢复确认先把两份原文分别写入新一代的 stage 键并逐一读回核对，最后才写 commit 键；
+ * commit 键是唯一的提交点，所以训练与清单两个读取入口不会看到一半新一半旧。wx 的多把
+ * 写入不假设原子：commit 之前的任何失败都只留下不可见的 stage/pending，旧档继续可读。
+ * 之后普通写入跟随 commit 指向的键，旧键原样保留（不删除、不改写），清缓存仍只清
+ * cache./thumbs. 前缀。提交记录损坏时不回退到旧键（避免把旧代际当成当前状态），
+ * 读取返回可见错误，写入口拒绝落盘。
  */
 const rules = require('./training-rules.js');
 
 const NAMESPACE = 'climbingNote.training.v1.';
 const ARCHIVE_KEY = NAMESPACE + 'archive';
+const WISHLIST_KEY = NAMESPACE + 'wishlist';
 const PHOTO_INDEX_KEY = NAMESPACE + 'photos';
+// T067：文本恢复的代际提交点与预演记录。两把都只存元数据，不放大段原文。
+const BACKUP_COMMIT_KEY = NAMESPACE + 'backup.commit';
+const BACKUP_PENDING_KEY = NAMESPACE + 'backup.pending';
+const BACKUP_STAGE_PREFIX = NAMESPACE + 'backup.stage.';
+const LAYOUT_VERSION = 1;
+const LAYOUT_GENERATION_PATTERN = /^[A-Za-z0-9_-]{6,90}$/;
+const LAYOUT_READ_FAILED = '读取本机文本恢复状态失败：';
+const LAYOUT_BROKEN = '本机文本恢复提交记录损坏，为避免把旧档案当成当前状态，已停止读取；请先导出诊断';
 // 可重建的派生缓存：普通清缓存只清这些前缀。
 const REBUILDABLE_PREFIXES = [NAMESPACE + 'cache.', NAMESPACE + 'thumbs.'];
 const STATE_VERSION = 1;
@@ -515,6 +538,258 @@ function normalizeArchive(raw) {
   };
 }
 
+// ------------------------------------------------------------------ *
+// T067：文本恢复的代际选择
+// ------------------------------------------------------------------ *
+
+function isRecord(value) {
+  return Boolean(
+    value &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null) &&
+      !Object.prototype.hasOwnProperty.call(value, '__proto__')
+  );
+}
+
+function isSafeArchiveId(value) {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]+$/.test(value);
+}
+
+function stageKeysFor(generation) {
+  return {
+    archiveKey: BACKUP_STAGE_PREFIX + generation + '.archive',
+    wishlistKey: BACKUP_STAGE_PREFIX + generation + '.wishlist'
+  };
+}
+
+function legacyLayout() {
+  return {
+    ok: true,
+    error: '',
+    code: 'legacy',
+    generation: '',
+    archiveKey: ARCHIVE_KEY,
+    wishlistKey: WISHLIST_KEY,
+    legacy: true,
+    record: null
+  };
+}
+
+/**
+ * 严格解析 commit 键：只有本层写出的、键名与代际一致、字段齐全的小记录才算有效。
+ * 提交记录损坏时不猜、不回退旧键，由读取入口返回可见错误。
+ */
+function parseCommitRecord(raw) {
+  if (typeof raw !== 'string' || !raw) return null;
+  let record;
+  try {
+    record = JSON.parse(raw);
+  } catch (error) {
+    return null;
+  }
+  if (!isRecord(record)) return null;
+  const keys = [
+    'version',
+    'generation',
+    'archiveKey',
+    'wishlistKey',
+    'archiveId',
+    'archiveBytes',
+    'wishlistBytes',
+    'archiveChecksum',
+    'wishlistChecksum',
+    'committedAt',
+    'previous'
+  ];
+  if (Object.keys(record).length !== keys.length) return null;
+  if (!keys.every(key => Object.prototype.hasOwnProperty.call(record, key))) return null;
+  if (record.version !== LAYOUT_VERSION) return null;
+  if (typeof record.generation !== 'string' || !LAYOUT_GENERATION_PATTERN.test(record.generation)) {
+    return null;
+  }
+  const expected = stageKeysFor(record.generation);
+  if (record.archiveKey !== expected.archiveKey || record.wishlistKey !== expected.wishlistKey) {
+    return null;
+  }
+  if (!isSafeArchiveId(record.archiveId)) return null;
+  if (!Number.isInteger(record.archiveBytes) || record.archiveBytes < 0) return null;
+  if (!Number.isInteger(record.wishlistBytes) || record.wishlistBytes < 0) return null;
+  if (typeof record.archiveChecksum !== 'string' || typeof record.wishlistChecksum !== 'string') {
+    return null;
+  }
+  if (typeof record.committedAt !== 'string' || !record.committedAt) return null;
+  const previous = record.previous;
+  if (!isRecord(previous)) return null;
+  const previousKeys = [
+    'archiveKey',
+    'wishlistKey',
+    'archivePresent',
+    'wishlistPresent',
+    'archiveBytes',
+    'wishlistBytes',
+    'archiveChecksum',
+    'wishlistChecksum'
+  ];
+  if (Object.keys(previous).length !== previousKeys.length) return null;
+  if (!previousKeys.every(key => Object.prototype.hasOwnProperty.call(previous, key))) return null;
+  if (typeof previous.archiveKey !== 'string' || !previous.archiveKey) return null;
+  if (typeof previous.wishlistKey !== 'string' || !previous.wishlistKey) return null;
+  if (typeof previous.archivePresent !== 'boolean' || typeof previous.wishlistPresent !== 'boolean') {
+    return null;
+  }
+  if (!Number.isInteger(previous.archiveBytes) || previous.archiveBytes < 0) return null;
+  if (!Number.isInteger(previous.wishlistBytes) || previous.wishlistBytes < 0) return null;
+  if (
+    typeof previous.archiveChecksum !== 'string' ||
+    typeof previous.wishlistChecksum !== 'string'
+  ) {
+    return null;
+  }
+  return record;
+}
+
+function committedLayout(record) {
+  return {
+    ok: true,
+    error: '',
+    code: 'committed',
+    generation: record.generation,
+    archiveKey: record.archiveKey,
+    wishlistKey: record.wishlistKey,
+    legacy: false,
+    record
+  };
+}
+
+let layoutCache = null;
+
+/**
+ * 当前代际。没有 commit 键时沿用旧键布局（等于没有恢复过）。
+ * 结果在进程内缓存；恢复提交与冷启动恢复成功后由本模块更新，测试可用 resetLayoutCache。
+ * getStorageInfoSync 只用来判断 commit 键是否存在：没有恢复过时，档案读取不会多一次
+ * getStorageSync，旧行为与调用次数保持不变。
+ */
+function resolveLayout() {
+  if (layoutCache) return layoutCache;
+  let keys;
+  try {
+    const info = wx.getStorageInfoSync();
+    keys = info && Array.isArray(info.keys) ? info.keys : [];
+  } catch (error) {
+    return {
+      ok: false,
+      error: LAYOUT_READ_FAILED + errorText(error),
+      code: 'layout-unreadable',
+      generation: '',
+      archiveKey: '',
+      wishlistKey: '',
+      legacy: false,
+      record: null
+    };
+  }
+  if (keys.indexOf(BACKUP_COMMIT_KEY) === -1) {
+    layoutCache = legacyLayout();
+    return layoutCache;
+  }
+  let raw;
+  try {
+    raw = wx.getStorageSync(BACKUP_COMMIT_KEY);
+  } catch (error) {
+    return {
+      ok: false,
+      error: LAYOUT_READ_FAILED + errorText(error),
+      code: 'layout-unreadable',
+      generation: '',
+      archiveKey: '',
+      wishlistKey: '',
+      legacy: false,
+      record: null
+    };
+  }
+  const record = parseCommitRecord(raw);
+  if (!record) {
+    return {
+      ok: false,
+      error: LAYOUT_BROKEN,
+      code: 'layout-broken',
+      generation: '',
+      archiveKey: '',
+      wishlistKey: '',
+      legacy: false,
+      record: null
+    };
+  }
+  layoutCache = committedLayout(record);
+  return layoutCache;
+}
+
+function resetLayoutCache() {
+  layoutCache = null;
+}
+
+/**
+ * 只有 T067 的提交成功后才调用：让同进程后续读取立刻跟随新代际。
+ */
+function activateLayout(record) {
+  const parsed = parseCommitRecord(typeof record === 'string' ? record : JSON.stringify(record));
+  if (!parsed) return false;
+  layoutCache = committedLayout(parsed);
+  return true;
+}
+
+/**
+ * 按当前布局读取一把键的原文；present:false 只表示读到空值，读取失败单独返回 ok:false。
+ */
+function readStorageText(key) {
+  try {
+    const value = wx.getStorageSync(key);
+    if (value === '' || value === null || value === undefined) {
+      return { ok: true, present: false, value: '', raw: value };
+    }
+    if (typeof value !== 'string') {
+      return { ok: false, present: false, value: '', raw: value, error: '本机存储值不是文本：' + key };
+    }
+    return { ok: true, present: true, value, raw: value };
+  } catch (error) {
+    return { ok: false, present: false, value: '', raw: '', error: errorText(error) };
+  }
+}
+
+function readActiveArchiveRaw() {
+  const layout = resolveLayout();
+  if (!layout.ok) {
+    return { ok: false, present: false, value: '', layout, key: '', error: layout.error };
+  }
+  const read = readStorageText(layout.archiveKey);
+  return {
+    ok: read.ok,
+    present: read.present,
+    value: read.value,
+    raw: read.raw,
+    error: read.error || '',
+    layout,
+    key: layout.archiveKey
+  };
+}
+
+function readActiveWishlistRaw() {
+  const layout = resolveLayout();
+  if (!layout.ok) {
+    return { ok: false, present: false, value: '', layout, key: '', error: layout.error };
+  }
+  const read = readStorageText(layout.wishlistKey);
+  return {
+    ok: read.ok,
+    present: read.present,
+    value: read.value,
+    raw: read.raw,
+    error: read.error || '',
+    layout,
+    key: layout.wishlistKey
+  };
+}
+
 /**
  * 读取本机档案。返回 { archive, error, ok, present, corrupt }：
  * - 无键（首次进入）：ok:true、present:false、空档案，不报错；
@@ -524,39 +799,90 @@ function normalizeArchive(raw) {
  * archive 始终可用于只读展示（损坏时为空档案），但写入口在 ok:false 时一律拒绝落盘。
  */
 function loadState() {
+  const layout = resolveLayout();
+  if (!layout.ok) {
+    return {
+      archive: createEmptyArchive(),
+      error: layout.error,
+      ok: false,
+      present: false,
+      corrupt: false,
+      layout
+    };
+  }
   let raw;
   try {
-    raw = wx.getStorageSync(ARCHIVE_KEY);
+    raw = wx.getStorageSync(layout.archiveKey);
   } catch (error) {
     return {
       archive: createEmptyArchive(),
       error: ARCHIVE_READ_FAILED + errorText(error),
       ok: false,
       present: false,
-      corrupt: false
+      corrupt: false,
+      layout
     };
   }
 
   if (raw === '' || raw === null || raw === undefined) {
-    return { archive: createEmptyArchive(), error: '', ok: true, present: false, corrupt: false };
+    // 恢复过之后 active 键缺失不能当成「首次进入」：那会把新一代静默读成空档。
+    if (!layout.legacy) {
+      return {
+        archive: createEmptyArchive(),
+        error: ARCHIVE_BROKEN,
+        ok: false,
+        present: true,
+        corrupt: true,
+        layout
+      };
+    }
+    return {
+      archive: createEmptyArchive(),
+      error: '',
+      ok: true,
+      present: false,
+      corrupt: false,
+      layout
+    };
   }
 
   let parsed;
   try {
     parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;
   } catch (error) {
-    return { archive: createEmptyArchive(), error: ARCHIVE_BROKEN, ok: false, present: true, corrupt: true };
+    return {
+      archive: createEmptyArchive(),
+      error: ARCHIVE_BROKEN,
+      ok: false,
+      present: true,
+      corrupt: true,
+      layout
+    };
   }
 
   if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.version !== undefined && parsed.version !== STATE_VERSION) {
-    return { archive: createEmptyArchive(), error: ARCHIVE_UNSUPPORTED, ok: false, present: true, corrupt: true };
+    return {
+      archive: createEmptyArchive(),
+      error: ARCHIVE_UNSUPPORTED,
+      ok: false,
+      present: true,
+      corrupt: true,
+      layout
+    };
   }
 
   const archive = normalizeArchive(parsed);
   if (!archive) {
-    return { archive: createEmptyArchive(), error: ARCHIVE_BROKEN, ok: false, present: true, corrupt: true };
+    return {
+      archive: createEmptyArchive(),
+      error: ARCHIVE_BROKEN,
+      ok: false,
+      present: true,
+      corrupt: true,
+      layout
+    };
   }
-  return { archive, error: '', ok: true, present: true, corrupt: false };
+  return { archive, error: '', ok: true, present: true, corrupt: false, layout };
 }
 
 /**
@@ -575,11 +901,13 @@ function hasArchive() {
  * 落盘档案。失败只返回错误，不抛出、不重试其他写入。
  */
 function saveArchive(archive) {
+  const layout = resolveLayout();
+  if (!layout.ok) return { ok: false, error: layout.error, key: '' };
   try {
-    wx.setStorageSync(ARCHIVE_KEY, JSON.stringify(archive));
-    return { ok: true, error: '' };
+    wx.setStorageSync(layout.archiveKey, JSON.stringify(archive));
+    return { ok: true, error: '', key: layout.archiveKey };
   } catch (error) {
-    return { ok: false, error: ARCHIVE_WRITE_FAILED + errorText(error) };
+    return { ok: false, error: ARCHIVE_WRITE_FAILED + errorText(error), key: layout.archiveKey };
   }
 }
 
@@ -3001,11 +3329,30 @@ function restoreAttempt(attemptId, input) {
 module.exports = {
   NAMESPACE,
   ARCHIVE_KEY,
+  WISHLIST_KEY,
   PHOTO_INDEX_KEY,
   REBUILDABLE_PREFIXES,
   STATE_VERSION,
   ARCHIVE_BROKEN,
   ARCHIVE_UNSUPPORTED,
+  // T067：文本恢复的代际布局。commit/pending/stage 键都在正式命名空间内，按受保护键处理。
+  BACKUP_COMMIT_KEY,
+  BACKUP_PENDING_KEY,
+  BACKUP_STAGE_PREFIX,
+  LAYOUT_VERSION,
+  LAYOUT_READ_FAILED,
+  LAYOUT_BROKEN,
+  stageKeysFor,
+  parseCommitRecord,
+  resolveLayout,
+  resetLayoutCache,
+  activateLayout,
+  readStorageText,
+  readActiveArchiveRaw,
+  readActiveWishlistRaw,
+  isRecord,
+  isSafeArchiveId,
+  newArchiveId,
   ATTEMPT_ARCHIVE_MISMATCH,
   ATTEMPT_STALE,
   clone,

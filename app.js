@@ -15,9 +15,16 @@
  * 两者都只处理各自 journal 的 pending，没有待办时不碰文件系统。整场恢复只有在同一份
  * 档案证明原场次、本场关联与全部原把次都已不在时才继续清理；原场次还在就撤掉未完成
  * 凭据，不会在重开时悄悄接着做一次没提交的删除。
+ *
+ * T067：文本恢复的最后一步是写一个很小的提交键。冷启动只核对既有提交与未完成的
+ * stage：已经落盘的提交按记录选代；没有持久提交键时绝不自动把 stage 提升为当前
+ * 代际，而是保留原文、继续读旧档，等用户重新预演并显式确认。任何异常都只记录，
+ * 不覆盖较新的档案；读取入口自己按提交键选代，不依赖这一步成功。
  */
 App({
   onLaunch() {
+    // 文本恢复提交的冷启动补写：只在证据完整且没有更新提交时工作。
+    this.recoverLocalTextRestore();
     // 本机删除凭据的重开恢复：只读正式命名空间内各自的受保护键。
     this.recoverLocalAttemptDeletes();
     this.recoverLocalSessionDeletes();
@@ -37,6 +44,24 @@ App({
     } catch (error) {
       console.error('云开发初始化失败：旧云记录暂不可读，本机记录不受影响', error);
       this.globalData.cloudReady = false;
+    }
+  },
+
+  /**
+   * 冷启动核对文本恢复：没有恢复计划时立即返回，不碰档案。
+   * 有持久提交时只按提交记录报告；没有提交键时保留 stage 原文与旧档，不自动启用。
+   * 读取入口本身按提交键选代，所以这一步失败也不会让页面看到半新半旧的数据。
+   */
+  recoverLocalTextRestore() {
+    try {
+      const backup = require('./utils/training-backup.js');
+      if (!backup || typeof backup.recoverPending !== 'function') return;
+      const result = backup.recoverPending();
+      if (result && result.ok === false && result.code && result.code !== 'nothing-to-recover') {
+        console.warn('本机文本恢复提交检查未完成，现有档案与清单保持不变', result.code, result.error);
+      }
+    } catch (error) {
+      console.warn('本机文本恢复提交检查失败，现有档案与清单保持不变', error);
     }
   },
 
