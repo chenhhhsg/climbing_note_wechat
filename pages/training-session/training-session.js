@@ -116,6 +116,18 @@ function buildGymShortNames(gymNames) {
 }
 
 /**
+ * 场次表单标题（U2）：按已有场次的日期与本地今天决定措辞。
+ * 只有同一本地日期才说「同日另开」；旧日期的新场次用中性的「开始新场次」，
+ * 不把上一场的日期误写成今天。没有当前场次时保持原来的「开始训练」。
+ */
+function sessionFormTitleFor(sessionDate) {
+  if (!sessionDate) return '开始训练';
+  return sessionDate === store.todayLocalDate()
+    ? '开始新场次（同日另开）'
+    : '开始新场次';
+}
+
+/**
  * 本馆已有候选的展示行：完攀三态只按档案层 routeCompletion 判定（只读）。
  * 已完攀抱石点按直达原线路历史；待确认抱石点按只提示、不写盘；顶绳/先锋不显示
  * 单次完攀状态，仍按原路径关联进本场。
@@ -149,7 +161,7 @@ function buildGymCandidate(archive, route, context) {
       ? completed
         ? '点按查看原线路历史'
         : pending
-          ? '完攀待确认，确认后再加入本场'
+          ? '完攀待确认，尚未加入本场'
           : '点按加入本场'
       : '点按加入本场',
     sessionId: context.sessionId,
@@ -315,7 +327,7 @@ Page({
       storageError: '',
       notice: '',
       sessionFormVisible: formVisible,
-      sessionFormTitle: active ? '开始新场次（同日另开）' : '开始训练',
+      sessionFormTitle: sessionFormTitleFor(active ? active.date : ''),
       gymName: keepForm ? this.data.gymName : gymName,
       sessionDate: keepForm ? this.data.sessionDate : date,
       formError: keepForm ? this.data.formError : '',
@@ -557,7 +569,7 @@ Page({
     this._formDirty = false;
     this.setData({
       sessionFormVisible: true,
-      sessionFormTitle: active ? '开始新场次（同日另开）' : '开始训练',
+      sessionFormTitle: sessionFormTitleFor(active ? active.dateText : ''),
       gymName: active ? active.gymName : this.data.gymName,
       sessionDate: store.todayLocalDate(),
       formError: ''
@@ -994,7 +1006,7 @@ Page({
         notice:
           '「' +
           candidate.name +
-          '」的完攀还在等待确认；确认完成后再加入本场，这次没有新增关联。'
+          '」的完攀还在等待确认；确认前不会新增本场关联，这次没有改动任何数据。'
       });
       return;
     }

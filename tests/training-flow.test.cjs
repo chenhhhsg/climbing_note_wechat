@@ -645,6 +645,60 @@ test('T063 首页同日继续、跨午夜转上次训练，开始与补记按原
   assert.match(wxss, /\.field-cover \{[^}]*height:176rpx/, '封面压缩到 176rpx');
 });
 
+test('T063 U2 首页旧日期主操作进入场内页时标题按日期上下文，不误写同日另开', async () => {
+  // 固定本地昨天：用真实本地日期推算，避免写死日期在跨天后变成同日。
+  const now = new Date();
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 20, 0);
+  const oldDate = store.todayLocalDate(yesterday);
+  const started = store.startSession({
+    gymName: '昨日岩馆',
+    date: oldDate,
+    now: yesterday
+  });
+  assert.equal(started.ok, true, started.error);
+  const before = rawArchive();
+
+  const home = createPage(indexDefinition);
+  home.onLoad();
+  home.refreshTrainingEntry(now);
+  assert.equal(home.data.trainingMode, 'previous');
+
+  // 真实 WXML 的旧日期主操作就是「开始今天训练」，绑定 startTraining。
+  const wxml = fs.readFileSync(INDEX_WXML, 'utf8');
+  assert.match(
+    wxml,
+    /<button wx:else id="start-training"[^>]*bindtap="startTraining"[^>]*>开始今天训练<\/button>/
+  );
+
+  // 按真实绑定进入场内页：查参数、开页面，走完消费者链路。
+  home.startTraining();
+  const url = wxLog.navigations.at(-1).url;
+  assert.equal(url, '/pages/training-session/training-session?start=1');
+  const query = Object.fromEntries(new URL(url, 'https://qa.invalid').searchParams);
+
+  const page = await openSessionPage(query);
+  assert.equal(page.data.sessionFormVisible, true);
+  assert.equal(page.data.sessionDate, store.todayLocalDate(), '默认日期仍是本地今天');
+  assert.equal(page.data.sessionFormTitle, '开始新场次', '旧场后的新场次用中性标题');
+  assert.doesNotMatch(page.data.sessionFormTitle, /同日/, '不把旧场误写成同日另开');
+
+  assert.equal(rawArchive(), before, '按主操作进入场内页不写档案');
+  const archive = store.loadState().archive;
+  assert.equal(archive.sessions.length, 1, '进入表单不自动建场');
+  assert.equal(archive.sessions[0].date, oldDate, '旧场日期与归属不变');
+  assert.equal(archive.activeSessionId, started.session.id);
+
+  // 同日另开保持原样：当前场次是本地今天时，标题才说「同日另开」。
+  const todaySession = store.startSession({
+    gymName: '今日岩馆',
+    date: store.todayLocalDate(now),
+    now
+  });
+  assert.equal(todaySession.ok, true, todaySession.error);
+  const sameDay = await openSessionPage({ start: '1' });
+  assert.equal(sameDay.data.sessionFormTitle, '开始新场次（同日另开）');
+});
+
 test('R2 从正式首页「开始训练」进入场内页，选照片并确认（正式入口链路）', async () => {
   const home = createPage(indexDefinition);
   home.onLoad();

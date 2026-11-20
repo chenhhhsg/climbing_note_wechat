@@ -41,6 +41,11 @@
       <text class="error-title">这个入口不能用来记录</text>
       <text class="error-text">{{contextError}}</text>
       <text class="error-hint">没有改动任何数据；请从本场线路列表重新进入。</text>
+      <!-- 返回兜底也失败时的可见提示：错误页同样展示同一条 notice，不只藏在成功分支里。 -->
+      <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
+        <text class="notice-text">{{notice}}</text>
+        <text class="notice-hint">点击收起</text>
+      </view>
       <button id="record-back-to-list" class="secondary-button" bindtap="backToList">返回本场线路</button>
     </view>
 

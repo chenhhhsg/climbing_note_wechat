@@ -3238,6 +3238,12 @@ test('T062 U1 本馆候选标出未完攀/已完攀/待确认：已完攀抱石�
   assert.equal(candidateOf(pendingBoulder.route.id).stateText, '完攀待确认');
   assert.equal(candidateOf(pendingBoulder.route.id).stateKind, 'pending');
   assert.equal(candidateOf(pendingBoulder.route.id).pending, true);
+  assert.doesNotMatch(
+    candidateOf(pendingBoulder.route.id).actionHint,
+    /确认后再加入/,
+    '待确认不会在确认后自动加入本场'
+  );
+  assert.match(candidateOf(pendingBoulder.route.id).actionHint, /尚未加入本场/);
   assert.equal(candidateOf(rope.route.id).stateText, '', '顶绳不显示单次完攀态');
   assert.equal(candidateOf(rope.route.id).completed, false);
 
@@ -3274,6 +3280,8 @@ test('T062 U1 本馆候选标出未完攀/已完攀/待确认：已完攀抱石�
   assert.equal(storage.get(ARCHIVE_KEY), bytesBeforePending, '待确认不写盘');
   assert.equal(page.data.addRouteVisible, true, '面板保留，便于确认后再选');
   assert.match(page.data.notice, /待确认/);
+  assert.doesNotMatch(page.data.notice, /确认后再加入|再加入本场/, '不再暗示确认后会加入本场');
+  assert.match(page.data.notice, /不会新增本场关联/, '说明确认前没有发生关联');
   assert.equal(linkCount(today.session.id, pendingBoulder.route.id), 0);
   // 再点一次同一条：提示稳定，仍不写盘。
   page.pickGymRoute(gymCandidateEvent(page, pendingBoulder.route.id));

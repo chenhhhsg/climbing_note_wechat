@@ -29,6 +29,7 @@ const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-sessio
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
 const SESSION_WXSS = path.join(ROOT, 'pages', 'training-session', 'training-session.wxss');
 const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 const SUMMARY_JS_PAGE = path.join(ROOT, 'pages', 'training-summary', 'training-summary.js');
 const WISHLIST_JS_PAGE = path.join(ROOT, 'pages', 'training-wishlist', 'training-wishlist.js');
 const WISHLIST_WXML = path.join(ROOT, 'pages', 'training-wishlist', 'training-wishlist.wxml');
@@ -1035,9 +1036,22 @@ test('T064 U3 入口错误页系统返回失败只回训练入口，不改活动
   backFailNext = true;
   redirectFailNext = true;
   page.backToList();
+  assert.equal(wxLog.backs.length, 1, '仍先尝试系统返回');
+  assert.equal(wxLog.redirects.length, 1, '兜底重定向也实际发起');
   assert.match(page.data.notice, /返回失败，请从训练首页重新进入本场。/);
   assert.equal(rawArchive(), rawBefore);
   assert.equal(archiveOf().activeSessionId, activeBefore);
+
+  // 提示必须在入口错误视图里真的可见，不能只挂在成功分支的 !contextError 之下。
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const contextAt = recordWxml.indexOf('id="record-context-error"');
+  const successAt = recordWxml.indexOf('wx:if="{{ready && !contextError}}"');
+  const noticeAt = recordWxml.indexOf('id="notice"');
+  assert.ok(contextAt !== -1 && successAt !== -1, '错误视图与成功分支都在');
+  assert.ok(
+    noticeAt > contextAt && noticeAt < successAt,
+    'notice 渲染在入口错误视图内，错误页也能看到返回失败提示'
+  );
 });
 
 // ------------------------------------------------------------------ *

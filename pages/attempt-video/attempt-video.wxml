@@ -98,11 +98,6 @@
           <text class="notice-hint">点击收起</text>
         </view>
 
-        <!-- T065：选片前展示实际可新增容量；就在共用操作区、各选片入口之上，
-             不新增卡片，保持视频 → 时间点 → 页尾占用的原有顺序。 -->
-        <text wx:if="{{spaceCapacityText}}" id="video-space-capacity" class="video-hint">{{spaceCapacityText}}</text>
-        <text wx:if="{{spaceCapacityNote}}" id="video-space-capacity-note" class="video-hint">{{spaceCapacityNote}}</text>
-
         <!-- 已保存且没有待确认新片：紧贴播放器只有同排的「更换视频／移除视频」 -->
         <view wx:if="{{hasSavedVideo && savedVideo && !hasPreview}}" id="video-saved" class="action-block">
           <text wx:if="{{!savedVideo.locatable}}" id="saved-unlocatable" class="error-text">{{savedVideo.unresolvedText}}</text>
@@ -110,6 +105,10 @@
             <button id="replace-video" class="primary-button" bindtap="choosePreview" disabled="{{choosing || busy}}">更换视频</button>
             <button id="remove-video" class="secondary-button" bindtap="askRemove" disabled="{{busy}}">移除视频</button>
           </view>
+          <!-- T065：选片前展示实际可新增容量；已保存时紧接同排「更换／移除」下方。
+               各状态共用同一组字段，只渲染当前状态的那一处；不新增卡片。 -->
+          <text wx:if="{{spaceCapacityText}}" id="video-space-capacity" class="video-hint">{{spaceCapacityText}}</text>
+          <text wx:if="{{spaceCapacityNote}}" id="video-space-capacity-note" class="video-hint">{{spaceCapacityNote}}</text>
           <!-- T049：回看时也写明副本只在这台手机上，与预览、确认移除与相册保留的说明同一口径 -->
           <text id="saved-storage-hint" class="video-hint action-hint">视频副本保存在这台手机微信里的攀笔中，不上传云端。系统相册里的原片保留。</text>
           <view class="saved-meta">
@@ -169,6 +168,9 @@
           <view class="action-row action-row-single">
             <button id="reselect-video" class="secondary-button" bindtap="choosePreview" disabled="{{choosing || busy}}">{{preview.mode === 'replacement' ? '更换视频' : '重新选择'}}</button>
           </view>
+          <!-- 待确认（首次或更换）：容量紧接当前的选片操作之后，打开相册前仍可见。 -->
+          <text wx:if="{{spaceCapacityText}}" id="video-space-capacity" class="video-hint">{{spaceCapacityText}}</text>
+          <text wx:if="{{spaceCapacityNote}}" id="video-space-capacity-note" class="video-hint">{{spaceCapacityNote}}</text>
         </view>
 
         <!-- 没有已保存片源也没有预览：只有一个相册选片入口 -->
@@ -183,6 +185,9 @@
               bindtap="choosePreview"
             >{{choosing ? '正在打开相册…' : '从相册选择视频'}}</button>
           </view>
+          <!-- 无片空态：容量紧接选片入口，打开相册前仍可见（含 0 B 与未知）。 -->
+          <text wx:if="{{spaceCapacityText}}" id="video-space-capacity" class="video-hint">{{spaceCapacityText}}</text>
+          <text wx:if="{{spaceCapacityNote}}" id="video-space-capacity-note" class="video-hint">{{spaceCapacityNote}}</text>
         </view>
       </view>
 

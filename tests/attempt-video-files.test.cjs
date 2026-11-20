@@ -1367,6 +1367,16 @@ test('T065-2 页面在选片入口上方显示可新增容量：按实际占用�
   assert.match(page.data.spaceCapacityNote, /更换时旧片仍占用预算/);
   assert.match(page.data.spaceCapacityNote, /新旧同时存在/);
 
+  // 准备更换（待确认新片）时容量仍可见，并按新旧同时存在计算。
+  const replacement = addTempVideo('capacity-replacement.mp4', 2048);
+  chooseVideo(replacement);
+  page.choosePreview();
+  assert.equal(page.data.preview.mode, 'replacement');
+  assert.match(page.data.spaceCapacityText, /选片前可新增 80\.0 MB/);
+  assert.match(page.data.spaceCapacityNote, /新旧同时存在/);
+  page.cancelReplace();
+  assert.equal(page.data.hasPreview, false);
+
   // 读占用失败：容量改为未知，但占用卡片仍显示可见错误。
   faults.readdir = true;
   page.refreshSpaceUsage();
@@ -1435,23 +1445,69 @@ test('T065-3 零容量与小预算的页面文案：显示 0 B 或实际剩余�
   assert.doesNotMatch(pageJs, /getStorageInfoSync|getFileSystemManager|freeSize|totalSize/);
 });
 
-test('T065-4 容量提示留在共用操作区、选片入口之前，不新增卡片也不改页面顺序', () => {
+test('T065-4 容量提示紧跟当前选片操作：已保存紧接更换/移除，其余紧接选片入口', () => {
   const wxml = fs.readFileSync(VIDEO_WXML, 'utf8');
   const at = id => {
     const index = wxml.indexOf('id="' + id + '"');
     assert.ok(index !== -1, '缺少 #' + id);
     return index;
   };
-  assert.ok(at('video-actions') < at('video-space-capacity'), '提示在共用操作区');
-  assert.ok(at('video-space-capacity') < at('video-saved'), '提示在更换/移除之前');
-  assert.ok(at('video-space-capacity-note') < at('video-saved'));
-  assert.ok(at('video-space-capacity') < at('video-choose'), '提示在首次选片入口之前');
-  assert.ok(at('video-markers') < at('video-space'), '时间点与页尾占用顺序不变');
+  const allAt = needle => {
+    const list = [];
+    let from = 0;
+    while (from <= wxml.length) {
+      const index = wxml.indexOf(needle, from);
+      if (index === -1) break;
+      list.push(index);
+      from = index + needle.length;
+    }
+    return list;
+  };
+  // 视频 → 共用操作区 → 时间点 → 页尾占用的顺序不变。
+  assert.ok(at('video-player') < at('video-actions'), '操作区紧接播放器');
+  assert.ok(at('video-actions') < at('video-markers'), '时间点在操作区之后');
+  assert.ok(at('video-markers') < at('video-space'), '占用与清理在时间点之后');
+
+  // 三段互斥状态各有一处容量提示，共用同一组字段；当前状态只渲染其中一处。
+  assert.equal(allAt('id="video-space-capacity"').length, 3, '三种状态各一处容量提示');
+  assert.equal(allAt('id="video-space-capacity-note"').length, 3);
   assert.match(wxml, /id="video-space-capacity"[^>]*class="video-hint"/);
-  // 容量提示不使用卡片容器：没有新增卡片，也没有打乱页尾最后一张卡片。
-  const capacityBlock = wxml.slice(at('video-space-capacity'), at('video-saved'));
-  assert.doesNotMatch(capacityBlock, /class="card /);
-  assert.equal(wxml.lastIndexOf('class="card '), wxml.indexOf('class="card ', at('video-space')));
+
+  // 已保存：紧接同排「更换视频／移除视频」之后，仍在保存说明之前。
+  const savedStart = at('video-saved');
+  const previewStart = at('video-preview');
+  const savedBlock = wxml.slice(savedStart, previewStart);
+  const savedRemoveAt = savedBlock.indexOf('id="remove-video"');
+  const savedRowEnd = savedBlock.indexOf('</view>', savedRemoveAt);
+  const savedCapacityAt = savedBlock.indexOf('id="video-space-capacity"');
+  assert.ok(savedRemoveAt !== -1 && savedCapacityAt !== -1);
+  assert.ok(savedCapacityAt > savedRowEnd, '已保存的容量提示在更换/移除同排之后');
+  assert.ok(
+    savedCapacityAt < savedBlock.indexOf('id="saved-storage-hint"'),
+    '容量提示紧接操作行，没有别的内容插在中间'
+  );
+
+  // 待确认（首次或更换）：紧跟当前「重新选择／更换视频」操作行。
+  const chooseStart = wxml.indexOf('wx:if="{{!hasSavedVideo && !hasPreview}}"');
+  const previewBlock = wxml.slice(previewStart, chooseStart);
+  const reselectAt = previewBlock.indexOf('id="reselect-video"');
+  const reselectRowEnd = previewBlock.indexOf('</view>', reselectAt);
+  const previewCapacityAt = previewBlock.indexOf('id="video-space-capacity"');
+  assert.ok(reselectAt !== -1 && previewCapacityAt !== -1);
+  assert.ok(previewCapacityAt > reselectRowEnd, '待确认的容量提示紧跟选片操作行');
+
+  // 无片空态：紧接「从相册选择视频」。
+  const chooseBlock = wxml.slice(chooseStart, at('video-markers'));
+  const chooseButtonAt = chooseBlock.indexOf('id="choose-video"');
+  const chooseRowEnd = chooseBlock.indexOf('</view>', chooseButtonAt);
+  const chooseCapacityAt = chooseBlock.indexOf('id="video-space-capacity"');
+  assert.ok(chooseButtonAt !== -1 && chooseCapacityAt !== -1);
+  assert.ok(chooseCapacityAt > chooseRowEnd, '无片空态的容量提示紧跟选片入口');
+
+  // 仍是普通提示文本，不新增卡片；页尾占用仍是最后一张实质卡片。
+  assert.doesNotMatch(savedBlock.slice(savedCapacityAt), /class="card /);
+  const spaceCardClass = wxml.indexOf('class="card ', at('video-space'));
+  assert.equal(wxml.lastIndexOf('class="card '), spaceCardClass, '占用与清理是页尾最后一张实质卡片');
 });
 
 test('T026-8b 提交后丢回执：页面按读回的索引确认成功并标明回执不明确', async () => {
