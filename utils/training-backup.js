@@ -23,19 +23,21 @@
  *    commit 同时选择档案与清单，所以不会看到一半新一半旧；
  * 3. commit 之前的任何失败只留下不可见的 pending/stage（不删除、不自动回滚），旧档继续
  *    可读；commit 写入失败但回执丢失时以读回内容为准；
- * 4. 重开时 recoverPending 只在「没有更新提交、stage 两把都完整且校验一致」时补写
- *    commit；任何不确定都只报告，不覆盖较新的状态。
+ * 4. 重开时 recoverPending 只核对并报告：没有持久提交键时绝不自动把 stage 提升为当前
+ *    代际，完整 stage 交给用户重新预演并显式确认；已有有效提交时按提交记录判定。
+ * 5. 预演令牌在本进程内一次性使用：提交键写出（成功、未知或读回不一致）后立即作废，
+ *    代际移动或进程重开后的旧令牌都需要重新预演。
  *
  * 正式恢复会为导入档案换一个新的 archiveId（新代际归属）：旧照片索引按老 archiveId
  * 归属，不会被新档案关联，也不会被删除；旧 archive/wishlist 键原样保留，供诊断导出。
  *
  * 对外接口：
  *   exportText({ now })                 只读生成备份文本与实读摘要
- *   inspectText(text, { now })          独立预演，零写入，返回 previewToken
+ *   inspectText(text, { now })          独立预演，零写入，返回一次性 previewToken
  *   confirmRestore(text, { confirmed:true, previewToken, now })
  *                                       显式确认恢复；失败不写，成功后返回新归属与回执
  *   exportDiagnostics({ now })          只读导出当前/上一代原文（含受损原文逐字保留）
- *   recoverPending({ now })             冷启动补提交；证据不完整或旧档已变化时不动
+ *   recoverPending({ now })             冷启动核对：只报告，不补写提交键、不启用未提交的 stage
  */
 'use strict';
 const store = require('./training-store.js');
@@ -186,6 +188,26 @@ const ERROR = {
 
 let generationSeq = 0;
 
+// 本进程内已签发的预演令牌。令牌本身只是文本哈希，单凭哈希无法区分「刚预演」和
+// 「先前已经确认过」；这里记录签发时的代际与是否已消耗。正式恢复只接受未消耗、且
+// 仍属于当前代际的令牌。进程重开后记录自然消失，重新预演即可；这正是 UI 侧需要
+// 重新绑定 nonce 与文本的地方。
+const MAX_ISSUED_PREVIEWS = 32;
+const issuedPreviews = new Map();
+
+function rememberPreview(token, generation, consumed) {
+  issuedPreviews.set(token, { generation, consumed });
+  if (issuedPreviews.size > MAX_ISSUED_PREVIEWS) {
+    // 只淘汰尚未消耗的旧记录；已消耗的令牌必须继续拦到进程结束。
+    for (const [key, value] of issuedPreviews) {
+      if (!value.consumed && key !== token) {
+        issuedPreviews.delete(key);
+        break;
+      }
+    }
+  }
+}
+
 // ------------------------------------------------------------------ *
 // 基础工具：UTF-8 字节数、纯文本哈希、时间与结构判定
 // ------------------------------------------------------------------ *
@@ -286,6 +308,54 @@ function isIsoTime(value) {
 
 function previewToken(text) {
   return 'bkp1-' + hashText(text);
+}
+
+function currentPreviewGeneration() {
+  try {
+    const layout = store.resolveLayout();
+    return layout && layout.ok ? layout.generation : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+/**
+ * 记录一次预演签发：绑定当前代际。令牌本身已经由文本哈希确定，不再重复保存原文。
+ */
+function registerPreview(text) {
+  const token = previewToken(text);
+  rememberPreview(token, currentPreviewGeneration(), false);
+  return token;
+}
+
+/**
+ * 令牌是否仍可用于这次确认：未被先前提交消耗、且签发后当前代际没有移动。
+ * 未登记过的令牌按兼容路径放行（例如进程重开后重新粘贴的确定性哈希），真正的重复
+ * 确认会在第一次走到提交点后被登记为已消耗。
+ */
+function previewTokenState(token) {
+  const entry = issuedPreviews.get(token);
+  if (!entry) return { ok: true, issued: false };
+  if (entry.consumed) return { ok: false, issued: true };
+  if (entry.generation !== null) {
+    const generation = currentPreviewGeneration();
+    if (generation !== null && generation !== entry.generation) {
+      return { ok: false, issued: true };
+    }
+  }
+  return { ok: true, issued: true };
+}
+
+/**
+ * 提交点已经写出（成功、未知或读回不一致）后，旧令牌一律作废；仅预提交失败保留。
+ */
+function markPreviewConsumed(token) {
+  const entry = issuedPreviews.get(token);
+  if (entry) {
+    entry.consumed = true;
+    return;
+  }
+  rememberPreview(token, currentPreviewGeneration(), true);
 }
 
 function emptyResult(code, error) {
@@ -791,9 +861,9 @@ function exportText(options) {
 }
 
 /**
- * 预演：解析并严格校验文本，返回摘要与令牌。零写入。
+ * 预演的内部实现：解析并严格校验文本，返回摘要与令牌。零写入。
  */
-function inspectText(text, options) {
+function inspectTextCore(text, options) {
   const data = options || {};
   if (typeof text !== 'string') {
     return emptyResult('broken-text', ERROR.BROKEN_TEXT);
@@ -829,6 +899,15 @@ function inspectText(text, options) {
     wishlistDoc: checked.wishlist,
     auxiliary: checked.auxiliary
   };
+}
+
+/**
+ * 预演：校验并签发一次可用的确认令牌。零写入。
+ */
+function inspectText(text, options) {
+  const inspected = inspectTextCore(text, options);
+  if (inspected.ok) inspected.token = registerPreview(text);
+  return inspected;
 }
 
 // ------------------------------------------------------------------ *
@@ -1092,6 +1171,9 @@ function stageAndCommit(plan) {
     return emptyResult('stage-readback-mismatch', ERROR.WRITE_FAILED + '：两把 stage 读回与预期不一致');
   }
 
+  // 提交点之前先丢掉进程内布局缓存：从这里开始，任何读取都必须重新看盘上的 commit，
+  // 不能继续拿旧的 legacy/committed 布局回答。
+  store.resetLayoutCache();
   const commitText = JSON.stringify(commitRecordOf(pending));
   const commitWrite = writeVerified(store.BACKUP_COMMIT_KEY, commitText);
   if (!commitWrite.ok) {
@@ -1187,8 +1269,12 @@ function confirmRestore(text, options) {
   if (typeof data.previewToken !== 'string' || data.previewToken !== previewToken(text)) {
     return emptyResult('preview-required', ERROR.PREVIEW);
   }
+  const previewed = previewTokenState(data.previewToken);
+  if (!previewed.ok) {
+    return emptyResult('preview-stale', ERROR.PREVIEW + '：该预演已被使用或代际已变化，请重新预演');
+  }
 
-  const inspected = inspectText(text, data);
+  const inspected = inspectTextCore(text, data);
   if (!inspected.ok) return inspected; // 无效/超限：零写入
 
   const layout = store.resolveLayout();
@@ -1243,7 +1329,15 @@ function confirmRestore(text, options) {
     previous: previous.previous,
     now: data.now
   });
-  if (!staged.ok) return staged;
+  if (!staged.ok) {
+    // 只有走到提交点之后（未知/读回不一致）才作废旧令牌；提交点之前的失败仍可原样重试。
+    if (staged.code === 'commit-unknown' || staged.code === 'commit-unverified') {
+      markPreviewConsumed(data.previewToken);
+    }
+    return staged;
+  }
+  // 提交键已经持久化：同一预演令牌不再能重复触发一次恢复。
+  markPreviewConsumed(data.previewToken);
 
   const verified = verifyActive({
     rebindArchiveId,
@@ -1286,7 +1380,7 @@ function confirmRestore(text, options) {
 }
 
 // ------------------------------------------------------------------ *
-// 冷启动恢复：只在没有更新提交时补齐已完整 stage 的确认恢复
+// 冷启动核对：只报告未提交的 stage，绝不自行选择新的当前代际
 // ------------------------------------------------------------------ *
 
 function recoverPending(options) {
@@ -1392,39 +1486,17 @@ function recoverPending(options) {
   );
   if (!checkedWishlist.ok) return checkedWishlist;
 
-  const commitText = JSON.stringify(commitRecordOf(pending));
-  const commitWrite = writeVerified(store.BACKUP_COMMIT_KEY, commitText);
-  if (!commitWrite.ok) {
-    store.resetLayoutCache();
-    return commitFailure(commitWrite, 'commit-write-failed');
-  }
-  if (!store.activateLayout(commitRecordOf(pending))) {
-    store.resetLayoutCache();
-    return emptyResult('commit-unverified', ERROR.COMMITTED_UNVERIFIED + '（提交记录无法解析）');
-  }
-  const verified = verifyActive({
-    rebindArchiveId: pending.rebindArchiveId,
-    summary: computeSummary(training, wishlistDoc, auxiliaryOf(normalized))
-  });
-  if (!verified.ok) {
-    return {
-      ok: false,
-      code: 'committed-unverified',
-      error: verified.error,
-      committed: true,
-      generation: pending.generation,
-      rebindArchiveId: pending.rebindArchiveId
-    };
-  }
+  // 冷启动只核对并报告，绝不替用户补写提交键：确认调用曾明确报告失败、或进程在
+  // 提交点前中断时，用户还没有在失败之后重新确认。stage 原文保持不可见、原档继续
+  // 可读，等待用户重新预演并显式确认（显式重试会复用同一代 stage）。
   return {
     ok: true,
-    code: commitWrite.receiptLost ? 'recovered-receipt-lost' : 'recovered',
+    code: 'pending-staged',
     error: '',
-    action: 'committed',
+    action: 'none',
     generation: pending.generation,
     rebindArchiveId: pending.rebindArchiveId,
-    summary: verified.summary,
-    receipt: { commit: commitWrite.receiptLost ? 'receipt-lost' : 'written' }
+    note: '确认恢复尚未写入提交记录，冷启动不会自动启用；如需恢复请重新预演并确认'
   };
 }
 

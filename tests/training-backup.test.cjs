@@ -579,9 +579,10 @@ test('T067-F 未确认、令牌不符与独立预演都不写活动键', () => {
 function prepareBackup() {
   seedFixture();
   const exported = backup.exportText({ now: FIXED_NOW });
+  // 先把当前档案清回旧档布局，再做预演：令牌绑定的是恢复发生时的代际。
+  resetStorage();
   const preview = backup.inspectText(exported.text);
   assert.equal(preview.ok, true, preview.error);
-  resetStorage();
   return { text: exported.text, token: preview.token };
 }
 
@@ -700,7 +701,7 @@ test('T067-J2 stage 档案/清单回执丢失但已落盘：读回确认后继�
 });
 
 
-test('T067-K 提交键写前失败：旧档完全可读；重开后可凭完整 stage 补提交', () => {
+test('T067-K 提交键写前失败：旧档完全可读；冷启动不自动启用，显式重新预演后才恢复', () => {
   const prepared = prepareBackup();
   arm('set', key => key === store.BACKUP_COMMIT_KEY, 1);
   const failed = confirm(prepared.text, prepared.token);
@@ -711,18 +712,37 @@ test('T067-K 提交键写前失败：旧档完全可读；重开后可凭完整 
   assert.equal(store.loadState().present, false);
   assert.equal(wishlist.loadWishlist().ok, true);
 
-  // 模拟进程重开：布局缓存清空，恢复例程从完整 stage 补写提交。
+  // 模拟进程重开：布局缓存清空，真实启动入口只核对，不补写提交键。
   store.resetLayoutCache();
   fault.setCalls = 0;
+  let app;
+  global.App = page => {
+    app = page;
+  };
+  delete require.cache[require.resolve(APP_JS)];
+  require(APP_JS);
+  app.onLaunch();
+  assert.equal(fault.setCalls, 0, '冷启动不写任何键');
+  assert.equal(storage.has(store.BACKUP_COMMIT_KEY), false);
+  assert.equal(stageKeyCount(), 2, '两份 stage 原文保留');
+  assert.equal(store.loadState().present, false, '未提交的 stage 不参与读取');
+
   const recovered = backup.recoverPending({ now: FIXED_NOW });
   assert.equal(recovered.ok, true, recovered.error);
-  assert.equal(recovered.code, 'recovered');
-  assert.ok(fault.setCalls >= 1, '补写提交确实发生');
-  const pending = JSON.parse(storage.get(store.BACKUP_PENDING_KEY));
+  assert.equal(recovered.code, 'pending-staged');
+  assert.equal(recovered.action, 'none');
+
+  // 用户重新预演并显式确认后才生效，并复用失败时留下的同一代 stage。
+  const pendingBefore = JSON.parse(storage.get(store.BACKUP_PENDING_KEY));
+  const again = backup.inspectText(prepared.text);
+  assert.equal(again.ok, true, again.error);
+  const retried = confirm(prepared.text, again.token);
+  assert.equal(retried.ok, true, retried.error);
+  const pendingAfter = JSON.parse(storage.get(store.BACKUP_PENDING_KEY));
+  assert.equal(pendingAfter.generation, pendingBefore.generation, '重试复用同一代');
   const loaded = store.loadState();
   assert.equal(loaded.ok, true, loaded.error);
-  assert.equal(loaded.archive.archiveId, pending.rebindArchiveId);
-  assert.equal(wishlist.loadWishlist().ok, true);
+  assert.equal(loaded.archive.archiveId, retried.rebindArchiveId);
 });
 
 test('T067-K2 提交失败后继续普通写入：重开不自动覆盖较新档案，重新确认仍可用', () => {
@@ -760,6 +780,109 @@ test('T067-K2 提交失败后继续普通写入：重开不自动覆盖较新档
   assert.equal(storage.get(ARCHIVE_KEY), newerArchive, '旧键仍原样保留');
 });
 
+test('T067-K3 提交键写前失败后继续普通写入：冷启动仍读旧档且新场次可见', () => {
+  seedFixture();
+  const exported = backup.exportText({ now: FIXED_NOW });
+  const preview = backup.inspectText(exported.text);
+  assert.equal(preview.ok, true, preview.error);
+  const oldId = store.loadState().archive.archiveId;
+
+  arm('set', key => key === store.BACKUP_COMMIT_KEY, 1);
+  const failed = confirm(exported.text, preview.token);
+  assert.equal(failed.ok, false);
+  assert.equal(failed.code, 'commit-write-failed');
+
+  // 失败后用户继续记录：普通写入仍落在旧档。
+  const started = store.startSession({
+    gymName: '失败后新开的馆',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 11, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const newerArchive = storage.get(ARCHIVE_KEY);
+
+  // 实际启动入口重走一遍：不启用未提交的 stage，也不覆盖较新的旧档。
+  store.resetLayoutCache();
+  fault.setCalls = 0;
+  let app;
+  global.App = page => {
+    app = page;
+  };
+  delete require.cache[require.resolve(APP_JS)];
+  require(APP_JS);
+  app.onLaunch();
+  assert.equal(fault.setCalls, 0, '冷启动不写任何键');
+  const loaded = store.loadState();
+  assert.equal(loaded.ok, true, loaded.error);
+  assert.equal(loaded.archive.archiveId, oldId);
+  assert.equal(loaded.archive.sessions.some(item => item.id === started.session.id), true);
+  assert.equal(storage.get(ARCHIVE_KEY), newerArchive);
+  assert.equal(storage.has(store.BACKUP_COMMIT_KEY), false);
+  assert.equal(stageKeyCount(), 2, '未提交的 stage 只保留原文，不参与读取');
+
+  const recovered = backup.recoverPending({ now: FIXED_NOW });
+  assert.equal(recovered.ok, true, recovered.error);
+  assert.equal(recovered.code, 'pending-stale');
+  assert.equal(fault.setCalls, 0, '旧档变化后冷启动仍不写');
+});
+
+test('T067-K4 提交键已落盘但读回暂时失败：不退回旧档，普通写入与冷读跟随同一新代', () => {
+  const prepared = prepareBackup();
+  arm('get', key => key === store.BACKUP_COMMIT_KEY, 1);
+  const uncertain = confirm(prepared.text, prepared.token);
+  assert.equal(uncertain.ok, false);
+  assert.equal(uncertain.code, 'commit-unknown');
+  assert.equal(storage.has(store.BACKUP_COMMIT_KEY), true, '提交键实际已持久化');
+
+  // 提交点写出过（即使回执读不到），旧令牌已作废。
+  const replay = confirm(prepared.text, prepared.token);
+  assert.equal(replay.ok, false);
+  assert.equal(replay.code, 'preview-stale');
+
+  // 读回恢复正常后，同进程公开读取按持久提交选代；随后普通写入落在新代。
+  const warm = store.resolveLayout();
+  assert.equal(warm.ok, true, warm.error);
+  assert.equal(warm.legacy, false);
+  const started = store.startSession({
+    gymName: '回执不确定后新开的馆',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 12, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+
+  // 冷读（清布局缓存）与热读选择同一代，并读得到刚写的场次。
+  store.resetLayoutCache();
+  const cold = store.loadState();
+  assert.equal(cold.ok, true, cold.error);
+  assert.equal(cold.archive.archiveId, warm.record.archiveId);
+  assert.equal(cold.archive.sessions.some(item => item.id === started.session.id), true);
+  assert.equal(storage.has(ARCHIVE_KEY), false, '不把未提交的半成品写回旧键');
+});
+
+test('T067-V 已使用的预演令牌不能重复恢复；重新预演后可再次恢复', () => {
+  seedFixture();
+  const exported = backup.exportText({ now: FIXED_NOW });
+  const preview = backup.inspectText(exported.text);
+  assert.equal(preview.ok, true, preview.error);
+  const first = confirm(exported.text, preview.token);
+  assert.equal(first.ok, true, first.error);
+
+  const before = snapshot();
+  const beforeWrites = fault.setCalls;
+  const replay = confirm(exported.text, preview.token);
+  assert.equal(replay.ok, false);
+  assert.equal(replay.code, 'preview-stale');
+  assert.deepEqual(snapshot(), before, '重复确认零写入');
+  assert.equal(fault.setCalls, beforeWrites, '重复确认零写入');
+
+  // 用户重新预演并确认是允许的，且会得到新的隔离归属。
+  const next = backup.inspectText(exported.text);
+  assert.equal(next.ok, true, next.error);
+  const latest = confirm(exported.text, next.token);
+  assert.equal(latest.ok, true, latest.error);
+  assert.notEqual(first.rebindArchiveId, latest.rebindArchiveId);
+});
+
 test('T067-L 提交回执丢失但已落盘：按读回确认成功，重开不重复写', () => {
   const prepared = prepareBackup();
   arm('lose', key => key === store.BACKUP_COMMIT_KEY, 1);
@@ -789,6 +912,11 @@ test('T067-M 提交键读回不一致：不暴露半提交，旧键保留，读�
   assert.equal(result.ok, false);
   assert.equal(result.code, 'commit-unverified');
 
+  // 提交点已经写出（哪怕读回不一致），旧令牌立即作废，不能用来重复尝试。
+  const replay = confirm(prepared.text, prepared.token);
+  assert.equal(replay.ok, false);
+  assert.equal(replay.code, 'preview-stale');
+
   store.resetLayoutCache();
   const loaded = store.loadState();
   const listed = wishlist.loadWishlist();
@@ -816,7 +944,10 @@ test('T067-N 已有活动代际时的第二次恢复失败：两个读取入口�
   const currentArchive = storage.get(currentLayout.archiveKey);
   const currentWishlist = storage.get(currentLayout.wishlistKey);
   arm('set', key => key.endsWith('.wishlist'), 1);
-  const second = confirm(prepared.text, prepared.token);
+  // 上一次成功恢复已经消耗旧令牌：重新预演后再做第二次尝试。
+  const secondPreview = backup.inspectText(prepared.text);
+  assert.equal(secondPreview.ok, true, secondPreview.error);
+  const second = confirm(prepared.text, secondPreview.token);
   assert.equal(second.ok, false);
   assert.equal(second.code, 'stage-wishlist-write-failed');
 
@@ -953,12 +1084,14 @@ test('T067-S 固定合成夹具：报告实际 UTF-8 字节与隔离恢复耗时
     assert.equal(preview.ok, true, preview.error);
   }
 
-  const token = backup.previewToken(exported.text);
   const restoreTimes = [];
   for (let index = 0; index < 3; index += 1) {
     resetStorage();
+    // 令牌一次性：每次恢复前都重新预演，计时只覆盖确认本身。
+    const fresh = backup.inspectText(exported.text);
+    assert.equal(fresh.ok, true, fresh.error);
     const startedAt = process.hrtime.bigint();
-    const result = confirm(exported.text, token);
+    const result = confirm(exported.text, fresh.token);
     restoreTimes.push(Number(process.hrtime.bigint() - startedAt) / 1e6);
     assert.equal(result.ok, true, result.error);
     assert.equal(result.summary.attempts, exported.summary.attempts);
