@@ -1373,6 +1373,50 @@ function changeRecentAttempt(event, action) {
 }
 
 // ---------------------------------------------------------------- 逐把备注
+//
+// T056 R1：一份未提交的备注草稿只属于**当前页面实例**，并按档案、场次、线路、原把
+// 四个 ID 分开保存。切到另一把（或收起这一行）再回来，仍从原草稿继续；只有明确取消，
+// 或保存后按已落盘档案读回确认成功，才释放对应的一把。草稿不落盘，也不参与任何跨页、
+// 跨档或跨把读取。
+
+const NOTE_DRAFT_SEPARATOR = '\u0000';
+
+function noteDraftKey(archiveId, sessionId, routeId, attemptId) {
+  return [archiveId, sessionId, routeId, attemptId]
+    .map(value => (typeof value === 'string' ? value : ''))
+    .join(NOTE_DRAFT_SEPARATOR);
+}
+
+/** 页面实例自己的草稿表；页面不提供时按实例惰性建立，绝不放模块级共享。 */
+function noteDraftsOf(page) {
+  if (!page._noteDrafts || typeof page._noteDrafts !== 'object') {
+    page._noteDrafts = Object.create(null);
+  }
+  return page._noteDrafts;
+}
+
+function noteEditorKey(editor) {
+  return noteDraftKey(
+    editor.archiveId,
+    editor.sessionId,
+    editor.routeId,
+    editor.attemptId
+  );
+}
+
+/** 记下这一把此刻的草稿（含未提交的空字符串），并保留打开时的原编辑代次。 */
+function writeNoteDraft(page, editor) {
+  noteDraftsOf(page)[noteEditorKey(editor)] = {
+    text: typeof editor.text === 'string' ? editor.text : '',
+    version: editor.version
+  };
+}
+
+/** 明确取消或保存读回成功后，只释放这一个四 ID 键的草稿。 */
+function dropNoteDraft(page, editor) {
+  if (!page || !editor) return;
+  delete noteDraftsOf(page)[noteEditorKey(editor)];
+}
 
 /**
  * 打开某一把的备注编辑：目标来自该行按钮带下来的原把次 ID，只在当前页面的
@@ -1381,6 +1425,9 @@ function changeRecentAttempt(event, action) {
  *
  * T045：单线页现场把次行在 attemptCards（最新在前），本场逐把页仍在 attempts；
  * 两处都按同一个原 attemptId 定位，并用该行自己的 label/resultText 填编辑抬头。
+ *
+ * T056 R1：同一把已有未提交草稿时带出草稿，而不是已保存原值；并沿用这份草稿打开时
+ * 的原编辑代次，使切走再回来仍是同一份编辑。没有草稿才换新代次。
  */
 function openNoteEditor(event) {
   if (this.data.contextError) return;
@@ -1393,20 +1440,27 @@ function openNoteEditor(event) {
   if (attempt.canEditNote === false) return;
 
   this._noteEditorSeq = (this._noteEditorSeq || 0) + 1;
-  this.setData({
-    noteEditor: {
-      attemptId: attempt.id,
-      // 同一把取消后重新打开、或改开另一把都会换号：之前渲染的保存/取消按钮随之失效。
-      version: this._noteEditorSeq,
-      routeId: this.data.selectedRoute.id,
-      sessionId: this.data.activeSession ? this.data.activeSession.id : '',
-      archiveId: (this.archive && this.archive.archiveId) || '',
-      routeName: this.data.selectedRoute.name,
-      attemptLabel: attempt.label,
-      resultText: attempt.resultText,
-      text: attempt.note
-    }
-  });
+  const archiveId = (this.archive && this.archive.archiveId) || '';
+  const sessionId = this.data.activeSession ? this.data.activeSession.id : '';
+  const routeId = this.data.selectedRoute.id;
+  const drafts = noteDraftsOf(this);
+  const draft = drafts[noteDraftKey(archiveId, sessionId, routeId, attempt.id)];
+  const editor = {
+    attemptId: attempt.id,
+    // 同一把取消后重新打开、或改开另一把都会换号：之前渲染的保存/取消按钮随之失效。
+    // 已有草稿时沿用草稿的原代次，切走再回来仍是同一份未提交编辑。
+    version: draft ? draft.version : this._noteEditorSeq,
+    routeId,
+    sessionId,
+    archiveId,
+    routeName: this.data.selectedRoute.name,
+    attemptLabel: attempt.label,
+    resultText: attempt.resultText,
+    text: draft ? draft.text : attempt.note
+  };
+  // 打开即把当前内容（可能是空字符串）记成这一把的草稿；不落盘。
+  writeNoteDraft(this, editor);
+  this.setData({ noteEditor: editor });
 }
 
 /**
@@ -1439,8 +1493,19 @@ function onNoteInput(event) {
   const editor = this.data.noteEditor;
   if (!editor) return;
   if (!noteEditorMatches(editor, noteEditorBinding(event))) return;
-  this.setData({
-    'noteEditor.text': (event && event.detail && event.detail.value) || ''
+  // 显式空字符串也是用户草稿的一部分：按原样保留，不用已保存原值顶替。
+  const text =
+    event && event.detail && typeof event.detail.value === 'string'
+      ? event.detail.value
+      : '';
+  this.setData({ 'noteEditor.text': text });
+  writeNoteDraft(this, {
+    attemptId: editor.attemptId,
+    archiveId: editor.archiveId,
+    sessionId: editor.sessionId,
+    routeId: editor.routeId,
+    version: editor.version,
+    text
   });
 }
 
@@ -1455,6 +1520,8 @@ function cancelNote(event) {
     this.refreshView();
     return;
   }
+  // 明确取消只丢弃当前这一把的草稿；其他把的草稿留在本页，切换回去仍可继续。
+  dropNoteDraft(this, editor);
   this.setData({ noteEditor: null });
 }
 
@@ -1507,6 +1574,29 @@ function saveNote(event) {
     return;
   }
 
+  // T056 R1：写成功后还要按**已落盘档案**读回这一把。只有读回的备注与本次输入一致
+  // 才释放草稿；读回失败或不一致时保留同一份草稿，用户可以原地重试。
+  const persisted = store.loadState();
+  const expected = typeof editor.text === 'string' ? editor.text.trim() : '';
+  const savedAttempt =
+    persisted.ok && persisted.archive
+      ? persisted.archive.attempts.find(item => item.id === editor.attemptId)
+      : null;
+  const persistedNote =
+    savedAttempt && typeof savedAttempt.note === 'string' ? savedAttempt.note : null;
+  if (!persisted.ok || !savedAttempt || persistedNote !== expected) {
+    this.setData({
+      storageError: persisted.ok
+        ? '备注保存后读回不一致，草稿仍保留，可重试。'
+        : persisted.error,
+      notice: '备注未保存，可重试。'
+    });
+    this.refreshView();
+    return;
+  }
+
+  this.archive = persisted.archive;
+  dropNoteDraft(this, editor);
   this.setData({ noteEditor: null, storageError: '', notice: '' });
   this.refreshView();
 }
@@ -1621,5 +1711,7 @@ module.exports = {
   onNoteInput,
   cancelNote,
   saveNote,
+  // 页面在刷新时把已失效的当前编辑器连同它那一份草稿一起忘掉（仍只删这一个键）。
+  dropNoteDraft,
   correctSend
 };

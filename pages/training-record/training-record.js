@@ -185,6 +185,9 @@ Page({
     // 长按后的短窗口：同一行在这段时间内的展开事件不生效（原生手势差异兜底）。
     this._lastLongPress = Object.create(null);
     this._recentStatus = null;
+    // T056 R1：未提交的逐把备注草稿只存在本页实例，按档案/场次/线路/原把四个 ID 分开；
+    // 切换把次、收起行或 onShow 都不释放，只有明确取消或保存读回成功才释放对应一把。
+    this._noteDrafts = Object.create(null);
     // 上一次渲染时置顶的原把次 ID：新一把落盘成功后上一把自动收成短行（只改本页展示）。
     this._latestAttemptId = '';
     // 本页已经成功撤销过的原把次（原把次 ID + 点击时渲染的版本）：同一按钮的退化事件
@@ -434,8 +437,10 @@ Page({
       });
     });
     // 编辑中的这一把若已不在可编辑列表里（被撤回或换档），收起编辑器而不是把输入写到别处。
+    // T056 R1：只释放这一把自己的草稿，其他把的未提交草稿继续留在本页。
     let noteEditor = this.data.noteEditor;
     if (noteEditor && !attemptCards.some(item => item.id === noteEditor.attemptId && item.canEditNote)) {
+      actions.dropNoteDraft(this, noteEditor);
       noteEditor = null;
     }
 
