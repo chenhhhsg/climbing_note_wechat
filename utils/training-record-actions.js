@@ -1378,6 +1378,10 @@ function changeRecentAttempt(event, action) {
 // 四个 ID 分开保存。切到另一把（或收起这一行）再回来，仍从原草稿继续；只有明确取消，
 // 或保存后按已落盘档案读回确认成功，才释放对应的一把。草稿不落盘，也不参与任何跨页、
 // 跨档或跨把读取。
+//
+// R1-E：草稿只保留文字，编辑代次不跟着草稿走。每一次**重新挂载**编辑器都取一个单调
+// 递增的新代次，因此早前 A 编辑器带下来的输入/保存/取消事件在 A→B→A 之后仍然失效，
+// 不会命中重新打开的 A；同一把未重新挂载的直接点按仍由页面提前返回，不换代次。
 
 const NOTE_DRAFT_SEPARATOR = '\u0000';
 
@@ -1404,11 +1408,10 @@ function noteEditorKey(editor) {
   );
 }
 
-/** 记下这一把此刻的草稿（含未提交的空字符串），并保留打开时的原编辑代次。 */
+/** 记下这一把此刻的草稿文字（含未提交的空字符串）。代次属于编辑挂载，不存进草稿。 */
 function writeNoteDraft(page, editor) {
   noteDraftsOf(page)[noteEditorKey(editor)] = {
-    text: typeof editor.text === 'string' ? editor.text : '',
-    version: editor.version
+    text: typeof editor.text === 'string' ? editor.text : ''
   };
 }
 
@@ -1426,8 +1429,9 @@ function dropNoteDraft(page, editor) {
  * T045：单线页现场把次行在 attemptCards（最新在前），本场逐把页仍在 attempts；
  * 两处都按同一个原 attemptId 定位，并用该行自己的 label/resultText 填编辑抬头。
  *
- * T056 R1：同一把已有未提交草稿时带出草稿，而不是已保存原值；并沿用这份草稿打开时
- * 的原编辑代次，使切走再回来仍是同一份编辑。没有草稿才换新代次。
+ * T056 R1：同一把已有未提交草稿时带出草稿文字，而不是已保存原值。草稿只保留文字；
+ * 每一次重新挂载都取新的单调递增代次，切走再回来带出同一份草稿，但早前那一次挂载的
+ * 输入/保存/取消事件不会因为「同一把」而重新生效。
  */
 function openNoteEditor(event) {
   if (this.data.contextError) return;
@@ -1447,9 +1451,9 @@ function openNoteEditor(event) {
   const draft = drafts[noteDraftKey(archiveId, sessionId, routeId, attempt.id)];
   const editor = {
     attemptId: attempt.id,
-    // 同一把取消后重新打开、或改开另一把都会换号：之前渲染的保存/取消按钮随之失效。
-    // 已有草稿时沿用草稿的原代次，切走再回来仍是同一份未提交编辑。
-    version: draft ? draft.version : this._noteEditorSeq,
+    // 同一把取消后重新打开、改开另一把、或 A→B→A 后回到 A 都会换号：之前渲染的
+    // 保存/取消按钮与输入事件随之失效。代次只增不减，不随草稿复用。
+    version: this._noteEditorSeq,
     routeId,
     sessionId,
     archiveId,
@@ -1574,17 +1578,28 @@ function saveNote(event) {
     return;
   }
 
-  // T056 R1：写成功后还要按**已落盘档案**读回这一把。只有读回的备注与本次输入一致
-  // 才释放草稿；读回失败或不一致时保留同一份草稿，用户可以原地重试。
+  // T056 R1：写成功后还要按**已落盘档案**读回这一把。读回必须仍是原来那一把——
+  // 同一份档案、同一场次、同一线路、同一个原把次 ID——并且文字与本次输入一致，
+  // 才释放草稿；任何一项不符都保留同一份草稿，用户可以原地重试。
   const persisted = store.loadState();
   const expected = typeof editor.text === 'string' ? editor.text.trim() : '';
+  const persistedArchiveId =
+    persisted.ok && persisted.archive ? persisted.archive.archiveId : '';
   const savedAttempt =
     persisted.ok && persisted.archive
       ? persisted.archive.attempts.find(item => item.id === editor.attemptId)
       : null;
   const persistedNote =
     savedAttempt && typeof savedAttempt.note === 'string' ? savedAttempt.note : null;
-  if (!persisted.ok || !savedAttempt || persistedNote !== expected) {
+  const sameIdentity = Boolean(
+    savedAttempt &&
+      persistedArchiveId &&
+      persistedArchiveId === editor.archiveId &&
+      savedAttempt.id === editor.attemptId &&
+      savedAttempt.sessionId === editor.sessionId &&
+      savedAttempt.routeId === editor.routeId
+  );
+  if (!persisted.ok || !sameIdentity || persistedNote !== expected) {
     this.setData({
       storageError: persisted.ok
         ? '备注保存后读回不一致，草稿仍保留，可重试。'
