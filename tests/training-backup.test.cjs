@@ -295,9 +295,11 @@ test('T067-A 样本训练/长期线路/逐把备注/清单文本往返，摘要�
 
   // 恢复到独立空档：新 archiveId、清单归属重绑、备注/撤回/计数一致。
   resetStorage();
+  const freshPreview = backup.inspectText(exported.text);
+  assert.equal(freshPreview.ok, true, freshPreview.error);
   const photoIndex = JSON.stringify({ version: 1, photos: [], routes: [], operations: [] });
   storage.set(PHOTO_KEY, photoIndex);
-  const confirmed = confirm(exported.text, preview.token);
+  const confirmed = confirm(exported.text, freshPreview.token);
   assert.equal(confirmed.ok, true, confirmed.error);
   assert.equal(confirmed.committed, true);
   assert.notEqual(confirmed.rebindArchiveId, fixture.archiveId);
@@ -590,8 +592,11 @@ test('T067-G 恢复计划写前失败：没有任何 stage/commit，旧档可读
   const prepared = prepareBackup();
   storage.set(ARCHIVE_KEY, JSON.stringify({ version: 1, archiveId: 'archive-legacy', gyms: [], sessions: [], routes: [], attempts: [] }));
   const legacyBefore = storage.get(ARCHIVE_KEY);
+  // 当前旧档是在预演之后落位的：按新规则需以这份旧档重新预演。
+  const fresh = backup.inspectText(prepared.text);
+  assert.equal(fresh.ok, true, fresh.error);
   arm('set', key => key === store.BACKUP_PENDING_KEY, 1);
-  const result = confirm(prepared.text, prepared.token);
+  const result = confirm(prepared.text, fresh.token);
   assert.equal(result.ok, false);
   assert.equal(result.code, 'pending-write-failed');
   assert.equal(storage.has(store.BACKUP_PENDING_KEY), false);
@@ -603,7 +608,7 @@ test('T067-G 恢复计划写前失败：没有任何 stage/commit，旧档可读
 
   // 写调用成功但读回不一致：同样停在提交点之前，不产生 stage。
   arm('mismatch', key => key === store.BACKUP_PENDING_KEY, 1);
-  const mismatched = confirm(prepared.text, prepared.token);
+  const mismatched = confirm(prepared.text, fresh.token);
   assert.equal(mismatched.ok, false);
   assert.equal(mismatched.code, 'pending-write-failed');
   assert.equal(stageKeyCount(), 0);
@@ -773,8 +778,17 @@ test('T067-K2 提交失败后继续普通写入：重开不自动覆盖较新档
   assert.equal(loaded.ok, true, loaded.error);
   assert.equal(loaded.archive.sessions.some(item => item.id === started.session.id), true);
 
-  // 用户再次显式确认：以确认时的当前旧档为「上一代」，正常完成恢复。
-  const confirmed = confirm(prepared.text, prepared.token);
+  // 普通写入发生在预演之后：旧令牌必须失效且零写入，新场次不能被静默丢弃。
+  const stale = confirm(prepared.text, prepared.token);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'preview-stale');
+  assert.equal(fault.setCalls, 0, '失效令牌不写任何键');
+  assert.equal(storage.get(ARCHIVE_KEY), newerArchive, '未重新预演前不覆盖较新的普通写入');
+
+  // 用户重新预演并以确认时的当前旧档为「上一代」，正常完成恢复。
+  const fresh = backup.inspectText(prepared.text);
+  assert.equal(fresh.ok, true, fresh.error);
+  const confirmed = confirm(prepared.text, fresh.token);
   assert.equal(confirmed.ok, true, confirmed.error);
   assert.equal(confirmed.previous.archiveChecksum, backup.hashText(newerArchive));
   assert.equal(storage.get(ARCHIVE_KEY), newerArchive, '旧键仍原样保留');
@@ -883,6 +897,135 @@ test('T067-V 已使用的预演令牌不能重复恢复；重新预演后可再�
   assert.notEqual(first.rebindArchiveId, latest.rebindArchiveId);
 });
 
+test('T067-W 同一代际内活动档案在预演后普通写入：旧令牌失效且零写入，重新预演可恢复', () => {
+  seedFixture();
+  const exported = backup.exportText({ now: FIXED_NOW });
+  const preview = backup.inspectText(exported.text);
+  assert.equal(preview.ok, true, preview.error);
+  const layout = store.resolveLayout();
+  assert.equal(layout.ok, true, layout.error);
+  assert.equal(layout.legacy, true, '本用例覆盖未恢复的旧键代际');
+  const archiveBefore = storage.get(layout.archiveKey);
+
+  // 预演之后、确认之前发生普通写入：同代际，不触发代际切换。
+  const started = store.startSession({
+    gymName: '预演后同代际新馆',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 13, 0)
+  });
+  assert.equal(started.ok, true, started.error);
+  const archiveAfter = storage.get(layout.archiveKey);
+  assert.notEqual(archiveAfter, archiveBefore);
+
+  const before = snapshot();
+  const beforeWrites = fault.setCalls;
+  const stale = confirm(exported.text, preview.token);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'preview-stale');
+  assert.deepEqual(snapshot(), before, '令牌失效时存储逐键不变');
+  assert.equal(fault.setCalls, beforeWrites, '令牌失效时零写入');
+  assert.equal(storage.get(layout.archiveKey), archiveAfter, '新写入的档案原文原样保留');
+  const stillThere = store.loadState();
+  assert.equal(stillThere.ok, true, stillThere.error);
+  assert.equal(
+    stillThere.archive.sessions.some(item => item.id === started.session.id),
+    true,
+    '预演后的新场次没有被静默丢弃'
+  );
+
+  // 以更新后的当前数据重新预演：确认成功，旧原文作为上一代逐字保护。
+  const fresh = backup.inspectText(exported.text);
+  assert.equal(fresh.ok, true, fresh.error);
+  const restored = confirm(exported.text, fresh.token);
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(restored.previous.archivePresent, true);
+  assert.equal(restored.previous.archiveBytes, backup.utf8Bytes(archiveAfter));
+  assert.equal(restored.previous.archiveChecksum, backup.hashText(archiveAfter));
+});
+
+test('T067-X 同一代际内清单在预演后普通写入：旧令牌失效且零写入，重新预演可恢复', () => {
+  const fixture = seedFixture();
+  const exported = backup.exportText({ now: FIXED_NOW });
+  const preview = backup.inspectText(exported.text);
+  assert.equal(preview.ok, true, preview.error);
+  const layout = store.resolveLayout();
+  assert.equal(layout.legacy, true);
+  const archiveBefore = storage.get(layout.archiveKey);
+  const wishlistBefore = storage.get(layout.wishlistKey);
+
+  // 只改清单：档案原文保持不变。
+  const archiveId = store.loadState().archive.archiveId;
+  const added = wishlist.addWishlist(fixture.routes[2], {
+    archiveId,
+    now: new Date(2026, 10, 20, 13, 10)
+  });
+  assert.equal(added.ok, true, added.error);
+  const wishlistAfter = storage.get(layout.wishlistKey);
+  assert.notEqual(wishlistAfter, wishlistBefore);
+  assert.equal(storage.get(layout.archiveKey), archiveBefore, '档案原文未变');
+
+  const before = snapshot();
+  const beforeWrites = fault.setCalls;
+  const stale = confirm(exported.text, preview.token);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'preview-stale');
+  assert.deepEqual(snapshot(), before);
+  assert.equal(fault.setCalls, beforeWrites);
+  assert.equal(storage.get(layout.wishlistKey), wishlistAfter, '新写入的清单原文原样保留');
+
+  const fresh = backup.inspectText(exported.text);
+  assert.equal(fresh.ok, true, fresh.error);
+  const restored = confirm(exported.text, fresh.token);
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(restored.previous.wishlistPresent, true);
+  assert.equal(restored.previous.wishlistBytes, backup.utf8Bytes(wishlistAfter));
+  assert.equal(restored.previous.wishlistChecksum, backup.hashText(wishlistAfter));
+  assert.equal(restored.previous.archiveChecksum, backup.hashText(archiveBefore));
+});
+
+test('T067-Y 已恢复代际内普通写入同样要求重新预演', () => {
+  seedFixture();
+  const exported = backup.exportText({ now: FIXED_NOW });
+  const firstPreview = backup.inspectText(exported.text);
+  assert.equal(firstPreview.ok, true, firstPreview.error);
+  const first = confirm(exported.text, firstPreview.token);
+  assert.equal(first.ok, true, first.error);
+
+  const layout = store.resolveLayout();
+  assert.equal(layout.ok, true, layout.error);
+  assert.equal(layout.legacy, false, '本用例覆盖恢复后的新代际');
+  const preview = backup.inspectText(exported.text);
+  assert.equal(preview.ok, true, preview.error);
+  const archiveBefore = storage.get(layout.archiveKey);
+
+  const started = store.startSession({
+    gymName: '恢复后同代际新馆',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 13, 20)
+  });
+  assert.equal(started.ok, true, started.error);
+  const archiveAfter = storage.get(layout.archiveKey);
+  assert.notEqual(archiveAfter, archiveBefore);
+
+  const before = snapshot();
+  const beforeWrites = fault.setCalls;
+  const stale = confirm(exported.text, preview.token);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'preview-stale');
+  assert.deepEqual(snapshot(), before);
+  assert.equal(fault.setCalls, beforeWrites);
+  assert.equal(storage.get(layout.archiveKey), archiveAfter);
+  const stillThere = store.loadState();
+  assert.equal(stillThere.ok, true, stillThere.error);
+  assert.equal(stillThere.archive.sessions.some(item => item.id === started.session.id), true);
+
+  const fresh = backup.inspectText(exported.text);
+  assert.equal(fresh.ok, true, fresh.error);
+  const restored = confirm(exported.text, fresh.token);
+  assert.equal(restored.ok, true, restored.error);
+  assert.equal(restored.previous.archiveChecksum, backup.hashText(archiveAfter));
+});
+
 test('T067-L 提交回执丢失但已落盘：按读回确认成功，重开不重复写', () => {
   const prepared = prepareBackup();
   arm('lose', key => key === store.BACKUP_COMMIT_KEY, 1);
@@ -906,14 +1049,17 @@ test('T067-M 提交键读回不一致：不暴露半提交，旧键保留，读�
   storage.set(WISHLIST_KEY, '{"oldWishlist":true}');
   const legacyArchive = storage.get(ARCHIVE_KEY);
   const legacyWishlist = storage.get(WISHLIST_KEY);
+  // 旧键是在预演之后落位的：以这份当前旧档重新预演。
+  const fresh = backup.inspectText(prepared.text);
+  assert.equal(fresh.ok, true, fresh.error);
 
   arm('mismatch', key => key === store.BACKUP_COMMIT_KEY, 1);
-  const result = confirm(prepared.text, prepared.token);
+  const result = confirm(prepared.text, fresh.token);
   assert.equal(result.ok, false);
   assert.equal(result.code, 'commit-unverified');
 
   // 提交点已经写出（哪怕读回不一致），旧令牌立即作废，不能用来重复尝试。
-  const replay = confirm(prepared.text, prepared.token);
+  const replay = confirm(prepared.text, fresh.token);
   assert.equal(replay.ok, false);
   assert.equal(replay.code, 'preview-stale');
 
@@ -1001,7 +1147,10 @@ test('T067-P 当前原文损坏时：诊断逐字保留，显式确认仍可恢�
   assert.equal(beforeDoc.current.wishlist.parseOk, false);
 
   const beforeWrites = fault.setCalls;
-  const result = confirm(prepared.text, prepared.token);
+  // 受损原文在预演之后落位：以这份「可读但损坏」的当前旧档重新预演，仍应允许显式恢复。
+  const fresh = backup.inspectText(prepared.text);
+  assert.equal(fresh.ok, true, fresh.error);
+  const result = confirm(prepared.text, fresh.token);
   assert.equal(result.ok, true, result.error);
   assert.ok(fault.setCalls > beforeWrites);
   assert.equal(storage.get(ARCHIVE_KEY), brokenArchive, '受损原文逐字保留');
@@ -1018,10 +1167,13 @@ test('T067-P 当前原文损坏时：诊断逐字保留，显式确认仍可恢�
 test('T067-Q 当前原文读取失败：不假定为空、不写入，诊断如实报告读取失败', () => {
   const prepared = prepareBackup();
   storage.set(ARCHIVE_KEY, '{"damaged":true}');
+  // 当前旧档在预演之后落位：先以这份旧档重新预演，再单独注入读取故障。
+  const fresh = backup.inspectText(prepared.text);
+  assert.equal(fresh.ok, true, fresh.error);
   const before = snapshot();
   const beforeWrites = fault.setCalls;
   arm('get', key => key === ARCHIVE_KEY, 1);
-  const result = confirm(prepared.text, prepared.token);
+  const result = confirm(prepared.text, fresh.token);
   assert.equal(result.ok, false);
   assert.equal(result.code, 'current-read-failed');
   assert.deepEqual(snapshot(), before);
@@ -1030,7 +1182,7 @@ test('T067-Q 当前原文读取失败：不假定为空、不写入，诊断如�
 
   fault.get = null;
   arm('get', key => key === WISHLIST_KEY, 1);
-  const wishlistFailed = confirm(prepared.text, prepared.token);
+  const wishlistFailed = confirm(prepared.text, fresh.token);
   assert.equal(wishlistFailed.ok, false);
   assert.equal(wishlistFailed.code, 'current-read-failed');
   assert.equal(storage.has(store.BACKUP_COMMIT_KEY), false);
@@ -1056,7 +1208,16 @@ test('T067-R 单独验证的备份可在之后显式恢复；未确认时当前�
   assert.equal(unconfirmed.code, 'confirmation-required');
   assert.equal(storage.get(ARCHIVE_KEY), currentBefore);
 
-  const result = confirm(prepared.text, inspected.token);
+  // 单独验证之后当前数据发生变化：旧令牌必须失效，且不写任何键。
+  const stale = confirm(prepared.text, inspected.token);
+  assert.equal(stale.ok, false);
+  assert.equal(stale.code, 'preview-stale');
+  assert.equal(storage.get(ARCHIVE_KEY), currentBefore, '重新预演前不覆盖当前档案');
+
+  // 以更新后的当前数据重新预演，显式确认后仍按备份文本恢复。
+  const fresh = backup.inspectText(prepared.text);
+  assert.equal(fresh.ok, true, fresh.error);
+  const result = confirm(prepared.text, fresh.token);
   assert.equal(result.ok, true, result.error);
   assert.notEqual(store.loadState().archive.archiveId, 'archive-broken');
   assert.equal(store.loadState().archive.gyms.length, inspected.summary.gyms);

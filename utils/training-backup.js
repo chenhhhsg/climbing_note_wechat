@@ -10,8 +10,8 @@
  * 训练与清单重算并把字节数、条目数、备注数逐项比对，不一致就拒绝，不写一个键。
  *
  * 安全边界：
- * - 预演（inspectText）只解析与校验，零存储写入；正式恢复必须显式传 confirmed:true
- *   和预演拿到的 previewToken（文本哈希），否则拒绝。
+ * - 预演（inspectText）只解析、校验并读取当前活动档案/清单原文特征，零存储写入；正式
+ *   恢复必须显式传 confirmed:true 和预演拿到的 previewToken（文本哈希），否则拒绝。
  * - 严格结构校验：不用原型/构造器字段，不做 ID 补写或猜测，重复 ID、跨表引用缺失、
  *   清单归属不符、未知字段都按无效输入拒绝；输入超过内部大小护栏也拒绝且不写。
  * - 当前档案/清单读取失败时，不把失败当成「没有数据」，也不覆盖任何键；原键原样保留。
@@ -25,8 +25,9 @@
  *    可读；commit 写入失败但回执丢失时以读回内容为准；
  * 4. 重开时 recoverPending 只核对并报告：没有持久提交键时绝不自动把 stage 提升为当前
  *    代际，完整 stage 交给用户重新预演并显式确认；已有有效提交时按提交记录判定。
- * 5. 预演令牌在本进程内一次性使用：提交键写出（成功、未知或读回不一致）后立即作废，
- *    代际移动或进程重开后的旧令牌都需要重新预演。
+ * 5. 预演令牌在本进程内一次性使用，并绑定签发时的活动档案/清单版本（存在性、字节数、
+ *    指纹）。提交键写出（成功、未知或读回不一致）后立即作废；代际移动、两把活动键任一
+ *    变化，或进程重开后的旧令牌都需要重新预演。
  *
  * 正式恢复会为导入档案换一个新的 archiveId（新代际归属）：旧照片索引按老 archiveId
  * 归属，不会被新档案关联，也不会被删除；旧 archive/wishlist 键原样保留，供诊断导出。
@@ -195,8 +196,8 @@ let generationSeq = 0;
 const MAX_ISSUED_PREVIEWS = 32;
 const issuedPreviews = new Map();
 
-function rememberPreview(token, generation, consumed) {
-  issuedPreviews.set(token, { generation, consumed });
+function rememberPreview(token, generation, consumed, snapshot) {
+  issuedPreviews.set(token, { generation, consumed, snapshot });
   if (issuedPreviews.size > MAX_ISSUED_PREVIEWS) {
     // 只淘汰尚未消耗的旧记录；已消耗的令牌必须继续拦到进程结束。
     for (const [key, value] of issuedPreviews) {
@@ -320,30 +321,39 @@ function currentPreviewGeneration() {
 }
 
 /**
- * 记录一次预演签发：绑定当前代际。令牌本身已经由文本哈希确定，不再重复保存原文。
+ * 记录一次预演签发：令牌本身由文本哈希确定，这里同时绑定签发时当前代际的活动档案与
+ * 清单原文特征（是否存在、字节数、指纹）。确认时必须逐项仍然一致，否则视为预演失效。
+ * 只读取两把活动键，不碰媒体、索引或日志，也不做任何写入。
  */
 function registerPreview(text) {
   const token = previewToken(text);
-  rememberPreview(token, currentPreviewGeneration(), false);
-  return token;
+  const current = currentPairSnapshot();
+  if (!current.ok) {
+    return {
+      ok: false,
+      code: 'current-read-failed',
+      error: ERROR.CURRENT_UNREADABLE + '：' + current.error
+    };
+  }
+  rememberPreview(token, current.layout.generation, false, current.snapshot);
+  return { ok: true, token };
 }
 
 /**
- * 令牌是否仍可用于这次确认：未被先前提交消耗、且签发后当前代际没有移动。
- * 未登记过的令牌按兼容路径放行（例如进程重开后重新粘贴的确定性哈希），真正的重复
- * 确认会在第一次走到提交点后被登记为已消耗。
+ * 令牌是否仍可用于这次确认：未被先前提交消耗、签发后当前代际没有移动，且确认时还能
+ * 找到预演时绑定的数据版本。未登记的令牌没有可核对的数据版本，不能直接确认。
  */
 function previewTokenState(token) {
   const entry = issuedPreviews.get(token);
-  if (!entry) return { ok: true, issued: false };
-  if (entry.consumed) return { ok: false, issued: true };
+  if (!entry) return { ok: true, issued: false, snapshot: null };
+  if (entry.consumed) return { ok: false, issued: true, snapshot: null };
   if (entry.generation !== null) {
     const generation = currentPreviewGeneration();
     if (generation !== null && generation !== entry.generation) {
-      return { ok: false, issued: true };
+      return { ok: false, issued: true, snapshot: null };
     }
   }
-  return { ok: true, issued: true };
+  return { ok: true, issued: true, snapshot: entry.snapshot || null };
 }
 
 /**
@@ -355,7 +365,7 @@ function markPreviewConsumed(token) {
     entry.consumed = true;
     return;
   }
-  rememberPreview(token, currentPreviewGeneration(), true);
+  rememberPreview(token, currentPreviewGeneration(), true, null);
 }
 
 function emptyResult(code, error) {
@@ -906,7 +916,10 @@ function inspectTextCore(text, options) {
  */
 function inspectText(text, options) {
   const inspected = inspectTextCore(text, options);
-  if (inspected.ok) inspected.token = registerPreview(text);
+  if (!inspected.ok) return inspected;
+  const registered = registerPreview(text);
+  if (!registered.ok) return registered;
+  inspected.token = registered.token;
   return inspected;
 }
 
@@ -1012,7 +1025,11 @@ function newGenerationId() {
   );
 }
 
-function previousOf(layout) {
+/**
+ * 读取当前代际的活动档案与清单原文特征。present 与读取失败分开返回：读取失败不能被
+ * 当成「空档」或「没有变化」继续往下走。只读两把活动键，不含任何媒体内容。
+ */
+function pairSnapshotOf(layout) {
   const archiveRead = readKeyText(layout.archiveKey);
   if (!archiveRead.ok) {
     return { ok: false, error: archiveRead.error };
@@ -1023,7 +1040,7 @@ function previousOf(layout) {
   }
   return {
     ok: true,
-    previous: {
+    snapshot: {
       archiveKey: layout.archiveKey,
       wishlistKey: layout.wishlistKey,
       archivePresent: archiveRead.present,
@@ -1034,6 +1051,40 @@ function previousOf(layout) {
       wishlistChecksum: wishlistRead.present ? hashText(wishlistRead.value) : ''
     }
   };
+}
+
+function currentPairSnapshot() {
+  const layout = store.resolveLayout();
+  if (!layout.ok) return { ok: false, error: layout.error };
+  const pair = pairSnapshotOf(layout);
+  if (!pair.ok) return pair;
+  return { ok: true, layout, snapshot: pair.snapshot };
+}
+
+/**
+ * 预演时的数据版本是否仍与确认时一致。两把键任一发生变化（含存在性变化）都算失效，
+ * 必须重新预演；指纹与字节数一起比较，避免只凭摘要长度误判。
+ */
+const PAIR_SNAPSHOT_KEYS = [
+  'archiveKey',
+  'wishlistKey',
+  'archivePresent',
+  'wishlistPresent',
+  'archiveBytes',
+  'wishlistBytes',
+  'archiveChecksum',
+  'wishlistChecksum'
+];
+
+function samePairSnapshot(left, right) {
+  if (!isRecord(left) || !isRecord(right)) return false;
+  return PAIR_SNAPSHOT_KEYS.every(key => left[key] === right[key]);
+}
+
+function previousOf(layout) {
+  const pair = pairSnapshotOf(layout);
+  if (!pair.ok) return { ok: false, error: pair.error };
+  return { ok: true, previous: pair.snapshot };
 }
 
 function buildReboundArchive(training, auxiliary, rebindArchiveId) {
@@ -1277,11 +1328,23 @@ function confirmRestore(text, options) {
   const inspected = inspectTextCore(text, data);
   if (!inspected.ok) return inspected; // 无效/超限：零写入
 
+  // 预演必须绑定当时的活动档案/清单版本；没有绑定就无法证明确认时看到的仍是预演内容。
+  if (!previewed.snapshot) {
+    return emptyResult('preview-required', ERROR.PREVIEW + '：本次预演的数据版本已不可核对，请重新预演');
+  }
+
   const layout = store.resolveLayout();
   if (!layout.ok) return emptyResult('current-unreadable', layout.error);
   const previous = previousOf(layout);
   if (!previous.ok) {
     return emptyResult('current-read-failed', ERROR.CURRENT_UNREADABLE + '：' + previous.error);
+  }
+  // 代际未变但两把活动键任一被普通写入改动时，同样要求重新预演；此时零写入。
+  if (!samePairSnapshot(previewed.snapshot, previous.previous)) {
+    return emptyResult(
+      'preview-stale',
+      ERROR.PREVIEW + '：预演后当前档案或清单已发生变化，请重新预演'
+    );
   }
 
   let rebindArchiveId = store.newArchiveId();
