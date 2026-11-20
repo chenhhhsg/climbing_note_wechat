@@ -288,12 +288,16 @@
 
 /* 岩馆手册 */
 .container { padding: 12rpx 32rpx 48rpx; }
-.field-cover { position:relative; overflow:hidden; border-radius:6rpx; height:334rpx; background:#173d32; margin-bottom:40rpx; }
+/* T063 U4：压缩品牌封面（334rpx → 176rpx），让训练主入口更早出现，保留原图与标题。 */
+.field-cover { position:relative; overflow:hidden; border-radius:6rpx; height:176rpx; background:#173d32; margin-bottom:20rpx; }
 .field-cover-image { position:absolute; width:100%; height:100%; }
-.field-cover-title { position:absolute; left:30rpx; top:32rpx; color:#ffedc2; font:700 82rpx/1.04 "Songti SC","Noto Serif CJK SC","SimSun",serif; letter-spacing:3rpx; }
+.field-cover-title { position:absolute; left:24rpx; top:20rpx; color:#ffedc2; font:700 52rpx/1.04 "Songti SC","Noto Serif CJK SC","SimSun",serif; letter-spacing:3rpx; }
 .field-cover-title text { display:block; }
 .training-entry { padding:24rpx 20rpx; background:#FFFFFF; border:1px solid #D7DED9; margin:0 0 16rpx; border-radius:8rpx; }
 .field-section-head { border-bottom:2rpx solid #1F5948; padding-bottom:15rpx; margin-bottom:22rpx; }
+/* 上次训练沿用同一张卡片，只用既有橙色点出与今天的差别。 */
+.training-entry-previous .field-section-head { border-bottom-color:#944424; }
+.training-entry-previous .field-mark { background:#944424; }
 .training-current-head { align-items:center; flex-wrap:wrap; gap:6rpx 18rpx; }
 .training-gym { font-size:34rpx; font-weight:700; color:#173d32; }
 .training-date,.record-date { font-family:"IBM Plex Mono",Consolas,"PingFang SC","Microsoft YaHei",sans-serif; }

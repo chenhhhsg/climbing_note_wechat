@@ -29,6 +29,7 @@ const SESSION_JS = path.join(ROOT, 'pages', 'training-session', 'training-sessio
 const SESSION_WXML = path.join(ROOT, 'pages', 'training-session', 'training-session.wxml');
 const SESSION_WXSS = path.join(ROOT, 'pages', 'training-session', 'training-session.wxss');
 const RECORD_JS = path.join(ROOT, 'pages', 'training-record', 'training-record.js');
+const RECORD_WXML = path.join(ROOT, 'pages', 'training-record', 'training-record.wxml');
 const SUMMARY_JS_PAGE = path.join(ROOT, 'pages', 'training-summary', 'training-summary.js');
 const WISHLIST_JS_PAGE = path.join(ROOT, 'pages', 'training-wishlist', 'training-wishlist.js');
 const WISHLIST_WXML = path.join(ROOT, 'pages', 'training-wishlist', 'training-wishlist.wxml');
@@ -57,15 +58,21 @@ function armSetFailAt(callNumber) {
   fault.setFailAt = callNumber;
 }
 
-const wxLog = { navigations: [], backs: [], relaunches: [], toasts: [] };
+const wxLog = { navigations: [], backs: [], redirects: [], relaunches: [], toasts: [] };
 let navFailNext = false;
+// T064 U3：分别注入「系统返回失败」与「训练入口重定向失败」，核对真实兜底路径。
+let backFailNext = false;
+let redirectFailNext = false;
 
 function resetWxLog() {
   wxLog.navigations = [];
   wxLog.backs = [];
+  wxLog.redirects = [];
   wxLog.relaunches = [];
   wxLog.toasts = [];
   navFailNext = false;
+  backFailNext = false;
+  redirectFailNext = false;
 }
 
 // 照片层只需要一个不会抛错的空文件系统：本测试不拍照、不读写照片。
@@ -124,12 +131,25 @@ global.wx = {
   },
   redirectTo(options) {
     wxLog.navigations.push(options);
+    wxLog.redirects.push(options);
+    if (redirectFailNext) {
+      redirectFailNext = false;
+      if (options && typeof options.fail === 'function') {
+        options.fail({ errMsg: 'redirectTo:fail injected' });
+      }
+    }
   },
   reLaunch(options) {
     wxLog.relaunches.push(options);
   },
   navigateBack(options) {
     wxLog.backs.push(options);
+    if (backFailNext) {
+      backFailNext = false;
+      if (options && typeof options.fail === 'function') {
+        options.fail({ errMsg: 'navigateBack:fail injected' });
+      }
+    }
   },
   switchTab(options) {
     wxLog.navigations.push(options);
@@ -911,6 +931,127 @@ test('T037 资料页归属不符：不展示、不受理写入，只留回到本
   assert.equal(typeof routeDefinition.backToList, 'function');
   page.backToList();
   assert.equal(wxLog.backs.length, 1, '正常路径是系统返回');
+});
+
+// ------------------------------------------------------------------ *
+// T064 U3：常驻提示收进帮助 + 入口错误页返回兜底
+// ------------------------------------------------------------------ *
+
+test('T064 U3 页尾只留简短展开/长按提示，完整帮助按需展开，视频与删除说明各回各入口', () => {
+  const recordWxml = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxml'),
+    'utf8'
+  );
+  const recordWxss = fs.readFileSync(
+    path.join(ROOT, 'pages', 'training-record', 'training-record.wxss'),
+    'utf8'
+  );
+  const recordJs = fs.readFileSync(RECORD_JS, 'utf8');
+  const videoWxml = fs.readFileSync(
+    path.join(ROOT, 'pages', 'attempt-video', 'attempt-video.wxml'),
+    'utf8'
+  );
+
+  // 现场页尾只有一句展开/长按提示，加一个真实的帮助入口。
+  const footStart = recordWxml.indexOf('id="record-foot-hint"');
+  assert.ok(footStart > -1, '页尾保留简短现场提示');
+  const foot = recordWxml.slice(footStart, recordWxml.indexOf('id="record-help"'));
+  assert.match(foot, /点旧行展开原把详情；长按整张把次卡先开「删除这一把」菜单。/);
+  assert.match(foot, /id="record-help-toggle"[\s\S]{0,240}bindtap="toggleHelp"/);
+  assert.doesNotMatch(foot, /副本只保存在这台手机/, '视频本机存储不再常驻页尾');
+  assert.doesNotMatch(
+    foot,
+    /记录、备注与攀笔保存的视频副本一起删除/,
+    '删除范围不再常驻页尾'
+  );
+
+  // 详细帮助默认收起，按需展开；只在普通文档流里，不遮住记把按钮与把次卡。
+  assert.match(recordWxml, /wx:if="\{\{helpOpen\}\}"[\s\S]{0,80}id="record-help"/);
+  const helpCss = declarationsOf(recordWxss, '.record-help');
+  assert.doesNotMatch(helpCss, /position:\s*(fixed|absolute)/, '帮助不用固定/绝对定位');
+  assert.match(helpCss, /margin-top:\s*12px/);
+  assert.match(declarationsOf(recordWxss, '.record-help-line'), /display:\s*block/);
+
+  // 帮助入口只翻转展示，不写盘；重复点按可收起，仍在原页。
+  const session = seedSession('帮助入口馆', '2026-11-13');
+  const route = seedRoute(session.id, { name: '帮助入口线', climbType: '抱石', grade: 'V3' });
+  const page = openRecordPage(route.id, session.id);
+  const rawBefore = rawArchive();
+  assert.equal(page.data.helpOpen, false, '默认不展开帮助');
+  page.toggleHelp();
+  assert.equal(page.data.helpOpen, true);
+  assert.equal(rawArchive(), rawBefore, '展开帮助不写本机档案');
+  assert.match(page.data.notice, /^$/, '展开帮助不产生错误提示');
+  page.toggleHelp();
+  assert.equal(page.data.helpOpen, false, '再点一下收起帮助');
+  assert.equal(rawArchive(), rawBefore);
+
+  // 视频副本口径归原把次视频页；删除范围归长按后的确认框，不在页尾重复。
+  assert.match(
+    videoWxml,
+    /id="saved-storage-hint"[^>]*>[^<]*不上传云端/,
+    '视频页保留本机副本说明'
+  );
+  assert.match(
+    recordJs,
+    /将删除这把记录、备注及攀笔保存的视频副本。/,
+    '有视频的删除确认仍写明删除范围'
+  );
+  assert.match(recordJs, /将删除这把记录和备注。/, '无视频的删除确认仍写明删除范围');
+});
+
+test('T064 U3 入口错误页系统返回失败只回训练入口，不改活动指针也不写档案', () => {
+  const session = seedSession('返回兜底馆', '2026-11-13');
+  const route = seedRoute(session.id, {
+    name: '返回兜底线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  const rawBefore = rawArchive();
+  const activeBefore = archiveOf().activeSessionId;
+
+  // 缺 archiveId 的入口：只显示可见原因与「返回本场线路」，不展示也不写任何记录。
+  const page = createPage(recordDefinition);
+  page.onLoad({ sessionId: session.id, routeId: route.id });
+  assert.match(page.data.contextError, /缺少档案参数/);
+  assert.equal(page.data.loadError, '');
+
+  // 系统返回失败：真实重定向到训练入口（场次页），不写档案、不改活动场次指针。
+  resetWxLog();
+  backFailNext = true;
+  page.backToList();
+  assert.equal(wxLog.backs.length, 1, '先尝试系统返回');
+  assert.equal(wxLog.redirects.length, 1, '返回失败后重定向训练入口');
+  assert.equal(
+    wxLog.redirects[0].url,
+    '/pages/training-session/training-session',
+    '兜底目标是训练入口'
+  );
+  assert.equal(rawArchive(), rawBefore, '返回兜底不写本机档案');
+  assert.equal(archiveOf().activeSessionId, activeBefore, '返回兜底不改活动场次指针');
+
+  // 训练入口重定向也失败：只留可见提示，档案仍保持原样。
+  resetWxLog();
+  page.setData({ notice: '' });
+  backFailNext = true;
+  redirectFailNext = true;
+  page.backToList();
+  assert.equal(wxLog.backs.length, 1, '仍先尝试系统返回');
+  assert.equal(wxLog.redirects.length, 1, '兜底重定向也实际发起');
+  assert.match(page.data.notice, /返回失败，请从训练首页重新进入本场。/);
+  assert.equal(rawArchive(), rawBefore);
+  assert.equal(archiveOf().activeSessionId, activeBefore);
+
+  // 提示必须在入口错误视图里真的可见，不能只挂在成功分支的 !contextError 之下。
+  const recordWxml = fs.readFileSync(RECORD_WXML, 'utf8');
+  const contextAt = recordWxml.indexOf('id="record-context-error"');
+  const successAt = recordWxml.indexOf('wx:if="{{ready && !contextError}}"');
+  const noticeAt = recordWxml.indexOf('id="notice"');
+  assert.ok(contextAt !== -1 && successAt !== -1, '错误视图与成功分支都在');
+  assert.ok(
+    noticeAt > contextAt && noticeAt < successAt,
+    'notice 渲染在入口错误视图内，错误页也能看到返回失败提示'
+  );
 });
 
 // ------------------------------------------------------------------ *

@@ -8,7 +8,7 @@
       <image class="avatar" src="{{userInfo.avatarUrl}}" mode="aspectFill" />
       <view class="user-detail">
         <text class="username">{{userInfo.nickName}}</text>
-        <text class="user-desc">攀岩爱好者</text>
+        <text class="user-desc">头像和昵称只在本页显示，不会创建账号或上传同步。</text>
       </view>
     </view>
     <view wx:else class="user-info" bindtap="getUserProfile">
@@ -16,10 +16,12 @@
         <text class="avatar-icon">?</text>
       </view>
       <view class="user-detail">
-        <text class="username">点击登录</text>
-        <text class="user-desc">设置微信昵称和头像，用于在攀笔显示个人资料；新的训练记录保存在这台手机的攀笔中。</text>
+        <text class="username">设置头像昵称</text>
+        <text class="user-desc">头像和昵称只在本页显示，不会创建账号或上传同步；新的训练记录保存在这台手机的攀笔中。</text>
       </view>
     </view>
+    <!-- T066：资料读取结果只在本页说明，和意见反馈的复制结果互不影响 -->
+    <text wx:if="{{profileNotice}}" id="profile-notice" class="user-desc">{{profileNotice}}</text>
   </view>
 
   <!-- 功能菜单 -->

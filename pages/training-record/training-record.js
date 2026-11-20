@@ -44,6 +44,11 @@
  * 头部替换操作行，输入框约两行高、长文在框内滚动，取消与保存紧随其后。未完成的旧行
  * 不留空纠错槽（现场也不再渲染更正入口）。显示编号（「第 N 把」）只数本场本线的有效
  * 把次——撤回的那一把不占号，现场、归档逐把、线路历史与视频标题共用档案层同一份投影。
+ *
+ * T064 U3：页尾不再常驻整段操作说明，只留「点旧行展开 / 长按整卡删除」一句；完整
+ * 帮助由 toggleHelp 按需展开。视频本机存储口径在原把次视频页，删除范围仍由长按后的
+ * 确认框说明。入口错误页的系统返回失败时直接 redirectTo 训练入口；这条兜底只导航，
+ * 不写档案、不改活动场次指针，也不释放 R1 的逐把备注草稿。
  */
 const store = require('../../utils/training-store.js');
 const actions = require('../../utils/training-record-actions.js');
@@ -121,6 +126,8 @@ Page({
     contextError: '',  // 入口缺参、串档或线路不属于这一场的可见原因（不写盘）
     storageError: '',  // 本次操作未落盘（不报已保存）
     notice: '',        // 说明性提示（守卫、快速双击等），不改数据
+    // T064 U3：完整帮助按需展开；只改本页展示，不落盘、不动备注草稿。
+    helpOpen: false,
 
     archiveId: '',
     activeSession: null,
@@ -1367,14 +1374,43 @@ Page({
   },
 
   /**
-   * 回到本场线路列表：正常路径就是系统返回；这里显式给缺参/失效时一个可点的出口。
+   * 回到本场线路列表（T064 U3 返回兜底）：正常路径就是系统返回；缺参/失效入口没有
+   * 上一页时（直接打开旧链接、页面栈被清理）直接重定向到训练入口，不写本机档案、
+   * 不改活动场次指针。重定向也失败时只留可见提示，页面与档案保持原样。
    */
   backToList() {
-    if (typeof wx !== 'undefined' && typeof wx.navigateBack === 'function') {
-      wx.navigateBack({ delta: 1 });
+    const api = typeof wx !== 'undefined' ? wx : null;
+    if (api && typeof api.navigateBack === 'function') {
+      try {
+        api.navigateBack({
+          delta: 1,
+          fail: () => this.redirectToTrainingEntry()
+        });
+        return;
+      } catch (error) {
+        // 同步异常按返回失败处理，走同一条训练入口兜底。
+      }
+    }
+    this.redirectToTrainingEntry();
+  },
+
+  /** 返回失败的真实兜底：只导航到训练入口，不触碰档案、场次指针或本页草稿。 */
+  redirectToTrainingEntry() {
+    const api = typeof wx !== 'undefined' ? wx : null;
+    if (!api || typeof api.redirectTo !== 'function') {
+      this.setData({ notice: '返回失败，请从训练首页重新进入本场。' });
       return;
     }
-    wx.redirectTo({ url: SESSION_URL });
+    try {
+      api.redirectTo({
+        url: SESSION_URL,
+        fail: () => {
+          this.setData({ notice: '返回失败，请从训练首页重新进入本场。' });
+        }
+      });
+    } catch (error) {
+      this.setData({ notice: '返回失败，请从训练首页重新进入本场。' });
+    }
   },
 
   // ---------------------------------------------------------------- 共用事件
@@ -1482,6 +1518,14 @@ Page({
   saveNote: actions.saveNote,
 
   // ---------------------------------------------------------------- 更正结果（T042 / T045）
+
+  /**
+   * T064 U3：按需展开/收起完整帮助。只翻转本页的 helpOpen，不写盘、不动展开态、
+   * 不动任何一把的备注草稿；页尾常驻的只有一句展开/长按提示。
+   */
+  toggleHelp() {
+    this.setData({ helpOpen: !this.data.helpOpen });
+  },
 
   dismissNotice() {
     this.setData({ notice: '' });

@@ -9,6 +9,8 @@
  * T050 返工（现场）：最新一把右侧只留一个小号文字「撤销」，最小命中区 44×44；
  * 撤销后这一把离开列表，前一把补位时不出撤销入口。稿里不再有「更多」菜单、
  * 行内更正与「恢复」按钮，所有动作都在普通文档流里，不用绝对定位叠放。
+ * T064 U3：页尾常驻说明收成一句展开/长按提示，完整帮助按需展开；帮助卡沿用现有
+ * 白色卡片与正文层级，320 宽下只占普通文档流，不遮住记把按钮与把次卡。
  */
 
 page {
@@ -944,10 +946,46 @@ page {
   margin-top: 12rpx;
 }
 
+/* T064 U3：页尾只留简短现场提示；完整帮助由「查看帮助」按需展开，仍在普通文档流。 */
+.record-foot {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-top: 8rpx;
+}
+
 .record-foot-hint {
   display: block;
-  margin-top: 8rpx;
   font-size: 22rpx;
+  line-height: 1.6;
+  color: #53615B;
+}
+
+.record-help-toggle {
+  align-self: flex-start;
+  margin-top: 4rpx;
+  color: #1F5948;
+}
+
+.record-help {
+  margin-top: 12px;
+  margin-bottom: 0;
+}
+
+.record-help-title {
+  display: block;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans CJK SC",
+    "Source Han Sans SC", "Microsoft YaHei", sans-serif;
+  font-size: 28rpx;
+  line-height: 1.4;
+  font-weight: 700;
+  color: #182421;
+}
+
+.record-help-line {
+  display: block;
+  margin-top: 10rpx;
+  font-size: 24rpx;
   line-height: 1.6;
   color: #53615B;
 }

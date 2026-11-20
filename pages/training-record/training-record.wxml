@@ -22,6 +22,9 @@
   备注入口、编辑区、视频入口与撤销各自保留独立输入，不触发父卡删除。确认后记录、
   备注与攀笔保存的视频副本一起删除，档案先移出记录，视频索引与文件按持久删除凭据
   继续清理；失败时可重试清理。
+  T064 U3：页尾不再常驻整段说明，只留「点旧行展开 / 长按整卡删除」一句；完整操作
+  帮助由「查看帮助」按需展开。视频本机存储口径回到原把次视频页，删除范围仍由长按后的
+  确认框说明；入口错误页的「返回本场线路」在系统返回失败时直接回训练入口，不写档案。
 -->
 <view class="page">
   <!-- 本机档案损坏或版本不支持：显示可见错误，不覆盖原数据 -->
@@ -38,6 +41,11 @@
       <text class="error-title">这个入口不能用来记录</text>
       <text class="error-text">{{contextError}}</text>
       <text class="error-hint">没有改动任何数据；请从本场线路列表重新进入。</text>
+      <!-- 返回兜底也失败时的可见提示：错误页同样展示同一条 notice，不只藏在成功分支里。 -->
+      <view wx:if="{{notice}}" id="notice" class="notice" bindtap="dismissNotice">
+        <text class="notice-text">{{notice}}</text>
+        <text class="notice-hint">点击收起</text>
+      </view>
       <button id="record-back-to-list" class="secondary-button" bindtap="backToList">返回本场线路</button>
     </view>
 
@@ -482,7 +490,26 @@
           <text>这一场这一条线还没有把次。用上方「未完成 / 完攀」记下第一把。</text>
         </view>
 
-        <text class="record-foot-hint">点旧行展开原把详情；最新一把完整展示，较早把次收成短行，有片的旧行收起时显示 ▶。展开后，有备注才显示原正文；最新一把和旧把都用「备注」入口，点开就在原把头部下方编辑这一把，保存只改这一把。视频入口无片「＋ 添加视频」、有片「回看视频」，都进原把次视频页，副本只保存在这台手机的攀笔中。最新一把右侧的「撤销」按一下就撤回这一把（本场少 1 把）；撤销成功后这一把移出列表，前一把只补位显示，再成功记一把才出现新的撤销入口，写失败时原行保留「重试撤销」。长按整张把次卡（序号、结果、时间、正文与卡内空白）先开「删除这一把」菜单，选中后才显示原把与视频删除范围；记录、备注与攀笔保存的视频副本一起删除（相册原片保留），取消不写；删除失败或视频副本未清理时可重试。备注入口、编辑区、回看视频与撤销有各自的手势，不会触发整卡删除。照片与卡点在照片缩略图里。</text>
+        <!--
+          T064 U3：常驻说明收成一句现场提示（展开 + 长按），完整帮助按需展开。
+          视频副本口径在原把次视频页，删除范围在长按后的确认框里，不在页尾重复整段。
+        -->
+        <view class="record-foot">
+          <text id="record-foot-hint" class="record-foot-hint">点旧行展开原把详情；长按整张把次卡先开「删除这一把」菜单。</text>
+          <button
+            id="record-help-toggle"
+            class="text-button record-help-toggle"
+            bindtap="toggleHelp"
+          >{{helpOpen ? '收起帮助' : '查看帮助'}}</button>
+        </view>
+        <view wx:if="{{helpOpen}}" id="record-help" class="card record-help">
+          <text id="record-help-title" class="record-help-title">现场记把帮助</text>
+          <text id="record-help-line-expand" class="record-help-line">短按旧行只展开/收起这一把；最新一把始终完整展示。长按整张把次卡（序号、结果、时间、正文与卡内空白）先开「删除这一把」菜单，确认框会写明这次删除的记录、备注与视频副本范围，取消不写。</text>
+          <text id="record-help-line-note" class="record-help-line">「备注」只编辑所点这一把，保存只改这一把；未保存的草稿留在本页，取消或保存读回成功才释放这一把。</text>
+          <text id="record-help-line-withdraw" class="record-help-line">最新一把右侧「撤销」按一下撤回这一把；成功后前一把只补位，写失败时原行保留「重试撤销」。</text>
+          <text id="record-help-line-video" class="record-help-line">「＋ 添加视频／回看视频」进原把次视频页；本机副本与相册原片的说明见视频页。</text>
+          <text id="record-help-line-photo" class="record-help-line">照片与卡点在照片缩略图里；跨天历史仍在线路历史页。</text>
+        </view>
       </block>
     </block>
   </block>

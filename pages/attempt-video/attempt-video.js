@@ -149,6 +149,10 @@ Page({
     spaceDetailText: '',
     spaceWarning: '',
     spaceError: '',
+    // T065：选片前实际可新增容量；读不到占用时为 null 并显示未知，恢复后刷新。
+    spaceCapacityBytes: null,
+    spaceCapacityText: '',
+    spaceCapacityNote: '',
     canCleanupOrphans: false,
     cleanupBusy: false,
     cleanupNotice: ''
@@ -354,6 +358,9 @@ Page({
       seekPending: false,
       seekRequestText: '',
       seekActualText: '',
+      spaceCapacityBytes: null,
+      spaceCapacityText: '',
+      spaceCapacityNote: '',
       busy: false,
       opKind: '',
       opStatus: '',
@@ -467,6 +474,9 @@ Page({
         spaceDetailText: '',
         spaceWarning: '',
         spaceError: '',
+        spaceCapacityBytes: null,
+        spaceCapacityText: '',
+        spaceCapacityNote: '',
         canCleanupOrphans: false,
         cleanupBusy: false,
         cleanupNotice: ''
@@ -494,11 +504,46 @@ Page({
         spaceUsageText: '',
         spaceDetailText: '',
         spaceWarning: '',
-        spaceError: '当前本机档案拿不到视频保存服务，暂时无法统计本机视频占用。'
+        spaceError: '当前本机档案拿不到视频保存服务，暂时无法统计本机视频占用。',
+        spaceCapacityBytes: null,
+        spaceCapacityText: '选片前可新增：未知（暂时无法统计本机视频占用）。',
+        spaceCapacityNote: '占用读不到时先按未知显示，恢复后会自动更新；已有视频仍可回看。'
       });
       return;
     }
     this.refreshSpaceUsage();
+  },
+
+  /**
+   * T065：选片前实际可新增容量。字节来自 getSpaceUsage 的实际占用与同一份预算策略
+   * （可用预算 - 当前占用 - 更换余量，再受单段上限约束），不读取或猜测设备剩余空间。
+   * usage 为空或读取失败时返回未知；下一次成功的刷新会覆盖回实际值。
+   */
+  capacityPatch(usage) {
+    const bytes = videoFiles.availableClipBytes(usage);
+    if (bytes === null) {
+      return {
+        spaceCapacityBytes: null,
+        spaceCapacityText: '选片前可新增：未知（暂时无法统计本机视频占用）。',
+        spaceCapacityNote: '占用读不到时先按未知显示，恢复后会自动更新；已有视频仍可回看。'
+      };
+    }
+    const policy = (usage && usage.policy) || {};
+    const text =
+      bytes > 0
+        ? '选片前可新增 ' +
+          videoFiles.formatBytes(bytes) +
+          '；单段上限 ' +
+          videoFiles.formatBytes(policy.maxClipBytes) +
+          '。'
+        : '选片前可新增：0 B（本机视频可用预算已用满）。';
+    return {
+      spaceCapacityBytes: bytes,
+      spaceCapacityText: text,
+      spaceCapacityNote: this.data.hasSavedVideo
+        ? '更换时旧片仍占用预算，按新旧同时存在计算；确认前不会改动原视频。'
+        : '按本机视频可用预算扣除当前实际占用与更换余量计算；保存前不会写入本机。'
+    };
   },
 
   /**
@@ -514,12 +559,17 @@ Page({
       result => {
         if (this._unloaded || seq !== this._spaceSeq) return;
         if (!result || !result.ok) {
-          this.setData({
-            spaceError:
-              '暂时无法统计本机视频占用：' +
-              ((result && result.error) || '未知原因') +
-              '；已有视频仍可回看。'
-          });
+          this.setData(
+            Object.assign(
+              {
+                spaceError:
+                  '暂时无法统计本机视频占用：' +
+                  ((result && result.error) || '未知原因') +
+                  '；已有视频仍可回看。'
+              },
+              this.capacityPatch(null)
+            )
+          );
           return;
         }
         const policy = result.policy || {};
@@ -550,25 +600,35 @@ Page({
           detail.push('无引用 ' + videoFiles.formatBytes(result.orphanBytes));
         }
         detail.push('已为照片保留 ' + videoFiles.formatBytes(policy.photoReserveBytes));
-        this.setData({
-          spaceUsageText:
-            videoFiles.formatBytes(result.totalBytes) +
-            ' / ' +
-            videoFiles.formatBytes(usableBytes),
-          spaceDetailText: detail.join(' · '),
-          spaceWarning: warning,
-          spaceError: '',
-          canCleanupOrphans: (result.orphanBytes || 0) > 0
-        });
+        this.setData(
+          Object.assign(
+            {
+              spaceUsageText:
+                videoFiles.formatBytes(result.totalBytes) +
+                ' / ' +
+                videoFiles.formatBytes(usableBytes),
+              spaceDetailText: detail.join(' · '),
+              spaceWarning: warning,
+              spaceError: '',
+              canCleanupOrphans: (result.orphanBytes || 0) > 0
+            },
+            this.capacityPatch(result)
+          )
+        );
       },
       error => {
         if (this._unloaded || seq !== this._spaceSeq) return;
-        this.setData({
-          spaceError:
-            '暂时无法统计本机视频占用：' +
-            playback.errorText(error) +
-            '；已有视频仍可回看。'
-        });
+        this.setData(
+          Object.assign(
+            {
+              spaceError:
+                '暂时无法统计本机视频占用：' +
+                playback.errorText(error) +
+                '；已有视频仍可回看。'
+            },
+            this.capacityPatch(null)
+          )
+        );
       }
     );
   },

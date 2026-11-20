@@ -27,6 +27,14 @@
  * 应用启动时若已明确云能力不可用（getApp().globalData.cloudReady === false），首次
  * 进入直接给出可重试的不可用状态；重试始终实际发起请求，仍由 utils/db.js 的既有
  * 错误分类区分不可用、拒绝、网络失败等原因。
+ *
+ * T063（U2/U4）：首页按档案里保存的场次日期与本地今天比较，不自动改旧场、不自动建新场：
+ * - 空档：保持原有「开始训练」入口；
+ * - 场次是今天：显示「本次训练」，主操作「继续本场」，次操作「另开一场」；
+ * - 场次是旧日期：显示「上次训练」与原日期/岩馆归属，主操作「开始今天训练」，
+ *   次操作「补记上次」——只打开原场次 ID，不改原日期与归属。
+ * 今天日期每次显示都按 training-store 的本地日期重算（onShow、跨午夜定时器、下拉刷新），
+ * 跨过午夜后旧场自动转为「上次训练」；在点开始/补记之前首页只读，不写档案。
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
@@ -48,7 +56,12 @@ Page({
     trainingReady: false,   // 本机档案可读（首次进入为 true，空档案也算可读）
     archiveError: '',       // 档案损坏/版本不支持/读取失败时的可见报错
     hasActiveSession: false,
-    activeSession: null,     // { id, gymName, dateText, label, routeName, attemptCountText }
+    activeSession: null,     // { id, gymName, dateText, label, routeName, attemptCountText, isToday }
+
+    // T063：按档案里的场次日期与本地今天区分空档 / 今天 / 上次训练（只读推导）
+    todayDate: '',           // training-store 的本地今天（YYYY-MM-DD），每次显示时重算
+    trainingMode: 'empty',   // empty | today | previous
+    trainingSectionTitle: '本次训练', // 本次训练（空档/今天）| 上次训练（旧日期）
 
     // 下次想爬（T035）：单行入口 + 本档可展示条目数，只读；整份清单在独立页
     wishlistCountText: '',
@@ -65,10 +78,14 @@ Page({
     this.refreshTrainingEntry();
     this.refreshWishlist();
     this.loadRecentRecords({ honorCloudState: true });
+    // 页面一直开着跨过午夜时，也按本地日期重算一次（只在内存里重读档案）。
+    this.scheduleDateRefresh();
   },
 
   // 从别的页面返回或重新显示时刷新；首次 onShow 紧跟在 onLoad 之后，不重复请求。
   onShow() {
+    // 返回首页时先重算今天：昨晚停在旧场，今早回来就显示「上次训练」。
+    this.scheduleDateRefresh();
     if (this._skipFirstShow) {
       this._skipFirstShow = false;
       return;
@@ -76,6 +93,15 @@ Page({
     this.refreshTrainingEntry();
     this.refreshWishlist();
     this.loadRecentRecords();
+  },
+
+  // 离开页面时不再保留午夜检查；下次 onShow 会重新安排。
+  onHide() {
+    this.clearDateRefresh();
+  },
+
+  onUnload() {
+    this.clearDateRefresh();
   },
 
   // 下拉刷新
@@ -88,10 +114,53 @@ Page({
   },
 
   /**
+   * 安排下一次本地午夜后的重算（T063）。
+   *
+   * 只重读档案、只改页面数据，不写档案；测试/Node 下定时器会 unref，不阻塞进程。
+   * 跨过午夜后，同一场次会从「本次训练」转为「上次训练」，旧场仍保持只读，
+   * 直到用户明确点「开始今天训练」或「补记上次」。
+   */
+  scheduleDateRefresh() {
+    this.clearDateRefresh();
+    if (typeof setTimeout !== 'function') return;
+
+    const now = new Date();
+    const nextMidnight = new Date(
+      now.getFullYear(),
+      now.getMonth(),
+      now.getDate() + 1,
+      0,
+      0,
+      1,
+      0
+    );
+    const delay = Math.max(1000, nextMidnight.getTime() - now.getTime());
+    const timer = setTimeout(() => {
+      this._dateRefreshTimer = null;
+      this.refreshTrainingEntry();
+      this.scheduleDateRefresh();
+    }, delay);
+    // 小程序里返回值是数字，Node 测试里是 Timeout 对象；有 unref 时不拖住测试进程。
+    if (timer && typeof timer.unref === 'function') timer.unref();
+    this._dateRefreshTimer = timer;
+  },
+
+  clearDateRefresh() {
+    if (this._dateRefreshTimer && typeof clearTimeout === 'function') {
+      clearTimeout(this._dateRefreshTimer);
+    }
+    this._dateRefreshTimer = null;
+  },
+
+  /**
    * 读取本机档案，得到「开始训练」或「继续本场」所需的当前场次与线路。
    * 只读：不改写档案，也不因为读失败而隐藏入口（失败时显示可见报错）。
+   *
+   * now 只用于离线测试注入固定本地日期；缺省取当前时间。日期本身始终来自
+   * training-store 的 todayLocalDate，和档案里保存的 session.date 逐字比较。
    */
-  refreshTrainingEntry() {
+  refreshTrainingEntry(now) {
+    const todayDate = store.todayLocalDate(now);
     const loaded = store.loadState();
     const archive = loaded.archive;
 
@@ -100,7 +169,10 @@ Page({
         trainingReady: false,
         archiveError: loaded.error,
         hasActiveSession: false,
-        activeSession: null
+        activeSession: null,
+        todayDate,
+        trainingMode: 'empty',
+        trainingSectionTitle: '本次训练'
       });
       return;
     }
@@ -111,7 +183,10 @@ Page({
         trainingReady: true,
         archiveError: '',
         hasActiveSession: false,
-        activeSession: null
+        activeSession: null,
+        todayDate,
+        trainingMode: 'empty',
+        trainingSectionTitle: '本次训练'
       });
       return;
     }
@@ -121,18 +196,24 @@ Page({
     const attempts = store.effectiveAttempts(
       (archive.attempts || []).filter(item => item.sessionId === session.id)
     );
+    // 日期逐字比较：档案里存的就是用户当时选定的本地日期，不按显示文案猜。
+    const isToday = session.date === todayDate;
 
     this.setData({
       trainingReady: true,
       archiveError: '',
       hasActiveSession: true,
+      todayDate,
+      trainingMode: isToday ? 'today' : 'previous',
+      trainingSectionTitle: isToday ? '本次训练' : '上次训练',
       activeSession: {
         id: session.id,
         gymName: store.gymName(archive, session.gymId),
         dateText: session.date,
         label: store.sessionLabel(archive, session),
         routeName: route ? route.name : '',
-        attemptCountText: attempts.length + ' 把'
+        attemptCountText: attempts.length + ' 把',
+        isToday
       }
     });
   },
@@ -297,10 +378,40 @@ Page({
 
   /**
    * 开始训练：进入场内记录页并直接展开场次表单（同日主动另开也走这里）。
+   * 日期仍由场内页自己的日期表单/T016 档案层处理，首页不预建场次、不写日期。
    */
   startTraining() {
     wx.navigateTo({
       url: '/pages/training-session/training-session?start=1'
+    });
+  },
+
+  /**
+   * 补记上次（T063）：旧日期场次只读展示，点这个按钮才回到那一场。
+   *
+   * 不新建场次、不改原日期与岩馆归属，也不复制把次；只把原场次 ID 交给场内页
+   * 既有的 sessionId 参数。正常进入时活动场次就是这一场，因此不需要额外写档案；
+   * 若停留期间活动指针被别处改掉，先按原场 ID 对回（只改选择，不碰场次内容）。
+   */
+  backfillPrevious() {
+    const session = this.data.activeSession;
+    if (!session || !session.id || session.isToday) return;
+
+    const loaded = store.loadState();
+    if (!loaded.ok) {
+      this.setData({ archiveError: loaded.error });
+      return;
+    }
+    if (loaded.archive.activeSessionId !== session.id) {
+      const outcome = store.selectSession(session.id);
+      if (!outcome.ok) {
+        this.setData({ archiveError: outcome.error });
+        return;
+      }
+    }
+
+    wx.navigateTo({
+      url: '/pages/training-session/training-session?sessionId=' + encodeURIComponent(session.id)
     });
   },
 

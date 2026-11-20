@@ -255,6 +255,18 @@ function tapDataset(dataset) {
   return { currentTarget: { dataset } };
 }
 
+/** 本馆候选行渲染出来的点击参数（与 WXML 的 dataset 一一对应）。 */
+function gymCandidateEvent(page, routeId) {
+  const item = page.data.gymRoutes.find(route => route.id === routeId);
+  assert.ok(item, '本馆候选里应有这条线路：' + routeId);
+  return tapDataset({
+    routeId,
+    sessionId: item.sessionId,
+    archiveId: item.archiveId,
+    contextPhase: item.contextPhase
+  });
+}
+
 function archiveOf() {
   return store.loadState().archive;
 }
@@ -673,7 +685,7 @@ test('T030 首屏加线区在结果按钮之前：空场是「添加第一条线
   assert.match(wxml, /id="add-route-tab-existing"[\s\S]{0,200}本馆已有/);
   assert.match(wxml, /id="add-route-tab-new"[\s\S]{0,200}新建线路/);
   // 本馆已有走原关联路径；新建走原创建表单（名称、类型、等级在首层，颜色可展开）。
-  assert.match(wxml, /id="gym-route-\{\{item\.id\}\}"[\s\S]{0,200}bindtap="pickGymRoute"/);
+  assert.match(wxml, /id="gym-route-\{\{item\.id\}\}"[\s\S]{0,500}bindtap="pickGymRoute"/);
   assert.match(wxml, /id="new-route-name"/);
   assert.match(wxml, /id="new-route-type"/);
   assert.match(wxml, /id="new-route-grade"/);
@@ -3137,4 +3149,321 @@ test('T048 点旧行只展开原把：切换与收起不写盘，最新一把仍
   assert.match(page.data.notice, /已经变化|刷新/);
   assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '过期行事件一个字都不写');
   assert.equal(page.data.attemptCards.length, 3, '列表仍是原三把');
+});
+
+// ------------------------------------------------------------------ *
+// T062 U1/U5 本馆候选完攀三态、只读历史与同日多馆短名
+// ------------------------------------------------------------------ *
+
+test('T062 U1 本馆候选标出未完攀/已完攀/待确认：已完攀抱石直达只读历史，不关联也不建场', () => {
+  // 昨天 A 馆留下四种线：已完攀抱石、未完攀抱石、待确认抱石、已完攀顶绳。
+  const prior = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-19',
+    now: new Date(2026, 10, 19, 9, 0)
+  });
+  assert.equal(prior.ok, true, prior.error);
+  const doneBoulder = store.createRoute({
+    sessionId: prior.session.id,
+    name: '昨天完攀线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(doneBoulder.ok, true, doneBoulder.error);
+  const openBoulder = store.createRoute({
+    sessionId: prior.session.id,
+    name: '昨天未完成线',
+    climbType: '抱石',
+    grade: 'V4'
+  });
+  assert.equal(openBoulder.ok, true, openBoulder.error);
+  const pendingBoulder = store.createRoute({
+    sessionId: prior.session.id,
+    name: '昨天待确认线',
+    climbType: '抱石',
+    grade: 'V5'
+  });
+  assert.equal(pendingBoulder.ok, true, pendingBoulder.error);
+  const rope = store.createRoute({
+    sessionId: prior.session.id,
+    name: '昨天顶绳线',
+    climbType: '顶绳',
+    grade: '5.10a'
+  });
+  assert.equal(rope.ok, true, rope.error);
+
+  const doneSave = store.saveAttempt({
+    sessionId: prior.session.id,
+    routeId: doneBoulder.route.id,
+    result: 'send'
+  });
+  assert.equal(doneSave.ok, true, doneSave.error);
+  const ropeSave = store.saveAttempt({
+    sessionId: prior.session.id,
+    routeId: rope.route.id,
+    result: 'send'
+  });
+  assert.equal(ropeSave.ok, true, ropeSave.error);
+
+  // 待确认：第二段写失败，进行中标记留在档案里。
+  armSetFailAt(2);
+  const pendingSave = store.saveAttempt({
+    sessionId: prior.session.id,
+    routeId: pendingBoulder.route.id,
+    result: 'send'
+  });
+  armSetFailAt(0);
+  assert.equal(pendingSave.ok, false, '第二段写失败才留下待确认完攀');
+  assert.equal(store.routeCompletion(archiveOf(), pendingBoulder.route.id).hasPendingSend, true);
+
+  // 今天同馆另开一场：本馆候选就是这四条线。
+  const today = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 9, 0)
+  });
+  assert.equal(today.ok, true, today.error);
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, today.session.id);
+  assert.equal(page.data.routes.length, 0);
+
+  const candidateOf = routeId => page.data.gymRoutes.find(item => item.id === routeId);
+  assert.equal(candidateOf(doneBoulder.route.id).stateText, '已完攀');
+  assert.equal(candidateOf(doneBoulder.route.id).stateKind, 'done');
+  assert.equal(candidateOf(doneBoulder.route.id).openHistory, true);
+  assert.match(candidateOf(doneBoulder.route.id).actionHint, /原线路历史/);
+  assert.equal(candidateOf(openBoulder.route.id).stateText, '未完攀');
+  assert.equal(candidateOf(openBoulder.route.id).stateKind, 'open');
+  assert.equal(candidateOf(openBoulder.route.id).openHistory, false);
+  assert.equal(candidateOf(pendingBoulder.route.id).stateText, '完攀待确认');
+  assert.equal(candidateOf(pendingBoulder.route.id).stateKind, 'pending');
+  assert.equal(candidateOf(pendingBoulder.route.id).pending, true);
+  assert.doesNotMatch(
+    candidateOf(pendingBoulder.route.id).actionHint,
+    /确认后再加入/,
+    '待确认不会在确认后自动加入本场'
+  );
+  assert.match(candidateOf(pendingBoulder.route.id).actionHint, /尚未加入本场/);
+  assert.equal(candidateOf(rope.route.id).stateText, '', '顶绳不显示单次完攀态');
+  assert.equal(candidateOf(rope.route.id).completed, false);
+
+  page.openAddRoute();
+  const bytesBeforeHistory = storage.get(ARCHIVE_KEY);
+  const archiveBeforeHistory = JSON.parse(bytesBeforeHistory);
+  const navBeforeHistory = wxLog.navigations.length;
+
+  // 已完攀抱石：只打开原线路历史，档案、选择与会话都不变。
+  page.pickGymRoute(gymCandidateEvent(page, doneBoulder.route.id));
+  assert.equal(wxLog.navigations.length, navBeforeHistory + 1);
+  const historyUrl = wxLog.navigations.at(-1).url;
+  assert.match(historyUrl, /^\/pages\/training-route\/training-route\?/);
+  assert.match(historyUrl, new RegExp('routeId=' + doneBoulder.route.id));
+  assert.match(
+    historyUrl,
+    new RegExp('archiveId=' + encodeURIComponent(archiveBeforeHistory.archiveId))
+  );
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBeforeHistory, '打开历史一个字都不写');
+  const archiveAfterHistory = archiveOf();
+  assert.equal(archiveAfterHistory.activeSessionId, archiveBeforeHistory.activeSessionId);
+  assert.equal(archiveAfterHistory.activeRouteId, archiveBeforeHistory.activeRouteId);
+  assert.equal(archiveAfterHistory.sessions.length, archiveBeforeHistory.sessions.length);
+  assert.equal(archiveAfterHistory.sessionRoutes.length, archiveBeforeHistory.sessionRoutes.length);
+  assert.equal(page.data.activeSession.id, today.session.id);
+  assert.equal(linkCount(today.session.id, doneBoulder.route.id), 0, '不新增本场关联');
+
+  // 待确认抱石：只给稳定提示，不关联、不跳转、不写盘，面板保持打开。
+  page.openAddRoute();
+  const navBeforePending = wxLog.navigations.length;
+  const bytesBeforePending = storage.get(ARCHIVE_KEY);
+  page.pickGymRoute(gymCandidateEvent(page, pendingBoulder.route.id));
+  assert.equal(wxLog.navigations.length, navBeforePending, '待确认不打开页面');
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBeforePending, '待确认不写盘');
+  assert.equal(page.data.addRouteVisible, true, '面板保留，便于确认后再选');
+  assert.match(page.data.notice, /待确认/);
+  assert.doesNotMatch(page.data.notice, /确认后再加入|再加入本场/, '不再暗示确认后会加入本场');
+  assert.match(page.data.notice, /不会新增本场关联/, '说明确认前没有发生关联');
+  assert.equal(linkCount(today.session.id, pendingBoulder.route.id), 0);
+  // 再点一次同一条：提示稳定，仍不写盘。
+  page.pickGymRoute(gymCandidateEvent(page, pendingBoulder.route.id));
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBeforePending);
+  assert.match(page.data.notice, /待确认/);
+
+  // 未完攀抱石：照常关联并选中，直达单线记录。
+  const navBeforeOpen = wxLog.navigations.length;
+  page.pickGymRoute(gymCandidateEvent(page, openBoulder.route.id));
+  assert.equal(wxLog.navigations.length, navBeforeOpen + 1);
+  assert.match(wxLog.navigations.at(-1).url, /^\/pages\/training-record\/training-record\?/);
+  assert.equal(linkCount(today.session.id, openBoulder.route.id), 1);
+  assert.equal(archiveOf().activeRouteId, openBoulder.route.id);
+
+  // 已完攀顶绳仍可重复记录：照常关联并选中。
+  page.openAddRoute();
+  page.pickGymRoute(gymCandidateEvent(page, rope.route.id));
+  assert.match(wxLog.navigations.at(-1).url, /^\/pages\/training-record\/training-record\?/);
+  assert.equal(linkCount(today.session.id, rope.route.id), 1);
+  assert.equal(archiveOf().activeRouteId, rope.route.id);
+  assert.equal(store.routesForSession(archiveOf(), today.session.id).length, 2);
+});
+
+test('T062 U1 陈旧本馆候选不串场：切场后旧行不关联、不跳转、不写盘', () => {
+  const prior = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-18',
+    now: new Date(2026, 10, 18, 9, 0)
+  });
+  assert.equal(prior.ok, true, prior.error);
+  const route = store.createRoute({
+    sessionId: prior.session.id,
+    name: '旧馆线',
+    climbType: '抱石',
+    grade: 'V3'
+  });
+  assert.equal(route.ok, true, route.error);
+
+  const first = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 9, 0)
+  });
+  assert.equal(first.ok, true, first.error);
+  const second = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 10, 0)
+  });
+  assert.equal(second.ok, true, second.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.activeSession.id, second.session.id);
+  page.openAddRoute();
+  const staleEvent = gymCandidateEvent(page, route.route.id);
+  const stalePhase = page.data.gymRoutes.find(item => item.id === route.route.id).contextPhase;
+
+  // 加线面板开着时切到同日另一场：候选重算，旧行代次已经变化。
+  page.switchSession(tapDataset({ sessionId: first.session.id }));
+  assert.equal(page.data.activeSession.id, first.session.id);
+  assert.equal(page.data.addRouteVisible, true, '切场后加线面板仍保持打开');
+  assert.notEqual(
+    page.data.gymRoutes.find(item => item.id === route.route.id).contextPhase,
+    stalePhase,
+    '切场后候选代次已更新'
+  );
+
+  const bytesBefore = storage.get(ARCHIVE_KEY);
+  const linksBefore = archiveOf().sessionRoutes.length;
+  const navBefore = wxLog.navigations.length;
+  page.pickGymRoute(staleEvent);
+  assert.equal(storage.get(ARCHIVE_KEY), bytesBefore, '旧行点击一个字都不写');
+  assert.equal(archiveOf().sessionRoutes.length, linksBefore, '旧行不新增关联');
+  assert.equal(linkCount(first.session.id, route.route.id), 0);
+  assert.equal(wxLog.navigations.length, navBefore, '旧行不打开页面');
+  assert.match(page.data.notice, /候选列表已经更新|上一场/);
+  assert.equal(archiveOf().activeSessionId, first.session.id);
+});
+
+test('T062 U5 同日多馆的场次按钮显示可辨岩馆短名，ID/编号/短按长按不变', () => {
+  const first = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 9, 0)
+  });
+  assert.equal(first.ok, true, first.error);
+  const second = store.startSession({
+    gymName: '岩馆 B',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 10, 0)
+  });
+  assert.equal(second.ok, true, second.error);
+
+  const page = openSessionPage({});
+  assert.equal(page.data.sameDaySessions.length, 2);
+  assert.deepEqual(
+    page.data.sameDaySessions.map(item => item.id),
+    [first.session.id, second.session.id],
+    '场次 ID 不变'
+  );
+  assert.deepEqual(
+    page.data.sameDaySessions.map(item => item.label),
+    ['第 1 场', '第 2 场'],
+    '场次编号不变'
+  );
+  assert.deepEqual(
+    page.data.sameDaySessions.map(item => item.shortName),
+    ['岩馆 A', '岩馆 B'],
+    '两个岩馆都有可辨短名'
+  );
+  assert.equal(page.data.sameDaySessions[1].isActive, true);
+
+  // WXML 只在同日多馆时加短名，原场次 ID、编号、短按与长按绑定全部保留。
+  const wxml = fs.readFileSync(SESSION_WXML, 'utf8');
+  assert.match(wxml, /item\.shortName \? item\.shortName \+ ' · ' : ''/);
+  assert.match(wxml, /\{\{item\.label\}\}/);
+  assert.match(wxml, /data-session-id="\{\{item\.id\}\}"/);
+  assert.match(wxml, /data-archive-id="\{\{archiveId\}\}"/);
+  assert.match(wxml, /bindtap="switchSession"/);
+  assert.match(wxml, /bindlongpress="requestDeleteSession"/);
+  assert.match(
+    wxml,
+    /id="session-chip-\{\{item\.id\}\}"[\s\S]{0,500}bindlongpress="requestDeleteSession"/
+  );
+
+  // 短按仍只切归属，不新增场次。
+  page.switchSession(tapDataset({ sessionId: first.session.id }));
+  assert.equal(page.data.activeSession.id, first.session.id);
+  assert.equal(archiveOf().sessions.length, 2);
+  assert.equal(archiveOf().activeSessionId, first.session.id);
+});
+
+test('T062 U5 同日同馆不给短名；长名前缀相同时自动加长到能分辨', () => {
+  const sameA = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 9, 0)
+  });
+  assert.equal(sameA.ok, true, sameA.error);
+  const sameB = store.startSession({
+    gymName: '岩馆 A',
+    date: '2026-11-20',
+    now: new Date(2026, 10, 20, 10, 0)
+  });
+  assert.equal(sameB.ok, true, sameB.error);
+
+  let page = openSessionPage({});
+  assert.deepEqual(
+    page.data.sameDaySessions.map(item => item.shortName),
+    ['', ''],
+    '同馆同日不显示岩馆短名'
+  );
+  assert.deepEqual(
+    page.data.sameDaySessions.map(item => item.label),
+    ['第 1 场', '第 2 场'],
+    '编号保持原样'
+  );
+
+  // 长名前缀相同的两馆：短名自动加长，文案不能混为一个。
+  const longOne = store.startSession({
+    gymName: '城市攀岩馆一号店',
+    date: '2026-11-21',
+    now: new Date(2026, 10, 21, 9, 0)
+  });
+  assert.equal(longOne.ok, true, longOne.error);
+  const longTwo = store.startSession({
+    gymName: '城市攀岩馆二号店',
+    date: '2026-11-21',
+    now: new Date(2026, 10, 21, 10, 0)
+  });
+  assert.equal(longTwo.ok, true, longTwo.error);
+
+  page = openSessionPage({});
+  const longNames = page.data.sameDaySessions.map(item => item.shortName);
+  assert.equal(longNames.length, 2);
+  assert.notEqual(longNames[0], longNames[1], '前缀相同的两馆短名必须可辨');
+  longNames.forEach(name => {
+    assert.ok(name.startsWith('城市攀岩馆'), '短名保留可辨前缀：' + name);
+  });
+  assert.deepEqual(
+    page.data.sameDaySessions.map(item => item.id),
+    [longOne.session.id, longTwo.session.id],
+    '短名不改变场次 ID'
+  );
 });

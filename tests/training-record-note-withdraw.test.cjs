@@ -867,6 +867,46 @@ test('T056 R1 单线页 A→B→A：各自草稿保留，保存 B 不动 A 的�
   assert.equal(page.data.noteEditor.text, 'A 第二次草稿', '再展开仍可继续编辑');
 });
 
+test('T064 U3 展开/收起帮助不释放 R1 草稿、不改展开态、不写档案', () => {
+  const session = startSession('岩馆 T064 帮助');
+  const route = createRoute(session.id, 'T064 帮助线', '顶绳');
+  const attempts = saveAttempts(
+    session.id,
+    route.id,
+    ['fail', 'fail'],
+    ['A 原备注', 'B 原备注']
+  );
+  const page = openRecord(session.id, route.id);
+  page.openNoteEditor(tapDataset({ attemptId: attempts[0].id }));
+  page.onNoteInput(noteInput(page, '帮助展开时保留的草稿'));
+  const rawBefore = rawArchive();
+  const cardsBefore = page.data.attemptCards.map(row => row.id);
+  const expandedBefore = page.data.expandedAttemptId;
+
+  // 展开帮助：只多出一块普通文档流说明，编辑器、草稿与卡片顺序都不动。
+  page.toggleHelp();
+  assert.equal(page.data.helpOpen, true);
+  assert.equal(page.data.noteEditor.attemptId, attempts[0].id);
+  assert.equal(page.data.noteEditor.text, '帮助展开时保留的草稿');
+  assert.deepEqual(page.data.attemptCards.map(row => row.id), cardsBefore, '卡片顺序不变');
+  assert.equal(page.data.expandedAttemptId, expandedBefore, '展开态不变');
+  assert.equal(rawArchive(), rawBefore, '帮助开关不写本机档案');
+
+  // 收起帮助后仍能在同一把上继续输入并保存。
+  page.toggleHelp();
+  assert.equal(page.data.helpOpen, false);
+  assert.equal(page.data.noteEditor.text, '帮助展开时保留的草稿', '收起帮助不丢草稿');
+  page.onNoteInput(noteInput(page, '帮助收起后继续'));
+  assert.equal(page.data.noteEditor.text, '帮助收起后继续');
+  page.saveNote(noteButtonEvent(page.data.noteEditor));
+  assert.equal(page.data.noteEditor, null);
+  assert.equal(
+    archiveOf().attempts.find(item => item.id === attempts[0].id).note,
+    '帮助收起后继续',
+    '保存只改这一把'
+  );
+});
+
 test('T056 R1 本场逐把页 A→B→A：草稿保留，旧代次输入/保存/取消不读写，跨页面实例隔离', () => {
   const session = startSession('岩馆 T056 逐把');
   const route = createRoute(session.id, 'T056 逐把线', '顶绳');

@@ -125,20 +125,31 @@
             >新建线路</view>
           </view>
 
-          <!-- 本馆已有：本岩馆里还没进本场次的线路，点一条就关联并选中 -->
+          <!-- 本馆已有：未完攀与绳线点一条关联并选中；已完攀抱石直达原历史，待确认只提示。 -->
           <block wx:if="{{addRouteMode === 'existing'}}">
             <block wx:if="{{gymRoutes.length > 0}}">
-              <text class="field-label">本馆已有线路（点一条加入本场）</text>
+              <text class="field-label">本馆已有线路（未完攀加入本场；已完攀抱石查看历史）</text>
               <view
                 wx:for="{{gymRoutes}}"
                 wx:key="id"
                 id="gym-route-{{item.id}}"
                 class="gym-route-item"
                 data-route-id="{{item.id}}"
+                data-session-id="{{item.sessionId}}"
+                data-archive-id="{{item.archiveId}}"
+                data-context-phase="{{item.contextPhase}}"
                 bindtap="pickGymRoute"
               >
-                <text class="gym-route-name">{{item.name}}</text>
+                <view class="gym-route-title">
+                  <text class="gym-route-name">{{item.name}}</text>
+                  <text
+                    wx:if="{{item.stateText}}"
+                    id="gym-route-state-{{item.id}}"
+                    class="gym-route-state gym-route-state-{{item.stateKind}}"
+                  >{{item.stateText}}</text>
+                </view>
                 <text class="gym-route-meta">{{item.climbType}} {{item.grade}}{{item.colorName ? ' · ' + item.colorName : ''}}</text>
+                <text wx:if="{{item.actionHint}}" class="gym-route-hint">{{item.actionHint}}</text>
               </view>
             </block>
             <view wx:else id="add-route-no-existing" class="empty-attempts">
@@ -289,7 +300,7 @@
               data-archive-id="{{archiveId}}"
               bindtap="switchSession"
               bindlongpress="requestDeleteSession"
-            >{{item.label}}</view>
+            >{{item.shortName ? item.shortName + ' · ' : ''}}{{item.label}}</view>
           </view>
         </view>
       </view>

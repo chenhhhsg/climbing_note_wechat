@@ -30,7 +30,8 @@ const log = {
   toasts: [],
   clipboardCalls: [],
   clipboardText: null,
-  storageWrites: []
+  storageWrites: [],
+  profileCalls: []
 };
 
 global.wx = {
@@ -55,6 +56,9 @@ global.wx = {
   },
   setClipboardData(options) {
     log.clipboardCalls.push({ options, argCount: arguments.length });
+  },
+  getUserProfile(options) {
+    log.profileCalls.push({ options, argCount: arguments.length });
   }
 };
 
@@ -70,6 +74,8 @@ function resetAll() {
   log.clipboardCalls.length = 0;
   log.clipboardText = null;
   log.storageWrites.length = 0;
+  log.profileCalls.length = 0;
+  appState.globalData.userInfo = null;
 }
 
 beforeEach(() => {
@@ -119,6 +125,16 @@ function succeedClipboard(index) {
 
 function failClipboard(index) {
   log.clipboardCalls[index].options.fail({ errMsg: 'setClipboardData:fail' });
+}
+
+/** 模拟微信资料读取成功。 */
+function succeedProfile(index, userInfo) {
+  log.profileCalls[index].options.success({ userInfo });
+}
+
+/** 模拟微信资料读取被拒绝或失败。 */
+function failProfile(index, errMsg) {
+  log.profileCalls[index].options.fail({ errMsg });
 }
 
 test('R4 成功：单个原生参数对象复制，成功回调后才提示已复制且文字一致', () => {
@@ -273,4 +289,149 @@ test('R4 保留个人页既有入口与菜单结构', () => {
   assert.equal(typeof profileDefinition.feedback, 'function');
   assert.equal(typeof profileDefinition.retryFeedback, 'function');
   assert.equal(typeof profileDefinition.clearCache, 'function');
+});
+
+// ------------------------------------------------------------------ T066 U7
+
+test('U7 入口只表达本机显示的资料能力，不再暗示登录、绑定或同步成功', () => {
+  const wxml = fs.readFileSync(PROFILE_WXML, 'utf8');
+  assert.ok(wxml.includes('设置头像昵称'), '资料入口应改为「设置头像昵称」');
+  assert.equal(wxml.includes('点击登录'), false, '不应再出现点击登录');
+  assert.equal(wxml.includes('登录'), false, '不应再让用户以为要登录');
+  assert.equal(wxml.includes('绑定账号'), false, '不应暗示绑定账号');
+  assert.equal(/同步成功|已同步|同步完成/.test(wxml), false, '不应暗示同步成功');
+  assert.ok(wxml.includes('不会创建账号'), '应说明不会创建账号');
+  assert.ok(wxml.includes('只在本页显示'), '应说明资料只在本页显示');
+  assert.ok(wxml.includes('保存在这台手机的攀笔中'), '保留本机训练记录归属说明');
+  assert.ok(wxml.includes('id="profile-notice"'), '资料结果应有独立的页面提示位');
+  assert.equal(typeof profileDefinition.getUserProfile, 'function');
+});
+
+test('U7 资料成功独立于复制反馈：不清草稿与失败态，也不写存储', () => {
+  const page = createPage(profileDefinition);
+  page.feedback();
+  confirmModal(0, '顶绳保护站附近的岩点有松动');
+  failClipboard(0);
+  assert.equal(page.data.feedbackCopyFailed, true);
+  assert.equal(page.data.feedbackDraft, '顶绳保护站附近的岩点有松动');
+  assert.equal(log.toasts.length, 1);
+
+  const userInfo = { nickName: '阿岩', avatarUrl: 'https://example.invalid/a.png' };
+  page.getUserProfile();
+  assert.equal(log.profileCalls.length, 1);
+  assert.equal(log.profileCalls[0].argCount, 1, '只允许一个原生参数对象');
+  assert.equal(typeof log.profileCalls[0].options.success, 'function');
+  assert.equal(typeof log.profileCalls[0].options.fail, 'function');
+  succeedProfile(0, userInfo);
+
+  assert.equal(page.data.hasUserInfo, true);
+  assert.deepEqual(page.data.userInfo, userInfo);
+  assert.equal(appState.globalData.userInfo, userInfo);
+  assert.equal(page.data.profileNotice, '');
+  assert.equal(page.data.feedbackCopyFailed, true, '资料成功不得覆盖复制失败态');
+  assert.equal(page.data.feedbackDraft, '顶绳保护站附近的岩点有松动');
+  assert.equal(log.toasts.length, 1, '资料成功不弹提示、不冒充复制结果');
+  assert.equal(log.storageWrites.length, 0, '资料只保留在本机内存');
+});
+
+test('U7 拒绝与失败分别说明，且都不影响意见反馈', () => {
+  const page = createPage(profileDefinition);
+  page.getUserProfile();
+  failProfile(0, 'getUserProfile:fail auth deny');
+  assert.equal(page.data.hasUserInfo, false);
+  assert.equal(page.data.profileNoticeKind, 'denied');
+  assert.match(page.data.profileNotice, /已取消/);
+  assert.equal(page.data.feedbackDraft, '');
+  assert.equal(page.data.feedbackCopyFailed, false);
+  assert.equal(log.toasts.length, 0, '资料拒绝不弹提示、不干扰复制反馈');
+
+  page.getUserProfile();
+  failProfile(1, 'getUserProfile:fail internal error');
+  assert.equal(page.data.profileNoticeKind, 'failed');
+  assert.match(page.data.profileNotice, /读取失败/);
+  assert.equal(page.data.hasUserInfo, false);
+  assert.equal(page.data.feedbackDraft, '');
+  assert.equal(page.data.feedbackCopyFailed, false);
+  assert.equal(log.toasts.length, 0, '资料失败不弹提示、不干扰复制反馈');
+});
+
+test('U7 资料失败提示点名真实控件，且连续两次读取（失败后成功）不改反馈与存储', () => {
+  const wxml = fs.readFileSync(PROFILE_WXML, 'utf8');
+  const noticeTag = wxml.match(/<text[^>]*id="profile-notice"[^>]*>/);
+  assert.ok(noticeTag, '#profile-notice 应存在');
+  assert.equal(
+    /bindtap|catchtap/.test(noticeTag[0]),
+    false,
+    '提示文字本身不应再成为第二个点击路径'
+  );
+
+  // 只从页面实际绑定的资料控件取处理函数，避免测试绕过绑定直接调方法。
+  const controlMatch = wxml.match(/<view[^>]*bindtap="(getUserProfile)"[^>]*>/);
+  assert.ok(controlMatch, '页面应保留绑定的「设置头像昵称」控件');
+  const handler = page => page[controlMatch[1]];
+  assert.equal(typeof profileDefinition[controlMatch[1]], 'function');
+
+  const page = createPage(profileDefinition);
+  page.feedback();
+  confirmModal(0, '失败后仍保留的反馈草稿');
+  failClipboard(0);
+  const draft = page.data.feedbackDraft;
+  assert.equal(page.data.feedbackCopyFailed, true);
+  assert.equal(log.toasts.length, 1);
+
+  // 第一次：失败。提示必须点名可用的「设置头像昵称」控件。
+  handler(page).call(page);
+  assert.equal(log.profileCalls.length, 1);
+  failProfile(0, 'getUserProfile:fail internal error');
+  assert.equal(page.data.profileNoticeKind, 'failed');
+  assert.match(page.data.profileNotice, /「设置头像昵称」/, '失败提示应点名真实控件');
+  assert.equal(page.data.profileNotice.includes('可点此重试'), false, '不应暗示提示文字可点');
+
+  // 第二次：同一个绑定控件再试一次并成功。
+  handler(page).call(page);
+  assert.equal(log.profileCalls.length, 2);
+  succeedProfile(1, { nickName: '阿岩', avatarUrl: 'https://example.invalid/a.png' });
+  assert.equal(page.data.hasUserInfo, true);
+  assert.equal(page.data.profileNotice, '');
+  assert.equal(page.data.profileNoticeKind, '');
+
+  assert.equal(page.data.feedbackCopyFailed, true, '资料读取不得改复制失败态');
+  assert.equal(page.data.feedbackDraft, draft, '资料读取不得改反馈草稿');
+  assert.equal(log.clipboardCalls.length, 1, '资料读取不得触碰剪贴板');
+  assert.equal(log.toasts.length, 1, '资料读取不弹提示、不冒充复制结果');
+  assert.equal(log.storageWrites.length, 0, '资料只保留在本机内存');
+});
+
+test('U7 复制结果不覆盖资料读取提示', () => {
+  const page = createPage(profileDefinition);
+  page.getUserProfile();
+  failProfile(0, 'getUserProfile:fail internal error');
+  const notice = page.data.profileNotice;
+  const kind = page.data.profileNoticeKind;
+
+  page.feedback();
+  confirmModal(0, '资料失败后仍可复制');
+  succeedClipboard(0);
+
+  assert.equal(log.toasts.at(-1).title, '已复制');
+  assert.equal(page.data.profileNotice, notice, '复制成功不得清掉资料结果提示');
+  assert.equal(page.data.profileNoticeKind, kind);
+  assert.equal(page.data.hasUserInfo, false, '复制成功不得冒充资料读取成功');
+});
+
+test('U7 微信资料接口不可用时只在本页说明失败，不抛异常', () => {
+  const page = createPage(profileDefinition);
+  const original = global.wx.getUserProfile;
+  global.wx.getUserProfile = undefined;
+  try {
+    assert.doesNotThrow(() => page.getUserProfile());
+  } finally {
+    global.wx.getUserProfile = original;
+  }
+  assert.equal(page.data.profileNoticeKind, 'failed');
+  assert.match(page.data.profileNotice, /读取失败/);
+  assert.equal(page.data.hasUserInfo, false);
+  assert.equal(page.data.feedbackDraft, '');
+  assert.equal(page.data.feedbackCopyFailed, false);
+  assert.equal(log.toasts.length, 0);
 });
