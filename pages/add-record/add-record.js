@@ -26,7 +26,12 @@ Page({
 
     // UI状态
     isSubmitting: false,      // 是否正在提交
-    showGradePicker: false    // 是否显示难度选择器
+    showGradePicker: false,   // 是否显示难度选择器
+
+    // R5 保存成功后的终态：写入成功后提交锁定至离开本页，只排一次延迟返回；
+    // 返回失败时保存仍保持锁定，只给显式重试返回，绝不重复上传或写库。
+    saveState: '',            // '' 未保存 / 'saved' 已保存（终态）
+    returnFailed: false       // 延迟返回失败，等待用户显式重试返回
   },
 
   onLoad() {
@@ -41,6 +46,71 @@ Page({
 
     // 初始化难度选项
     this.updateGradeOptions(app.globalData.climbTypes[0]);
+  },
+
+  /**
+   * 页面卸载：取消已排队的延迟返回，离开本页后不再弹回上一页。
+   */
+  onUnload() {
+    this.clearReturnTimer();
+  },
+
+  /**
+   * 取消延迟返回定时器（成功终态只允许一个待执行的返回回执）。
+   */
+  clearReturnTimer() {
+    if (this.returnTimer) {
+      clearTimeout(this.returnTimer);
+      this.returnTimer = null;
+    }
+  },
+
+  /**
+   * 排一次延迟返回：重复触发不叠加定时器，成功写入后只有一个返回回执。
+   */
+  scheduleReturn() {
+    if (this.returnTimer) return;
+    this.returnTimer = setTimeout(() => {
+      this.returnTimer = null;
+      this.goBackAfterSave();
+    }, 1500);
+  },
+
+  /**
+   * 保存成功后的返回：只做页面返回，不再上传图片、不再写库。
+   * 返回失败保留「已保存」锁定，改为用户显式重试返回。
+   */
+  goBackAfterSave() {
+    if (this.data.saveState !== 'saved') return;
+    if (typeof wx === 'undefined' || typeof wx.navigateBack !== 'function') {
+      this.markReturnFailed();
+      return;
+    }
+    wx.navigateBack({
+      delta: 1,
+      fail: () => {
+        this.markReturnFailed();
+      }
+    });
+  },
+
+  /**
+   * 返回失败：记录已保存，只提示并可显式重试返回；保存状态保持锁定。
+   */
+  markReturnFailed() {
+    this.setData({ returnFailed: true });
+    wx.showToast({
+      title: '已保存，返回失败',
+      icon: 'none'
+    });
+  },
+
+  /**
+   * 显式重试返回：只重试页面返回，绝不重复上传或写库。
+   */
+  retryReturn() {
+    if (this.data.saveState !== 'saved') return;
+    this.goBackAfterSave();
   },
 
   /**
@@ -177,17 +247,23 @@ Page({
 
   /**
    * 提交表单
+   *
+   * R5：写入成功后进入终态——提交锁定到离开本页，连点零写；只排一次延迟返回。
+   * 返回失败时保存仍锁定，由显式「重试返回」再试，不重复上传或写库。
+   * 明确失败的写入不删除已上传的云文件，原表单输入保留，可原地重试。
    */
   async submitForm() {
-    if (!this.validateForm()) return;
+    // 成功终态：不再上传、不再写库，也不重复排返回。
+    if (this.data.saveState === 'saved') return;
     if (this.data.isSubmitting) return;
+    if (!this.validateForm()) return;
 
     this.setData({ isSubmitting: true });
 
     try {
       wx.showLoading({ title: '保存中...' });
 
-      // 上传图片
+      // 上传图片（既有上传路径保持不变；失败重试仍走同一条路径）
       const imageFileIDs = [];
       for (const imagePath of this.data.images) {
         const uploadRes = await db.uploadImage(imagePath);
@@ -209,16 +285,20 @@ Page({
       // 保存到数据库
       await db.addRecord(record);
 
+      // 写入成功即终态：先锁定提交并清掉旧返回计划，再排唯一的延迟返回。
+      this.clearReturnTimer();
+      this.setData({
+        saveState: 'saved',
+        returnFailed: false,
+        isSubmitting: false
+      });
+
       wx.hideLoading();
       wx.showToast({
         title: '保存成功',
         icon: 'success'
       });
-
-      // 返回上一页
-      setTimeout(() => {
-        wx.navigateBack();
-      }, 1500);
+      this.scheduleReturn();
 
     } catch (err) {
       console.error('保存失败：', err);
@@ -227,6 +307,7 @@ Page({
         title: '保存失败',
         icon: 'none'
       });
+      // 明确失败：不锁定提交、不清理云文件（结果不明时不删除），原表单可重试。
     } finally {
       this.setData({ isSubmitting: false });
     }

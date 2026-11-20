@@ -1,5 +1,6 @@
 /**
  * T058 R3 首页旧云记录状态互斥与可重试（离线部分）
+ * T060 R5 旧云表单保存成功后的终态（离线部分）
  *
  * 直接加载正式首页 pages/index/index.js，用隔离云替身驱动真实页面处理器：
  * - 旧记录区四态互斥：loading / error / 成功空 / 成功有数据；
@@ -8,6 +9,12 @@
  * - 迟到失败不覆盖更新的成功数据；本机训练入口始终独立可操作；
  * - getApp().globalData.cloudReady === false 时首次进入直接给可重试的不可用状态，
  *   但重试始终实际请求，仍由 db 区分不可用、拒绝与临时网络失败。
+ *
+ * 同时直接加载正式旧云表单 pages/add-record/add-record.js，只用合成云替身：
+ * - 写入成功后提交锁定，连点零写，只会排一次延迟返回；
+ * - 返回失败保留锁定并给出显式重试返回，重试返回不重复上传或写库；
+ * - 页面卸载取消已排队的返回计划，离开后不再弹回；
+ * - 明确失败不锁定、不删除已上传文件，原输入保留并可原地重试。
  *
  * 这里不提供 wx.cloud、不读取真实云环境或账号；真实云权限、原生渲染与手机实测待验。
  *
@@ -22,11 +29,21 @@ const { test, beforeEach } = require('node:test');
 const ROOT = path.resolve(__dirname, '..');
 const INDEX_JS = path.join(ROOT, 'pages', 'index', 'index.js');
 const INDEX_WXML = path.join(ROOT, 'pages', 'index', 'index.wxml');
+const ADD_RECORD_JS = path.join(ROOT, 'pages', 'add-record', 'add-record.js');
+const ADD_RECORD_WXML = path.join(ROOT, 'pages', 'add-record', 'add-record.wxml');
 const DB_JS = path.join(ROOT, 'utils', 'db.js');
 const STORE_JS = path.join(ROOT, 'utils', 'training-store.js');
 
 const storage = new Map();
-const wxLog = { navigations: [], switches: [] };
+const wxLog = {
+  navigations: [],
+  switches: [],
+  backs: [],
+  toasts: [],
+  loading: 0,
+  hiddenLoading: 0
+};
+let navigateBackImpl = null;
 
 global.wx = {
   getStorageSync(key) {
@@ -47,31 +64,69 @@ global.wx = {
   switchTab(options) {
     wxLog.switches.push(options);
   },
+  navigateBack(options) {
+    wxLog.backs.push(options || {});
+    if (navigateBackImpl) navigateBackImpl(options || {});
+  },
+  showLoading() {
+    wxLog.loading += 1;
+  },
+  hideLoading() {
+    wxLog.hiddenLoading += 1;
+  },
+  showToast(options) {
+    wxLog.toasts.push(options);
+  },
   stopPullDownRefresh() {}
 };
 
-let appState = { globalData: { cloudReady: true } };
+function freshAppState() {
+  return {
+    globalData: {
+      cloudReady: true,
+      climbTypes: ['抱石', '先锋攀', '顶绳攀', '室内', '室外'],
+      statusOptions: ['完成', '未完成', '挂片', '红点']
+    }
+  };
+}
+
+let appState = freshAppState();
 global.getApp = () => appState;
 
 const db = require(DB_JS);
 const store = require(STORE_JS);
 const realGetRecentRecords = db.getRecentRecords;
+const realAddRecord = db.addRecord;
+const realUploadImage = db.uploadImage;
+const realDeleteImage = db.deleteImage;
 
 let indexDefinition = null;
+let addRecordDefinition = null;
 let cloudCalls = 0;
+let writeLog = null;
 
 function resetAll() {
   storage.clear();
   wxLog.navigations = [];
   wxLog.switches = [];
-  appState = { globalData: { cloudReady: true } };
+  wxLog.backs = [];
+  wxLog.toasts = [];
+  wxLog.loading = 0;
+  wxLog.hiddenLoading = 0;
+  navigateBackImpl = null;
+  appState = freshAppState();
   cloudCalls = 0;
   db.getRecentRecords = realGetRecentRecords;
+  db.addRecord = realAddRecord;
+  db.uploadImage = realUploadImage;
+  db.deleteImage = realDeleteImage;
+  writeLog = { addRecord: 0, uploads: 0, deletes: 0, lastRecord: null };
 }
 
 beforeEach(() => {
   resetAll();
   indexDefinition = capturePage(INDEX_JS);
+  addRecordDefinition = capturePage(ADD_RECORD_JS);
 });
 
 function capturePage(jsPath) {
@@ -350,4 +405,207 @@ test('R3 模板四态互斥，重试按钮有真实处理器，不保留无条�
   assert.match(source, /wx:elif="\{\{cloudState === 'ok'\}\}"/);
   assert.equal(source.indexOf('wx:if="{{isEmpty}}"'), -1);
   assert.equal(source.indexOf('wx:else class="record-list"'), -1);
+});
+
+// ------------------------------------------------------------------ T060 R5 旧云表单终态
+
+function openAddRecord() {
+  const page = createPage(addRecordDefinition);
+  page.onLoad();
+  return page;
+}
+
+/** 合成云替身：只统计页面实际发起的上传、写库与删除调用。 */
+function stubWrites(options) {
+  const opts = options || {};
+  db.uploadImage = (filePath) => {
+    writeLog.uploads += 1;
+    if (opts.upload) return opts.upload(filePath, writeLog.uploads);
+    return Promise.resolve({ fileID: 'cloud://synthetic/' + writeLog.uploads + '.jpg' });
+  };
+  db.addRecord = (record) => {
+    writeLog.addRecord += 1;
+    writeLog.lastRecord = record;
+    if (opts.addRecord) return opts.addRecord(writeLog.addRecord, record);
+    return Promise.resolve({ _id: 'synthetic-' + writeLog.addRecord });
+  };
+  db.deleteImage = () => {
+    writeLog.deletes += 1;
+    return Promise.resolve({});
+  };
+}
+
+test('R5 合成云成功后连点：云写入与延迟返回各一次，提交进入终态', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  stubWrites();
+
+  const page = openAddRecord();
+  page.setData({
+    location: '终态岩馆',
+    images: ['wxfile://tmp-a.jpg', 'wxfile://tmp-b.jpg'],
+    notes: '终态备注',
+    attempts: 3
+  });
+
+  const first = page.submitForm();
+  const second = page.submitForm(); // 保存中连点
+  await Promise.all([first, second]);
+  await flush();
+
+  assert.equal(writeLog.uploads, 2, '既有上传路径每张图只上传一次');
+  assert.equal(writeLog.addRecord, 1, '实际云写入只发生一次');
+  assert.equal(page.data.saveState, 'saved');
+  assert.equal(page.data.isSubmitting, false);
+  assert.equal(page.data.returnFailed, false);
+  assert.equal(wxLog.toasts.filter(item => item.title === '保存成功').length, 1);
+
+  // 成功终态后的连点既不补写，也不叠加返回计划。
+  await page.submitForm();
+  await page.submitForm();
+  await page.submitForm();
+  await flush();
+  assert.equal(writeLog.addRecord, 1);
+  assert.equal(writeLog.uploads, 2);
+
+  assert.equal(wxLog.backs.length, 0, '延迟返回到点前不返回');
+  t.mock.timers.tick(1499);
+  assert.equal(wxLog.backs.length, 0);
+  t.mock.timers.tick(1);
+  assert.equal(wxLog.backs.length, 1, '延迟返回只执行一次');
+  assert.equal(wxLog.backs[0].delta, 1);
+
+  page.onUnload();
+  t.mock.timers.tick(5000);
+  assert.equal(wxLog.backs.length, 1, '卸载后不再排返回');
+  assert.equal(writeLog.deletes, 0, '本任务不调用云删除');
+});
+
+test('R5 返回失败：保存仍锁定，可显式重试返回且零重复写', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  stubWrites();
+  navigateBackImpl = (options) => {
+    if (wxLog.backs.length === 1) {
+      if (typeof options.fail === 'function') options.fail({ errMsg: 'navigateBack:fail' });
+      return;
+    }
+    if (typeof options.success === 'function') options.success({});
+  };
+
+  const page = openAddRecord();
+  page.setData({ location: '返回失败岩馆' });
+
+  await page.submitForm();
+  await flush();
+  assert.equal(writeLog.addRecord, 1);
+
+  t.mock.timers.tick(1500);
+  assert.equal(wxLog.backs.length, 1);
+  assert.equal(page.data.returnFailed, true);
+  assert.equal(page.data.saveState, 'saved');
+  assert.equal(page.data.isSubmitting, false);
+  assert.equal(wxLog.toasts.at(-1).title, '已保存，返回失败');
+
+  // 锁定状态下的连点仍然零写。
+  await page.submitForm();
+  await page.submitForm();
+  await flush();
+  assert.equal(writeLog.addRecord, 1);
+  assert.equal(writeLog.uploads, 0);
+
+  // 显式重试返回：只重试页面返回，不重复上传或写库。
+  page.retryReturn();
+  assert.equal(wxLog.backs.length, 2);
+  assert.equal(writeLog.addRecord, 1);
+  assert.equal(writeLog.uploads, 0);
+  assert.equal(page.data.saveState, 'saved');
+  assert.equal(writeLog.deletes, 0);
+});
+
+test('R5 离开页面取消返回计划：卸载后定时器不再弹回', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  stubWrites();
+
+  const page = openAddRecord();
+  page.setData({ location: '卸载岩馆' });
+  await page.submitForm();
+  await flush();
+  assert.equal(writeLog.addRecord, 1);
+  assert.equal(page.data.saveState, 'saved');
+
+  page.onUnload();
+  t.mock.timers.tick(5000);
+
+  assert.equal(wxLog.backs.length, 0, '卸载应清掉已排队的返回');
+  assert.equal(writeLog.addRecord, 1);
+});
+
+test('R5 明确失败可原地重试：原输入与上传路径保持，不删除云文件', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  stubWrites({
+    addRecord: (call) => {
+      if (call === 1) return Promise.reject({ errCode: -1, errMsg: 'request:fail 写入失败' });
+      return Promise.resolve({ _id: 'synthetic-retry' });
+    }
+  });
+
+  const page = openAddRecord();
+  page.setData({
+    location: '重试岩馆',
+    notes: '原备注',
+    attempts: 4,
+    images: ['wxfile://tmp-a.jpg']
+  });
+
+  await page.submitForm();
+  await flush();
+
+  assert.equal(writeLog.addRecord, 1);
+  assert.equal(writeLog.uploads, 1);
+  assert.equal(page.data.saveState, '', '明确失败不是终态');
+  assert.equal(page.data.isSubmitting, false);
+  assert.equal(page.data.location, '重试岩馆');
+  assert.equal(page.data.notes, '原备注');
+  assert.equal(page.data.attempts, 4);
+  assert.deepEqual(page.data.images, ['wxfile://tmp-a.jpg']);
+  assert.equal(wxLog.toasts.at(-1).title, '保存失败');
+  assert.equal(writeLog.deletes, 0, '失败不删除已上传文件');
+  assert.equal(wxLog.backs.length, 0);
+
+  await page.submitForm();
+  await flush();
+
+  assert.equal(writeLog.addRecord, 2, '明确失败后重试原表单');
+  assert.equal(writeLog.uploads, 2, '重试仍走同一条既有上传路径');
+  assert.equal(page.data.saveState, 'saved');
+  assert.deepEqual(writeLog.lastRecord.images, ['cloud://synthetic/2.jpg']);
+
+  t.mock.timers.tick(1500);
+  assert.equal(wxLog.backs.length, 1);
+  assert.equal(writeLog.deletes, 0);
+});
+
+test('R5 模板保留旧表单并绑定终态锁定与显式返回', () => {
+  const source = fs.readFileSync(ADD_RECORD_WXML, 'utf8');
+
+  assert.ok(source.includes('id="submit-record"'));
+  assert.match(source, /disabled="\{\{isSubmitting \|\| saveState === 'saved'\}\}"/);
+  assert.ok(source.includes('id="return-failed"'));
+  assert.match(source, /wx:if="\{\{returnFailed\}\}"/);
+  assert.ok(source.includes('id="retry-return"'));
+  assert.ok(source.includes('bindtap="retryReturn"'));
+
+  // 旧表单入口与既有结构保持。
+  assert.ok(source.includes('bindtap="submitForm"'));
+  assert.ok(source.includes('bindtap="chooseImage"'));
+  assert.ok(source.includes('bindtap="previewImage"'));
+  assert.ok(source.includes('catchtap="deleteImage"'));
+
+  assert.equal(typeof addRecordDefinition.retryReturn, 'function');
+  assert.equal(typeof addRecordDefinition.goBackAfterSave, 'function');
+  assert.equal(typeof addRecordDefinition.onUnload, 'function');
+
+  // 未保存时显式返回不生效，避免无记录时误触发返回。
+  const page = openAddRecord();
+  page.retryReturn();
+  assert.equal(wxLog.backs.length, 0);
 });
