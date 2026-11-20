@@ -98,6 +98,11 @@
           <text class="notice-hint">点击收起</text>
         </view>
 
+        <!-- T065：选片前展示实际可新增容量；就在共用操作区、各选片入口之上，
+             不新增卡片，保持视频 → 时间点 → 页尾占用的原有顺序。 -->
+        <text wx:if="{{spaceCapacityText}}" id="video-space-capacity" class="video-hint">{{spaceCapacityText}}</text>
+        <text wx:if="{{spaceCapacityNote}}" id="video-space-capacity-note" class="video-hint">{{spaceCapacityNote}}</text>
+
         <!-- 已保存且没有待确认新片：紧贴播放器只有同排的「更换视频／移除视频」 -->
         <view wx:if="{{hasSavedVideo && savedVideo && !hasPreview}}" id="video-saved" class="action-block">
           <text wx:if="{{!savedVideo.locatable}}" id="saved-unlocatable" class="error-text">{{savedVideo.unresolvedText}}</text>

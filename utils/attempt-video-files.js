@@ -353,6 +353,26 @@ function checkClipSpace(usedBytes, newBytes, policy) {
   };
 }
 
+/**
+ * 选片前实际可新增的单段字节数（T065）：沿用 checkClipSpace 的同一份判定，
+ * 取「可用预算 - 当前实际占用 - 更换余量」后，再与单片上限取小。更换时旧副本仍在
+ * 占用里，因此天然按新旧同时存在计算，不提前扣掉旧片。
+ *
+ * 只接受一次成功的占用读数（usage.totalBytes 与预算策略）；读不出来返回 null，
+ * 页面显示未知，不猜测设备剩余空间，也不使用硬编码的模拟容量。
+ */
+function availableClipBytes(usage, policyInput) {
+  if (!usage || typeof usage !== 'object' || usage.ok === false) return null;
+  const used = safeNumber(usage.totalBytes);
+  if (used === null || used < 0) return null;
+  const policy = policyInput || usage.policy;
+  if (!policy || typeof policy !== 'object') return null;
+  const maxClipBytes = safeNumber(policy.maxClipBytes);
+  if (maxClipBytes === null || maxClipBytes <= 0) return null;
+  const check = checkClipSpace(Math.floor(used), 0, policy);
+  return Math.min(Math.floor(maxClipBytes), check.remainingAfterPeakBytes);
+}
+
 // ------------------------------------------------------------------ *
 // 索引形状
 // ------------------------------------------------------------------ *
@@ -2802,6 +2822,7 @@ module.exports = {
   hasActiveSessionVideoMutation,
   resolveVideoSpacePolicy,
   checkClipSpace,
+  availableClipBytes,
   normalizeIndex,
   normalizeClip,
   normalizePending,

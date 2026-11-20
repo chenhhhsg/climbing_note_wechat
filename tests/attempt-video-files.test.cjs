@@ -815,6 +815,55 @@ test('T026-2 空间预检：单片上限、总量与替换峰值；超限不写�
   assert.equal(usage.warn, false, '6000 未到 9000 提醒线');
 });
 
+test('T065-1 选片前可新增容量：按实际预算扣占用与余量，再受单段上限约束', () => {
+  // 小预算复现真实边界：可用 9600、更换余量 1200、单段上限默认收敛为 12000。
+  const policy = files.resolveVideoSpacePolicy({ budgetBytes: 12000 });
+  assert.equal(policy.usableBytes, 9600);
+  assert.equal(policy.reserveBytes, 1200);
+  assert.equal(policy.maxClipBytes, 12000);
+
+  const capacityOf = totalBytes =>
+    files.availableClipBytes({ ok: true, totalBytes, policy });
+
+  // 余量不足：9600 - 8000 - 1200 = 400，新旧同时存在时只能再放 400。
+  assert.equal(capacityOf(8000), 400);
+  // 零容量：占用 + 余量正好用满可用预算，值为 0 而不是负数。
+  assert.equal(capacityOf(8400), 0);
+  // 已经超预算仍显示 0，不显示负数。
+  assert.equal(capacityOf(10000), 0);
+  // 单片上限更小时按上限收口（即便总预算还有大量余量）。
+  const clipPolicy = files.resolveVideoSpacePolicy({
+    budgetBytes: 100000,
+    photoReserveBytes: 0,
+    reserveBytes: 0,
+    maxClipBytes: 3000
+  });
+  assert.equal(
+    files.availableClipBytes({ ok: true, totalBytes: 1000, policy: clipPolicy }),
+    3000
+  );
+
+  // 与真实预检同一口径：可新增 + 当前占用 + 更换余量不超过可用预算。
+  const partial = capacityOf(5000);
+  assert.equal(partial + 5000 + policy.reserveBytes <= policy.usableBytes, true);
+  assert.equal(
+    files.checkClipSpace(5000, partial, policy).ok,
+    true,
+    '按这个容量预检必须通过'
+  );
+  assert.equal(
+    files.checkClipSpace(5000, partial + 1, policy).ok,
+    false,
+    '再多 1 字节必须被同一预检拒绝'
+  );
+
+  // 读不到占用或预算：未知（null），不猜设备剩余空间。
+  assert.equal(files.availableClipBytes(null), null);
+  assert.equal(files.availableClipBytes({ ok: false, error: 'mock' }), null);
+  assert.equal(files.availableClipBytes({ ok: true, policy }), null);
+  assert.equal(files.availableClipBytes({ ok: true, totalBytes: 0 }), null);
+});
+
 // ------------------------------------------------------------------ *
 // 写入失败、配额失败与来源不可读
 // ------------------------------------------------------------------ */
@@ -1294,6 +1343,115 @@ test('T026-8 页面确认保存后切到持久副本，占用与清理入口可�
   assert.equal(rebuilt.data.savedVideo.clipId, savedClip.clipId);
   assert.equal(rebuilt.data.playerSrc, page.data.playerSrc);
   assert.equal(rebuilt.data.attempt.note, 'B 把的备注');
+});
+
+test('T065-2 页面在选片入口上方显示可新增容量：按实际占用计算，更换按新旧同时存在', async () => {
+  const flow = seedTwoAttempts();
+  const temp = addTempVideo('capacity.mp4', 4096);
+  const seeded = await makeService(flow).commit(requestFor(flow, flow.attemptB, temp));
+  assert.equal(seeded.ok, true, seeded.error);
+
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+  const policy = files.resolveVideoSpacePolicy({});
+  const expected = files.availableClipBytes({
+    ok: true,
+    totalBytes: 4096,
+    policy
+  });
+  // 默认预算：可用 160 MB，扣 4 KB 占用与 8 MB 更换余量后仍受 80 MB 单段上限约束。
+  assert.equal(page.data.spaceCapacityBytes, expected);
+  assert.equal(expected, policy.maxClipBytes);
+  assert.match(page.data.spaceCapacityText, /^选片前可新增 80\.0 MB/);
+  assert.match(page.data.spaceCapacityText, /单段上限 80\.0 MB/);
+  assert.match(page.data.spaceCapacityNote, /更换时旧片仍占用预算/);
+  assert.match(page.data.spaceCapacityNote, /新旧同时存在/);
+
+  // 读占用失败：容量改为未知，但占用卡片仍显示可见错误。
+  faults.readdir = true;
+  page.refreshSpaceUsage();
+  await settle();
+  assert.equal(page.data.spaceCapacityBytes, null);
+  assert.match(page.data.spaceCapacityText, /未知/);
+  assert.match(page.data.spaceCapacityText, /暂时无法统计/);
+  assert.match(page.data.spaceError, /readdir/);
+
+  // 故障恢复后同一次刷新把实际容量恢复回来。
+  faults.readdir = false;
+  page.refreshSpaceUsage();
+  await settle();
+  assert.equal(page.data.spaceCapacityBytes, expected);
+  assert.equal(page.data.spaceError, '');
+  assert.match(page.data.spaceCapacityText, /选片前可新增 80\.0 MB/);
+  assert.doesNotMatch(page.data.spaceCapacityText, /未知/);
+});
+
+test('T065-3 零容量与小预算的页面文案：显示 0 B 或实际剩余，不写设备容量猜测', async () => {
+  const flow = seedTwoAttempts();
+  const page = openVideoPage(flow, flow.attemptB);
+  await settle();
+
+  // 用同一份真实预算判定注入小预算读数：可用 9600、余量 1200。
+  const policy = files.resolveVideoSpacePolicy({ budgetBytes: 12000 });
+  page._videoService = {
+    getSpaceUsage() {
+      return Promise.resolve({
+        ok: true,
+        totalBytes: 8400,
+        fileCount: 1,
+        clipCount: 1,
+        otherArchiveBytes: 0,
+        orphanBytes: 0,
+        policy,
+        usableBytes: policy.usableBytes
+      });
+    }
+  };
+  page.refreshSpaceUsage();
+  await settle();
+  assert.equal(page.data.spaceCapacityBytes, 0);
+  assert.match(page.data.spaceCapacityText, /0 B/);
+  assert.match(page.data.spaceCapacityText, /用满/);
+
+  // 余量不足但未用满：9600 - 8000 - 1200 = 400 B。
+  page._videoService.getSpaceUsage = () =>
+    Promise.resolve({
+      ok: true,
+      totalBytes: 8000,
+      fileCount: 1,
+      clipCount: 1,
+      otherArchiveBytes: 0,
+      orphanBytes: 0,
+      policy,
+      usableBytes: policy.usableBytes
+    });
+  page.refreshSpaceUsage();
+  await settle();
+  assert.equal(page.data.spaceCapacityBytes, 400);
+  assert.match(page.data.spaceCapacityText, /选片前可新增 400 B/);
+
+  // 文案只引用预算策略与占用读数，不读取或硬编码设备存储上限。
+  const pageJs = fs.readFileSync(VIDEO_JS, 'utf8');
+  assert.doesNotMatch(pageJs, /getStorageInfoSync|getFileSystemManager|freeSize|totalSize/);
+});
+
+test('T065-4 容量提示留在共用操作区、选片入口之前，不新增卡片也不改页面顺序', () => {
+  const wxml = fs.readFileSync(VIDEO_WXML, 'utf8');
+  const at = id => {
+    const index = wxml.indexOf('id="' + id + '"');
+    assert.ok(index !== -1, '缺少 #' + id);
+    return index;
+  };
+  assert.ok(at('video-actions') < at('video-space-capacity'), '提示在共用操作区');
+  assert.ok(at('video-space-capacity') < at('video-saved'), '提示在更换/移除之前');
+  assert.ok(at('video-space-capacity-note') < at('video-saved'));
+  assert.ok(at('video-space-capacity') < at('video-choose'), '提示在首次选片入口之前');
+  assert.ok(at('video-markers') < at('video-space'), '时间点与页尾占用顺序不变');
+  assert.match(wxml, /id="video-space-capacity"[^>]*class="video-hint"/);
+  // 容量提示不使用卡片容器：没有新增卡片，也没有打乱页尾最后一张卡片。
+  const capacityBlock = wxml.slice(at('video-space-capacity'), at('video-saved'));
+  assert.doesNotMatch(capacityBlock, /class="card /);
+  assert.equal(wxml.lastIndexOf('class="card '), wxml.indexOf('class="card ', at('video-space')));
 });
 
 test('T026-8b 提交后丢回执：页面按读回的索引确认成功并标明回执不明确', async () => {
