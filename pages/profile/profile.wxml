@@ -24,6 +24,79 @@
     <text wx:if="{{profileNotice}}" id="profile-notice" class="user-desc">{{profileNotice}}</text>
   </view>
 
+  <!--
+    T068：文字备份入口。说明紧挨入口，写清只备份文字、不含媒体/时间点/操作日志；
+    已有媒体保持旧档案归属，恢复不会产生可播放副本。
+  -->
+  <view class="backup-section" id="backup-section">
+    <view class="backup-head">
+      <view class="field-menu-mark"></view>
+      <text class="backup-title">文字备份与恢复</text>
+    </view>
+    <text class="backup-scope" id="backup-scope">
+      只备份文字：训练场次、线路、逐把结果与备注、下次想爬清单、计数与当前选择。照片、视频、时间点标记、操作日志和云端记录不包含；已有照片与视频仍归旧档案所有，恢复的文字不会产生可播放副本。
+    </text>
+
+    <view wx:if="{{backupNotice}}" id="backup-notice" class="backup-notice backup-notice-{{backupNoticeKind}}">
+      <text>{{backupNotice}}</text>
+    </view>
+
+    <view class="backup-actions">
+      <button id="export-backup" class="backup-button" bindtap="exportBackupText">生成文本备份</button>
+      <button id="export-diagnostics" class="backup-button secondary" bindtap="exportBackupDiagnostics">导出受损诊断</button>
+    </view>
+
+    <view wx:if="{{backupExportText}}" id="backup-export" class="backup-output">
+      <text id="backup-export-meta" class="backup-meta">{{backupExportMeta}}</text>
+      <scroll-view class="backup-text-box" scroll-y="{{true}}">
+        <text class="backup-text" selectable="{{true}}" user-select="{{true}}">{{backupExportText}}</text>
+      </scroll-view>
+      <button id="copy-backup" class="backup-button" bindtap="copyBackupText">复制备份文本</button>
+      <text wx:if="{{backupCopyFailed}}" id="backup-copy-failed" class="backup-warn">{{backupCopyIssueText}}</text>
+    </view>
+
+    <view wx:if="{{backupDiagnosticsText}}" id="backup-diagnostics" class="backup-output">
+      <text id="backup-diagnostics-meta" class="backup-meta">{{backupDiagnosticsMeta}}</text>
+      <scroll-view class="backup-text-box" scroll-y="{{true}}">
+        <text class="backup-text" selectable="{{true}}" user-select="{{true}}">{{backupDiagnosticsText}}</text>
+      </scroll-view>
+      <button id="copy-diagnostics" class="backup-button secondary" bindtap="copyBackupDiagnostics">复制诊断原文</button>
+      <text wx:if="{{backupDiagnosticsCopyFailed}}" id="backup-diagnostics-copy-failed" class="backup-warn">{{backupDiagnosticsCopyIssueText}}</text>
+    </view>
+
+    <view class="backup-import-block" id="backup-import-block">
+      <text class="backup-subtitle">从文字恢复</text>
+      <text class="backup-hint">
+        把之前复制到别处保存的备份文本粘贴到这里。正常导入只接受本页「生成文本备份」的格式；受损诊断原文只能用于排查，不能当作备份导入。
+      </text>
+      <textarea
+        id="backup-import-input"
+        class="backup-import"
+        value="{{backupImportText}}"
+        maxlength="{{backupImportMaxLength}}"
+        placeholder="粘贴备份文本…"
+        cursor-spacing="24"
+        bindinput="onBackupImportInput"
+      ></textarea>
+      <view class="backup-actions">
+        <button id="preview-backup" class="backup-button secondary" bindtap="previewBackupImport">检查备份文本</button>
+        <button wx:if="{{backupPreview}}" id="confirm-restore" class="backup-button danger" bindtap="confirmBackupRestore">确认恢复</button>
+      </view>
+      <view wx:if="{{backupPreview}}" id="backup-preview" class="backup-preview">
+        <text class="backup-meta">
+          已校验：{{backupPreview.summary.sessions}} 场 · {{backupPreview.summary.routes}} 条线路 · {{backupPreview.summary.attempts}} 把 · {{backupPreview.summary.notes}} 条备注 · 清单 {{backupPreview.summary.wishlist}} 条
+        </text>
+        <text class="backup-meta">
+          来源档案 {{backupPreview.plan.sourceArchiveId}}。正式恢复会分配新的档案归属；当前档案原文保留在本机供诊断，恢复不会带来照片、视频或时间点的可播放副本。
+        </text>
+      </view>
+    </view>
+
+    <text class="backup-footnote">
+      复制与恢复都只在你点按后发生；本页不代你上传，也不把诊断原文当成可导入备份。
+    </text>
+  </view>
+
   <!-- 功能菜单 -->
   <view class="menu-section">
     <view class="menu-item" bindtap="goToFitnessTest">
