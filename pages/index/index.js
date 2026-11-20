@@ -19,6 +19,14 @@
  * pages/training-wishlist；首页只算 listWishlist 返回的本档可展示条目数，0 条时入口照常在。
  * 首页不再铺清单条目，也不再把线路 ID 交给别处的点击；打开独立页时带上渲染这一刻的
  * archiveId，供清单页核对归属。首页本身仍只读。
+ *
+ * T058：旧记录区统一为互斥的 loading / error / ok+空 / ok+有数据 四态；失败只显示
+ * 原原因与重试，绝不再落到「还没有旧记录」。首次进入只由 onLoad 发起一次读取（紧随
+ * 其后的首次 onShow 不重复请求），之后返回首页或下拉刷新才重新读取；迟到失败与迟到
+ * 成功都按请求序号丢弃，不覆盖更新状态。本机训练入口仍只读本机档案，与云请求无关。
+ * 应用启动时若已明确云能力不可用（getApp().globalData.cloudReady === false），首次
+ * 进入直接给出可重试的不可用状态；重试始终实际发起请求，仍由 utils/db.js 的既有
+ * 错误分类区分不可用、拒绝、网络失败等原因。
  */
 const db = require('../../utils/db');
 const dateUtil = require('../../utils/date');
@@ -34,6 +42,7 @@ Page({
     isEmpty: false,     // 旧云记录是否为空
     cloudState: 'loading', // loading | ok | error：旧云读取的可判别状态
     cloudError: '',     // 旧云读取失败提示（不影响本机训练入口）
+    cloudErrorKind: '', // unavailable | denied | not-found | failed：db 既有分类
 
     // 本机训练入口：与本机档案一致，不由云请求决定
     trainingReady: false,   // 本机档案可读（首次进入为 true，空档案也算可读）
@@ -51,13 +60,19 @@ Page({
   onLoad() {
     // 每次重新进入页面都换新的请求序号：旧请求的回执一律丢弃。
     this._cloudToken = 0;
+    // 首次进入由 onLoad 发起读取；紧随其后的第一次 onShow 不再重复请求。
+    this._skipFirstShow = true;
     this.refreshTrainingEntry();
     this.refreshWishlist();
-    this.loadRecentRecords();
+    this.loadRecentRecords({ honorCloudState: true });
   },
 
-  // 每次显示页面时刷新本机入口、想爬清单与旧云记录
+  // 从别的页面返回或重新显示时刷新；首次 onShow 紧跟在 onLoad 之后，不重复请求。
   onShow() {
+    if (this._skipFirstShow) {
+      this._skipFirstShow = false;
+      return;
+    }
     this.refreshTrainingEntry();
     this.refreshWishlist();
     this.loadRecentRecords();
@@ -123,14 +138,72 @@ Page({
   },
 
   /**
+   * 应用启动时登记的云能力状态（T058）：明确为 false 时才作为首次读取的提示，
+   * 其余（缺失、true、异常）都交给 utils/db.js 的真实请求结果判别。
+   * 重试与返回刷新不读这个提示，避免一次过时的 false 永远挡住恢复。
+   */
+  readCloudReady() {
+    try {
+      if (typeof getApp !== 'function') return null;
+      const app = getApp();
+      if (!app || !app.globalData) return null;
+      return typeof app.globalData.cloudReady === 'boolean'
+        ? app.globalData.cloudReady
+        : null;
+    } catch (error) {
+      return null;
+    }
+  },
+
+  /**
+   * 失败文案只用 utils/db.js 既有分类（T018）：title 说明原原因，hint 说明本机不受影响。
+   * 分类的 hint 常以「旧记录暂不可读；」开头，这里去重后并入一条可见提示。
+   */
+  cloudErrorText(view) {
+    const prefix = '旧记录暂不可读；';
+    const hint = view.hint.indexOf(prefix) === 0 ? view.hint.slice(prefix.length) : view.hint;
+    return '旧记录暂不可读（' + view.title + '）；' + hint;
+  },
+
+  /**
+   * 统一的失败落盘：旧记录区进入 error，清空空态标记，本机训练入口不动。
+   */
+  applyCloudFailure(error) {
+    const view = db.describeCloudError(error);
+    this.setData({
+      recentRecords: [],
+      isEmpty: false,
+      loading: false,
+      cloudState: 'error',
+      cloudError: this.cloudErrorText(view),
+      cloudErrorKind: view.kind
+    });
+  },
+
+  /**
    * 加载最近的旧云记录。
    * 用请求序号判别迟到返回：只有最后一次请求的回执才允许落到页面上，
-   * 旧请求的失败或迟到成功都不会改动本机训练入口。
+   * 旧请求的失败或迟到成功都不会改动本机训练入口，也不覆盖更新状态。
+   *
+   * options.honorCloudState 只在首次进入时为 true：应用已明确云不可用时直接给出
+   * 可重试的失败，不再发请求；重试与返回刷新始终实际请求，由 db 判别原因。
    */
-  loadRecentRecords() {
-    this._cloudToken += 1;
+  loadRecentRecords(options) {
+    const opts = options || {};
+    this._cloudToken = (this._cloudToken || 0) + 1;
     const token = this._cloudToken;
-    this.setData({ loading: true, cloudState: 'loading' });
+
+    if (opts.honorCloudState && this.readCloudReady() === false) {
+      this.applyCloudFailure(db.cloudUnavailable('云开发不可用：应用启动时未检测到云能力'));
+      return Promise.resolve();
+    }
+
+    this.setData({
+      loading: true,
+      cloudState: 'loading',
+      cloudError: '',
+      cloudErrorKind: ''
+    });
 
     return db.getRecentRecords(5).then(res => {
       if (token !== this._cloudToken) return;
@@ -147,21 +220,22 @@ Page({
         isEmpty: records.length === 0,
         loading: false,
         cloudState: 'ok',
-        cloudError: ''
+        cloudError: '',
+        cloudErrorKind: ''
       });
     }).catch(err => {
       if (token !== this._cloudToken) return;
       console.error('加载旧记录失败：', err);
       // 旧云不可用（无云环境、无权限或占位环境）只影响旧记录区，训练入口照常可用。
-      const code = err && err.code === db.CLOUD_UNAVAILABLE ? '云环境不可用' : '读取失败';
-      this.setData({
-        recentRecords: [],
-        isEmpty: true,
-        loading: false,
-        cloudState: 'error',
-        cloudError: '旧记录暂不可读（' + code + '）；本机训练不受影响。'
-      });
+      this.applyCloudFailure(err);
     });
+  },
+
+  /**
+   * 失败后的重试入口：始终实际发起请求，失败可再次重试；本机训练入口保持可操作。
+   */
+  retryRecentRecords() {
+    return this.loadRecentRecords();
   },
 
   /**

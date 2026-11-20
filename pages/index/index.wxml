@@ -55,25 +55,27 @@
       <text class="section-more" bindtap="goToList">查看全部 ›</text>
     </view>
 
-    <!-- 旧云读取失败：只影响本区，训练入口照常可用 -->
-    <view wx:if="{{cloudState === 'error'}}" id="cloud-error" class="cloud-error">
-      <text class="cloud-error-text">{{cloudError}}</text>
-    </view>
-
-    <!-- 加载中 -->
-    <view wx:if="{{loading}}" class="loading-state">
+    <!--
+      旧云读取状态互斥（T058）：loading / error / 成功空 / 成功有数据。
+      失败只显示原原因与重试，绝不落到「还没有旧记录」；本机训练入口不受影响。
+    -->
+    <view wx:if="{{cloudState === 'loading'}}" id="cloud-loading" class="loading-state">
       <text>加载中...</text>
     </view>
 
-    <!-- 无数据状态 -->
-    <view wx:elif="{{isEmpty}}" class="empty-state">
+    <view wx:elif="{{cloudState === 'error'}}" id="cloud-error" class="cloud-error">
+      <text id="cloud-error-text" class="cloud-error-text">{{cloudError}}</text>
+      <button id="cloud-retry" class="btn-cloud-retry" bindtap="retryRecentRecords">重试</button>
+    </view>
 
+    <!-- 无数据状态：只在成功读取且确实为空时出现 -->
+    <view wx:elif="{{cloudState === 'ok' && isEmpty}}" id="cloud-empty" class="empty-state">
       <text class="empty-text">还没有旧记录</text>
       <text class="empty-hint">早期的云端记录会出现在这里。</text>
     </view>
 
-    <!-- 记录列表 -->
-    <view wx:else class="record-list">
+    <!-- 记录列表：只在成功读取且有数据时出现 -->
+    <view wx:elif="{{cloudState === 'ok'}}" id="cloud-records" class="record-list">
       <view
         wx:for="{{recentRecords}}"
         wx:key="_id"
